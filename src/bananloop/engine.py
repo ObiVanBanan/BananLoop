@@ -41,9 +41,16 @@ def _hash_payload(payload: dict[str, Any]) -> str:
 
 
 class Engine:
-    def __init__(self, store: CampaignStore, workspace: WorkspaceManager):
+    def __init__(
+        self,
+        store: CampaignStore,
+        workspace: WorkspaceManager,
+        progress: Callable[[str], None] | None = None,
+    ):
         self.store = store
         self.workspace = workspace
+        self._progress_callback = progress
+        self._retry_running_actions = False
         self.spec = store.spec()
         self.evaluator = CommandEvaluator(self.spec.evaluation_command)
         self.agent: AgentAdapter
@@ -53,6 +60,10 @@ class Engine:
             self.agent = PiAdapter(self.spec.agent.model, self.spec.agent.extra_args)
         else:
             self.agent = CommandAgentAdapter(self.spec.agent.command)
+
+    def _progress(self, message: str) -> None:
+        if self._progress_callback:
+            self._progress_callback(message)
 
     def _checkpoint(self, stage: str) -> None:
         if os.getenv("BANANLOOP_TEST_STOP_AFTER_STAGE") == stage:
@@ -93,19 +104,41 @@ class Engine:
             if existing["request_hash"] != request_hash:
                 raise EngineError(f"action input mismatch for {action_id}")
             if existing["status"] == "COMPLETED":
+                self._progress(f"{action_id}: reuse completed result")
                 return json.loads(existing["response_json"])
-            if existing["status"] == "RUNNING":
-                raise UnknownActionOutcome(f"action {action_id} was running when process stopped; refusing blind retry")
-            raise EngineError(f"action {action_id} previously failed: {existing['error']}")
-        if self._budget_or_stop(kind):
-            raise EngineError("budget exhausted before action")
-        self.store.start_action(action_id, experiment_id, stage, kind, request_hash)
+            if existing["status"] == "CANCELLED":
+                if self._budget_or_stop(kind):
+                    raise EngineError("budget exhausted before action retry")
+                self._progress(f"{action_id}: retry cancelled action")
+                self.store.restart_action(action_id)
+            elif existing["status"] == "RUNNING":
+                if not self._retry_running_actions:
+                    raise UnknownActionOutcome(
+                        f"action {action_id} was running when process stopped; "
+                        "resume with --retry-running-action only if you know the previous local process is gone"
+                    )
+                if self._budget_or_stop(kind):
+                    raise EngineError("budget exhausted before action retry")
+                self._progress(f"{action_id}: explicitly retry orphaned RUNNING action")
+                self.store.restart_action(action_id)
+            else:
+                raise EngineError(f"action {action_id} previously failed: {existing['error']}")
+        else:
+            if self._budget_or_stop(kind):
+                raise EngineError("budget exhausted before action")
+            self.store.start_action(action_id, experiment_id, stage, kind, request_hash)
+        self._progress(f"{action_id}: invoke {kind}")
         try:
             response = invoke()
+        except KeyboardInterrupt:
+            self.store.cancel_action(action_id, "user interrupt")
+            self._progress(f"{action_id}: cancelled by user")
+            raise
         except Exception as exc:
             self.store.fail_action(action_id, str(exc))
             raise
         self.store.finish_action(action_id, response)
+        self._progress(f"{action_id}: completed")
         return response
 
     def _baseline(self) -> None:
@@ -339,7 +372,8 @@ class Engine:
             return True
         return False
 
-    def run(self, *, resume: bool = False) -> dict[str, Any]:
+    def run(self, *, resume: bool = False, retry_running_actions: bool = False) -> dict[str, Any]:
+        self._retry_running_actions = retry_running_actions
         campaign = self.store.campaign()
         if campaign["spec_hash"] != self.spec.approved_hash():
             raise EngineError("approved campaign spec hash mismatch")
@@ -370,6 +404,8 @@ class Engine:
             attempt_id = int(campaign["active_attempt_id"])
             experiment_id = int(campaign["active_experiment_id"])
             stage = self.store.attempt(attempt_id)["stage"]
+            ordinal = self.store.experiment(experiment_id)["ordinal"]
+            self._progress(f"experiment {ordinal}: {stage}")
             if stage == "PROPOSE":
                 self._stage_propose(attempt_id, experiment_id)
             elif stage == "EXECUTE":
