@@ -27,18 +27,31 @@ def _paths(repo: Path, state_dir: str | None) -> RuntimePaths:
     return paths
 
 
+def _agent_config(args: argparse.Namespace) -> AgentConfig:
+    extra_args: list[str] = []
+    if args.agent == "codex":
+        extra_args = args.codex_arg or []
+    elif args.agent == "pi":
+        if args.provider:
+            extra_args += ["--provider", args.provider]
+        if args.thinking:
+            extra_args += ["--thinking", args.thinking]
+        extra_args += args.pi_arg or []
+    return AgentConfig(
+        kind=args.agent,
+        command=shlex.split(args.agent_cmd) if args.agent_cmd else [],
+        model=args.model,
+        extra_args=extra_args,
+    )
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     if not args.allow_dirty:
         assert_clean_source(repo)
     base = current_commit(repo)
     paths = _paths(repo, args.state_dir)
-    agent = AgentConfig(
-        kind=args.agent,
-        command=shlex.split(args.agent_cmd) if args.agent_cmd else [],
-        model=args.model,
-        extra_args=args.codex_arg or [],
-    )
+    agent = _agent_config(args)
     spec = CampaignSpec(
         goal=args.goal,
         source_repo=str(repo),
@@ -164,10 +177,17 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--check", action="append")
     init.add_argument("--editable", action="append")
     init.add_argument("--protect", action="append")
-    init.add_argument("--agent", choices=["codex", "command"], default="codex")
+    init.add_argument("--agent", choices=["codex", "command", "pi"], default="codex")
     init.add_argument("--agent-cmd")
     init.add_argument("--model")
+    init.add_argument("--provider", help="Pi provider, e.g. ollama-cloud")
+    init.add_argument(
+        "--thinking",
+        choices=["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+        help="Pi thinking level",
+    )
     init.add_argument("--codex-arg", action="append")
+    init.add_argument("--pi-arg", action="append")
     init.add_argument("--max-experiments", type=int, default=5)
     init.add_argument("--max-attempts", type=int, default=8)
     init.add_argument("--max-agent-calls", type=int, default=20)

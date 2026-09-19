@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from pydantic import ValidationError
 
-from .agents import AgentAdapter, AgentError, CodexAdapter, CommandAgentAdapter
+from .agents import AgentAdapter, AgentError, CodexAdapter, CommandAgentAdapter, PiAdapter
 from .budget import pre_action_stop
 from .contracts import (
     CampaignSpec,
@@ -49,6 +49,8 @@ class Engine:
         self.agent: AgentAdapter
         if self.spec.agent.kind == "codex":
             self.agent = CodexAdapter(self.spec.agent.model, self.spec.agent.extra_args)
+        elif self.spec.agent.kind == "pi":
+            self.agent = PiAdapter(self.spec.agent.model, self.spec.agent.extra_args)
         else:
             self.agent = CommandAgentAdapter(self.spec.agent.command)
 

@@ -68,7 +68,7 @@ class BudgetSpec(BaseModel):
 
 
 class AgentConfig(BaseModel):
-    kind: Literal["codex", "command"] = "codex"
+    kind: Literal["codex", "command", "pi"] = "codex"
     command: list[str] = Field(default_factory=list)
     model: str | None = None
     extra_args: list[str] = Field(default_factory=list)

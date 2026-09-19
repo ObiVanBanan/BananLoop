@@ -17,7 +17,7 @@ The coding agent proposes and edits. The evaluator and deterministic policy deci
 - fixed baseline vs. moving champion;
 - structured command evaluator with metric/check validation;
 - deterministic min-improvement, target, guardrail and plateau policies;
-- Codex CLI adapter and generic JSON-over-stdin/stdout command adapter;
+- Codex CLI adapter, Pi RPC adapter, and generic JSON-over-stdin/stdout command adapter;
 - action IDs that prevent completed agent/evaluator calls from being repeated on resume;
 - budgets for experiments, attempts, agent calls, evaluator calls and wall time;
 - `init`, `run`, `status`, `resume`, `stop`, `report` CLI;
@@ -111,6 +111,45 @@ bananloop run --repo .
 ```
 
 `--codex-arg` can be repeated for installation-specific Codex flags.
+
+## Pi adapter
+
+Pi is integrated through its RPC JSONL mode, not through a one-shot shell wrapper. Pi proposes/implements inside the managed workspace; BananLoop still owns evaluation and ACCEPT/REJECT.
+
+Example with Ollama Cloud:
+
+```powershell
+$env:PI_OLLAMA_WEB_TOOLS="0"
+
+uv run bananloop init `
+  --repo .tmp\pi-fixture `
+  --state-dir .tmp\pi-state `
+  --goal "Raise quality while keeping regressions at zero" `
+  --eval-cmd "python evaluator.py" `
+  --metric quality `
+  --direction maximize `
+  --target 1 `
+  --min-improvement 0.5 `
+  --guard "regressions<=0" `
+  --check tests `
+  --editable "value.txt" `
+  --editable "guard.txt" `
+  --protect "evaluator.py" `
+  --protect "agent.py" `
+  --agent pi `
+  --provider ollama-cloud `
+  --model "nemotron-3-nano:30b" `
+  --thinking off `
+  --max-experiments 2 `
+  --max-agent-calls 4
+
+uv run bananloop run --repo .tmp\pi-fixture --state-dir .tmp\pi-state
+uv run bananloop report --repo .tmp\pi-fixture --state-dir .tmp\pi-state
+```
+
+The adapter starts `pi --mode rpc --no-session --no-approve`. `--provider`, `--model`, and `--thinking` are translated to Pi startup options. Use repeated `--pi-arg` for additional Pi CLI flags.
+
+Pi's final assistant message must be a single JSON object matching the BananLoop role contract. Markdown fences or prose outside that object are treated as `AGENT_PROTOCOL_ERROR`.
 
 ## Evaluator contract
 
