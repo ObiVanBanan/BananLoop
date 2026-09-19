@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -8,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from bananloop.agents.base import AgentAdapter
 from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, RuntimePaths
 from bananloop.engine import ControlledInterruption, Engine
 from bananloop.store import CampaignStore
@@ -108,5 +110,58 @@ def test_resume_after_durable_stage_does_not_restart_experiment(tmp_path: Path, 
         assert [e["status"] for e in experiments] == ["ACCEPTED", "REJECTED", "ACCEPTED"]
         first_eval = json.loads(experiments[0]["evaluation_json"])
         assert first_eval["metrics"]["quality"]["value"] == 1
+    finally:
+        store.close()
+
+
+
+class ReplayNormalizingAgent(AgentAdapter):
+    def probe(self):
+        return {"available": True}
+
+    def execute(self, task, workspace, timeout):
+        raise AssertionError("durable completed action must not call the agent again")
+
+    def normalize_result(self, task, result):
+        normalized = dict(result)
+        if task.get("role") == "implement" and normalized.get("blockers") == "None":
+            normalized["blockers"] = []
+        return normalized
+
+
+def test_replayed_agent_result_is_normalized_without_second_call(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+
+        engine._stage_propose(attempt_id, experiment_id)
+        exp = store.experiment(experiment_id)
+        task = engine._task_context("implement", experiment_id)
+        task["hypothesis"] = json.loads(exp["hypothesis_json"])
+        request_hash = hashlib.sha256(
+            json.dumps(task, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+        action_id = f"exp:{experiment_id}:implement"
+        store.start_action(action_id, experiment_id, "EXECUTE", "agent", request_hash)
+        store.finish_action(
+            action_id,
+            {
+                "summary": "changed fixture",
+                "changed_paths": ["value.txt"],
+                "verification_notes": "ok",
+                "blockers": "None",
+            },
+        )
+
+        calls_before = store.campaign()["agent_calls"]
+        engine.agent = ReplayNormalizingAgent()
+        engine._stage_execute(attempt_id, experiment_id)
+
+        assert store.attempt(attempt_id)["stage"] == "SNAPSHOT"
+        assert store.campaign()["agent_calls"] == calls_before
     finally:
         store.close()
