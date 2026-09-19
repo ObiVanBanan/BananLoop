@@ -122,23 +122,58 @@ class PiAdapter(AgentAdapter):
         return instruction + "\n\nBANANLOOP TASK:\n" + json.dumps(task, ensure_ascii=False, indent=2)
 
     @staticmethod
+    def _extract_single_json_object(text: str) -> dict[str, Any]:
+        spans: list[str] = []
+        start: int | None = None
+        depth = 0
+        in_string = False
+        escaped = False
+        for index, char in enumerate(text):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+                continue
+            if char == "{":
+                if depth == 0:
+                    start = index
+                depth += 1
+            elif char == "}" and depth:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    spans.append(text[start:index + 1])
+                    start = None
+
+        objects: list[dict[str, Any]] = []
+        for span in spans:
+            try:
+                value = json.loads(span)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                objects.append(value)
+
+        if len(objects) != 1:
+            raise AgentError(
+                "Pi final response does not contain exactly one unambiguous JSON object"
+            )
+        return objects[0]
+
+    @staticmethod
     def _parse_final_json(text: str) -> dict[str, Any]:
         candidate = text.strip()
         try:
             data = json.loads(candidate)
-        except json.JSONDecodeError as direct_error:
-            if "</think>" not in candidate:
-                raise AgentError(
-                    f"Pi final response is not strict JSON: {candidate[:1000]!r}"
-                ) from direct_error
-            candidate = candidate.rsplit("</think>", 1)[1].strip()
-            try:
-                data = json.loads(candidate)
-            except json.JSONDecodeError as suffix_error:
-                raise AgentError(
-                    "Pi final response after </think> is not strict JSON: "
-                    f"{candidate[:1000]!r}"
-                ) from suffix_error
+        except json.JSONDecodeError:
+            if "</think>" in candidate:
+                candidate = candidate.rsplit("</think>", 1)[1].strip()
+            data = PiAdapter._extract_single_json_object(candidate)
         if not isinstance(data, dict):
             raise AgentError("Pi final response must be a JSON object")
         return data
