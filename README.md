@@ -105,8 +105,7 @@ bananloop init \
   --editable "src/**" \
   --protect "scripts/evaluate.py" \
   --protect "tests/**" \
-  --agent codex \
-  --model gpt-5.6-codex
+  --agent codex
 
 bananloop run --repo .
 ```
