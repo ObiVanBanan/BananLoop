@@ -89,6 +89,16 @@ Expected scientific history:
 
 The source fixture repository itself remains at its original commit. All candidate commits live in BananLoop's private workspace under `~/.bananloop/projects/<repo-hash>/` unless `--state-dir` is supplied.
 
+
+For secondary metrics that should only avoid getting worse while the primary metric improves, use a champion-relative non-regression guardrail:
+
+```bash
+--non-regression public_human_reject_rate:minimize
+--non-regression coverage:maximize:0.01
+```
+
+The optional third field is an allowed tolerance. This is different from an absolute `--guard`: non-regression compares each candidate to the current champion instead of forcing every intermediate candidate to satisfy a final target immediately.
+
 ## Codex adapter
 
 Use `--agent codex` (the default). BananLoop calls Codex non-interactively with a JSON Schema and `--output-last-message`, while the engine retains lifecycle/acceptance ownership.
