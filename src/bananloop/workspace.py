@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fnmatch
 import shutil
+import tempfile
 from pathlib import Path
 
 from .process import run_process
@@ -15,7 +16,7 @@ class WorkspaceManager:
     def __init__(self, source_repo: Path, workspace: Path):
         self.source_repo = source_repo.resolve()
         self.workspace = workspace.resolve()
-        self.agent_workspace = (self.workspace.parent / "agent_workspace").resolve()
+        self.agent_workspace: Path | None = None
 
     def ensure(self, base_commit: str) -> None:
         if not self.workspace.exists():
@@ -59,8 +60,8 @@ class WorkspaceManager:
         return False
 
     def prepare_agent_workspace(self, hidden_paths: list[str]) -> Path:
-        if self.agent_workspace.exists():
-            shutil.rmtree(self.agent_workspace)
+        self.cleanup_agent_workspace()
+        self.agent_workspace = Path(tempfile.mkdtemp(prefix="bananloop-agent-")).resolve()
         hidden = [".git", ".git/**", ".bananloop_eval", ".bananloop_eval/**", *hidden_paths]
 
         def ignore(directory: str, names: list[str]) -> set[str]:
@@ -76,7 +77,13 @@ class WorkspaceManager:
                     ignored.add(name)
             return ignored
 
-        shutil.copytree(self.workspace, self.agent_workspace, ignore=ignore, symlinks=True)
+        shutil.copytree(
+            self.workspace,
+            self.agent_workspace,
+            ignore=ignore,
+            symlinks=True,
+            dirs_exist_ok=True,
+        )
         run_process(["git", "init"], cwd=self.agent_workspace, timeout=30)
         run_process(["git", "config", "user.email", "bananloop@localhost"], cwd=self.agent_workspace, timeout=10)
         run_process(["git", "config", "user.name", "BananLoop Agent Sandbox"], cwd=self.agent_workspace, timeout=10)
@@ -113,8 +120,9 @@ class WorkspaceManager:
         return changed
 
     def cleanup_agent_workspace(self) -> None:
-        if self.agent_workspace.exists():
+        if self.agent_workspace is not None and self.agent_workspace.exists():
             shutil.rmtree(self.agent_workspace)
+        self.agent_workspace = None
 
     def verify_scope(self, changed: list[str], editable_scope: list[str], protected_paths: list[str]) -> tuple[bool, list[str]]:
         violations: list[str] = []
