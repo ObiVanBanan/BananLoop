@@ -22,7 +22,7 @@ from .evaluators import CommandEvaluator, EvaluatorError
 from .integrity import evaluation_fingerprint, verify_evaluation_assets
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
 from .store import CampaignStore
-from .workspace import WorkspaceManager
+from .workspace import WorkspaceError, WorkspaceManager
 
 
 class ControlledInterruption(RuntimeError):
@@ -70,6 +70,82 @@ class Engine:
 
     def _agent_timeout(self, default: int) -> int:
         return self._agent_timeout_seconds or default
+
+    def _agent_hidden_paths(self) -> list[str]:
+        frozen = [asset.path for asset in self.spec.evaluation_assets]
+        return list(dict.fromkeys([*self.spec.agent_hidden_paths, *frozen]))
+
+    def _agent_evaluation_view(self, payload_json: str | None) -> dict[str, Any] | None:
+        if not payload_json:
+            return None
+        payload = json.loads(payload_json)
+        payload["artifacts"] = []
+        visible = set(self.spec.agent_visible_metrics)
+        if visible:
+            payload["metrics"] = {
+                name: value
+                for name, value in (payload.get("metrics") or {}).items()
+                if name in visible
+            }
+        return payload
+
+    def _agent_decision_view(self, decision_json: str | None) -> dict[str, Any] | None:
+        if not decision_json:
+            return None
+        decision = json.loads(decision_json)
+        visible = set(self.spec.agent_visible_metrics)
+        if not visible:
+            return decision
+
+        primary_visible = self.spec.primary_metric.name in visible
+        view: dict[str, Any] = {"accepted": bool(decision.get("accepted"))}
+        if primary_visible:
+            for name in ("primary_value", "champion_value", "delta"):
+                if name in decision:
+                    view[name] = decision[name]
+
+        predicates: dict[str, bool] = {}
+        for key, value in (decision.get("predicates") or {}).items():
+            if key == "minimum_improvement":
+                if primary_visible:
+                    predicates[key] = bool(value)
+            elif key.startswith("check:"):
+                predicates[key] = bool(value)
+            elif key.startswith("guard:") and any(
+                key.startswith(f"guard:{metric}") for metric in visible
+            ):
+                predicates[key] = bool(value)
+        view["predicates"] = predicates
+
+        reasons: list[str] = []
+        for reason in decision.get("reasons") or []:
+            if reason == "ACCEPTED" or reason.startswith("CHECK_FAILED:"):
+                reasons.append(reason)
+            elif reason == "PRIMARY_NOT_IMPROVED" and primary_visible:
+                reasons.append(reason)
+            elif reason.startswith("GUARDRAIL_FAILED:"):
+                metric = reason.split(":", 1)[1]
+                if metric in visible:
+                    reasons.append(reason)
+        view["reasons"] = reasons
+        return view
+
+    def _invoke_agent(
+        self,
+        task: dict[str, Any],
+        *,
+        timeout: int,
+        apply_changes: bool,
+    ) -> dict[str, Any]:
+        hidden = self._agent_hidden_paths()
+        agent_workspace = self.workspace.prepare_agent_workspace(hidden)
+        try:
+            result = self.agent.execute(task, agent_workspace, timeout=timeout)
+            if apply_changes:
+                self.workspace.apply_agent_changes(agent_workspace, hidden)
+            return result
+        finally:
+            self.workspace.cleanup_agent_workspace()
 
     def _checkpoint(self, stage: str) -> None:
         if os.getenv("BANANLOOP_TEST_STOP_AFTER_STAGE") == stage:
@@ -224,7 +300,7 @@ class Engine:
                 "hypothesis": json.loads(exp["hypothesis_json"]) if exp["hypothesis_json"] else None,
                 "status": exp["status"],
                 "failure_category": exp["failure_category"],
-                "decision": json.loads(exp["decision_json"]) if exp["decision_json"] else None,
+                "decision": self._agent_decision_view(exp["decision_json"]),
             })
         return history
 
@@ -235,11 +311,15 @@ class Engine:
             "role": role,
             "goal": self.spec.goal,
             "primary_metric": self.spec.primary_metric.model_dump(mode="json"),
-            "guardrails": [g.model_dump(mode="json") for g in self.spec.guardrails],
+            "guardrails": [
+                g.model_dump(mode="json")
+                for g in self.spec.guardrails
+                if not self.spec.agent_visible_metrics or g.metric in self.spec.agent_visible_metrics
+            ],
             "editable_scope": self.spec.editable_scope,
             "protected_paths": self.spec.protected_paths,
-            "baseline": json.loads(campaign["baseline_json"]),
-            "champion": json.loads(campaign["champion_json"]),
+            "baseline": self._agent_evaluation_view(campaign["baseline_json"]),
+            "champion": self._agent_evaluation_view(campaign["champion_json"]),
             "champion_snapshot": campaign["champion_snapshot"],
             "history": self._history(),
             "experiment_id": experiment_id,
@@ -255,10 +335,10 @@ class Engine:
                 stage="PROPOSE",
                 kind="agent",
                 request=task,
-                invoke=lambda: self.agent.execute(
+                invoke=lambda: self._invoke_agent(
                     task,
-                    self.workspace.workspace,
                     timeout=self._agent_timeout(900),
+                    apply_changes=False,
                 ),
             )
             raw = self.agent.normalize_result(task, raw)
@@ -268,11 +348,16 @@ class Engine:
                 self._stop(StopReason.NO_HYPOTHESIS)
                 return
             hypothesis = Hypothesis.model_validate(raw)
-        except (AgentError, ValidationError, UnknownActionOutcome) as exc:
+        except (AgentError, ValidationError, UnknownActionOutcome, WorkspaceError) as exc:
             self.store.update_experiment(experiment_id, failure_category="AGENT_PROTOCOL_ERROR", lesson=str(exc)[:1000])
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(f"propose failed: {exc}") from exc
-        self.store.update_experiment(experiment_id, hypothesis_json=hypothesis.model_dump_json())
+        self.store.update_experiment(
+            experiment_id,
+            hypothesis_json=hypothesis.model_dump_json(),
+            failure_category=None,
+            lesson=None,
+        )
         self.store.set_stage(attempt_id, "EXECUTE")
         self._checkpoint("EXECUTE")
 
@@ -292,15 +377,20 @@ class Engine:
                 stage="EXECUTE",
                 kind="agent",
                 request=task,
-                invoke=lambda: self.agent.execute(
+                invoke=lambda: self._invoke_agent(
                     task,
-                    self.workspace.workspace,
                     timeout=self._agent_timeout(1200),
+                    apply_changes=True,
                 ),
             )
             raw = self.agent.normalize_result(task, raw)
             ImplementResult.model_validate(raw)
-        except (AgentError, ValidationError, UnknownActionOutcome) as exc:
+            self.store.update_experiment(
+                experiment_id,
+                failure_category=None,
+                lesson=None,
+            )
+        except (AgentError, ValidationError, UnknownActionOutcome, WorkspaceError) as exc:
             self.store.update_experiment(experiment_id, failure_category="AGENT_PROTOCOL_ERROR", lesson=str(exc)[:1000])
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(f"implement failed: {exc}") from exc

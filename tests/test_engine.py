@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from bananloop.agents.base import AgentAdapter
-from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, EvaluationResult, GuardrailSpec, MetricSpec, RuntimePaths
+from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, EvaluationResult, GuardrailSpec, Hypothesis, MetricSpec, RuntimePaths
 from bananloop.engine import ControlledInterruption, Engine, EngineError, UnknownActionOutcome
 from bananloop.report import build_report
 from bananloop.store import CampaignStore
@@ -450,5 +450,152 @@ def test_propose_uses_runtime_agent_timeout_override(tmp_path: Path):
 
         assert agent.timeout == 3600
         assert store.attempt(attempt_id)["stage"] == "EXECUTE"
+    finally:
+        store.close()
+
+
+
+class IsolationCheckingAgent(AgentAdapter):
+    def __init__(self):
+        self.evaluator_visible = None
+        self.evaluator_in_git_history = None
+
+    def probe(self):
+        return {"available": True}
+
+    def execute(self, task, workspace, timeout):
+        self.evaluator_visible = (workspace / "evaluator.py").exists()
+        history_probe = subprocess.run(
+            ["git", "show", "HEAD:evaluator.py"],
+            cwd=workspace,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.evaluator_in_git_history = history_probe.returncode == 0
+        return {
+            "hypothesis": "change visible production file",
+            "rationale": "isolation fixture",
+            "expected_effect": "quality up",
+            "files_or_area": ["value.txt"],
+            "falsification_condition": "quality unchanged",
+            "mechanism_key": "isolation-check",
+        }
+
+
+class IsolatedImplementAgent(AgentAdapter):
+    def probe(self):
+        return {"available": True}
+
+    def execute(self, task, workspace, timeout):
+        assert not (workspace / "evaluator.py").exists()
+        (workspace / "value.txt").write_text("1\n", encoding="utf-8")
+        return {
+            "summary": "changed visible value",
+            "changed_paths": ["value.txt"],
+            "verification_notes": "isolated workspace",
+            "blockers": [],
+        }
+
+
+def _freeze_fixture_evaluator(engine: Engine) -> None:
+    evaluator = engine.workspace.workspace / "evaluator.py"
+    engine.spec.evaluation_assets = [
+        EvaluationAsset(
+            path="evaluator.py",
+            sha256=hashlib.sha256(evaluator.read_bytes()).hexdigest(),
+        )
+    ]
+
+
+def test_agent_workspace_hides_frozen_evaluator_and_git_history(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        _freeze_fixture_evaluator(engine)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        agent = IsolationCheckingAgent()
+        engine.agent = agent
+
+        engine._stage_propose(attempt_id, experiment_id)
+
+        assert agent.evaluator_visible is False
+        assert agent.evaluator_in_git_history is False
+        assert engine.workspace.agent_workspace is None
+    finally:
+        store.close()
+
+
+def test_implement_changes_are_applied_back_from_isolated_workspace(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        _freeze_fixture_evaluator(engine)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        store.update_experiment(
+            experiment_id,
+            hypothesis_json=Hypothesis(
+                hypothesis="set value",
+                rationale="fixture",
+                expected_effect="quality up",
+                files_or_area=["value.txt"],
+                falsification_condition="quality unchanged",
+                mechanism_key="set-value",
+            ).model_dump_json(),
+        )
+        store.set_stage(attempt_id, "EXECUTE")
+        engine.agent = IsolatedImplementAgent()
+
+        engine._stage_execute(attempt_id, experiment_id)
+
+        assert (engine.workspace.workspace / "value.txt").read_text(encoding="utf-8") == "1\n"
+        assert (engine.workspace.workspace / "evaluator.py").exists()
+        assert engine.workspace.agent_workspace is None
+    finally:
+        store.close()
+
+
+def test_agent_context_filters_non_visible_metrics_and_guardrails(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, _ = store.create_attempt(campaign["champion_snapshot"])
+        engine.spec.agent_visible_metrics = ["quality"]
+
+        task = engine._task_context("propose", experiment_id)
+
+        assert set(task["baseline"]["metrics"]) == {"quality"}
+        assert set(task["champion"]["metrics"]) == {"quality"}
+        assert task["baseline"]["artifacts"] == []
+        assert task["guardrails"] == []
+    finally:
+        store.close()
+
+
+def test_successful_retry_clears_stale_agent_failure_metadata(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        store.update_experiment(
+            experiment_id,
+            failure_category="AGENT_PROTOCOL_ERROR",
+            lesson="old transient failure",
+        )
+        engine.agent = TimeoutCapturingAgent()
+
+        engine._stage_propose(attempt_id, experiment_id)
+
+        exp = store.experiment(experiment_id)
+        assert exp["failure_category"] is None
+        assert exp["lesson"] is None
     finally:
         store.close()

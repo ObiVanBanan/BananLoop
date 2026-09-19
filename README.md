@@ -13,7 +13,8 @@ The coding agent proposes and edits. The evaluator and deterministic policy deci
 - immutable approved campaign spec + SHA-256 identity;
 - SQLite source of truth and append-style lifecycle events;
 - explicit durable stages: `PROPOSE -> EXECUTE -> SNAPSHOT -> VERIFY -> EVALUATE -> DECIDE -> PROMOTE/REJECT -> RECORD`;
-- private local Git clone, leaving the user's checkout untouched;
+- private evaluator Git clone, leaving the user's checkout untouched;
+- sanitized temporary agent workspace with frozen evaluator assets and selected hidden paths removed from both files and local Git history;
 - fixed baseline vs. moving champion;
 - structured command evaluator with metric/check validation;
 - deterministic min-improvement, target, guardrail and plateau policies;
@@ -25,7 +26,7 @@ The coding agent proposes and edits. The evaluator and deterministic policy deci
 - deterministic fixture demonstrating accept -> reject -> accept;
 - documented `rag_tender` bridge boundary.
 
-v0.1 targets trusted local projects. It is not a malicious-code sandbox and does not claim a hard USD budget.
+v0.1 targets trusted local projects. Agent isolation prevents ordinary evaluator/GOLD leakage, but it is not an OS/chroot security sandbox against a deliberately adversarial local process and does not claim a hard USD budget.
 
 ## Install
 
@@ -149,7 +150,32 @@ uv run bananloop report --repo .tmp\pi-fixture --state-dir .tmp\pi-state
 
 The adapter starts `pi --mode rpc --no-session --no-approve`. `--provider`, `--model`, and `--thinking` are translated to Pi startup options. Use repeated `--pi-arg` for additional Pi CLI flags.
 
-Pi's final assistant message must be a single JSON object matching the BananLoop role contract. Markdown fences or prose outside that object are treated as `AGENT_PROTOCOL_ERROR`.
+Pi's final assistant result must contain one unambiguous JSON object matching the BananLoop role contract. BananLoop accepts strict JSON directly, can recover one embedded JSON object from surrounding prose, and performs one in-session format-repair turn when needed. Ambiguous/malformed output remains an `AGENT_PROTOCOL_ERROR`.
+
+
+## Agent/evaluator isolation
+
+Evaluator assets are automatically removed from the temporary agent workspace. Use `--agent-hide` for additional sensitive files or directories such as GOLD labels, harness code, benchmark tests, or review artifacts. Patterns are repeatable:
+
+```bash
+bananloop init \
+  ... \
+  --agent-hide "harness_rag/**" \
+  --agent-hide "data/**" \
+  --agent-hide "tests/**"
+```
+
+The agent workspace is copied to the system temporary directory without the source repository's `.git` history, then initialized as a fresh Git repository. Implementer changes are transferred back to the evaluator workspace as a Git patch. `.bananloop_eval/**` and frozen `--eval-asset` paths are always hidden automatically.
+
+Use repeated `--agent-metric` flags to restrict evaluation feedback visible in the agent task context:
+
+```bash
+--agent-metric public_hard_pass_rate \
+--agent-metric public_false_match_rate \
+--agent-metric public_human_reject_rate
+```
+
+When at least one agent-visible metric is configured, other metric values and guardrails are omitted from agent baseline/champion/history views. For a true final holdout, do not use hidden metrics in the iterative acceptance policy; evaluate them only after the campaign or in a separate final-validation step.
 
 ## Evaluator contract
 
