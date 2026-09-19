@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import shutil
 import subprocess
@@ -42,20 +43,40 @@ class PiAdapter(AgentAdapter):
         self._active: dict[str, subprocess.Popen[str]] = {}
         self._lock = threading.Lock()
 
-    def probe(self) -> dict[str, Any]:
+    def _resolved_command(self) -> list[str]:
         executable = self.command[0]
-        available = bool(shutil.which(executable)) if not Path(executable).is_absolute() else Path(executable).exists()
-        if not available:
+        if Path(executable).is_absolute():
+            resolved = executable if Path(executable).exists() else None
+        else:
+            resolved = shutil.which(executable)
+        if not resolved:
+            raise AgentError(f"Pi executable not found: {executable!r}")
+
+        suffix = Path(resolved).suffix.lower()
+        tail = self.command[1:]
+        if os.name == "nt" and suffix in {".cmd", ".bat"}:
+            comspec = os.environ.get("COMSPEC", "cmd.exe")
+            return [comspec, "/d", "/s", "/c", resolved, *tail]
+        if os.name == "nt" and suffix == ".ps1":
+            powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe") or "powershell.exe"
+            return [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", resolved, *tail]
+        return [resolved, *tail]
+
+    def probe(self) -> dict[str, Any]:
+        try:
+            resolved_command = self._resolved_command()
+        except AgentError:
             return {"available": False, "kind": "pi", "command": self.command}
         version = "unknown"
         try:
-            version = run_process([*self.command, "--version"], cwd=Path.cwd(), timeout=10).stdout.strip()
+            version = run_process([*resolved_command, "--version"], cwd=Path.cwd(), timeout=10).stdout.strip()
         except ProcessError:
             pass
         return {
             "available": True,
             "kind": "pi",
             "command": self.command,
+            "resolved_command": resolved_command,
             "version": version,
             "model": self.model,
         }
@@ -67,7 +88,7 @@ class PiAdapter(AgentAdapter):
         return f"exp:{experiment_id}:{role}"
 
     def _argv(self) -> list[str]:
-        argv = [*self.command, "--mode", "rpc", "--no-session", "--no-approve"]
+        argv = [*self._resolved_command(), "--mode", "rpc", "--no-session", "--no-approve"]
         if self.model:
             argv += ["--model", self.model]
         argv += self.extra_args
