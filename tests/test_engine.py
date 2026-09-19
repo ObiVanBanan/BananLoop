@@ -156,6 +156,7 @@ def test_replayed_agent_result_is_normalized_without_second_call(tmp_path: Path)
                 "blockers": "None",
             },
         )
+        (engine.workspace.workspace / "value.txt").write_text("1\n")
 
         calls_before = store.campaign()["agent_calls"]
         engine.agent = ReplayNormalizingAgent()
@@ -163,5 +164,6 @@ def test_replayed_agent_result_is_normalized_without_second_call(tmp_path: Path)
 
         assert store.attempt(attempt_id)["stage"] == "SNAPSHOT"
         assert store.campaign()["agent_calls"] == calls_before
+        assert (engine.workspace.workspace / "value.txt").read_text() == "1\n"
     finally:
         store.close()
