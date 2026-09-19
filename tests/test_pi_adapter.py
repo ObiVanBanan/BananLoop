@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -159,8 +160,11 @@ def test_pi_wraps_windows_cmd_shim(monkeypatch: pytest.MonkeyPatch):
     shim = r"C:\Users\tester\AppData\Roaming\npm\pi.CMD"
     comspec = r"C:\Windows\System32\cmd.exe"
 
-    monkeypatch.setattr(pi_module.os, "name", "nt")
-    monkeypatch.setenv("COMSPEC", comspec)
+    monkeypatch.setattr(
+        pi_module,
+        "os",
+        SimpleNamespace(name="nt", environ={"COMSPEC": comspec}),
+    )
     monkeypatch.setattr(pi_module.shutil, "which", lambda name: shim if name == "pi" else None)
 
     adapter = PiAdapter(
