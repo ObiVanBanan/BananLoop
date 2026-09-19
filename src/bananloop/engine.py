@@ -206,13 +206,16 @@ class Engine:
 
     def _stage_execute(self, attempt_id: int, experiment_id: int) -> None:
         campaign = self.store.campaign()
-        self.workspace.checkout(campaign["champion_snapshot"])
+        action_id = f"exp:{experiment_id}:implement"
+        existing_action = self.store.action(action_id)
+        if not (existing_action and existing_action["status"] == "COMPLETED"):
+            self.workspace.checkout(campaign["champion_snapshot"])
         exp = self.store.experiment(experiment_id)
         task = self._task_context("implement", experiment_id)
         task["hypothesis"] = json.loads(exp["hypothesis_json"])
         try:
             raw = self._action(
-                action_id=f"exp:{experiment_id}:implement",
+                action_id=action_id,
                 experiment_id=experiment_id,
                 stage="EXECUTE",
                 kind="agent",
