@@ -11,7 +11,7 @@ import pytest
 
 from bananloop.agents.base import AgentAdapter
 from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, RuntimePaths
-from bananloop.engine import ControlledInterruption, Engine
+from bananloop.engine import ControlledInterruption, Engine, UnknownActionOutcome
 from bananloop.store import CampaignStore
 from bananloop.workspace import WorkspaceManager
 
@@ -165,5 +165,79 @@ def test_replayed_agent_result_is_normalized_without_second_call(tmp_path: Path)
         assert store.attempt(attempt_id)["stage"] == "SNAPSHOT"
         assert store.campaign()["agent_calls"] == calls_before
         assert (engine.workspace.workspace / "value.txt").read_text() == "1\n"
+    finally:
+        store.close()
+
+
+
+def test_user_interrupt_marks_action_cancelled_and_resume_retries(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    request = {"role": "propose", "experiment_id": 99}
+    try:
+        def interrupt():
+            raise KeyboardInterrupt()
+
+        with pytest.raises(KeyboardInterrupt):
+            engine._action(
+                action_id="test:interrupt",
+                experiment_id=None,
+                stage="PROPOSE",
+                kind="agent",
+                request=request,
+                invoke=interrupt,
+            )
+
+        cancelled = store.action("test:interrupt")
+        assert cancelled["status"] == "CANCELLED"
+        assert store.campaign()["agent_calls"] == 1
+
+        result = engine._action(
+            action_id="test:interrupt",
+            experiment_id=None,
+            stage="PROPOSE",
+            kind="agent",
+            request=request,
+            invoke=lambda: {"ok": True},
+        )
+
+        assert result == {"ok": True}
+        assert store.action("test:interrupt")["status"] == "COMPLETED"
+        assert store.campaign()["agent_calls"] == 2
+    finally:
+        store.close()
+
+
+def test_orphaned_running_action_requires_explicit_retry(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    request = {"role": "propose", "experiment_id": 99}
+    request_hash = hashlib.sha256(
+        json.dumps(request, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    try:
+        store.start_action("test:orphan", None, "PROPOSE", "agent", request_hash)
+
+        with pytest.raises(UnknownActionOutcome):
+            engine._action(
+                action_id="test:orphan",
+                experiment_id=None,
+                stage="PROPOSE",
+                kind="agent",
+                request=request,
+                invoke=lambda: {"ok": True},
+            )
+
+        engine._retry_running_actions = True
+        result = engine._action(
+            action_id="test:orphan",
+            experiment_id=None,
+            stage="PROPOSE",
+            kind="agent",
+            request=request,
+            invoke=lambda: {"ok": True},
+        )
+
+        assert result == {"ok": True}
+        assert store.action("test:orphan")["status"] == "COMPLETED"
+        assert store.campaign()["agent_calls"] == 2
     finally:
         store.close()

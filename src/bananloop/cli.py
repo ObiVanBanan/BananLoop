@@ -95,17 +95,24 @@ def _open(args: argparse.Namespace) -> tuple[RuntimePaths, CampaignStore, Engine
     store = CampaignStore(paths.db)
     spec = store.spec()
     workspace = WorkspaceManager(Path(spec.source_repo), paths.workspace)
-    return paths, store, Engine(store, workspace)
+    progress = lambda message: print(f"[BananLoop] {message}", flush=True)
+    return paths, store, Engine(store, workspace, progress=progress)
 
 
 def cmd_run(args: argparse.Namespace, resume: bool = False) -> int:
     _, store, engine = _open(args)
     try:
-        campaign = engine.run(resume=resume)
+        campaign = engine.run(
+            resume=resume,
+            retry_running_actions=bool(getattr(args, "retry_running_action", False)),
+        )
         print(json.dumps({k: campaign[k] for k in ("status", "stop_reason", "stage", "experiment_count", "attempt_count", "agent_calls", "evaluator_calls", "champion_snapshot")}, indent=2))
         return 0 if campaign["status"] != "PAUSED_INFRA" else 2
     except ControlledInterruption as exc:
         print(str(exc), file=sys.stderr)
+        return 130
+    except KeyboardInterrupt:
+        print("BananLoop interrupted by user. Active local agent process was cancelled.", file=sys.stderr)
         return 130
     except EngineError as exc:
         print(f"BananLoop error: {exc}", file=sys.stderr)
@@ -211,6 +218,11 @@ def parser() -> argparse.ArgumentParser:
             sp.add_argument("--output")
             sp.set_defaults(func=cmd_report)
         elif name == "resume":
+            sp.add_argument(
+                "--retry-running-action",
+                action="store_true",
+                help="retry an orphaned RUNNING action after confirming the previous local process is gone",
+            )
             sp.set_defaults(func=lambda a: cmd_run(a, resume=True))
         else:
             sp.set_defaults(func=lambda a: cmd_run(a, resume=False))

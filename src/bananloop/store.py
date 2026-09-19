@@ -233,6 +233,28 @@ class CampaignStore:
         self.event("ACTION_FAILED", {"action_id": action_id, "error": error[:500]})
         self.conn.commit()
 
+    def cancel_action(self, action_id: str, reason: str = "user interrupt") -> None:
+        self.conn.execute(
+            "UPDATE actions SET status='CANCELLED',error=?,updated_at=? WHERE id=?",
+            (reason, utc_now(), action_id),
+        )
+        self.event("ACTION_CANCELLED", {"action_id": action_id, "reason": reason[:500]})
+        self.conn.commit()
+
+    def restart_action(self, action_id: str) -> None:
+        action = self.action(action_id)
+        if not action:
+            raise StoreError(f"action {action_id} missing")
+        now = utc_now()
+        counter = "agent_calls" if action["kind"] == "agent" else "evaluator_calls"
+        self.conn.execute(
+            "UPDATE actions SET status='RUNNING',response_json=NULL,error=NULL,updated_at=? WHERE id=?",
+            (now, action_id),
+        )
+        self.conn.execute(f"UPDATE campaigns SET {counter}={counter}+1,updated_at=? WHERE id=1", (now,))
+        self.event("ACTION_RETRIED", {"action_id": action_id, "kind": action["kind"], "stage": action["stage"]})
+        self.conn.commit()
+
     def record_evaluation(self, experiment_id: int | None, snapshot: str, result: dict[str, Any]) -> None:
         self.conn.execute(
             "INSERT INTO evaluations(experiment_id,candidate_snapshot,result_json,created_at) VALUES(?,?,?,?)",
