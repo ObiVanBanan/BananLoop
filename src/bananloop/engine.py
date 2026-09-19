@@ -291,19 +291,7 @@ class Engine:
         changed = self.workspace.changed_paths(exp["parent_snapshot"], exp["candidate_snapshot"])
         valid, violations = self.workspace.verify_scope(changed, self.spec.editable_scope, self.spec.protected_paths)
         integrity_violations = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
-        if not valid:
-            decision = {
-                "accepted": False,
-                "primary_value": None,
-                "champion_value": None,
-                "delta": None,
-                "predicates": {"scope": False},
-                "reasons": ["SCOPE_VIOLATION", *violations],
-            }
-            self.store.update_experiment(experiment_id, decision_json=json.dumps(decision), failure_category="SCOPE_VIOLATION", lesson="Candidate changed protected/out-of-scope paths")
-            self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
-            self.store.set_stage(attempt_id, "REJECT")
-        elif integrity_violations:
+        if integrity_violations:
             decision = {
                 "accepted": False,
                 "primary_value": None,
@@ -318,6 +306,18 @@ class Engine:
                 failure_category="EVALUATOR_CHANGED",
                 lesson="Frozen evaluation assets changed",
             )
+            self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
+            self.store.set_stage(attempt_id, "REJECT")
+        elif not valid:
+            decision = {
+                "accepted": False,
+                "primary_value": None,
+                "champion_value": None,
+                "delta": None,
+                "predicates": {"scope": False},
+                "reasons": ["SCOPE_VIOLATION", *violations],
+            }
+            self.store.update_experiment(experiment_id, decision_json=json.dumps(decision), failure_category="SCOPE_VIOLATION", lesson="Candidate changed protected/out-of-scope paths")
             self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
             self.store.set_stage(attempt_id, "REJECT")
         else:
