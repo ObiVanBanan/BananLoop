@@ -29,6 +29,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
         experiments.append(item)
     baseline_value = metric_value(baseline, spec.primary_metric.name) if baseline else None
     final_value = metric_value(champion, spec.primary_metric.name) if champion else None
+    resource_summary = store.resource_summary()
     return {
         "campaign_outcome": campaign["status"],
         "stop_reason": campaign["stop_reason"],
@@ -46,6 +47,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             "evaluation_calls": campaign["evaluator_calls"],
             "experiments": campaign["experiment_count"],
             "attempts": campaign["attempt_count"],
+            **resource_summary,
         },
     }
 
@@ -80,6 +82,9 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Evaluation calls: {r['evaluation_calls']}",
         f"- Scientific experiments: {r['experiments']}",
         f"- Attempts: {r['attempts']}",
+        f"- Action wall time: {r['wall_time_seconds']:.3f} s",
+        f"- Resource reservations: {r['reservation_count']} ({r['open_reservations']} open)",
+        f"- Unknown action outcomes: {r['unknown_outcomes']}",
         "",
     ]
     return "\n".join(lines)
