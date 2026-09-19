@@ -148,7 +148,14 @@ class PiAdapter(AgentAdapter):
         """Normalize harmless weak-model empty-value variants without repairing semantic errors."""
         normalized = dict(data)
         role = task.get("role")
+        if role == "propose":
+            files_or_area = normalized.get("files_or_area")
+            if isinstance(files_or_area, str) and files_or_area.strip():
+                normalized["files_or_area"] = [files_or_area.strip()]
         if role == "implement":
+            changed_paths = normalized.get("changed_paths")
+            if isinstance(changed_paths, str) and changed_paths.strip():
+                normalized["changed_paths"] = [changed_paths.strip()]
             blockers = normalized.get("blockers")
             if blockers is None:
                 normalized["blockers"] = []
