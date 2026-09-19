@@ -113,11 +113,35 @@ class PiAdapter(AgentAdapter):
                 "Modify only editable_scope and never modify protected_paths. Do not decide whether the change "
                 "is better; BananLoop evaluates it independently. Your final assistant message MUST be exactly "
                 "one JSON object with these keys: summary, changed_paths, verification_notes, blockers. "
+                "changed_paths and blockers MUST be JSON arrays of strings. If there are no blockers, use "
+                "\"blockers\": [] and never use strings such as \"None\" or \"null\". "
                 "Do not use markdown fences and do not include prose outside the JSON object."
             )
         else:
             raise AgentError(f"unsupported Pi role: {role!r}")
         return instruction + "\n\nBANANLOOP TASK:\n" + json.dumps(task, ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def _normalize_result(task: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+        """Normalize harmless weak-model empty-value variants without repairing semantic errors."""
+        normalized = dict(data)
+        role = task.get("role")
+        if role == "implement":
+            blockers = normalized.get("blockers")
+            if blockers is None:
+                normalized["blockers"] = []
+            elif isinstance(blockers, str) and blockers.strip().lower() in {
+                "",
+                "none",
+                "null",
+                "n/a",
+                "no blockers",
+                "no blocker",
+            }:
+                normalized["blockers"] = []
+            if normalized.get("verification_notes") is None:
+                normalized["verification_notes"] = ""
+        return normalized
 
     @staticmethod
     def _stderr_reader(stream, sink: list[str]) -> None:
@@ -261,7 +285,7 @@ class PiAdapter(AgentAdapter):
                 raise AgentError(f"Pi final response is not strict JSON: {text[:1000]!r}") from exc
             if not isinstance(data, dict):
                 raise AgentError("Pi final response must be a JSON object")
-            return data
+            return self._normalize_result(task, data)
         finally:
             with self._lock:
                 self._active.pop(action_id, None)
