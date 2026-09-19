@@ -43,3 +43,19 @@ def test_init_cli_accepts_agent_isolation_controls():
         "public_hard_pass_rate",
         "public_false_match_rate",
     ]
+
+
+
+def test_init_cli_parses_non_regression_guardrail():
+    args = parser().parse_args([
+        "init",
+        "--non-regression", "public_human_reject_rate:minimize",
+        "--non-regression", "coverage:maximize:0.01",
+    ])
+
+    assert args.non_regression[0].metric == "public_human_reject_rate"
+    assert args.non_regression[0].direction.value == "minimize"
+    assert args.non_regression[0].tolerance == 0.0
+    assert args.non_regression[1].metric == "coverage"
+    assert args.non_regression[1].direction.value == "maximize"
+    assert args.non_regression[1].tolerance == 0.01

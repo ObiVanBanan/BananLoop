@@ -6,7 +6,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, RuntimePaths
+from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, NonRegressionSpec, RuntimePaths
 from .engine import ControlledInterruption, Engine, EngineError
 from .integrity import EvaluationIntegrityError, discover_evaluation_assets, evaluation_fingerprint
 from .lock import CampaignLock, CampaignLockError
@@ -22,6 +22,20 @@ def _guard(value: str) -> GuardrailSpec:
             name, bound = value.split(op, 1)
             return GuardrailSpec(metric=name.strip(), operator=op, bound=float(bound.strip()))
     raise argparse.ArgumentTypeError("guard must look like metric<=123")
+
+
+def _non_regression(value: str) -> NonRegressionSpec:
+    parts = [part.strip() for part in value.split(":")]
+    if len(parts) not in {2, 3} or parts[1] not in {"maximize", "minimize"}:
+        raise argparse.ArgumentTypeError(
+            "non-regression must look like metric:maximize[:tolerance] or metric:minimize[:tolerance]"
+        )
+    tolerance = float(parts[2]) if len(parts) == 3 else 0.0
+    return NonRegressionSpec(
+        metric=parts[0],
+        direction=Direction(parts[1]),
+        tolerance=tolerance,
+    )
 
 
 def _paths(repo: Path, state_dir: str | None) -> RuntimePaths:
@@ -92,6 +106,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             maximum=args.metric_max,
         ),
         guardrails=args.guard or [],
+        non_regression=args.non_regression or [],
         mandatory_checks=args.check or [],
         editable_scope=args.editable or ["**"],
         protected_paths=protected_paths,
@@ -246,6 +261,12 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--metric-min", type=float)
     init.add_argument("--metric-max", type=float)
     init.add_argument("--guard", type=_guard, action="append")
+    init.add_argument(
+        "--non-regression",
+        type=_non_regression,
+        action="append",
+        help="require candidate metric not to regress vs champion; metric:minimize|maximize[:tolerance]",
+    )
     init.add_argument("--check", action="append")
     init.add_argument("--editable", action="append")
     init.add_argument("--protect", action="append")

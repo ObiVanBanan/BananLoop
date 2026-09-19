@@ -115,6 +115,10 @@ class Engine:
                 key.startswith(f"guard:{metric}") for metric in visible
             ):
                 predicates[key] = bool(value)
+            elif key.startswith("non_regression:") and any(
+                key.startswith(f"non_regression:{metric}:") for metric in visible
+            ):
+                predicates[key] = bool(value)
         view["predicates"] = predicates
 
         reasons: list[str] = []
@@ -124,6 +128,10 @@ class Engine:
             elif reason == "PRIMARY_NOT_IMPROVED" and primary_visible:
                 reasons.append(reason)
             elif reason.startswith("GUARDRAIL_FAILED:"):
+                metric = reason.split(":", 1)[1]
+                if metric in visible:
+                    reasons.append(reason)
+            elif reason.startswith("REGRESSION:"):
                 metric = reason.split(":", 1)[1]
                 if metric in visible:
                     reasons.append(reason)
@@ -314,6 +322,11 @@ class Engine:
             "guardrails": [
                 g.model_dump(mode="json")
                 for g in self.spec.guardrails
+                if not self.spec.agent_visible_metrics or g.metric in self.spec.agent_visible_metrics
+            ],
+            "non_regression": [
+                g.model_dump(mode="json")
+                for g in self.spec.non_regression
                 if not self.spec.agent_visible_metrics or g.metric in self.spec.agent_visible_metrics
             ],
             "editable_scope": self.spec.editable_scope,

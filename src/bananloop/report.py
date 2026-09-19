@@ -41,6 +41,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
         "baseline_snapshot": campaign["baseline_snapshot"],
         "champion_snapshot": campaign["champion_snapshot"],
         "guardrails": [g.model_dump(mode="json") for g in spec.guardrails],
+        "non_regression": [g.model_dump(mode="json") for g in spec.non_regression],
         "experiments": experiments,
         "resources": {
             "agent_calls": campaign["agent_calls"],
