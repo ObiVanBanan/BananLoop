@@ -26,3 +26,20 @@ def test_pi_cli_builds_agent_config():
         "--thinking", "off",
         "--exclude-tools", "web_search",
     ]
+
+
+
+def test_init_cli_accepts_agent_isolation_controls():
+    args = parser().parse_args([
+        "init",
+        "--agent-hide", "harness_rag/**",
+        "--agent-hide", "data/**",
+        "--agent-metric", "public_hard_pass_rate",
+        "--agent-metric", "public_false_match_rate",
+    ])
+
+    assert args.agent_hide == ["harness_rag/**", "data/**"]
+    assert args.agent_metric == [
+        "public_hard_pass_rate",
+        "public_false_match_rate",
+    ]
