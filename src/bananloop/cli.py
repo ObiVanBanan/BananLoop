@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, RuntimePaths
 from .engine import ControlledInterruption, Engine, EngineError
+from .integrity import discover_evaluation_assets, evaluation_fingerprint
 from .report import build_report, render_markdown
 from .store import CampaignStore, StoreError
 from .workspace import WorkspaceManager, assert_clean_source, current_commit
@@ -52,11 +53,16 @@ def cmd_init(args: argparse.Namespace) -> int:
     base = current_commit(repo)
     paths = _paths(repo, args.state_dir)
     agent = _agent_config(args)
+    evaluation_command = shlex.split(args.eval_cmd)
+    evaluation_assets = discover_evaluation_assets(repo, evaluation_command, args.eval_asset)
+    frozen_paths = [asset.path for asset in evaluation_assets]
+    protected_paths = list(dict.fromkeys([*(args.protect or []), *frozen_paths]))
     spec = CampaignSpec(
         goal=args.goal,
         source_repo=str(repo),
         base_commit=base,
-        evaluation_command=shlex.split(args.eval_cmd),
+        evaluation_command=evaluation_command,
+        evaluation_assets=evaluation_assets,
         primary_metric=MetricSpec(
             name=args.metric,
             direction=Direction(args.direction),
@@ -69,7 +75,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         guardrails=args.guard or [],
         mandatory_checks=args.check or [],
         editable_scope=args.editable or ["**"],
-        protected_paths=args.protect or [],
+        protected_paths=protected_paths,
         budget=BudgetSpec(
             max_experiments=args.max_experiments,
             max_attempts=args.max_attempts,
@@ -85,7 +91,11 @@ def cmd_init(args: argparse.Namespace) -> int:
         store.initialize(spec)
     finally:
         store.close()
-    print(f"Campaign initialized\nstate: {paths.root}\nbase: {base}\nspec: {spec.approved_hash()}")
+    fingerprint = evaluation_fingerprint(evaluation_assets) or "-"
+    print(
+        f"Campaign initialized\nstate: {paths.root}\nbase: {base}"
+        f"\nspec: {spec.approved_hash()}\nevaluator_fingerprint: {fingerprint}"
+    )
     return 0
 
 
@@ -173,6 +183,11 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--state-dir")
     init.add_argument("--goal", required=True)
     init.add_argument("--eval-cmd", required=True)
+    init.add_argument(
+        "--eval-asset",
+        action="append",
+        help="additional evaluator/scoring/config file to freeze; repeatable",
+    )
     init.add_argument("--metric", required=True)
     init.add_argument("--direction", choices=["maximize", "minimize"], default="maximize")
     init.add_argument("--target", type=float, required=True)
