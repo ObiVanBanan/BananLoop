@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import bananloop.agents.pi as pi_module
 from bananloop.agents.base import AgentError
 from bananloop.agents.pi import PiAdapter
 
@@ -151,3 +152,23 @@ def test_pi_builds_rpc_command(tmp_path: Path):
     assert "--no-approve" in argv
     assert argv[argv.index("--model") + 1] == "nemotron-3-nano:30b"
     assert argv[argv.index("--provider") + 1] == "ollama-cloud"
+
+
+
+def test_pi_wraps_windows_cmd_shim(monkeypatch: pytest.MonkeyPatch):
+    shim = r"C:\Users\tester\AppData\Roaming\npm\pi.CMD"
+    comspec = r"C:\Windows\System32\cmd.exe"
+
+    monkeypatch.setattr(pi_module.os, "name", "nt")
+    monkeypatch.setenv("COMSPEC", comspec)
+    monkeypatch.setattr(pi_module.shutil, "which", lambda name: shim if name == "pi" else None)
+
+    adapter = PiAdapter(
+        model="nemotron-3-nano:30b",
+        extra_args=["--provider", "ollama-cloud", "--thinking", "off"],
+    )
+    argv = adapter._argv()
+
+    assert argv[:5] == [comspec, "/d", "/s", "/c", shim]
+    assert argv[5:9] == ["--mode", "rpc", "--no-session", "--no-approve"]
+    assert argv[argv.index("--model") + 1] == "nemotron-3-nano:30b"
