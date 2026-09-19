@@ -143,6 +143,7 @@ def cmd_run(args: argparse.Namespace, resume: bool = False) -> int:
                     resume=resume,
                     retry_running_actions=bool(getattr(args, "retry_running_action", False)),
                     retry_failed_actions=bool(getattr(args, "retry_failed_action", False)),
+                    agent_timeout_seconds=getattr(args, "agent_timeout_seconds", None),
                 )
                 print(json.dumps({k: campaign[k] for k in ("status", "stop_reason", "stage", "experiment_count", "attempt_count", "agent_calls", "evaluator_calls", "champion_snapshot")}, indent=2))
                 return 0 if campaign["status"] != "PAUSED_INFRA" else 2
@@ -262,6 +263,12 @@ def parser() -> argparse.ArgumentParser:
         sp = sub.add_parser(name)
         sp.add_argument("--repo", default=".")
         sp.add_argument("--state-dir")
+        if name in {"run", "resume"}:
+            sp.add_argument(
+                "--agent-timeout-seconds",
+                type=int,
+                help="override per-agent-call wall time for this run/resume",
+            )
         if name == "status":
             sp.add_argument("--json", action="store_true")
             sp.set_defaults(func=cmd_status)
