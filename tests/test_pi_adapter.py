@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -159,8 +160,11 @@ def test_pi_wraps_windows_cmd_shim(monkeypatch: pytest.MonkeyPatch):
     shim = r"C:\Users\tester\AppData\Roaming\npm\pi.CMD"
     comspec = r"C:\Windows\System32\cmd.exe"
 
-    monkeypatch.setattr(pi_module.os, "name", "nt")
-    monkeypatch.setenv("COMSPEC", comspec)
+    monkeypatch.setattr(
+        pi_module,
+        "os",
+        SimpleNamespace(name="nt", environ={"COMSPEC": comspec}),
+    )
     monkeypatch.setattr(pi_module.shutil, "which", lambda name: shim if name == "pi" else None)
 
     adapter = PiAdapter(
@@ -194,3 +198,27 @@ def test_pi_does_not_repair_nonempty_blocker_text():
         {"blockers": "tests are failing"},
     )
     assert data["blockers"] == "tests are failing"
+
+
+
+def test_pi_parses_json_after_closed_think_tag():
+    parsed = PiAdapter._parse_final_json(
+        'reasoning text</think>{"hypothesis":"set value","rationale":"fixture",'
+        '"expected_effect":"quality up","files_or_area":["value.txt"],'
+        '"falsification_condition":"quality unchanged","mechanism_key":"set-value"}'
+    )
+    assert parsed["mechanism_key"] == "set-value"
+
+
+def test_pi_rejects_prose_before_json_without_think_boundary():
+    with pytest.raises(AgentError, match="strict JSON"):
+        PiAdapter._parse_final_json(
+            'I will return JSON now. {"hypothesis":"set value"}'
+        )
+
+
+def test_pi_rejects_trailing_prose_after_think_json():
+    with pytest.raises(AgentError, match="after </think> is not strict JSON"):
+        PiAdapter._parse_final_json(
+            'reasoning</think>{"hypothesis":"set value"} extra'
+        )

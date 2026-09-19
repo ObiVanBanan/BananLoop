@@ -122,6 +122,28 @@ class PiAdapter(AgentAdapter):
         return instruction + "\n\nBANANLOOP TASK:\n" + json.dumps(task, ensure_ascii=False, indent=2)
 
     @staticmethod
+    def _parse_final_json(text: str) -> dict[str, Any]:
+        candidate = text.strip()
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError as direct_error:
+            if "</think>" not in candidate:
+                raise AgentError(
+                    f"Pi final response is not strict JSON: {candidate[:1000]!r}"
+                ) from direct_error
+            candidate = candidate.rsplit("</think>", 1)[1].strip()
+            try:
+                data = json.loads(candidate)
+            except json.JSONDecodeError as suffix_error:
+                raise AgentError(
+                    "Pi final response after </think> is not strict JSON: "
+                    f"{candidate[:1000]!r}"
+                ) from suffix_error
+        if not isinstance(data, dict):
+            raise AgentError("Pi final response must be a JSON object")
+        return data
+
+    @staticmethod
     def normalize_result(task: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
         """Normalize harmless weak-model empty-value variants without repairing semantic errors."""
         normalized = dict(data)
@@ -279,12 +301,7 @@ class PiAdapter(AgentAdapter):
             text = ((response.get("data") or {}).get("text"))
             if not isinstance(text, str) or not text.strip():
                 raise AgentError("Pi completed without a final assistant text result")
-            try:
-                data = json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise AgentError(f"Pi final response is not strict JSON: {text[:1000]!r}") from exc
-            if not isinstance(data, dict):
-                raise AgentError("Pi final response must be a JSON object")
+            data = self._parse_final_json(text)
             return self.normalize_result(task, data)
         finally:
             with self._lock:
