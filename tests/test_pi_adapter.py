@@ -154,7 +154,7 @@ def test_pi_rpc_requires_strict_json_result(tmp_path: Path):
         command=fake_pi(tmp_path),
         extra_args=["--bad-json"],
     )
-    with pytest.raises(AgentError, match="strict JSON"):
+    with pytest.raises(AgentError, match="unambiguous JSON object"):
         adapter.execute(
             {
                 "role": "propose",
