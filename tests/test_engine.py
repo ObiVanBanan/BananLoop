@@ -11,7 +11,7 @@ import pytest
 
 from bananloop.agents.base import AgentAdapter
 from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, EvaluationResult, GuardrailSpec, MetricSpec, RuntimePaths
-from bananloop.engine import ControlledInterruption, Engine, UnknownActionOutcome
+from bananloop.engine import ControlledInterruption, Engine, EngineError, UnknownActionOutcome
 from bananloop.report import build_report
 from bananloop.store import CampaignStore
 from bananloop.workspace import WorkspaceManager
@@ -203,6 +203,43 @@ def test_user_interrupt_marks_action_cancelled_and_resume_retries(tmp_path: Path
 
         assert result == {"ok": True}
         assert store.action("test:interrupt")["status"] == "COMPLETED"
+        assert store.campaign()["agent_calls"] == 2
+    finally:
+        store.close()
+
+
+def test_failed_action_requires_explicit_retry(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    request = {"role": "propose", "experiment_id": 99}
+    request_hash = hashlib.sha256(
+        json.dumps(request, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    try:
+        store.start_action("test:failed", None, "PROPOSE", "agent", request_hash)
+        store.fail_action("test:failed", "protocol failure")
+
+        with pytest.raises(EngineError, match="retry-failed-action"):
+            engine._action(
+                action_id="test:failed",
+                experiment_id=None,
+                stage="PROPOSE",
+                kind="agent",
+                request=request,
+                invoke=lambda: {"ok": True},
+            )
+
+        engine._retry_failed_actions = True
+        result = engine._action(
+            action_id="test:failed",
+            experiment_id=None,
+            stage="PROPOSE",
+            kind="agent",
+            request=request,
+            invoke=lambda: {"ok": True},
+        )
+
+        assert result == {"ok": True}
+        assert store.action("test:failed")["status"] == "COMPLETED"
         assert store.campaign()["agent_calls"] == 2
     finally:
         store.close()
