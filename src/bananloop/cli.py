@@ -12,6 +12,7 @@ from .integrity import discover_evaluation_assets, evaluation_fingerprint
 from .lock import CampaignLock, CampaignLockError
 from .report import build_report, render_markdown
 from .store import CampaignStore, StoreError
+from .wizard import confirm_spec, needs_interactive_init, run_init_wizard
 from .workspace import WorkspaceManager, assert_clean_source, current_commit
 
 
@@ -52,7 +53,21 @@ def cmd_init(args: argparse.Namespace) -> int:
     if not args.allow_dirty:
         assert_clean_source(repo)
     base = current_commit(repo)
-    paths = _paths(repo, args.state_dir)
+
+    interactive = needs_interactive_init(args)
+    if interactive:
+        if not args.interactive and not sys.stdin.isatty():
+            raise ValueError(
+                "missing required init fields in non-interactive mode; "
+                "provide --goal/--eval-cmd/--metric/--target/--min-improvement or use --interactive"
+            )
+        run_init_wizard(args, repo, base)
+
+    if args.direction is None:
+        args.direction = "maximize"
+    if args.agent is None:
+        args.agent = "codex"
+
     agent = _agent_config(args)
     evaluation_command = shlex.split(args.eval_cmd)
     evaluation_assets = discover_evaluation_assets(repo, evaluation_command, args.eval_asset)
@@ -87,6 +102,12 @@ def cmd_init(args: argparse.Namespace) -> int:
         ),
         agent=agent,
     )
+    if interactive and not args.yes:
+        if not confirm_spec(spec.model_dump(mode="json")):
+            print("Campaign not approved; no campaign state was created.")
+            return 1
+
+    paths = _paths(repo, args.state_dir)
     store = CampaignStore(paths.db)
     try:
         store.initialize(spec)
@@ -189,17 +210,17 @@ def parser() -> argparse.ArgumentParser:
     init = sub.add_parser("init", help="approve and persist a campaign specification")
     init.add_argument("--repo", default=".")
     init.add_argument("--state-dir")
-    init.add_argument("--goal", required=True)
-    init.add_argument("--eval-cmd", required=True)
+    init.add_argument("--goal")
+    init.add_argument("--eval-cmd")
     init.add_argument(
         "--eval-asset",
         action="append",
         help="additional evaluator/scoring/config file to freeze; repeatable",
     )
-    init.add_argument("--metric", required=True)
-    init.add_argument("--direction", choices=["maximize", "minimize"], default="maximize")
-    init.add_argument("--target", type=float, required=True)
-    init.add_argument("--min-improvement", type=float, required=True)
+    init.add_argument("--metric")
+    init.add_argument("--direction", choices=["maximize", "minimize"])
+    init.add_argument("--target", type=float)
+    init.add_argument("--min-improvement", type=float)
     init.add_argument("--unit")
     init.add_argument("--metric-min", type=float)
     init.add_argument("--metric-max", type=float)
@@ -207,7 +228,7 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--check", action="append")
     init.add_argument("--editable", action="append")
     init.add_argument("--protect", action="append")
-    init.add_argument("--agent", choices=["codex", "command", "pi"], default="codex")
+    init.add_argument("--agent", choices=["codex", "command", "pi"])
     init.add_argument("--agent-cmd")
     init.add_argument("--model")
     init.add_argument("--provider", help="Pi provider, e.g. ollama-cloud")
@@ -225,6 +246,8 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--deadline-seconds", type=int, default=3600)
     init.add_argument("--plateau", type=int, default=3)
     init.add_argument("--allow-dirty", action="store_true")
+    init.add_argument("--interactive", action="store_true", help="run the interactive init wizard")
+    init.add_argument("--yes", action="store_true", help="approve an interactive CampaignSpec without confirmation")
     init.set_defaults(func=cmd_init)
 
     for name in ("run", "resume", "status", "stop", "report"):
