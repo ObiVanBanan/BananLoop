@@ -91,6 +91,7 @@ class CampaignSpec(BaseModel):
     source_repo: str
     base_commit: str
     evaluation_command: list[str]
+    evaluator_timeout_seconds: int = Field(default=900, ge=1)
     evaluation_assets: list[EvaluationAsset] = Field(default_factory=list)
     primary_metric: MetricSpec
     guardrails: list[GuardrailSpec] = Field(default_factory=list)
@@ -109,7 +110,9 @@ class CampaignSpec(BaseModel):
 
     def approved_hash(self) -> str:
         data = self.model_dump(mode="json")
-        # Keep hashes compatible with v0.1 specs created before evaluation_assets existed.
+        # Keep hashes compatible with v0.1 specs created before these fields existed.
+        if self.evaluator_timeout_seconds == 900:
+            data.pop("evaluator_timeout_seconds", None)
         if not self.evaluation_assets:
             data.pop("evaluation_assets", None)
         payload = json.dumps(data, sort_keys=True, separators=(",", ":"))

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from bananloop.agents.base import AgentAdapter
-from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, GuardrailSpec, MetricSpec, RuntimePaths
+from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, EvaluationResult, GuardrailSpec, MetricSpec, RuntimePaths
 from bananloop.engine import ControlledInterruption, Engine, UnknownActionOutcome
 from bananloop.report import build_report
 from bananloop.store import CampaignStore
@@ -343,5 +343,36 @@ def test_verify_rejects_frozen_evaluator_drift(tmp_path: Path):
         decision = json.loads(exp["decision_json"])
         assert decision["reasons"][0] == "EVALUATOR_CHANGED"
         assert "hash_mismatch:evaluator.py" in decision["reasons"]
+    finally:
+        store.close()
+
+
+
+class CapturingEvaluator:
+    def __init__(self):
+        self.timeout = None
+
+    def evaluate(self, workspace, timeout):
+        self.timeout = timeout
+        return EvaluationResult.model_validate({
+            "status": "ok",
+            "metrics": {
+                "quality": 0,
+                "regressions": 0,
+            },
+            "checks": {"tests": True},
+        })
+
+
+def test_baseline_uses_campaign_evaluator_timeout(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.spec.evaluator_timeout_seconds = 4321
+        evaluator = CapturingEvaluator()
+        engine.evaluator = evaluator
+
+        engine._baseline()
+
+        assert evaluator.timeout == 4321
     finally:
         store.close()

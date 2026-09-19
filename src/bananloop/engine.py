@@ -170,7 +170,10 @@ class Engine:
                 stage="BASELINE",
                 kind="evaluator",
                 request=request,
-                invoke=lambda: self.evaluator.evaluate(self.workspace.workspace, timeout=900).model_dump(mode="json"),
+                invoke=lambda: self.evaluator.evaluate(
+                    self.workspace.workspace,
+                    timeout=self.spec.evaluator_timeout_seconds,
+                ).model_dump(mode="json"),
             )
             result = EvaluationResult.model_validate(raw)
             validate_evaluation(self.spec, result)
@@ -344,7 +347,10 @@ class Engine:
                 stage="EVALUATE",
                 kind="evaluator",
                 request=request,
-                invoke=lambda: self.evaluator.evaluate(self.workspace.workspace, timeout=900).model_dump(mode="json"),
+                invoke=lambda: self.evaluator.evaluate(
+                    self.workspace.workspace,
+                    timeout=self.spec.evaluator_timeout_seconds,
+                ).model_dump(mode="json"),
             )
             result = EvaluationResult.model_validate(raw)
             validate_evaluation(self.spec, result)
