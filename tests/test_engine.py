@@ -12,6 +12,7 @@ import pytest
 from bananloop.agents.base import AgentAdapter
 from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, RuntimePaths
 from bananloop.engine import ControlledInterruption, Engine, UnknownActionOutcome
+from bananloop.report import build_report
 from bananloop.store import CampaignStore
 from bananloop.workspace import WorkspaceManager
 
@@ -262,6 +263,46 @@ def test_accepted_experiment_clears_transient_failure_and_lesson(tmp_path: Path)
         engine._stage_record(attempt_id, experiment_id)
 
         exp = store.experiment(experiment_id)
+        assert exp["status"] == "ACCEPTED"
+        assert exp["failure_category"] is None
+        assert exp["lesson"] == "Promoted as new champion"
+    finally:
+        store.close()
+
+
+
+def test_report_hides_stale_failure_for_historical_accepted_experiment(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        store.update_experiment(
+            experiment_id,
+            hypothesis_json=json.dumps({
+                "hypothesis": "historical accepted change",
+                "rationale": "test",
+                "expected_effect": "up",
+                "files_or_area": ["value.txt"],
+                "falsification_condition": "no change",
+                "mechanism_key": "historical",
+            }),
+            decision_json=json.dumps({"accepted": True, "delta": 1.0}),
+            evaluation_json=campaign["champion_json"],
+            failure_category="AGENT_PROTOCOL_ERROR",
+            lesson="old transient protocol error",
+        )
+        store.finish_attempt(
+            attempt_id,
+            experiment_id,
+            status="ACCEPTED",
+            scientific=True,
+            improved=True,
+        )
+
+        report = build_report(store)
+        exp = report["experiments"][0]
         assert exp["status"] == "ACCEPTED"
         assert exp["failure_category"] is None
         assert exp["lesson"] == "Promoted as new champion"
