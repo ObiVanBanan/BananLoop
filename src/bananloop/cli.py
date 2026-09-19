@@ -8,12 +8,12 @@ from pathlib import Path
 
 from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, RuntimePaths
 from .engine import ControlledInterruption, Engine, EngineError
-from .integrity import discover_evaluation_assets, evaluation_fingerprint
+from .integrity import EvaluationIntegrityError, discover_evaluation_assets, evaluation_fingerprint
 from .lock import CampaignLock, CampaignLockError
 from .report import build_report, render_markdown
 from .store import CampaignStore, StoreError
 from .wizard import confirm_spec, needs_interactive_init, run_init_wizard
-from .workspace import WorkspaceManager, assert_clean_source, current_commit
+from .workspace import WorkspaceError, WorkspaceManager, assert_clean_source, current_commit
 
 
 def _guard(value: str) -> GuardrailSpec:
@@ -279,7 +279,7 @@ def main() -> None:
     try:
         code = parser().parse_args()
         raise SystemExit(code.func(code))
-    except (StoreError, ValueError) as exc:
+    except (StoreError, WorkspaceError, EvaluationIntegrityError, ValueError) as exc:
         print(f"BananLoop error: {exc}", file=sys.stderr)
         raise SystemExit(2)
 

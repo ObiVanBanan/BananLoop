@@ -37,23 +37,31 @@ def discover_evaluation_assets(
     evaluation_command: list[str],
     explicit_assets: list[str] | None = None,
 ) -> list[EvaluationAsset]:
-    candidates: list[str] = list(explicit_assets or [])
-    for token in evaluation_command:
-        token_path = Path(token)
-        if token_path.is_absolute():
-            possible = token_path
-        else:
-            possible = repo / token_path
-        try:
-            if possible.resolve().is_file():
-                candidates.append(token)
-        except OSError:
-            continue
-
+    repo = repo.resolve()
     assets: dict[str, EvaluationAsset] = {}
-    for value in candidates:
+
+    # Explicit evaluator assets are part of the trusted repository boundary.
+    # Keep rejecting external paths here so callers cannot accidentally freeze
+    # arbitrary host files into a portable CampaignSpec.
+    for value in explicit_assets or []:
         relative, path = normalize_repo_file(repo, value)
         assets[relative] = EvaluationAsset(path=relative, sha256=sha256_file(path))
+
+    # Command arguments can legitimately reference external inputs such as a
+    # hidden holdout. Auto-discover only files that live inside the source repo;
+    # external inputs must carry their own identity/check (for example a SHA).
+    for token in evaluation_command:
+        token_path = Path(token)
+        possible = token_path if token_path.is_absolute() else repo / token_path
+        try:
+            path = possible.resolve()
+            if not path.is_file():
+                continue
+            relative = path.relative_to(repo).as_posix()
+        except (OSError, ValueError):
+            continue
+        assets[relative] = EvaluationAsset(path=relative, sha256=sha256_file(path))
+
     return [assets[key] for key in sorted(assets)]
 
 

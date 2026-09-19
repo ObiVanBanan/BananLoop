@@ -4,8 +4,15 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, MetricSpec
-from bananloop.integrity import discover_evaluation_assets, evaluation_fingerprint, verify_evaluation_assets
+from bananloop.integrity import (
+    EvaluationIntegrityError,
+    discover_evaluation_assets,
+    evaluation_fingerprint,
+    verify_evaluation_assets,
+)
 
 
 def test_discover_evaluation_assets_hashes_command_files_and_explicit_assets(tmp_path: Path):
@@ -71,3 +78,30 @@ def test_empty_evaluation_assets_preserve_legacy_spec_hash():
 
     assert spec.evaluation_assets == []
     assert spec.approved_hash() == expected
+
+
+
+def test_discovery_ignores_external_existing_command_files(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    evaluator = repo / "evaluator.py"
+    evaluator.write_text("print('ok')\n", encoding="utf-8")
+    external = tmp_path / "hidden.json"
+    external.write_text('{"cases": []}\n', encoding="utf-8")
+
+    assets = discover_evaluation_assets(
+        repo,
+        ["python", "evaluator.py", "--holdout", str(external)],
+    )
+
+    assert [asset.path for asset in assets] == ["evaluator.py"]
+
+
+def test_explicit_external_eval_asset_is_rejected(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    external = tmp_path / "hidden.json"
+    external.write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(EvaluationIntegrityError, match="must be inside repository"):
+        discover_evaluation_assets(repo, ["python"], [str(external)])
