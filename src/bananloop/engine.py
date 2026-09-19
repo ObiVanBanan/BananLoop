@@ -311,7 +311,11 @@ class Engine:
             "role": role,
             "goal": self.spec.goal,
             "primary_metric": self.spec.primary_metric.model_dump(mode="json"),
-            "guardrails": [g.model_dump(mode="json") for g in self.spec.guardrails],
+            "guardrails": [
+                g.model_dump(mode="json")
+                for g in self.spec.guardrails
+                if not self.spec.agent_visible_metrics or g.metric in self.spec.agent_visible_metrics
+            ],
             "editable_scope": self.spec.editable_scope,
             "protected_paths": self.spec.protected_paths,
             "baseline": self._agent_evaluation_view(campaign["baseline_json"]),
