@@ -122,7 +122,7 @@ class PiAdapter(AgentAdapter):
         return instruction + "\n\nBANANLOOP TASK:\n" + json.dumps(task, ensure_ascii=False, indent=2)
 
     @staticmethod
-    def _normalize_result(task: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+    def normalize_result(task: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
         """Normalize harmless weak-model empty-value variants without repairing semantic errors."""
         normalized = dict(data)
         role = task.get("role")
@@ -285,7 +285,7 @@ class PiAdapter(AgentAdapter):
                 raise AgentError(f"Pi final response is not strict JSON: {text[:1000]!r}") from exc
             if not isinstance(data, dict):
                 raise AgentError("Pi final response must be a JSON object")
-            return self._normalize_result(task, data)
+            return self.normalize_result(task, data)
         finally:
             with self._lock:
                 self._active.pop(action_id, None)

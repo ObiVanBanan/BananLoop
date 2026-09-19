@@ -189,6 +189,7 @@ class Engine:
                 request=task,
                 invoke=lambda: self.agent.execute(task, self.workspace.workspace, timeout=900),
             )
+            raw = self.agent.normalize_result(task, raw)
             if raw.get("status") == "NO_HYPOTHESIS":
                 self.store.update_experiment(experiment_id, failure_category="NO_HYPOTHESIS", lesson="Agent proposed no further hypothesis")
                 self.store.finish_attempt(attempt_id, experiment_id, status="NO_HYPOTHESIS", scientific=False, improved=False)
@@ -218,6 +219,7 @@ class Engine:
                 request=task,
                 invoke=lambda: self.agent.execute(task, self.workspace.workspace, timeout=1200),
             )
+            raw = self.agent.normalize_result(task, raw)
             ImplementResult.model_validate(raw)
         except (AgentError, ValidationError, UnknownActionOutcome) as exc:
             self.store.update_experiment(experiment_id, failure_category="AGENT_PROTOCOL_ERROR", lesson=str(exc)[:1000])
