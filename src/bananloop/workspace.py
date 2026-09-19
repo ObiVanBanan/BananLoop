@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 
@@ -10,6 +12,14 @@ from .process import run_process
 
 class WorkspaceError(RuntimeError):
     pass
+
+
+def _remove_readonly(func, path: str, exc_info) -> None:
+    exc = exc_info[1]
+    if not isinstance(exc, PermissionError):
+        raise exc
+    os.chmod(path, os.stat(path).st_mode | stat.S_IWUSR)
+    func(path)
 
 
 class WorkspaceManager:
@@ -120,9 +130,16 @@ class WorkspaceManager:
         return changed
 
     def cleanup_agent_workspace(self) -> None:
-        if self.agent_workspace is not None and self.agent_workspace.exists():
-            shutil.rmtree(self.agent_workspace)
+        workspace = self.agent_workspace
         self.agent_workspace = None
+        if workspace is None or not workspace.exists():
+            return
+        try:
+            shutil.rmtree(workspace, onerror=_remove_readonly)
+        except OSError as exc:
+            raise WorkspaceError(
+                f"cannot remove temporary agent workspace {workspace}: {exc}"
+            ) from exc
 
     def verify_scope(self, changed: list[str], editable_scope: list[str], protected_paths: list[str]) -> tuple[bool, list[str]]:
         violations: list[str] = []
