@@ -78,6 +78,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         source_repo=str(repo),
         base_commit=base,
         evaluation_command=evaluation_command,
+        evaluator_timeout_seconds=args.evaluator_timeout_seconds,
         evaluation_assets=evaluation_assets,
         primary_metric=MetricSpec(
             name=args.metric,
@@ -212,6 +213,12 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--state-dir")
     init.add_argument("--goal")
     init.add_argument("--eval-cmd")
+    init.add_argument(
+        "--evaluator-timeout-seconds",
+        type=int,
+        default=900,
+        help="maximum wall time for each evaluator invocation (default: 900)",
+    )
     init.add_argument(
         "--eval-asset",
         action="append",
