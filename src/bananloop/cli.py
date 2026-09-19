@@ -142,6 +142,7 @@ def cmd_run(args: argparse.Namespace, resume: bool = False) -> int:
                 campaign = engine.run(
                     resume=resume,
                     retry_running_actions=bool(getattr(args, "retry_running_action", False)),
+                    retry_failed_actions=bool(getattr(args, "retry_failed_action", False)),
                 )
                 print(json.dumps({k: campaign[k] for k in ("status", "stop_reason", "stage", "experiment_count", "attempt_count", "agent_calls", "evaluator_calls", "champion_snapshot")}, indent=2))
                 return 0 if campaign["status"] != "PAUSED_INFRA" else 2
@@ -275,6 +276,11 @@ def parser() -> argparse.ArgumentParser:
                 "--retry-running-action",
                 action="store_true",
                 help="retry an orphaned RUNNING action after confirming the previous local process is gone",
+            )
+            sp.add_argument(
+                "--retry-failed-action",
+                action="store_true",
+                help="retry a known FAILED action; consumes a new action reservation/call",
             )
             sp.set_defaults(func=lambda a: cmd_run(a, resume=True))
         else:

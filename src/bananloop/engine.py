@@ -52,6 +52,7 @@ class Engine:
         self.workspace = workspace
         self._progress_callback = progress
         self._retry_running_actions = False
+        self._retry_failed_actions = False
         self.spec = store.spec()
         self.evaluator = CommandEvaluator(self.spec.evaluation_command)
         self.agent: AgentAdapter
@@ -122,8 +123,20 @@ class Engine:
                     raise EngineError("budget exhausted before action retry")
                 self._progress(f"{action_id}: explicitly retry orphaned RUNNING action")
                 self.store.restart_action(action_id)
+            elif existing["status"] == "FAILED":
+                if not self._retry_failed_actions:
+                    raise EngineError(
+                        f"action {action_id} previously failed: {existing['error']}; "
+                        "resume with --retry-failed-action to retry it"
+                    )
+                if self._budget_or_stop(kind):
+                    raise EngineError("budget exhausted before failed action retry")
+                self._progress(f"{action_id}: explicitly retry FAILED action")
+                self.store.restart_action(action_id)
             else:
-                raise EngineError(f"action {action_id} previously failed: {existing['error']}")
+                raise EngineError(
+                    f"action {action_id} has unsupported prior status {existing['status']}"
+                )
         else:
             if self._budget_or_stop(kind):
                 raise EngineError("budget exhausted before action")
@@ -424,8 +437,15 @@ class Engine:
             return True
         return False
 
-    def run(self, *, resume: bool = False, retry_running_actions: bool = False) -> dict[str, Any]:
+    def run(
+        self,
+        *,
+        resume: bool = False,
+        retry_running_actions: bool = False,
+        retry_failed_actions: bool = False,
+    ) -> dict[str, Any]:
         self._retry_running_actions = retry_running_actions
+        self._retry_failed_actions = retry_failed_actions
         campaign = self.store.campaign()
         if campaign["spec_hash"] != self.spec.approved_hash():
             raise EngineError("approved campaign spec hash mismatch")

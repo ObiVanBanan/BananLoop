@@ -22,11 +22,14 @@ if "--version" in sys.argv:
 
 result = None
 bad_json = "--bad-json" in sys.argv
+repair_json = "--repair-json" in sys.argv
+prompt_count = 0
 
 for raw in sys.stdin:
     req = json.loads(raw)
     kind = req.get("type")
     if kind == "prompt":
+        prompt_count += 1
         print(json.dumps({
             "id": req.get("id"),
             "type": "response",
@@ -34,7 +37,9 @@ for raw in sys.stdin:
             "success": True,
         }), flush=True)
         message = req.get("message", "")
-        if '"role": "propose"' in message:
+        if "BANANLOOP FORMAT REPAIR" in message:
+            pass
+        elif '"role": "propose"' in message:
             result = {
                 "hypothesis": "increase fixture value",
                 "rationale": "value drives quality",
@@ -53,7 +58,8 @@ for raw in sys.stdin:
             }
         print(json.dumps({"type": "agent_settled"}), flush=True)
     elif kind == "get_last_assistant_text":
-        text = "not-json" if bad_json else json.dumps(result)
+        should_repair = repair_json and prompt_count >= 2
+        text = "not-json" if bad_json and not should_repair else json.dumps(result)
         print(json.dumps({
             "id": req.get("id"),
             "type": "response",
@@ -116,6 +122,29 @@ def test_pi_rpc_propose_and_implement(tmp_path: Path):
     )
     assert implement["changed_paths"] == ["value.txt"]
     assert (workspace / "value.txt").read_text(encoding="utf-8") == "1\n"
+
+
+def test_pi_rpc_repairs_non_json_result_once(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    adapter = PiAdapter(
+        command=fake_pi(tmp_path),
+        extra_args=["--bad-json", "--repair-json"],
+    )
+
+    result = adapter.execute(
+        {
+            "role": "propose",
+            "experiment_id": 1,
+            "goal": "test",
+            "editable_scope": ["**"],
+            "protected_paths": [],
+        },
+        workspace,
+        timeout=5,
+    )
+
+    assert result["mechanism_key"] == "increase-value"
 
 
 def test_pi_rpc_requires_strict_json_result(tmp_path: Path):

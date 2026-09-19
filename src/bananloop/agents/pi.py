@@ -144,6 +144,29 @@ class PiAdapter(AgentAdapter):
         return data
 
     @staticmethod
+    def _repair_prompt(task: dict[str, Any]) -> str:
+        role = task.get("role")
+        if role == "propose":
+            schema = (
+                '{"hypothesis":"...","rationale":"...","expected_effect":"...",'
+                '"files_or_area":["..."],"falsification_condition":"...","mechanism_key":"..."}'
+            )
+        elif role == "implement":
+            schema = (
+                '{"summary":"...","changed_paths":["..."],"verification_notes":"...",'
+                '"blockers":[]}'
+            )
+        else:
+            raise AgentError(f"unsupported Pi role for JSON repair: {role!r}")
+        return (
+            "BANANLOOP FORMAT REPAIR. Your previous final message was not valid protocol JSON. "
+            "Do not redo the analysis, do not inspect more files, and do not modify files. "
+            "Only convert the conclusion you already reached into exactly one strict JSON object. "
+            f"Required shape: {schema} "
+            "Return JSON only: no markdown fence, no commentary, no <think> text."
+        )
+
+    @staticmethod
     def normalize_result(task: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
         """Normalize harmless weak-model empty-value variants without repairing semantic errors."""
         normalized = dict(data)
@@ -249,6 +272,42 @@ class PiAdapter(AgentAdapter):
                     raise AgentError(f"Pi RPC command failed: {event.get('error', 'unknown error')}")
                 return event
 
+    def _wait_prompt_settled(
+        self,
+        proc: subprocess.Popen[str],
+        reader: _JsonlReader,
+        deadline: float,
+        stderr_lines: list[str],
+        prompt_id: str,
+    ) -> None:
+        prompt_accepted = False
+        settled = False
+        while not settled:
+            event = self._next_event(proc, reader, deadline, stderr_lines)
+            if event.get("type") == "response" and event.get("id") == prompt_id:
+                if not event.get("success", False):
+                    raise AgentError(f"Pi rejected prompt: {event.get('error', 'unknown error')}")
+                prompt_accepted = True
+            elif event.get("type") == "agent_settled":
+                settled = True
+        if not prompt_accepted:
+            raise AgentError("Pi settled without acknowledging the prompt")
+
+    def _last_assistant_text(
+        self,
+        proc: subprocess.Popen[str],
+        reader: _JsonlReader,
+        deadline: float,
+        stderr_lines: list[str],
+        request_id: str,
+    ) -> str:
+        self._send(proc, {"id": request_id, "type": "get_last_assistant_text"})
+        response = self._wait_response(proc, reader, deadline, stderr_lines, request_id)
+        text = ((response.get("data") or {}).get("text"))
+        if not isinstance(text, str) or not text.strip():
+            raise AgentError("Pi completed without a final assistant text result")
+        return text
+
     def execute(self, task: dict[str, Any], workspace: Path, timeout: int) -> dict[str, Any]:
         argv = self._argv()
         action_id = self._action_id(task)
@@ -287,28 +346,36 @@ class PiAdapter(AgentAdapter):
         try:
             prompt_id = f"{action_id}:prompt"
             self._send(proc, {"id": prompt_id, "type": "prompt", "message": self._prompt(task)})
-
-            prompt_accepted = False
-            settled = False
-            while not settled:
-                event = self._next_event(proc, reader, deadline, stderr_lines)
-                if event.get("type") == "response" and event.get("id") == prompt_id:
-                    if not event.get("success", False):
-                        raise AgentError(f"Pi rejected prompt: {event.get('error', 'unknown error')}")
-                    prompt_accepted = True
-                elif event.get("type") == "agent_settled":
-                    settled = True
-
-            if not prompt_accepted:
-                raise AgentError("Pi settled without acknowledging the prompt")
+            self._wait_prompt_settled(proc, reader, deadline, stderr_lines, prompt_id)
 
             result_id = f"{action_id}:result"
-            self._send(proc, {"id": result_id, "type": "get_last_assistant_text"})
-            response = self._wait_response(proc, reader, deadline, stderr_lines, result_id)
-            text = ((response.get("data") or {}).get("text"))
-            if not isinstance(text, str) or not text.strip():
-                raise AgentError("Pi completed without a final assistant text result")
-            data = self._parse_final_json(text)
+            text = self._last_assistant_text(proc, reader, deadline, stderr_lines, result_id)
+            try:
+                data = self._parse_final_json(text)
+            except AgentError as first_error:
+                repair_id = f"{action_id}:json-repair"
+                self._send(
+                    proc,
+                    {
+                        "id": repair_id,
+                        "type": "prompt",
+                        "message": self._repair_prompt(task),
+                    },
+                )
+                self._wait_prompt_settled(proc, reader, deadline, stderr_lines, repair_id)
+                repair_text = self._last_assistant_text(
+                    proc,
+                    reader,
+                    deadline,
+                    stderr_lines,
+                    f"{action_id}:repair-result",
+                )
+                try:
+                    data = self._parse_final_json(repair_text)
+                except AgentError as repair_error:
+                    raise AgentError(
+                        f"{first_error}; Pi JSON repair also failed: {repair_error}"
+                    ) from repair_error
             return self.normalize_result(task, data)
         finally:
             with self._lock:
