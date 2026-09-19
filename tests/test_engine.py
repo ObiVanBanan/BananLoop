@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from bananloop.agents.base import AgentAdapter
-from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, RuntimePaths
+from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, GuardrailSpec, MetricSpec, RuntimePaths
 from bananloop.engine import ControlledInterruption, Engine, UnknownActionOutcome
 from bananloop.report import build_report
 from bananloop.store import CampaignStore
@@ -306,5 +306,42 @@ def test_report_hides_stale_failure_for_historical_accepted_experiment(tmp_path:
         assert exp["status"] == "ACCEPTED"
         assert exp["failure_category"] is None
         assert exp["lesson"] == "Promoted as new champion"
+    finally:
+        store.close()
+
+
+
+def test_verify_rejects_frozen_evaluator_drift(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        evaluator_path = engine.workspace.workspace / "evaluator.py"
+        expected_hash = hashlib.sha256(evaluator_path.read_bytes()).hexdigest()
+        engine.spec.evaluation_assets = [
+            EvaluationAsset(path="evaluator.py", sha256=expected_hash)
+        ]
+        engine.spec.protected_paths = ["agent.py"]
+
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        engine._stage_propose(attempt_id, experiment_id)
+        engine._stage_execute(attempt_id, experiment_id)
+        engine._stage_snapshot(attempt_id, experiment_id)
+
+        exp = store.experiment(experiment_id)
+        engine.workspace.checkout(exp["candidate_snapshot"])
+        evaluator_path.write_text("print('tampered')\n", encoding="utf-8")
+        tampered = engine.workspace.snapshot("tamper evaluator")
+        store.update_experiment(experiment_id, candidate_snapshot=tampered)
+
+        engine._stage_verify(attempt_id, experiment_id)
+
+        exp = store.experiment(experiment_id)
+        assert store.attempt(attempt_id)["stage"] == "REJECT"
+        assert exp["failure_category"] == "EVALUATOR_CHANGED"
+        decision = json.loads(exp["decision_json"])
+        assert decision["reasons"][0] == "EVALUATOR_CHANGED"
+        assert "hash_mismatch:evaluator.py" in decision["reasons"]
     finally:
         store.close()

@@ -67,6 +67,11 @@ class BudgetSpec(BaseModel):
     plateau_experiments: int = Field(default=3, ge=1)
 
 
+class EvaluationAsset(BaseModel):
+    path: str
+    sha256: str
+
+
 class AgentConfig(BaseModel):
     kind: Literal["codex", "command", "pi"] = "codex"
     command: list[str] = Field(default_factory=list)
@@ -86,6 +91,7 @@ class CampaignSpec(BaseModel):
     source_repo: str
     base_commit: str
     evaluation_command: list[str]
+    evaluation_assets: list[EvaluationAsset] = Field(default_factory=list)
     primary_metric: MetricSpec
     guardrails: list[GuardrailSpec] = Field(default_factory=list)
     mandatory_checks: list[str] = Field(default_factory=list)
@@ -102,7 +108,11 @@ class CampaignSpec(BaseModel):
         return value
 
     def approved_hash(self) -> str:
-        payload = json.dumps(self.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+        data = self.model_dump(mode="json")
+        # Keep hashes compatible with v0.1 specs created before evaluation_assets existed.
+        if not self.evaluation_assets:
+            data.pop("evaluation_assets", None)
+        payload = json.dumps(data, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode()).hexdigest()
 
 
