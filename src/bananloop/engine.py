@@ -349,11 +349,15 @@ class Engine:
         if exp["decision_json"]:
             accepted = bool(json.loads(exp["decision_json"]).get("accepted"))
         status = "ACCEPTED" if accepted else "REJECTED"
-        failure = exp["failure_category"]
-        if not failure and not accepted:
-            decision = json.loads(exp["decision_json"]) if exp["decision_json"] else {}
-            failure = (decision.get("reasons") or ["REJECTED"])[0]
-        lesson = exp["lesson"] or ("Promoted as new champion" if accepted else f"Rejected: {failure}")
+        if accepted:
+            failure = None
+            lesson = "Promoted as new champion"
+        else:
+            failure = exp["failure_category"]
+            if not failure:
+                decision = json.loads(exp["decision_json"]) if exp["decision_json"] else {}
+                failure = (decision.get("reasons") or ["REJECTED"])[0]
+            lesson = exp["lesson"] or f"Rejected: {failure}"
         self.store.update_experiment(experiment_id, failure_category=failure, lesson=lesson)
         self.store.finish_attempt(attempt_id, experiment_id, status=status, scientific=scientific, improved=accepted)
 
