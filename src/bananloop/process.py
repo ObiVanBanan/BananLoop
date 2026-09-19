@@ -44,7 +44,16 @@ def run_process(
         raise ProcessError(f"cannot start process: {argv!r}: {exc}") from exc
     result = ProcessResult(completed.returncode, completed.stdout, completed.stderr)
     if check and completed.returncode != 0:
-        raise ProcessError(f"process failed with exit code {completed.returncode}: {argv!r}", result)
+        details: list[str] = []
+        if completed.stdout.strip():
+            details.append("stdout:\n" + completed.stdout[-4000:].rstrip())
+        if completed.stderr.strip():
+            details.append("stderr:\n" + completed.stderr[-4000:].rstrip())
+        suffix = "\n" + "\n".join(details) if details else ""
+        raise ProcessError(
+            f"process failed with exit code {completed.returncode}: {argv!r}{suffix}",
+            result,
+        )
     return result
 
 
