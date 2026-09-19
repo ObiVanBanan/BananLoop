@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,18 @@ CREATE TABLE IF NOT EXISTS actions (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS reservations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  action_id TEXT NOT NULL,
+  resource TEXT NOT NULL,
+  amount REAL NOT NULL,
+  status TEXT NOT NULL,
+  quality TEXT NOT NULL,
+  reserved_at TEXT NOT NULL,
+  settled_at TEXT,
+  duration_ms REAL
+);
+CREATE INDEX IF NOT EXISTS idx_reservations_action ON reservations(action_id, id);
 CREATE TABLE IF NOT EXISTS evaluations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   experiment_id INTEGER,
@@ -209,6 +222,31 @@ class CampaignStore:
         row = self.conn.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
         return dict(row) if row else None
 
+    @staticmethod
+    def _resource_for_kind(kind: str) -> str:
+        return "agent_call" if kind == "agent" else "evaluator_call"
+
+    def _reserve_action(self, action_id: str, kind: str, now: str) -> None:
+        self.conn.execute(
+            "INSERT INTO reservations(action_id,resource,amount,status,quality,reserved_at) VALUES(?,?,?,?,?,?)",
+            (action_id, self._resource_for_kind(kind), 1.0, "RESERVED", "actual", now),
+        )
+
+    def _settle_reservation(self, action_id: str, status: str, now: str) -> None:
+        row = self.conn.execute(
+            "SELECT id,reserved_at FROM reservations WHERE action_id=? AND status='RESERVED' ORDER BY id DESC LIMIT 1",
+            (action_id,),
+        ).fetchone()
+        if not row:
+            return
+        started = datetime.fromisoformat(row["reserved_at"])
+        ended = datetime.fromisoformat(now)
+        duration_ms = max(0.0, (ended - started).total_seconds() * 1000.0)
+        self.conn.execute(
+            "UPDATE reservations SET status=?,settled_at=?,duration_ms=? WHERE id=?",
+            (status, now, duration_ms, row["id"]),
+        )
+
     def start_action(self, action_id: str, experiment_id: int | None, stage: str, kind: str, request_hash: str) -> None:
         now = utc_now()
         self.conn.execute(
@@ -216,28 +254,35 @@ class CampaignStore:
             (action_id, experiment_id, stage, kind, "RUNNING", request_hash, now, now),
         )
         counter = "agent_calls" if kind == "agent" else "evaluator_calls"
+        self._reserve_action(action_id, kind, now)
         self.conn.execute(f"UPDATE campaigns SET {counter}={counter}+1,updated_at=? WHERE id=1", (now,))
         self.event("ACTION_STARTED", {"action_id": action_id, "kind": kind, "stage": stage})
         self.conn.commit()
 
     def finish_action(self, action_id: str, response: dict[str, Any]) -> None:
+        now = utc_now()
         self.conn.execute(
             "UPDATE actions SET status='COMPLETED',response_json=?,updated_at=? WHERE id=?",
-            (json.dumps(response, sort_keys=True), utc_now(), action_id),
+            (json.dumps(response, sort_keys=True), now, action_id),
         )
+        self._settle_reservation(action_id, "CONSUMED", now)
         self.event("ACTION_COMPLETED", {"action_id": action_id})
         self.conn.commit()
 
     def fail_action(self, action_id: str, error: str) -> None:
-        self.conn.execute("UPDATE actions SET status='FAILED',error=?,updated_at=? WHERE id=?", (error, utc_now(), action_id))
+        now = utc_now()
+        self.conn.execute("UPDATE actions SET status='FAILED',error=?,updated_at=? WHERE id=?", (error, now, action_id))
+        self._settle_reservation(action_id, "FAILED", now)
         self.event("ACTION_FAILED", {"action_id": action_id, "error": error[:500]})
         self.conn.commit()
 
     def cancel_action(self, action_id: str, reason: str = "user interrupt") -> None:
+        now = utc_now()
         self.conn.execute(
             "UPDATE actions SET status='CANCELLED',error=?,updated_at=? WHERE id=?",
-            (reason, utc_now(), action_id),
+            (reason, now, action_id),
         )
+        self._settle_reservation(action_id, "CANCELLED", now)
         self.event("ACTION_CANCELLED", {"action_id": action_id, "reason": reason[:500]})
         self.conn.commit()
 
@@ -247,10 +292,12 @@ class CampaignStore:
             raise StoreError(f"action {action_id} missing")
         now = utc_now()
         counter = "agent_calls" if action["kind"] == "agent" else "evaluator_calls"
+        self._settle_reservation(action_id, "UNKNOWN", now)
         self.conn.execute(
             "UPDATE actions SET status='RUNNING',response_json=NULL,error=NULL,updated_at=? WHERE id=?",
             (now, action_id),
         )
+        self._reserve_action(action_id, action["kind"], now)
         self.conn.execute(f"UPDATE campaigns SET {counter}={counter}+1,updated_at=? WHERE id=1", (now,))
         self.event("ACTION_RETRIED", {"action_id": action_id, "kind": action["kind"], "stage": action["stage"]})
         self.conn.commit()
@@ -271,6 +318,19 @@ class CampaignStore:
 
     def experiments(self) -> list[dict[str, Any]]:
         return [dict(row) for row in self.conn.execute("SELECT * FROM experiments ORDER BY id")]
+
+    def reservations(self) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.conn.execute("SELECT * FROM reservations ORDER BY id")]
+
+    def resource_summary(self) -> dict[str, Any]:
+        rows = self.reservations()
+        wall_ms = sum(float(row["duration_ms"] or 0.0) for row in rows)
+        return {
+            "wall_time_seconds": wall_ms / 1000.0,
+            "open_reservations": sum(1 for row in rows if row["status"] == "RESERVED"),
+            "unknown_outcomes": sum(1 for row in rows if row["status"] == "UNKNOWN"),
+            "reservation_count": len(rows),
+        }
 
     def events(self) -> list[dict[str, Any]]:
         return [dict(row) for row in self.conn.execute("SELECT * FROM events ORDER BY seq")]
