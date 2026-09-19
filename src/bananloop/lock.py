@@ -21,7 +21,12 @@ class CampaignLock:
 
     def acquire(self) -> "CampaignLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        fh = self.path.open("a+b")
+        try:
+            fh = self.path.open("a+b")
+        except OSError as exc:
+            raise CampaignLockError(
+                f"cannot open campaign lock (already locked or inaccessible): {self.path}"
+            ) from exc
         try:
             fh.seek(0, os.SEEK_END)
             if fh.tell() == 0:
