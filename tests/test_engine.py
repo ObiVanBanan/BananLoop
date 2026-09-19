@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from bananloop.agents.base import AgentAdapter
-from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, EvaluationResult, GuardrailSpec, MetricSpec, RuntimePaths
+from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, EvaluationResult, GuardrailSpec, Hypothesis, MetricSpec, RuntimePaths
 from bananloop.engine import ControlledInterruption, Engine, EngineError, UnknownActionOutcome
 from bananloop.report import build_report
 from bananloop.store import CampaignStore
