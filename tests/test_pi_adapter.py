@@ -154,7 +154,7 @@ def test_pi_rpc_requires_strict_json_result(tmp_path: Path):
         command=fake_pi(tmp_path),
         extra_args=["--bad-json"],
     )
-    with pytest.raises(AgentError, match="strict JSON"):
+    with pytest.raises(AgentError, match="unambiguous JSON object"):
         adapter.execute(
             {
                 "role": "propose",
@@ -239,18 +239,32 @@ def test_pi_parses_json_after_closed_think_tag():
     assert parsed["mechanism_key"] == "set-value"
 
 
-def test_pi_rejects_prose_before_json_without_think_boundary():
-    with pytest.raises(AgentError, match="strict JSON"):
+def test_pi_extracts_single_json_object_from_surrounding_prose():
+    parsed = PiAdapter._parse_final_json(
+        'I will return JSON now. {"hypothesis":"set value"} done.'
+    )
+    assert parsed["hypothesis"] == "set value"
+
+
+def test_pi_extracts_single_json_object_after_think_with_trailing_prose():
+    parsed = PiAdapter._parse_final_json(
+        'reasoning</think>Here is the result: {"hypothesis":"set value"} extra'
+    )
+    assert parsed["hypothesis"] == "set value"
+
+
+def test_pi_rejects_multiple_json_objects_as_ambiguous():
+    with pytest.raises(AgentError, match="exactly one unambiguous JSON object"):
         PiAdapter._parse_final_json(
-            'I will return JSON now. {"hypothesis":"set value"}'
+            'first {"hypothesis":"one"} second {"hypothesis":"two"}'
         )
 
 
-def test_pi_rejects_trailing_prose_after_think_json():
-    with pytest.raises(AgentError, match="after </think> is not strict JSON"):
-        PiAdapter._parse_final_json(
-            'reasoning</think>{"hypothesis":"set value"} extra'
-        )
+def test_pi_embedded_json_parser_ignores_braces_inside_strings():
+    parsed = PiAdapter._parse_final_json(
+        'prefix {"summary":"kept {literal} braces","changed_paths":[],"verification_notes":"","blockers":[]} suffix'
+    )
+    assert parsed["summary"] == "kept {literal} braces"
 
 
 
