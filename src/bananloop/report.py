@@ -15,6 +15,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
     champion = EvaluationResult.model_validate_json(campaign["champion_json"]) if campaign["champion_json"] else None
     experiments: list[dict[str, Any]] = []
     for row in store.experiments():
+        accepted = row["status"] == "ACCEPTED"
         item = {
             "id": row["id"],
             "ordinal": row["ordinal"],
@@ -22,8 +23,8 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             "hypothesis": json.loads(row["hypothesis_json"]) if row["hypothesis_json"] else None,
             "candidate_snapshot": row["candidate_snapshot"],
             "decision": json.loads(row["decision_json"]) if row["decision_json"] else None,
-            "failure_category": row["failure_category"],
-            "lesson": row["lesson"],
+            "failure_category": None if accepted else row["failure_category"],
+            "lesson": "Promoted as new champion" if accepted else row["lesson"],
         }
         experiments.append(item)
     baseline_value = metric_value(baseline, spec.primary_metric.name) if baseline else None
