@@ -179,17 +179,17 @@ def test_pi_normalizes_empty_blocker_sentinels():
     adapter = PiAdapter()
     task = {"role": "implement"}
 
-    assert adapter._normalize_result(task, {"blockers": "None", "verification_notes": None}) == {
+    assert adapter.normalize_result(task, {"blockers": "None", "verification_notes": None}) == {
         "blockers": [],
         "verification_notes": "",
     }
-    assert adapter._normalize_result(task, {"blockers": None})["blockers"] == []
-    assert adapter._normalize_result(task, {"blockers": []})["blockers"] == []
+    assert adapter.normalize_result(task, {"blockers": None})["blockers"] == []
+    assert adapter.normalize_result(task, {"blockers": []})["blockers"] == []
 
 
 def test_pi_does_not_repair_nonempty_blocker_text():
     adapter = PiAdapter()
-    data = adapter._normalize_result(
+    data = adapter.normalize_result(
         {"role": "implement"},
         {"blockers": "tests are failing"},
     )
