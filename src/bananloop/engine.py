@@ -19,6 +19,7 @@ from .contracts import (
     StopReason,
 )
 from .evaluators import CommandEvaluator, EvaluatorError
+from .integrity import evaluation_fingerprint, verify_evaluation_assets
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
 from .store import CampaignStore
 from .workspace import WorkspaceManager
@@ -141,13 +142,27 @@ class Engine:
         self._progress(f"{action_id}: completed")
         return response
 
+    def _evaluation_request(self, snapshot: str) -> dict[str, Any]:
+        return {
+            "snapshot": snapshot,
+            "command": self.spec.evaluation_command,
+            "evaluation_fingerprint": evaluation_fingerprint(self.spec.evaluation_assets),
+        }
+
     def _baseline(self) -> None:
         campaign = self.store.campaign()
         if campaign["baseline_json"]:
             return
         self.store.update_campaign(status=CampaignStatus.RUNNING.value, stage="BASELINE")
         self.workspace.ensure(self.spec.base_commit)
-        request = {"snapshot": self.spec.base_commit, "command": self.spec.evaluation_command}
+        integrity_violations = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
+        if integrity_violations:
+            error = "evaluation assets changed before baseline: " + ", ".join(integrity_violations)
+            self.store.event("BASELINE_FAILED", {"error": error})
+            self.store.conn.commit()
+            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+            raise EngineError(error)
+        request = self._evaluation_request(self.spec.base_commit)
         try:
             raw = self._action(
                 action_id="baseline:evaluate",
@@ -275,6 +290,7 @@ class Engine:
         self.workspace.checkout(exp["candidate_snapshot"])
         changed = self.workspace.changed_paths(exp["parent_snapshot"], exp["candidate_snapshot"])
         valid, violations = self.workspace.verify_scope(changed, self.spec.editable_scope, self.spec.protected_paths)
+        integrity_violations = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
         if not valid:
             decision = {
                 "accepted": False,
@@ -287,6 +303,23 @@ class Engine:
             self.store.update_experiment(experiment_id, decision_json=json.dumps(decision), failure_category="SCOPE_VIOLATION", lesson="Candidate changed protected/out-of-scope paths")
             self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
             self.store.set_stage(attempt_id, "REJECT")
+        elif integrity_violations:
+            decision = {
+                "accepted": False,
+                "primary_value": None,
+                "champion_value": None,
+                "delta": None,
+                "predicates": {"evaluation_integrity": False},
+                "reasons": ["EVALUATOR_CHANGED", *integrity_violations],
+            }
+            self.store.update_experiment(
+                experiment_id,
+                decision_json=json.dumps(decision),
+                failure_category="EVALUATOR_CHANGED",
+                lesson="Frozen evaluation assets changed",
+            )
+            self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
+            self.store.set_stage(attempt_id, "REJECT")
         else:
             self.store.set_stage(attempt_id, "EVALUATE")
         self._checkpoint(self.store.attempt(attempt_id)["stage"])
@@ -294,7 +327,16 @@ class Engine:
     def _stage_evaluate(self, attempt_id: int, experiment_id: int) -> None:
         exp = self.store.experiment(experiment_id)
         self.workspace.checkout(exp["candidate_snapshot"])
-        request = {"snapshot": exp["candidate_snapshot"], "command": self.spec.evaluation_command}
+        integrity_violations = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
+        if integrity_violations:
+            self.store.update_experiment(
+                experiment_id,
+                failure_category="EVALUATOR_CHANGED",
+                lesson="Frozen evaluation assets changed before measurement: " + ", ".join(integrity_violations),
+            )
+            self.store.set_stage(attempt_id, "REJECT")
+            return
+        request = self._evaluation_request(exp["candidate_snapshot"])
         try:
             raw = self._action(
                 action_id=f"exp:{experiment_id}:evaluate",
