@@ -27,12 +27,7 @@ def _paths(repo: Path, state_dir: str | None) -> RuntimePaths:
     return paths
 
 
-def cmd_init(args: argparse.Namespace) -> int:
-    repo = Path(args.repo).resolve()
-    if not args.allow_dirty:
-        assert_clean_source(repo)
-    base = current_commit(repo)
-    paths = _paths(repo, args.state_dir)
+def _agent_config(args: argparse.Namespace) -> AgentConfig:
     extra_args: list[str] = []
     if args.agent == "codex":
         extra_args = args.codex_arg or []
@@ -42,12 +37,21 @@ def cmd_init(args: argparse.Namespace) -> int:
         if args.thinking:
             extra_args += ["--thinking", args.thinking]
         extra_args += args.pi_arg or []
-    agent = AgentConfig(
+    return AgentConfig(
         kind=args.agent,
         command=shlex.split(args.agent_cmd) if args.agent_cmd else [],
         model=args.model,
         extra_args=extra_args,
     )
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).resolve()
+    if not args.allow_dirty:
+        assert_clean_source(repo)
+    base = current_commit(repo)
+    paths = _paths(repo, args.state_dir)
+    agent = _agent_config(args)
     spec = CampaignSpec(
         goal=args.goal,
         source_repo=str(repo),
