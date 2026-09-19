@@ -34,6 +34,7 @@ def test_guardrail_rejects_even_when_primary_improves():
 
 def test_non_regression_rejects_candidate_that_improves_primary_but_worsens_secondary():
     s = spec()
+    s.guardrails = []
     s.non_regression = [
         NonRegressionSpec(
             metric="regressions",
@@ -49,6 +50,7 @@ def test_non_regression_rejects_candidate_that_improves_primary_but_worsens_seco
 
 def test_non_regression_accepts_equal_or_better_secondary():
     s = spec()
+    s.guardrails = []
     s.non_regression = [
         NonRegressionSpec(
             metric="regressions",
