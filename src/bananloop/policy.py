@@ -33,6 +33,8 @@ def validate_evaluation(spec: CampaignSpec, result: EvaluationResult) -> None:
             raise InvalidEvaluation(f"metric {metric.name} unit mismatch: {actual_unit!r}")
     for guard in spec.guardrails:
         metric_value(result, guard.metric)
+    for guard in spec.non_regression:
+        metric_value(result, guard.metric)
     for check in spec.mandatory_checks:
         if check not in result.checks:
             raise InvalidEvaluation(f"missing mandatory check: {check}")
@@ -68,6 +70,18 @@ def decide(spec: CampaignSpec, champion: EvaluationResult, candidate: Evaluation
         predicates[f"guard:{guard.metric}{guard.operator}{guard.bound}"] = passed
         if not passed:
             reasons.append(f"GUARDRAIL_FAILED:{guard.metric}")
+    for guard in spec.non_regression:
+        champion_value = metric_value(champion, guard.metric)
+        candidate_value = metric_value(candidate, guard.metric)
+        if guard.direction == Direction.MAXIMIZE:
+            passed = candidate_value >= champion_value - guard.tolerance
+        else:
+            passed = candidate_value <= champion_value + guard.tolerance
+        predicates[
+            f"non_regression:{guard.metric}:{guard.direction.value}:{guard.tolerance}"
+        ] = passed
+        if not passed:
+            reasons.append(f"REGRESSION:{guard.metric}")
     for name in spec.mandatory_checks:
         passed = candidate.checks[name].passed
         predicates[f"check:{name}"] = passed
