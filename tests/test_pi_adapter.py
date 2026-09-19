@@ -222,3 +222,36 @@ def test_pi_rejects_trailing_prose_after_think_json():
         PiAdapter._parse_final_json(
             'reasoning</think>{"hypothesis":"set value"} extra'
         )
+
+
+
+def test_pi_normalizes_singleton_path_fields():
+    adapter = PiAdapter()
+
+    proposed = adapter.normalize_result(
+        {"role": "propose"},
+        {"files_or_area": "value.txt"},
+    )
+    assert proposed["files_or_area"] == ["value.txt"]
+
+    implemented = adapter.normalize_result(
+        {"role": "implement"},
+        {"changed_paths": "value.txt", "blockers": []},
+    )
+    assert implemented["changed_paths"] == ["value.txt"]
+
+
+def test_pi_does_not_coerce_non_string_path_shapes():
+    adapter = PiAdapter()
+
+    proposed = adapter.normalize_result(
+        {"role": "propose"},
+        {"files_or_area": {"path": "value.txt"}},
+    )
+    assert proposed["files_or_area"] == {"path": "value.txt"}
+
+    implemented = adapter.normalize_result(
+        {"role": "implement"},
+        {"changed_paths": 123, "blockers": []},
+    )
+    assert implemented["changed_paths"] == 123
