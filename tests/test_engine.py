@@ -241,3 +241,29 @@ def test_orphaned_running_action_requires_explicit_retry(tmp_path: Path):
         assert store.campaign()["agent_calls"] == 2
     finally:
         store.close()
+
+
+
+def test_accepted_experiment_clears_transient_failure_and_lesson(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+
+        store.update_experiment(
+            experiment_id,
+            decision_json=json.dumps({"accepted": True}),
+            evaluation_json=campaign["champion_json"],
+            failure_category="AGENT_PROTOCOL_ERROR",
+            lesson="old transient protocol error",
+        )
+        engine._stage_record(attempt_id, experiment_id)
+
+        exp = store.experiment(experiment_id)
+        assert exp["status"] == "ACCEPTED"
+        assert exp["failure_category"] is None
+        assert exp["lesson"] == "Promoted as new champion"
+    finally:
+        store.close()
