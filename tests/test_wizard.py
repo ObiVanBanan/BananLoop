@@ -80,3 +80,9 @@ def test_confirm_spec_requires_explicit_yes():
 def test_init_parser_accepts_evaluator_timeout():
     args = parser().parse_args(["init", "--evaluator-timeout-seconds", "14400"])
     assert args.evaluator_timeout_seconds == 14400
+
+
+
+def test_resume_parser_accepts_failed_action_retry():
+    args = parser().parse_args(["resume", "--retry-failed-action"])
+    assert args.retry_failed_action is True
