@@ -80,6 +80,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         evaluation_command=evaluation_command,
         evaluator_timeout_seconds=args.evaluator_timeout_seconds,
         evaluation_assets=evaluation_assets,
+        agent_hidden_paths=args.agent_hide or [],
+        agent_visible_metrics=args.agent_metric or [],
         primary_metric=MetricSpec(
             name=args.metric,
             direction=Direction(args.direction),
@@ -225,6 +227,16 @@ def parser() -> argparse.ArgumentParser:
         "--eval-asset",
         action="append",
         help="additional evaluator/scoring/config file to freeze; repeatable",
+    )
+    init.add_argument(
+        "--agent-hide",
+        action="append",
+        help="path/glob hidden from the agent workspace; repeatable",
+    )
+    init.add_argument(
+        "--agent-metric",
+        action="append",
+        help="metric name visible to the agent in baseline/champion/history; repeatable",
     )
     init.add_argument("--metric")
     init.add_argument("--direction", choices=["maximize", "minimize"])
