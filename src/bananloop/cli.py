@@ -9,6 +9,7 @@ from pathlib import Path
 from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, RuntimePaths
 from .engine import ControlledInterruption, Engine, EngineError
 from .integrity import discover_evaluation_assets, evaluation_fingerprint
+from .lock import CampaignLock, CampaignLockError
 from .report import build_report, render_markdown
 from .store import CampaignStore, StoreError
 from .workspace import WorkspaceManager, assert_clean_source, current_commit
@@ -110,25 +111,32 @@ def _open(args: argparse.Namespace) -> tuple[RuntimePaths, CampaignStore, Engine
 
 
 def cmd_run(args: argparse.Namespace, resume: bool = False) -> int:
-    _, store, engine = _open(args)
+    repo = Path(args.repo).resolve()
+    paths = _paths(repo, args.state_dir)
     try:
-        campaign = engine.run(
-            resume=resume,
-            retry_running_actions=bool(getattr(args, "retry_running_action", False)),
-        )
-        print(json.dumps({k: campaign[k] for k in ("status", "stop_reason", "stage", "experiment_count", "attempt_count", "agent_calls", "evaluator_calls", "champion_snapshot")}, indent=2))
-        return 0 if campaign["status"] != "PAUSED_INFRA" else 2
-    except ControlledInterruption as exc:
-        print(str(exc), file=sys.stderr)
-        return 130
-    except KeyboardInterrupt:
-        print("BananLoop interrupted by user. Active local agent process was cancelled.", file=sys.stderr)
-        return 130
-    except EngineError as exc:
+        with CampaignLock(paths.root / "campaign.lock"):
+            _, store, engine = _open(args)
+            try:
+                campaign = engine.run(
+                    resume=resume,
+                    retry_running_actions=bool(getattr(args, "retry_running_action", False)),
+                )
+                print(json.dumps({k: campaign[k] for k in ("status", "stop_reason", "stage", "experiment_count", "attempt_count", "agent_calls", "evaluator_calls", "champion_snapshot")}, indent=2))
+                return 0 if campaign["status"] != "PAUSED_INFRA" else 2
+            except ControlledInterruption as exc:
+                print(str(exc), file=sys.stderr)
+                return 130
+            except KeyboardInterrupt:
+                print("BananLoop interrupted by user. Active local agent process was cancelled.", file=sys.stderr)
+                return 130
+            except EngineError as exc:
+                print(f"BananLoop error: {exc}", file=sys.stderr)
+                return 2
+            finally:
+                store.close()
+    except CampaignLockError as exc:
         print(f"BananLoop error: {exc}", file=sys.stderr)
         return 2
-    finally:
-        store.close()
 
 
 def cmd_status(args: argparse.Namespace) -> int:
