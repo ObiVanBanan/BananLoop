@@ -53,6 +53,7 @@ class Engine:
         self._progress_callback = progress
         self._retry_running_actions = False
         self._retry_failed_actions = False
+        self._agent_timeout_seconds: int | None = None
         self.spec = store.spec()
         self.evaluator = CommandEvaluator(self.spec.evaluation_command)
         self.agent: AgentAdapter
@@ -66,6 +67,9 @@ class Engine:
     def _progress(self, message: str) -> None:
         if self._progress_callback:
             self._progress_callback(message)
+
+    def _agent_timeout(self, default: int) -> int:
+        return self._agent_timeout_seconds or default
 
     def _checkpoint(self, stage: str) -> None:
         if os.getenv("BANANLOOP_TEST_STOP_AFTER_STAGE") == stage:
@@ -251,7 +255,11 @@ class Engine:
                 stage="PROPOSE",
                 kind="agent",
                 request=task,
-                invoke=lambda: self.agent.execute(task, self.workspace.workspace, timeout=900),
+                invoke=lambda: self.agent.execute(
+                    task,
+                    self.workspace.workspace,
+                    timeout=self._agent_timeout(900),
+                ),
             )
             raw = self.agent.normalize_result(task, raw)
             if raw.get("status") == "NO_HYPOTHESIS":
@@ -284,7 +292,11 @@ class Engine:
                 stage="EXECUTE",
                 kind="agent",
                 request=task,
-                invoke=lambda: self.agent.execute(task, self.workspace.workspace, timeout=1200),
+                invoke=lambda: self.agent.execute(
+                    task,
+                    self.workspace.workspace,
+                    timeout=self._agent_timeout(1200),
+                ),
             )
             raw = self.agent.normalize_result(task, raw)
             ImplementResult.model_validate(raw)
@@ -443,9 +455,11 @@ class Engine:
         resume: bool = False,
         retry_running_actions: bool = False,
         retry_failed_actions: bool = False,
+        agent_timeout_seconds: int | None = None,
     ) -> dict[str, Any]:
         self._retry_running_actions = retry_running_actions
         self._retry_failed_actions = retry_failed_actions
+        self._agent_timeout_seconds = agent_timeout_seconds
         campaign = self.store.campaign()
         if campaign["spec_hash"] != self.spec.approved_hash():
             raise EngineError("approved campaign spec hash mismatch")

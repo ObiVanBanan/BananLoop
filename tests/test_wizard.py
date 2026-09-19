@@ -86,3 +86,9 @@ def test_init_parser_accepts_evaluator_timeout():
 def test_resume_parser_accepts_failed_action_retry():
     args = parser().parse_args(["resume", "--retry-failed-action"])
     assert args.retry_failed_action is True
+
+
+
+def test_resume_parser_accepts_agent_timeout_override():
+    args = parser().parse_args(["resume", "--agent-timeout-seconds", "3600"])
+    assert args.agent_timeout_seconds == 3600

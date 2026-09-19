@@ -413,3 +413,42 @@ def test_baseline_uses_campaign_evaluator_timeout(tmp_path: Path):
         assert evaluator.timeout == 4321
     finally:
         store.close()
+
+
+
+class TimeoutCapturingAgent(AgentAdapter):
+    def __init__(self):
+        self.timeout = None
+
+    def probe(self):
+        return {"available": True}
+
+    def execute(self, task, workspace, timeout):
+        self.timeout = timeout
+        return {
+            "hypothesis": "capture timeout",
+            "rationale": "test",
+            "expected_effect": "none",
+            "files_or_area": ["value.txt"],
+            "falsification_condition": "n/a",
+            "mechanism_key": "timeout-test",
+        }
+
+
+def test_propose_uses_runtime_agent_timeout_override(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        agent = TimeoutCapturingAgent()
+        engine.agent = agent
+        engine._agent_timeout_seconds = 3600
+
+        engine._stage_propose(attempt_id, experiment_id)
+
+        assert agent.timeout == 3600
+        assert store.attempt(attempt_id)["stage"] == "EXECUTE"
+    finally:
+        store.close()
