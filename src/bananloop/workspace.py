@@ -15,6 +15,7 @@ class WorkspaceManager:
     def __init__(self, source_repo: Path, workspace: Path):
         self.source_repo = source_repo.resolve()
         self.workspace = workspace.resolve()
+        self.agent_workspace = (self.workspace.parent / "agent_workspace").resolve()
 
     def ensure(self, base_commit: str) -> None:
         if not self.workspace.exists():
@@ -47,7 +48,73 @@ class WorkspaceManager:
     @staticmethod
     def _matches(path: str, patterns: list[str]) -> bool:
         normalized = path.replace("\\", "/")
-        return any(pattern == "**" or fnmatch.fnmatch(normalized, pattern) for pattern in patterns)
+        for pattern in patterns:
+            pattern = pattern.replace("\\", "/")
+            if pattern == "**" or fnmatch.fnmatch(normalized, pattern):
+                return True
+            if pattern.endswith("/**"):
+                prefix = pattern[:-3].rstrip("/")
+                if normalized == prefix or normalized.startswith(prefix + "/"):
+                    return True
+        return False
+
+    def prepare_agent_workspace(self, hidden_paths: list[str]) -> Path:
+        if self.agent_workspace.exists():
+            shutil.rmtree(self.agent_workspace)
+        hidden = [".git", ".git/**", ".bananloop_eval", ".bananloop_eval/**", *hidden_paths]
+
+        def ignore(directory: str, names: list[str]) -> set[str]:
+            current = Path(directory)
+            ignored: set[str] = set()
+            for name in names:
+                path = current / name
+                try:
+                    relative = path.relative_to(self.workspace).as_posix()
+                except ValueError:
+                    continue
+                if self._matches(relative, hidden):
+                    ignored.add(name)
+            return ignored
+
+        shutil.copytree(self.workspace, self.agent_workspace, ignore=ignore, symlinks=True)
+        run_process(["git", "init"], cwd=self.agent_workspace, timeout=30)
+        run_process(["git", "config", "user.email", "bananloop@localhost"], cwd=self.agent_workspace, timeout=10)
+        run_process(["git", "config", "user.name", "BananLoop Agent Sandbox"], cwd=self.agent_workspace, timeout=10)
+        run_process(["git", "add", "-A"], cwd=self.agent_workspace, timeout=30)
+        run_process(["git", "commit", "-m", "bananloop sanitized agent baseline"], cwd=self.agent_workspace, timeout=60)
+        return self.agent_workspace
+
+    def apply_agent_changes(self, agent_workspace: Path, hidden_paths: list[str]) -> list[str]:
+        run_process(["git", "add", "-A"], cwd=agent_workspace, timeout=30)
+        changed_out = run_process(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=agent_workspace,
+            timeout=20,
+        ).stdout
+        changed = [line.strip().replace("\\", "/") for line in changed_out.splitlines() if line.strip()]
+        hidden = [".git", ".git/**", ".bananloop_eval", ".bananloop_eval/**", *hidden_paths]
+        violations = [path for path in changed if self._matches(path, hidden)]
+        if violations:
+            raise WorkspaceError(
+                "agent attempted to write hidden path(s): " + ", ".join(sorted(violations))
+            )
+        patch = run_process(
+            ["git", "diff", "--cached", "--binary", "--full-index"],
+            cwd=agent_workspace,
+            timeout=30,
+        ).stdout
+        if patch:
+            run_process(
+                ["git", "apply", "--whitespace=nowarn", "-"],
+                cwd=self.workspace,
+                timeout=60,
+                input_text=patch,
+            )
+        return changed
+
+    def cleanup_agent_workspace(self) -> None:
+        if self.agent_workspace.exists():
+            shutil.rmtree(self.agent_workspace)
 
     def verify_scope(self, changed: list[str], editable_scope: list[str], protected_paths: list[str]) -> tuple[bool, list[str]]:
         violations: list[str] = []
