@@ -58,6 +58,12 @@ class GuardrailSpec(BaseModel):
     bound: float
 
 
+class NonRegressionSpec(BaseModel):
+    metric: str
+    direction: Direction
+    tolerance: float = Field(default=0.0, ge=0)
+
+
 class BudgetSpec(BaseModel):
     max_experiments: int = Field(default=5, ge=1)
     max_attempts: int = Field(default=8, ge=1)
@@ -97,6 +103,7 @@ class CampaignSpec(BaseModel):
     agent_visible_metrics: list[str] = Field(default_factory=list)
     primary_metric: MetricSpec
     guardrails: list[GuardrailSpec] = Field(default_factory=list)
+    non_regression: list[NonRegressionSpec] = Field(default_factory=list)
     mandatory_checks: list[str] = Field(default_factory=list)
     editable_scope: list[str] = Field(default_factory=lambda: ["**"])
     protected_paths: list[str] = Field(default_factory=list)
@@ -121,6 +128,8 @@ class CampaignSpec(BaseModel):
             data.pop("agent_hidden_paths", None)
         if not self.agent_visible_metrics:
             data.pop("agent_visible_metrics", None)
+        if not self.non_regression:
+            data.pop("non_regression", None)
         payload = json.dumps(data, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode()).hexdigest()
 
