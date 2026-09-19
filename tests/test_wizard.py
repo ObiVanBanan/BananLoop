@@ -74,3 +74,9 @@ def test_init_wizard_collects_minimum_campaign_fields(tmp_path: Path, monkeypatc
 def test_confirm_spec_requires_explicit_yes():
     assert confirm_spec({"goal": "x"}, input_fn=lambda prompt: "yes")
     assert not confirm_spec({"goal": "x"}, input_fn=lambda prompt: "")
+
+
+
+def test_init_parser_accepts_evaluator_timeout():
+    args = parser().parse_args(["init", "--evaluator-timeout-seconds", "14400"])
+    assert args.evaluator_timeout_seconds == 14400
