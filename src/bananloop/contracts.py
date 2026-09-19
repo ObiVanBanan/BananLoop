@@ -93,6 +93,8 @@ class CampaignSpec(BaseModel):
     evaluation_command: list[str]
     evaluator_timeout_seconds: int = Field(default=900, ge=1)
     evaluation_assets: list[EvaluationAsset] = Field(default_factory=list)
+    agent_hidden_paths: list[str] = Field(default_factory=list)
+    agent_visible_metrics: list[str] = Field(default_factory=list)
     primary_metric: MetricSpec
     guardrails: list[GuardrailSpec] = Field(default_factory=list)
     mandatory_checks: list[str] = Field(default_factory=list)
@@ -115,6 +117,10 @@ class CampaignSpec(BaseModel):
             data.pop("evaluator_timeout_seconds", None)
         if not self.evaluation_assets:
             data.pop("evaluation_assets", None)
+        if not self.agent_hidden_paths:
+            data.pop("agent_hidden_paths", None)
+        if not self.agent_visible_metrics:
+            data.pop("agent_visible_metrics", None)
         payload = json.dumps(data, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode()).hexdigest()
 
