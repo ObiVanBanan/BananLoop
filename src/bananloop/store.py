@@ -348,7 +348,14 @@ class CampaignStore:
 
     def record_decision(self, experiment_id: int, snapshot: str, decision: dict[str, Any]) -> None:
         self.conn.execute(
-            "INSERT OR IGNORE INTO decisions(experiment_id,candidate_snapshot,decision_json,created_at) VALUES(?,?,?,?)",
+            """
+            INSERT INTO decisions(experiment_id,candidate_snapshot,decision_json,created_at)
+            VALUES(?,?,?,?)
+            ON CONFLICT(experiment_id) DO UPDATE SET
+              candidate_snapshot=excluded.candidate_snapshot,
+              decision_json=excluded.decision_json,
+              created_at=excluded.created_at
+            """,
             (experiment_id, snapshot, json.dumps(decision, sort_keys=True), utc_now()),
         )
         self.conn.commit()
