@@ -20,6 +20,7 @@ from .contracts import (
 )
 from .evaluators import CommandEvaluator, EvaluatorError
 from .integrity import evaluation_fingerprint, verify_evaluation_assets
+from .leakage import scan_forbidden_diff_patterns
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
 from .store import CampaignStore
 from .workspace import WorkspaceError, WorkspaceManager
@@ -651,6 +652,46 @@ class Engine:
             self.store.update_experiment(experiment_id, decision_json=json.dumps(decision), failure_category="SCOPE_VIOLATION", lesson="Candidate changed protected/out-of-scope paths")
             self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
             self.store.set_stage(attempt_id, "REJECT")
+        elif self.spec.forbidden_diff_patterns:
+            leakage_violations = scan_forbidden_diff_patterns(
+                self.workspace.diff_text(
+                    exp["parent_snapshot"],
+                    exp["candidate_snapshot"],
+                ),
+                self.spec.forbidden_diff_patterns,
+            )
+            if leakage_violations:
+                decision = {
+                    "accepted": False,
+                    "primary_value": None,
+                    "champion_value": None,
+                    "delta": None,
+                    "predicates": {"anti_gaming": False},
+                    "reasons": ["LEAKAGE_GUARD"],
+                }
+                self.store.update_experiment(
+                    experiment_id,
+                    decision_json=json.dumps(decision),
+                    failure_category="LEAKAGE_GUARD",
+                    lesson="; ".join(leakage_violations)[:1000],
+                )
+                self.store.record_decision(
+                    experiment_id,
+                    exp["candidate_snapshot"],
+                    decision,
+                )
+                self.store.event(
+                    "LEAKAGE_GUARD_REJECTED",
+                    {
+                        "experiment_id": experiment_id,
+                        "snapshot": exp["candidate_snapshot"],
+                        "violations": leakage_violations,
+                    },
+                )
+                self.store.conn.commit()
+                self.store.set_stage(attempt_id, "REJECT")
+            else:
+                self.store.set_stage(attempt_id, "EVALUATE")
         else:
             self.store.set_stage(attempt_id, "EVALUATE")
         self._checkpoint(self.store.attempt(attempt_id)["stage"])
