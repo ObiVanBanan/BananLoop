@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
   baseline_snapshot TEXT,
   champion_json TEXT,
   champion_snapshot TEXT,
+  research_state_json TEXT,
   active_experiment_id INTEGER,
   active_attempt_id INTEGER,
   experiment_count INTEGER NOT NULL DEFAULT 0,
@@ -40,6 +41,7 @@ CREATE TABLE IF NOT EXISTS experiments (
   candidate_snapshot TEXT,
   evaluation_json TEXT,
   decision_json TEXT,
+  dev_decision_json TEXT,
   status TEXT NOT NULL,
   failure_category TEXT,
   lesson TEXT,
@@ -124,7 +126,19 @@ class CampaignStore:
             self.conn.execute(
                 "ALTER TABLE evaluations ADD COLUMN tier TEXT NOT NULL DEFAULT 'dev'"
             )
-            self.conn.commit()
+
+        campaign_columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(campaigns)")
+        }
+        if "research_state_json" not in campaign_columns:
+            self.conn.execute("ALTER TABLE campaigns ADD COLUMN research_state_json TEXT")
+
+        experiment_columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(experiments)")
+        }
+        if "dev_decision_json" not in experiment_columns:
+            self.conn.execute("ALTER TABLE experiments ADD COLUMN dev_decision_json TEXT")
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -149,6 +163,14 @@ class CampaignStore:
     def spec(self) -> CampaignSpec:
         return CampaignSpec.model_validate_json(self.campaign()["spec_json"])
 
+
+    def research_state(self) -> dict[str, Any] | None:
+        payload = self.campaign().get("research_state_json")
+        return json.loads(payload) if payload else None
+
+    def set_research_state(self, state: dict[str, Any]) -> None:
+        self.update_campaign(research_state_json=json.dumps(state, sort_keys=True))
+
     def update_campaign(self, **fields: Any) -> None:
         if not fields:
             return
@@ -172,7 +194,8 @@ class CampaignStore:
 
     def create_attempt(self, parent_snapshot: str) -> tuple[int, int]:
         campaign = self.campaign()
-        ordinal = campaign["experiment_count"] + 1
+        row = self.conn.execute("SELECT COALESCE(MAX(ordinal), 0) AS max_ordinal FROM experiments").fetchone()
+        ordinal = int(row["max_ordinal"]) + 1
         now = utc_now()
         cur = self.conn.execute(
             "INSERT INTO experiments(ordinal,parent_snapshot,status,created_at,updated_at) VALUES(?,?,?,?,?)",
