@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from .contracts import CampaignSpec, EvaluationResult
-from .policy import metric_value
+from .policy import metric_value, target_met
 from .store import CampaignStore
 
 
@@ -29,6 +29,37 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
         experiments.append(item)
     baseline_value = metric_value(baseline, spec.primary_metric.name) if baseline else None
     final_value = metric_value(champion, spec.primary_metric.name) if champion else None
+    validation_baseline = None
+    validation_champion = None
+    final_holdout = None
+    if campaign["baseline_snapshot"]:
+        row = store.latest_evaluation(campaign["baseline_snapshot"], "validation")
+        if row is not None:
+            validation_baseline = EvaluationResult.model_validate_json(row["result_json"])
+    if campaign["champion_snapshot"]:
+        row = store.latest_evaluation(campaign["champion_snapshot"], "validation")
+        if row is not None:
+            validation_champion = EvaluationResult.model_validate_json(row["result_json"])
+        row = store.latest_evaluation(campaign["champion_snapshot"], "holdout")
+        if row is not None:
+            final_holdout = EvaluationResult.model_validate_json(row["result_json"])
+
+    validation_baseline_value = (
+        metric_value(validation_baseline, spec.primary_metric.name)
+        if validation_baseline
+        else None
+    )
+    validation_champion_value = (
+        metric_value(validation_champion, spec.primary_metric.name)
+        if validation_champion
+        else None
+    )
+    holdout_value = (
+        metric_value(final_holdout, spec.primary_metric.name)
+        if final_holdout
+        else None
+    )
+
     resource_summary = store.resource_summary()
     return {
         "campaign_outcome": campaign["status"],
@@ -42,6 +73,30 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
         "champion_snapshot": campaign["champion_snapshot"],
         "guardrails": [g.model_dump(mode="json") for g in spec.guardrails],
         "non_regression": [g.model_dump(mode="json") for g in spec.non_regression],
+        "evaluation_protocol": {
+            "dev": {
+                "configured": True,
+                "baseline": baseline_value,
+                "champion": final_value,
+            },
+            "validation": {
+                "configured": bool(spec.validation_command),
+                "baseline": validation_baseline_value,
+                "champion": validation_champion_value,
+                "delta": (
+                    None
+                    if validation_baseline_value is None or validation_champion_value is None
+                    else validation_champion_value - validation_baseline_value
+                ),
+            },
+            "holdout": {
+                "configured": bool(spec.holdout_command),
+                "evaluated": final_holdout is not None,
+                "snapshot": campaign["champion_snapshot"] if final_holdout else None,
+                "value": holdout_value,
+                "target_met": target_met(spec, final_holdout) if final_holdout else None,
+            },
+        },
         "experiments": experiments,
         "resources": {
             "agent_calls": campaign["agent_calls"],
@@ -64,6 +119,31 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Baseline → final: `{report['baseline']}` → `{report['final_champion']}` (delta `{report['delta']}`)",
         f"- Baseline snapshot: `{report['baseline_snapshot']}`",
         f"- Champion snapshot: `{report['champion_snapshot']}`",
+        "",
+        "## Evaluation protocol",
+        "",
+    ]
+    protocol = report["evaluation_protocol"]
+    validation = protocol["validation"]
+    holdout = protocol["holdout"]
+    lines += [
+        f"- Dev: `{protocol['dev']['baseline']}` → `{protocol['dev']['champion']}`",
+        (
+            f"- Validation: `{validation['baseline']}` → `{validation['champion']}` "
+            f"(delta `{validation['delta']}`)"
+            if validation["configured"]
+            else "- Validation: not configured"
+        ),
+        (
+            f"- Final holdout: `{holdout['value']}`; target_met=`{holdout['target_met']}`; "
+            f"snapshot=`{holdout['snapshot']}`"
+            if holdout["evaluated"]
+            else (
+                "- Final holdout: configured but not evaluated"
+                if holdout["configured"]
+                else "- Final holdout: not configured"
+            )
+        ),
         "",
         "## Experiments",
         "",
