@@ -56,6 +56,16 @@ class Engine:
         self._agent_timeout_seconds: int | None = None
         self.spec = store.spec()
         self.evaluator = CommandEvaluator(self.spec.evaluation_command)
+        self.validation_evaluator = (
+            CommandEvaluator(self.spec.validation_command)
+            if self.spec.validation_command
+            else None
+        )
+        self.holdout_evaluator = (
+            CommandEvaluator(self.spec.holdout_command)
+            if self.spec.holdout_command
+            else None
+        )
         self.agent: AgentAdapter
         if self.spec.agent.kind == "codex":
             self.agent = CodexAdapter(self.spec.agent.model, self.spec.agent.extra_args)
@@ -172,7 +182,22 @@ class Engine:
         return self.store.campaign()
 
     def _budget_or_stop(self, kind: str) -> bool:
-        reason = pre_action_stop(self.store.campaign(), self.spec.budget, kind)
+        campaign = self.store.campaign()
+        if kind == "final_evaluator":
+            return False
+
+        # A configured final holdout owns the last evaluator-call slot. Iterative
+        # dev/validation work must stop before consuming it, otherwise a campaign
+        # could finish without its promised final-only assessment.
+        if (
+            kind == "evaluator"
+            and self.spec.holdout_command
+            and campaign["evaluator_calls"] >= self.spec.budget.max_evaluator_calls - 1
+        ):
+            self._stop(StopReason.BUDGET_EXHAUSTED)
+            return True
+
+        reason = pre_action_stop(campaign, self.spec.budget, kind)
         if reason:
             self._stop(reason)
             return True
@@ -243,12 +268,103 @@ class Engine:
         self._progress(f"{action_id}: completed")
         return response
 
-    def _evaluation_request(self, snapshot: str) -> dict[str, Any]:
+    def _evaluation_request(
+        self,
+        snapshot: str,
+        *,
+        tier: str = "dev",
+        command: list[str] | None = None,
+    ) -> dict[str, Any]:
         return {
             "snapshot": snapshot,
-            "command": self.spec.evaluation_command,
+            "tier": tier,
+            "command": command or self.spec.evaluation_command,
             "evaluation_fingerprint": evaluation_fingerprint(self.spec.evaluation_assets),
         }
+
+    def _validation_reference(self) -> EvaluationResult:
+        snapshot = self.store.campaign()["champion_snapshot"]
+        row = self.store.latest_evaluation(snapshot, "validation")
+        if row is None:
+            raise EngineError(
+                f"validation reference missing for champion snapshot {snapshot}"
+            )
+        return EvaluationResult.model_validate_json(row["result_json"])
+
+    def _holdout_assessment(self, result: EvaluationResult) -> dict[str, Any]:
+        validate_evaluation(self.spec, result)
+        return {
+            "snapshot": self.store.campaign()["champion_snapshot"],
+            "target_met": target_met(self.spec, result),
+            "result": result.model_dump(mode="json"),
+        }
+
+    def _finalize_holdout(self) -> dict[str, Any] | None:
+        if self.holdout_evaluator is None:
+            return None
+
+        campaign = self.store.campaign()
+        snapshot = campaign["champion_snapshot"]
+        if not snapshot:
+            return None
+
+        existing = self.store.latest_evaluation(snapshot, "holdout")
+        if existing is not None:
+            result = EvaluationResult.model_validate_json(existing["result_json"])
+            return self._holdout_assessment(result)
+
+        if campaign["evaluator_calls"] >= self.spec.budget.max_evaluator_calls:
+            raise EngineError(
+                "final holdout could not run: evaluator-call budget has no reserved slot"
+            )
+
+        self.workspace.checkout(snapshot)
+        integrity_violations = verify_evaluation_assets(
+            self.workspace.workspace, self.spec.evaluation_assets
+        )
+        if integrity_violations:
+            raise EngineError(
+                "evaluation assets changed before final holdout: "
+                + ", ".join(integrity_violations)
+            )
+
+        request = self._evaluation_request(
+            snapshot,
+            tier="holdout",
+            command=self.spec.holdout_command,
+        )
+        raw = self._action(
+            action_id="final:holdout",
+            experiment_id=None,
+            stage="FINAL_HOLDOUT",
+            kind="final_evaluator",
+            request=request,
+            invoke=lambda: self.holdout_evaluator.evaluate(
+                self.workspace.workspace,
+                timeout=(
+                    self.spec.holdout_timeout_seconds
+                    or self.spec.evaluator_timeout_seconds
+                ),
+            ).model_dump(mode="json"),
+        )
+        result = EvaluationResult.model_validate(raw)
+        validate_evaluation(self.spec, result)
+        self.store.record_evaluation(
+            None,
+            snapshot,
+            result.model_dump(mode="json"),
+            tier="holdout",
+        )
+        assessment = self._holdout_assessment(result)
+        self.store.event(
+            "FINAL_HOLDOUT_RECORDED",
+            {
+                "snapshot": snapshot,
+                "target_met": assessment["target_met"],
+            },
+        )
+        self.store.conn.commit()
+        return assessment
 
     def _baseline(self) -> None:
         campaign = self.store.campaign()
