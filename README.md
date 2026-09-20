@@ -3,7 +3,7 @@
 BananLoop is a local supervisor for bounded, measurable improvement campaigns over an existing Git repository:
 
 ```text
-baseline -> hypothesis -> implement -> snapshot -> verify -> evaluate -> decide -> promote/reject -> repeat
+baseline -> hypothesis -> implement -> snapshot -> verify -> DEV evaluate -> decide -> validate -> promote/reject -> learn -> repeat -> final holdout
 ```
 
 The coding agent proposes and edits. The evaluator and deterministic policy decide. Rejected candidates never become the next starting point.
@@ -18,6 +18,7 @@ The coding agent proposes and edits. The evaluator and deterministic policy deci
 - fixed baseline vs. moving champion;
 - structured command evaluators with first-class `dev -> validation -> final holdout` tiers;
 - deterministic min-improvement, target, guardrail and plateau policies;
+- Experimentation Intelligence v1: DEV-only research memory, hypothesis genealogy, duplicate-mechanism guard, budget-aware planning context, and exploit/explore/reframe modes;
 - Codex CLI adapter, Pi RPC adapter, and generic JSON-over-stdin/stdout command adapter;
 - action IDs that prevent completed agent/evaluator calls from being repeated on resume;
 - budgets for experiments, attempts, agent calls, evaluator calls and wall time;
@@ -98,6 +99,29 @@ For secondary metrics that should only avoid getting worse while the primary met
 ```
 
 The optional third field is an allowed tolerance. This is different from an absolute `--guard`: non-regression compares each candidate to the current champion instead of forcing every intermediate candidate to satisfy a final target immediately.
+
+## Experimentation Intelligence v1
+
+Adaptive planning uses only DEV evidence. Validation and final-holdout payloads are supervisor-only and are not written into agent history or research state.
+
+Each proposer task receives:
+
+- a durable `research_state` derived from prior DEV experiments;
+- failure-class and mechanism summaries;
+- remaining experiment/attempt/agent/evaluator budget;
+- a deterministic planning mode: `exploit`, `explore`, or `reframe`;
+- recent causal lessons generated from DEV outcomes.
+
+Hypotheses carry genealogy fields: `relation`, `prior_experiment_refs`, and `novelty_rationale`. Reusing the same `mechanism_key` without declaring a refinement/retry/supersession is rejected before implementation and does not consume a scientific experiment.
+
+Evaluators may expose numeric aggregate DEV diagnostics for planning. Diagnostics are hidden by default and must be explicitly allowlisted:
+
+```bash
+--agent-diagnostic wrong_not_found_rate
+--agent-diagnostic material_constraint_failures
+```
+
+Do not use validation or holdout-derived diagnostics here.
 
 ## Codex adapter
 
