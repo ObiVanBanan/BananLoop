@@ -60,10 +60,21 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
         else None
     )
 
+    if spec.holdout_command:
+        if final_holdout is None:
+            final_assessment = "PENDING"
+        else:
+            final_assessment = (
+                "ACCEPTED" if target_met(spec, final_holdout) else "REJECTED"
+            )
+    else:
+        final_assessment = "DEV_ONLY"
+
     resource_summary = store.resource_summary()
     return {
         "campaign_outcome": campaign["status"],
         "stop_reason": campaign["stop_reason"],
+        "final_assessment": final_assessment,
         "goal": spec.goal,
         "primary_metric": spec.primary_metric.name,
         "baseline": baseline_value,
@@ -114,6 +125,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         f"- Outcome: **{report['campaign_outcome']}**",
         f"- Stop reason: **{report['stop_reason'] or '-'}**",
+        f"- Final assessment: **{report['final_assessment']}**",
         f"- Goal: {report['goal']}",
         f"- Primary metric: `{report['primary_metric']}`",
         f"- Baseline → final: `{report['baseline']}` → `{report['final_champion']}` (delta `{report['delta']}`)",
