@@ -105,6 +105,9 @@ class Engine:
         decision = json.loads(decision_json)
         visible = set(self.spec.agent_visible_metrics)
         if not visible:
+            # Validation/holdout are supervisor-only tiers. Never pass their
+            # detailed payloads back into adaptive agent memory.
+            decision.pop("validation", None)
             return decision
 
         primary_visible = self.spec.primary_metric.name in visible
@@ -170,6 +173,36 @@ class Engine:
             raise ControlledInterruption(f"forced interruption after durable stage {stage}")
 
     def _stop(self, reason: StopReason, status: CampaignStatus = CampaignStatus.STOPPED) -> dict[str, Any]:
+        finalizable = reason not in {
+            StopReason.PAUSED_INFRA,
+            StopReason.PAUSED_NEEDS_INPUT,
+            StopReason.USER_STOPPED,
+        }
+        final_holdout: dict[str, Any] | None = None
+        if finalizable and self.holdout_evaluator is not None:
+            self._progress("final holdout: evaluate champion")
+            try:
+                final_holdout = self._finalize_holdout()
+            except (
+                EvaluatorError,
+                InvalidEvaluation,
+                ValidationError,
+                UnknownActionOutcome,
+                WorkspaceError,
+                EngineError,
+            ) as exc:
+                self.store.update_campaign(
+                    status=CampaignStatus.PAUSED_INFRA.value,
+                    stop_reason=reason.value,
+                    stage="FINAL_HOLDOUT",
+                )
+                self.store.event(
+                    "FINAL_HOLDOUT_FAILED",
+                    {"pending_stop_reason": reason.value, "error": str(exc)[:1000]},
+                )
+                self.store.conn.commit()
+                raise EngineError(f"final holdout failed: {exc}") from exc
+
         if reason == StopReason.GOAL_MET:
             status = CampaignStatus.GOAL_MET
         if reason == StopReason.PAUSED_INFRA:
@@ -177,7 +210,11 @@ class Engine:
         if reason == StopReason.PAUSED_NEEDS_INPUT:
             status = CampaignStatus.PAUSED_NEEDS_INPUT
         self.store.update_campaign(status=status.value, stop_reason=reason.value, stage=None)
-        self.store.event("CAMPAIGN_STOPPED", {"reason": reason.value, "status": status.value})
+        event_payload: dict[str, Any] = {"reason": reason.value, "status": status.value}
+        if final_holdout is not None:
+            event_payload["final_holdout_target_met"] = final_holdout["target_met"]
+            event_payload["final_holdout_snapshot"] = final_holdout["snapshot"]
+        self.store.event("CAMPAIGN_STOPPED", event_payload)
         self.store.conn.commit()
         return self.store.campaign()
 
@@ -400,7 +437,54 @@ class Engine:
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(f"baseline failed: {exc}") from exc
         snapshot = self.workspace.head()
-        self.store.record_evaluation(None, snapshot, result.model_dump(mode="json"))
+        self.store.record_evaluation(
+            None,
+            snapshot,
+            result.model_dump(mode="json"),
+            tier="dev",
+        )
+
+        if self.validation_evaluator is not None:
+            validation_request = self._evaluation_request(
+                snapshot,
+                tier="validation",
+                command=self.spec.validation_command,
+            )
+            try:
+                validation_raw = self._action(
+                    action_id="baseline:validation",
+                    experiment_id=None,
+                    stage="BASELINE_VALIDATION",
+                    kind="evaluator",
+                    request=validation_request,
+                    invoke=lambda: self.validation_evaluator.evaluate(
+                        self.workspace.workspace,
+                        timeout=(
+                            self.spec.validation_timeout_seconds
+                            or self.spec.evaluator_timeout_seconds
+                        ),
+                    ).model_dump(mode="json"),
+                )
+                validation_result = EvaluationResult.model_validate(validation_raw)
+                validate_evaluation(self.spec, validation_result)
+            except (
+                EvaluatorError,
+                InvalidEvaluation,
+                ValidationError,
+                UnknownActionOutcome,
+            ) as exc:
+                self.store.event("BASELINE_VALIDATION_FAILED", {"error": str(exc)})
+                self.store.conn.commit()
+                self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+                raise EngineError(f"baseline validation failed: {exc}") from exc
+            self.store.record_evaluation(
+                None,
+                snapshot,
+                validation_result.model_dump(mode="json"),
+                tier="validation",
+            )
+            self.store.event("BASELINE_VALIDATION_RECORDED", {"snapshot": snapshot})
+
         self.store.update_campaign(
             baseline_json=result.model_dump_json(),
             baseline_snapshot=snapshot,
@@ -605,7 +689,12 @@ class Engine:
         except UnknownActionOutcome as exc:
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(str(exc)) from exc
-        self.store.record_evaluation(experiment_id, exp["candidate_snapshot"], result.model_dump(mode="json"))
+        self.store.record_evaluation(
+            experiment_id,
+            exp["candidate_snapshot"],
+            result.model_dump(mode="json"),
+            tier="dev",
+        )
         self.store.update_experiment(experiment_id, evaluation_json=result.model_dump_json())
         self.store.set_stage(attempt_id, "DECIDE")
         self._checkpoint("DECIDE")
@@ -617,8 +706,96 @@ class Engine:
         candidate = EvaluationResult.model_validate_json(exp["evaluation_json"])
         decision = decide(self.spec, champion, candidate)
         self.store.update_experiment(experiment_id, decision_json=decision.model_dump_json())
-        self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision.model_dump(mode="json"))
-        self.store.set_stage(attempt_id, "PROMOTE" if decision.accepted else "REJECT")
+        self.store.record_decision(
+            experiment_id,
+            exp["candidate_snapshot"],
+            decision.model_dump(mode="json"),
+        )
+        if decision.accepted and self.validation_evaluator is not None:
+            self.store.set_stage(attempt_id, "VALIDATE")
+        else:
+            self.store.set_stage(attempt_id, "PROMOTE" if decision.accepted else "REJECT")
+        self._checkpoint(self.store.attempt(attempt_id)["stage"])
+
+    def _stage_validate(self, attempt_id: int, experiment_id: int) -> None:
+        exp = self.store.experiment(experiment_id)
+        self.workspace.checkout(exp["candidate_snapshot"])
+        request = self._evaluation_request(
+            exp["candidate_snapshot"],
+            tier="validation",
+            command=self.spec.validation_command,
+        )
+        try:
+            raw = self._action(
+                action_id=f"exp:{experiment_id}:validation",
+                experiment_id=experiment_id,
+                stage="VALIDATE",
+                kind="evaluator",
+                request=request,
+                invoke=lambda: self.validation_evaluator.evaluate(
+                    self.workspace.workspace,
+                    timeout=(
+                        self.spec.validation_timeout_seconds
+                        or self.spec.evaluator_timeout_seconds
+                    ),
+                ).model_dump(mode="json"),
+            )
+            result = EvaluationResult.model_validate(raw)
+            validate_evaluation(self.spec, result)
+            reference = self._validation_reference()
+            validation_decision = decide(self.spec, reference, result)
+        except (EvaluatorError, InvalidEvaluation, ValidationError) as exc:
+            combined = json.loads(exp["decision_json"])
+            combined["accepted"] = False
+            combined.setdefault("predicates", {})["validation"] = False
+            combined.setdefault("reasons", []).append("INVALID_VALIDATION")
+            combined["validation"] = {
+                "accepted": False,
+                "reasons": ["INVALID_VALIDATION"],
+            }
+            self.store.update_experiment(
+                experiment_id,
+                decision_json=json.dumps(combined),
+                failure_category="INVALID_VALIDATION",
+                lesson=str(exc)[:1000],
+            )
+            self.store.set_stage(attempt_id, "REJECT")
+            return
+        except UnknownActionOutcome as exc:
+            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+            raise EngineError(str(exc)) from exc
+
+        self.store.record_evaluation(
+            experiment_id,
+            exp["candidate_snapshot"],
+            result.model_dump(mode="json"),
+            tier="validation",
+        )
+
+        combined = json.loads(exp["decision_json"])
+        combined["validation"] = validation_decision.model_dump(mode="json")
+        combined.setdefault("predicates", {})["validation"] = validation_decision.accepted
+        if not validation_decision.accepted:
+            combined["accepted"] = False
+            combined.setdefault("reasons", []).append("VALIDATION_REJECTED")
+            combined["reasons"].extend(
+                f"VALIDATION:{reason}"
+                for reason in validation_decision.reasons
+                if reason != "ACCEPTED"
+            )
+            self.store.update_experiment(
+                experiment_id,
+                decision_json=json.dumps(combined),
+                failure_category="VALIDATION_REJECTED",
+                lesson="Dev improvement did not reproduce on validation tier",
+            )
+            self.store.set_stage(attempt_id, "REJECT")
+        else:
+            self.store.update_experiment(
+                experiment_id,
+                decision_json=json.dumps(combined),
+            )
+            self.store.set_stage(attempt_id, "PROMOTE")
         self._checkpoint(self.store.attempt(attempt_id)["stage"])
 
     def _stage_promote(self, attempt_id: int, experiment_id: int) -> None:
@@ -656,7 +833,10 @@ class Engine:
     def _post_iteration_stop(self) -> bool:
         campaign = self.store.campaign()
         champion = EvaluationResult.model_validate_json(campaign["champion_json"])
-        if target_met(self.spec, champion):
+        goal_met = target_met(self.spec, champion)
+        if goal_met and self.validation_evaluator is not None:
+            goal_met = target_met(self.spec, self._validation_reference())
+        if goal_met:
             self._stop(StopReason.GOAL_MET, CampaignStatus.GOAL_MET)
             return True
         if campaign["non_improve_streak"] >= self.spec.budget.plateau_experiments:
@@ -723,6 +903,8 @@ class Engine:
                 self._stage_evaluate(attempt_id, experiment_id)
             elif stage == "DECIDE":
                 self._stage_decide(attempt_id, experiment_id)
+            elif stage == "VALIDATE":
+                self._stage_validate(attempt_id, experiment_id)
             elif stage == "PROMOTE":
                 self._stage_promote(attempt_id, experiment_id)
             elif stage == "REJECT":
