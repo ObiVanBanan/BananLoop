@@ -106,6 +106,7 @@ class CampaignSpec(BaseModel):
     evaluation_assets: list[EvaluationAsset] = Field(default_factory=list)
     agent_hidden_paths: list[str] = Field(default_factory=list)
     agent_visible_metrics: list[str] = Field(default_factory=list)
+    agent_visible_diagnostics: list[str] = Field(default_factory=list)
     primary_metric: MetricSpec
     guardrails: list[GuardrailSpec] = Field(default_factory=list)
     non_regression: list[NonRegressionSpec] = Field(default_factory=list)
@@ -166,6 +167,8 @@ class CampaignSpec(BaseModel):
             data.pop("agent_hidden_paths", None)
         if not self.agent_visible_metrics:
             data.pop("agent_visible_metrics", None)
+        if not self.agent_visible_diagnostics:
+            data.pop("agent_visible_diagnostics", None)
         if not self.non_regression:
             data.pop("non_regression", None)
         if not self.forbidden_diff_patterns:
@@ -181,6 +184,9 @@ class Hypothesis(BaseModel):
     files_or_area: list[str] = Field(default_factory=list)
     falsification_condition: str
     mechanism_key: str
+    relation: Literal["new", "refine", "retry", "supersede"] = "new"
+    prior_experiment_refs: list[int] = Field(default_factory=list)
+    novelty_rationale: str = ""
 
 
 class ImplementResult(BaseModel):
@@ -207,6 +213,7 @@ class EvaluationResult(BaseModel):
     status: Literal["ok", "invalid", "infra_error", "cancelled"] = "ok"
     metrics: dict[str, MetricValue]
     checks: dict[str, CheckValue] = Field(default_factory=dict)
+    diagnostics: dict[str, float] = Field(default_factory=dict)
     artifacts: list[str] = Field(default_factory=list)
 
     @field_validator("metrics", mode="before")
@@ -237,6 +244,23 @@ class Decision(BaseModel):
     delta: float
     predicates: dict[str, bool]
     reasons: list[str]
+
+
+class MechanismEvidence(BaseModel):
+    mechanism_key: str
+    experiment_ordinals: list[int] = Field(default_factory=list)
+    dev_outcomes: dict[str, int] = Field(default_factory=dict)
+    last_relation: str | None = None
+
+
+class ResearchState(BaseModel):
+    schema_version: int = 1
+    planning_mode: Literal["exploit", "explore", "reframe"] = "exploit"
+    non_improve_streak: int = Field(default=0, ge=0)
+    failure_counts: dict[str, int] = Field(default_factory=dict)
+    mechanisms: list[MechanismEvidence] = Field(default_factory=list)
+    recent_lessons: list[str] = Field(default_factory=list)
+    remaining_budget: dict[str, int] = Field(default_factory=dict)
 
 
 class RuntimePaths(BaseModel):
