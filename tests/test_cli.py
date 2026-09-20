@@ -59,3 +59,19 @@ def test_init_cli_parses_non_regression_guardrail():
     assert args.non_regression[1].metric == "coverage"
     assert args.non_regression[1].direction.value == "maximize"
     assert args.non_regression[1].tolerance == 0.01
+
+
+
+def test_init_cli_accepts_staged_evaluation_commands():
+    args = parser().parse_args([
+        "init",
+        "--validation-eval-cmd", "python validation.py --aggregate-only",
+        "--holdout-eval-cmd", "python holdout.py --final-only",
+        "--validation-timeout-seconds", "1200",
+        "--holdout-timeout-seconds", "3600",
+    ])
+
+    assert args.validation_eval_cmd == "python validation.py --aggregate-only"
+    assert args.holdout_eval_cmd == "python holdout.py --final-only"
+    assert args.validation_timeout_seconds == 1200
+    assert args.holdout_timeout_seconds == 3600
