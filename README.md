@@ -12,11 +12,11 @@ The coding agent proposes and edits. The evaluator and deterministic policy deci
 
 - immutable approved campaign spec + SHA-256 identity;
 - SQLite source of truth and append-style lifecycle events;
-- explicit durable stages: `PROPOSE -> EXECUTE -> SNAPSHOT -> VERIFY -> EVALUATE -> DECIDE -> PROMOTE/REJECT -> RECORD`;
+- explicit durable stages: `PROPOSE -> EXECUTE -> SNAPSHOT -> VERIFY -> EVALUATE -> DECIDE -> [VALIDATE] -> PROMOTE/REJECT -> RECORD`;
 - private evaluator Git clone, leaving the user's checkout untouched;
 - sanitized temporary agent workspace with frozen evaluator assets and selected hidden paths removed from both files and local Git history;
 - fixed baseline vs. moving champion;
-- structured command evaluator with metric/check validation;
+- structured command evaluators with first-class `dev -> validation -> final holdout` tiers;
 - deterministic min-improvement, target, guardrail and plateau policies;
 - Codex CLI adapter, Pi RPC adapter, and generic JSON-over-stdin/stdout command adapter;
 - action IDs that prevent completed agent/evaluator calls from being repeated on resume;
@@ -185,7 +185,36 @@ Use repeated `--agent-metric` flags to restrict evaluation feedback visible in t
 --agent-metric public_human_reject_rate
 ```
 
-When at least one agent-visible metric is configured, other metric values and guardrails are omitted from agent baseline/champion/history views. For a true final holdout, do not use hidden metrics in the iterative acceptance policy; evaluate them only after the campaign or in a separate final-validation step.
+When at least one agent-visible metric is configured, other metric values and guardrails are omitted from agent baseline/champion/history views.
+
+## Staged evaluation protocol
+
+BananLoop can own the full evaluation lifecycle instead of requiring a manual post-campaign holdout:
+
+- `--eval-cmd` is the **dev** evaluator. It runs on the baseline and every candidate and drives the ordinary iterative decision.
+- `--validation-eval-cmd` is a blind **validation** evaluator. It runs on the baseline and only on candidates that first pass the dev policy. A candidate is promoted only when the same metric/guardrail policy also improves against the current validation champion.
+- `--holdout-eval-cmd` is the **final holdout** evaluator. It runs once on the terminal champion after normal campaign termination. Its detailed result is never added to agent context or experiment history.
+- Validation/holdout commands may point at external datasets. Repository evaluator scripts/configs referenced by any tier are frozen and automatically hidden from the agent workspace.
+- When a holdout is configured, BananLoop reserves the final evaluator-call budget slot for it.
+
+Example:
+
+```bash
+bananloop init \
+  --repo . \
+  --goal "Improve matching quality without false positives" \
+  --eval-cmd "python scripts/evaluate.py --split dev" \
+  --validation-eval-cmd "python scripts/evaluate.py --split validation --aggregate-only" \
+  --holdout-eval-cmd "python scripts/evaluate.py --split holdout --aggregate-only" \
+  --metric quality \
+  --direction maximize \
+  --target 0.80 \
+  --min-improvement 0.01 \
+  --guard "false_match_rate<=0" \
+  --max-evaluator-calls 16
+```
+
+The three commands use the same evaluator JSON contract and metric names. Validation details remain supervisor-side; the agent can observe only the ordinary experiment outcome plus whatever dev metrics were explicitly allowed through `--agent-metric`. The final report renders dev, validation, and holdout results separately.
 
 ## Evaluator contract
 
