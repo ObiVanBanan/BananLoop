@@ -708,23 +708,29 @@ def test_staged_validation_gates_promotion_and_final_holdout_runs_once(tmp_path:
         store.close()
 
 
-def test_agent_history_never_contains_validation_payload(tmp_path: Path):
+def test_agent_history_and_research_state_use_only_dev_evidence(tmp_path: Path):
     store, engine, _, _ = make_staged_engine(tmp_path)
     try:
         engine.run()
         history = engine._history()
 
         assert history
-        assert any(row["failure_category"] == "VALIDATION_REJECTED" for row in history)
-        for row in history:
-            decision = row["decision"]
-            if decision is not None:
-                assert "validation" not in decision
+        # Experiment 1 passed DEV and failed blind validation. Adaptive memory
+        # must retain only the DEV signal, not the hidden-tier rejection.
+        assert history[0]["dev_outcome"] == "DEV_IMPROVEMENT"
+        rendered_history = json.dumps(history).upper()
+        assert "VALIDATION" not in rendered_history
+        assert "HOLDOUT" not in rendered_history
 
         task = engine._task_context("propose", 999)
-        assert "holdout" not in json.dumps(task).lower()
+        rendered_task = json.dumps(task).upper()
+        assert "VALIDATION_REJECTED" not in rendered_task
+        assert "INVALID_VALIDATION" not in rendered_task
+        assert "HOLDOUT" not in rendered_task
         assert "validation_command" not in json.dumps(task)
         assert "holdout_command" not in json.dumps(task)
+        assert task["research_state"]["planning_mode"] in {"exploit", "explore", "reframe"}
+        assert "remaining_budget" in task["research_state"]
     finally:
         store.close()
 
