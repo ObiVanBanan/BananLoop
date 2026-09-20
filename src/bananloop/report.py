@@ -71,6 +71,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
         final_assessment = "DEV_ONLY"
 
     resource_summary = store.resource_summary()
+    research_state = store.research_state()
     return {
         "campaign_outcome": campaign["status"],
         "stop_reason": campaign["stop_reason"],
@@ -109,6 +110,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             },
         },
         "experiments": experiments,
+        "research_state": research_state,
         "resources": {
             "agent_calls": campaign["agent_calls"],
             "evaluation_calls": campaign["evaluator_calls"],
@@ -166,6 +168,21 @@ def render_markdown(report: dict[str, Any]) -> str:
         hypothesis = (exp["hypothesis"] or {}).get("hypothesis", "-")
         decision = exp["decision"] or {}
         lines.append(f"- #{exp['ordinal']} **{exp['status']}** — {hypothesis}; delta={decision.get('delta', '-')}; failure={exp['failure_category'] or '-'}")
+    research = report.get("research_state")
+    if research:
+        lines += [
+            "",
+            "## Research state",
+            "",
+            f"- Planning mode: `{research['planning_mode']}`",
+            f"- DEV non-improve streak: {research['dev_non_improve_streak']}",
+            f"- Failure classes: `{json.dumps(research['failure_counts'], sort_keys=True)}`",
+            f"- Remaining budget: `{json.dumps(research['remaining_budget'], sort_keys=True)}`",
+        ]
+        if research.get("recent_lessons"):
+            lines.append("- Recent lessons:")
+            lines.extend(f"  - {lesson}" for lesson in research["recent_lessons"])
+
     r = report["resources"]
     lines += [
         "",
