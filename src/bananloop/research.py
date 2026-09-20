@@ -231,22 +231,32 @@ def build_research_state(
         item["last_relation"] = hypothesis.get("relation", "new")
         lessons.append(_lesson_for(outcome, key))
 
+    dev_non_improve_streak = 0
+    for row in experiments:
+        if row.get("status") == "ACTIVE" or not row.get("evaluation_json"):
+            continue
+        outcome = classify_dev_outcome(spec, row)
+        if outcome == "DEV_IMPROVEMENT":
+            dev_non_improve_streak = 0
+        else:
+            dev_non_improve_streak += 1
+
     remaining = {
         "experiments": max(0, spec.budget.max_experiments - int(campaign["experiment_count"])),
         "attempts": max(0, spec.budget.max_attempts - int(campaign["attempt_count"])),
         "agent_calls": max(0, spec.budget.max_agent_calls - int(campaign["agent_calls"])),
         "evaluator_calls": max(0, spec.budget.max_evaluator_calls - int(campaign["evaluator_calls"])),
-        "experiments_until_plateau": max(
+        "dev_experiments_until_reframe": max(
             0,
-            spec.budget.plateau_experiments - int(campaign["non_improve_streak"]),
+            spec.budget.plateau_experiments - 1 - dev_non_improve_streak,
         ),
     }
     return ResearchState(
         planning_mode=planning_mode(
-            int(campaign["non_improve_streak"]),
+            dev_non_improve_streak,
             spec.budget.plateau_experiments,
         ),
-        non_improve_streak=int(campaign["non_improve_streak"]),
+        dev_non_improve_streak=dev_non_improve_streak,
         failure_counts=dict(sorted(failure_counts.items())),
         mechanisms=[
             MechanismEvidence.model_validate(value)
