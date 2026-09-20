@@ -98,6 +98,10 @@ class CampaignSpec(BaseModel):
     base_commit: str
     evaluation_command: list[str]
     evaluator_timeout_seconds: int = Field(default=900, ge=1)
+    validation_command: list[str] = Field(default_factory=list)
+    validation_timeout_seconds: int | None = Field(default=None, ge=1)
+    holdout_command: list[str] = Field(default_factory=list)
+    holdout_timeout_seconds: int | None = Field(default=None, ge=1)
     evaluation_assets: list[EvaluationAsset] = Field(default_factory=list)
     agent_hidden_paths: list[str] = Field(default_factory=list)
     agent_visible_metrics: list[str] = Field(default_factory=list)
@@ -122,6 +126,14 @@ class CampaignSpec(BaseModel):
         # Keep hashes compatible with v0.1 specs created before these fields existed.
         if self.evaluator_timeout_seconds == 900:
             data.pop("evaluator_timeout_seconds", None)
+        if not self.validation_command:
+            data.pop("validation_command", None)
+        if self.validation_timeout_seconds is None:
+            data.pop("validation_timeout_seconds", None)
+        if not self.holdout_command:
+            data.pop("holdout_command", None)
+        if self.holdout_timeout_seconds is None:
+            data.pop("holdout_timeout_seconds", None)
         if not self.evaluation_assets:
             data.pop("evaluation_assets", None)
         if not self.agent_hidden_paths:
