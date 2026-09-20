@@ -796,6 +796,11 @@ class Engine:
         except (EvaluatorError, InvalidEvaluation, ValidationError) as exc:
             combined = json.loads(exp["decision_json"])
             combined["accepted"] = False
+            combined["reasons"] = [
+                reason
+                for reason in combined.get("reasons", [])
+                if reason != "ACCEPTED"
+            ]
             combined.setdefault("predicates", {})["validation"] = False
             combined.setdefault("reasons", []).append("INVALID_VALIDATION")
             combined["validation"] = {
@@ -807,6 +812,11 @@ class Engine:
                 decision_json=json.dumps(combined),
                 failure_category="INVALID_VALIDATION",
                 lesson=str(exc)[:1000],
+            )
+            self.store.record_decision(
+                experiment_id,
+                exp["candidate_snapshot"],
+                combined,
             )
             self.store.set_stage(attempt_id, "REJECT")
             return
