@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS evaluations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   experiment_id INTEGER,
   candidate_snapshot TEXT NOT NULL,
+  tier TEXT NOT NULL DEFAULT 'dev',
   result_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -112,6 +113,18 @@ class CampaignStore:
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """Apply additive migrations so existing campaign state remains usable."""
+        evaluation_columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(evaluations)")
+        }
+        if "tier" not in evaluation_columns:
+            self.conn.execute(
+                "ALTER TABLE evaluations ADD COLUMN tier TEXT NOT NULL DEFAULT 'dev'"
+            )
+            self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -302,12 +315,36 @@ class CampaignStore:
         self.event("ACTION_RETRIED", {"action_id": action_id, "kind": action["kind"], "stage": action["stage"]})
         self.conn.commit()
 
-    def record_evaluation(self, experiment_id: int | None, snapshot: str, result: dict[str, Any]) -> None:
+    def record_evaluation(
+        self,
+        experiment_id: int | None,
+        snapshot: str,
+        result: dict[str, Any],
+        *,
+        tier: str = "dev",
+    ) -> None:
         self.conn.execute(
-            "INSERT INTO evaluations(experiment_id,candidate_snapshot,result_json,created_at) VALUES(?,?,?,?)",
-            (experiment_id, snapshot, json.dumps(result, sort_keys=True), utc_now()),
+            "INSERT INTO evaluations(experiment_id,candidate_snapshot,tier,result_json,created_at) VALUES(?,?,?,?,?)",
+            (experiment_id, snapshot, tier, json.dumps(result, sort_keys=True), utc_now()),
         )
         self.conn.commit()
+
+    def evaluations(self, tier: str | None = None) -> list[dict[str, Any]]:
+        if tier is None:
+            rows = self.conn.execute("SELECT * FROM evaluations ORDER BY id")
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM evaluations WHERE tier=? ORDER BY id",
+                (tier,),
+            )
+        return [dict(row) for row in rows]
+
+    def latest_evaluation(self, snapshot: str, tier: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM evaluations WHERE candidate_snapshot=? AND tier=? ORDER BY id DESC LIMIT 1",
+            (snapshot, tier),
+        ).fetchone()
+        return dict(row) if row else None
 
     def record_decision(self, experiment_id: int, snapshot: str, decision: dict[str, Any]) -> None:
         self.conn.execute(
