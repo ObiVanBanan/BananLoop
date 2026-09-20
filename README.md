@@ -216,6 +216,20 @@ bananloop init \
 
 The three commands use the same evaluator JSON contract and metric names. Validation details remain supervisor-side; the agent can observe only the ordinary experiment outcome plus whatever dev metrics were explicitly allowed through `--agent-metric`. The final report renders dev, validation, and holdout results separately.
 
+### Anti-gaming diff guard
+
+Use repeatable `--forbid-diff-regex` rules to reject suspicious newly added production lines before any evaluator call. This is useful for blocking benchmark IDs, GOLD imports, known labels, or evaluator-module references:
+
+```bash
+bananloop init \
+  ... \
+  --forbid-diff-regex '\\b(?:harness_gold|deep_gold)\\b' \
+  --forbid-diff-regex '\\bgold_q[0-9]+\\b' \
+  --forbid-diff-regex '\\bknown_(?:positive|rejected)_ids\\b'
+```
+
+The scanner examines added diff lines only, so deleting an old forbidden reference is allowed. It is a deterministic anti-gaming tripwire, not an OS security boundary; keep evaluation assets hidden with `--agent-hide`/frozen evaluator assets as the primary isolation mechanism.
+
 ## Evaluator contract
 
 The evaluation command runs with the frozen candidate workspace as `cwd` and must print one JSON object:
