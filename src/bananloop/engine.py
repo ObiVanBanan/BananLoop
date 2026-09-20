@@ -22,6 +22,13 @@ from .evaluators import CommandEvaluator, EvaluatorError
 from .integrity import evaluation_fingerprint, verify_evaluation_assets
 from .leakage import scan_forbidden_diff_patterns
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
+from .research import (
+    agent_decision_view,
+    agent_evaluation_view,
+    build_history,
+    build_research_state,
+    redundancy_reason,
+)
 from .store import CampaignStore
 from .workspace import WorkspaceError, WorkspaceManager
 
@@ -95,70 +102,23 @@ class Engine:
         ]
 
     def _agent_evaluation_view(self, payload_json: str | None) -> dict[str, Any] | None:
-        if not payload_json:
-            return None
-        payload = json.loads(payload_json)
-        payload["artifacts"] = []
-        visible = set(self.spec.agent_visible_metrics)
-        if visible:
-            payload["metrics"] = {
-                name: value
-                for name, value in (payload.get("metrics") or {}).items()
-                if name in visible
-            }
-        return payload
+        return agent_evaluation_view(self.spec, payload_json)
 
     def _agent_decision_view(self, decision_json: str | None) -> dict[str, Any] | None:
         if not decision_json:
             return None
         decision = json.loads(decision_json)
-        visible = set(self.spec.agent_visible_metrics)
-        if not visible:
-            # Validation/holdout are supervisor-only tiers. Never pass their
-            # detailed payloads back into adaptive agent memory.
-            decision.pop("validation", None)
-            return decision
-
-        primary_visible = self.spec.primary_metric.name in visible
-        view: dict[str, Any] = {"accepted": bool(decision.get("accepted"))}
-        if primary_visible:
-            for name in ("primary_value", "champion_value", "delta"):
-                if name in decision:
-                    view[name] = decision[name]
-
-        predicates: dict[str, bool] = {}
-        for key, value in (decision.get("predicates") or {}).items():
-            if key == "minimum_improvement":
-                if primary_visible:
-                    predicates[key] = bool(value)
-            elif key.startswith("check:"):
-                predicates[key] = bool(value)
-            elif key.startswith("guard:") and any(
-                key.startswith(f"guard:{metric}") for metric in visible
-            ):
-                predicates[key] = bool(value)
-            elif key.startswith("non_regression:") and any(
-                key.startswith(f"non_regression:{metric}:") for metric in visible
-            ):
-                predicates[key] = bool(value)
-        view["predicates"] = predicates
-
-        reasons: list[str] = []
-        for reason in decision.get("reasons") or []:
-            if reason == "ACCEPTED" or reason.startswith("CHECK_FAILED:"):
-                reasons.append(reason)
-            elif reason == "PRIMARY_NOT_IMPROVED" and primary_visible:
-                reasons.append(reason)
-            elif reason.startswith("GUARDRAIL_FAILED:"):
-                metric = reason.split(":", 1)[1]
-                if metric in visible:
-                    reasons.append(reason)
-            elif reason.startswith("REGRESSION:"):
-                metric = reason.split(":", 1)[1]
-                if metric in visible:
-                    reasons.append(reason)
-        view["reasons"] = reasons
-        return view
+        decision.pop("validation", None)
+        predicates = dict(decision.get("predicates") or {})
+        predicates.pop("validation", None)
+        decision["predicates"] = predicates
+        decision["reasons"] = [
+            reason
+            for reason in (decision.get("reasons") or [])
+            if reason not in {"VALIDATION_REJECTED", "INVALID_VALIDATION"}
+            and not reason.startswith("VALIDATION:")
+        ]
+        return agent_decision_view(self.spec, decision)
 
     def _invoke_agent(
         self,
@@ -504,23 +464,24 @@ class Engine:
         )
         self.store.event("BASELINE_RECORDED", {"snapshot": snapshot})
         self.store.conn.commit()
+        self._refresh_research_state()
         self._checkpoint("BASELINE")
 
     def _history(self) -> list[dict[str, Any]]:
-        history: list[dict[str, Any]] = []
-        for exp in self.store.experiments()[-8:]:
-            if exp["status"] == "ACTIVE":
-                continue
-            history.append({
-                "ordinal": exp["ordinal"],
-                "hypothesis": json.loads(exp["hypothesis_json"]) if exp["hypothesis_json"] else None,
-                "status": exp["status"],
-                "failure_category": exp["failure_category"],
-                "decision": self._agent_decision_view(exp["decision_json"]),
-            })
-        return history
+        return build_history(self.spec, self.store.experiments(), limit=8)
+
+    def _refresh_research_state(self) -> dict[str, Any]:
+        state = build_research_state(
+            self.spec,
+            self.store.campaign(),
+            self.store.experiments(),
+        )
+        payload = state.model_dump(mode="json")
+        self.store.set_research_state(payload)
+        return payload
 
     def _task_context(self, role: str, experiment_id: int) -> dict[str, Any]:
+        research_state = self._refresh_research_state()
         campaign = self.store.campaign()
         return {
             "schema_version": 1,
@@ -543,6 +504,17 @@ class Engine:
             "champion": self._agent_evaluation_view(campaign["champion_json"]),
             "champion_snapshot": campaign["champion_snapshot"],
             "history": self._history(),
+            "research_state": research_state,
+            "planning_mode": research_state["planning_mode"],
+            "planning_requirements": {
+                "exploit": "build on the strongest DEV-supported mechanism without duplicating prior work",
+                "explore": "test a materially different mechanism family from recent failed attempts",
+                "reframe": "challenge the current framing and choose a new mechanism family before plateau",
+                "genealogy": (
+                    "If reusing a mechanism_key, set relation to refine/retry/supersede "
+                    "and cite a matching prior experiment ordinal."
+                ),
+            },
             "experiment_id": experiment_id,
         }
 
@@ -566,6 +538,7 @@ class Engine:
             if raw.get("status") == "NO_HYPOTHESIS":
                 self.store.update_experiment(experiment_id, failure_category="NO_HYPOTHESIS", lesson="Agent proposed no further hypothesis")
                 self.store.finish_attempt(attempt_id, experiment_id, status="NO_HYPOTHESIS", scientific=False, improved=False)
+                self._refresh_research_state()
                 self._stop(StopReason.NO_HYPOTHESIS)
                 return
             hypothesis = Hypothesis.model_validate(raw)
@@ -573,6 +546,34 @@ class Engine:
             self.store.update_experiment(experiment_id, failure_category="AGENT_PROTOCOL_ERROR", lesson=str(exc)[:1000])
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(f"propose failed: {exc}") from exc
+
+        duplicate = redundancy_reason(hypothesis, self.store.experiments())
+        if duplicate:
+            self.store.update_experiment(
+                experiment_id,
+                hypothesis_json=hypothesis.model_dump_json(),
+                failure_category="REDUNDANT_HYPOTHESIS",
+                lesson=duplicate[:1000],
+            )
+            self.store.event(
+                "REDUNDANT_HYPOTHESIS_REJECTED",
+                {
+                    "experiment_id": experiment_id,
+                    "ordinal": self.store.experiment(experiment_id)["ordinal"],
+                    "mechanism_key": hypothesis.mechanism_key,
+                    "reason": duplicate[:1000],
+                },
+            )
+            self.store.finish_attempt(
+                attempt_id,
+                experiment_id,
+                status="REDUNDANT",
+                scientific=False,
+                improved=False,
+            )
+            self._refresh_research_state()
+            return
+
         self.store.update_experiment(
             experiment_id,
             hypothesis_json=hypothesis.model_dump_json(),
@@ -753,7 +754,11 @@ class Engine:
         champion = EvaluationResult.model_validate_json(campaign["champion_json"])
         candidate = EvaluationResult.model_validate_json(exp["evaluation_json"])
         decision = decide(self.spec, champion, candidate)
-        self.store.update_experiment(experiment_id, decision_json=decision.model_dump_json())
+        self.store.update_experiment(
+            experiment_id,
+            dev_decision_json=decision.model_dump_json(),
+            decision_json=decision.model_dump_json(),
+        )
         self.store.record_decision(
             experiment_id,
             exp["candidate_snapshot"],
@@ -901,7 +906,14 @@ class Engine:
                 failure = (decision.get("reasons") or ["REJECTED"])[0]
             lesson = exp["lesson"] or f"Rejected: {failure}"
         self.store.update_experiment(experiment_id, failure_category=failure, lesson=lesson)
-        self.store.finish_attempt(attempt_id, experiment_id, status=status, scientific=scientific, improved=accepted)
+        self.store.finish_attempt(
+            attempt_id,
+            experiment_id,
+            status=status,
+            scientific=scientific,
+            improved=accepted,
+        )
+        self._refresh_research_state()
 
     def _post_iteration_stop(self) -> bool:
         campaign = self.store.campaign()
