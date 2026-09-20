@@ -32,6 +32,17 @@ def make_repo(tmp_path: Path) -> Path:
         "g=float(Path('guard.txt').read_text())\n"
         "print(json.dumps({'status':'ok','metrics':{'quality':q,'regressions':g},'checks':{'tests':True}}))\n"
     )
+    (repo / "validation.py").write_text(
+        "import json\nfrom pathlib import Path\n"
+        "q=float(Path('value.txt').read_text())\n"
+        "v=0.0 if q == 1.0 else q\n"
+        "print(json.dumps({'status':'ok','metrics':{'quality':v,'regressions':0},'checks':{'tests':True}}))\n"
+    )
+    (repo / "holdout.py").write_text(
+        "import json\nfrom pathlib import Path\n"
+        "q=float(Path('value.txt').read_text())\n"
+        "print(json.dumps({'status':'ok','metrics':{'quality':q,'regressions':0},'checks':{'tests':True}}))\n"
+    )
     (repo / "agent.py").write_text(
         "import json,sys\nfrom pathlib import Path\n"
         "r=json.load(sys.stdin); idx=len(r.get('history',[]))+1\n"
@@ -68,6 +79,43 @@ def make_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str]:
         editable_scope=["value.txt", "guard.txt"],
         protected_paths=["evaluator.py", "agent.py"],
         budget=BudgetSpec(max_experiments=5, max_attempts=6, max_agent_calls=12, max_evaluator_calls=8, plateau_experiments=3),
+        agent=AgentConfig(kind="command", command=[sys.executable, "agent.py"]),
+    )
+    store = CampaignStore(paths.db)
+    store.initialize(spec)
+    engine = Engine(store, WorkspaceManager(repo, paths.workspace))
+    return store, engine, repo, base
+
+
+def make_staged_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str]:
+    repo = make_repo(tmp_path)
+    base = git(["rev-parse", "HEAD"], repo)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "staged-state")
+    paths.ensure()
+    spec = CampaignSpec(
+        goal="quality 3 with blind validation and final holdout",
+        source_repo=str(repo),
+        base_commit=base,
+        evaluation_command=[sys.executable, "evaluator.py"],
+        validation_command=[sys.executable, "validation.py"],
+        holdout_command=[sys.executable, "holdout.py"],
+        primary_metric=MetricSpec(
+            name="quality",
+            direction=Direction.MAXIMIZE,
+            target=3,
+            min_improvement=0.5,
+        ),
+        guardrails=[GuardrailSpec(metric="regressions", operator="<=", bound=0)],
+        mandatory_checks=["tests"],
+        editable_scope=["value.txt", "guard.txt"],
+        protected_paths=["evaluator.py", "validation.py", "holdout.py", "agent.py"],
+        budget=BudgetSpec(
+            max_experiments=5,
+            max_attempts=6,
+            max_agent_calls=12,
+            max_evaluator_calls=12,
+            plateau_experiments=4,
+        ),
         agent=AgentConfig(kind="command", command=[sys.executable, "agent.py"]),
     )
     store = CampaignStore(paths.db)
@@ -597,5 +645,73 @@ def test_successful_retry_clears_stale_agent_failure_metadata(tmp_path: Path):
         exp = store.experiment(experiment_id)
         assert exp["failure_category"] is None
         assert exp["lesson"] is None
+    finally:
+        store.close()
+
+
+
+def test_staged_validation_gates_promotion_and_final_holdout_runs_once(tmp_path: Path):
+    store, engine, _, _ = make_staged_engine(tmp_path)
+    try:
+        out = engine.run()
+
+        assert out["status"] == "GOAL_MET"
+        assert [row["status"] for row in store.experiments()] == [
+            "REJECTED",
+            "REJECTED",
+            "ACCEPTED",
+        ]
+
+        evaluations = store.evaluations()
+        assert [row["tier"] for row in evaluations].count("dev") == 4
+        assert [row["tier"] for row in evaluations].count("validation") == 3
+        assert [row["tier"] for row in evaluations].count("holdout") == 1
+
+        first = store.experiments()[0]
+        first_decision = json.loads(first["decision_json"])
+        assert first_decision["accepted"] is False
+        assert first_decision["predicates"]["validation"] is False
+        assert "VALIDATION_REJECTED" in first_decision["reasons"]
+        assert first["failure_category"] == "VALIDATION_REJECTED"
+
+        final_action = store.action("final:holdout")
+        assert final_action is not None
+        assert final_action["status"] == "COMPLETED"
+        calls_after_first_run = store.campaign()["evaluator_calls"]
+
+        # Terminal replay must not consume or reveal the final holdout again.
+        out2 = engine.run()
+        assert out2["status"] == "GOAL_MET"
+        assert store.campaign()["evaluator_calls"] == calls_after_first_run
+        assert len(store.evaluations("holdout")) == 1
+
+        report = build_report(store)
+        assert report["evaluation_protocol"]["validation"]["configured"] is True
+        assert report["evaluation_protocol"]["validation"]["baseline"] == 0.0
+        assert report["evaluation_protocol"]["validation"]["champion"] == 3.0
+        assert report["evaluation_protocol"]["holdout"]["evaluated"] is True
+        assert report["evaluation_protocol"]["holdout"]["value"] == 3.0
+        assert report["evaluation_protocol"]["holdout"]["target_met"] is True
+    finally:
+        store.close()
+
+
+def test_agent_history_never_contains_validation_payload(tmp_path: Path):
+    store, engine, _, _ = make_staged_engine(tmp_path)
+    try:
+        engine.run()
+        history = engine._history()
+
+        assert history
+        assert any(row["failure_category"] == "VALIDATION_REJECTED" for row in history)
+        for row in history:
+            decision = row["decision"]
+            if decision is not None:
+                assert "validation" not in decision
+
+        task = engine._task_context("propose", 999)
+        assert "holdout" not in json.dumps(task).lower()
+        assert "validation_command" not in json.dumps(task)
+        assert "holdout_command" not in json.dumps(task)
     finally:
         store.close()
