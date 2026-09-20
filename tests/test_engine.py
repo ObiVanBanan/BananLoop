@@ -87,7 +87,11 @@ def make_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str]:
     return store, engine, repo, base
 
 
-def make_staged_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str]:
+def make_staged_engine(
+    tmp_path: Path,
+    *,
+    max_evaluator_calls: int = 12,
+) -> tuple[CampaignStore, Engine, Path, str]:
     repo = make_repo(tmp_path)
     base = git(["rev-parse", "HEAD"], repo)
     paths = RuntimePaths.for_repo(repo, tmp_path / "staged-state")
@@ -113,7 +117,7 @@ def make_staged_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str
             max_experiments=5,
             max_attempts=6,
             max_agent_calls=12,
-            max_evaluator_calls=12,
+            max_evaluator_calls=max_evaluator_calls,
             plateau_experiments=4,
         ),
         agent=AgentConfig(kind="command", command=[sys.executable, "agent.py"]),
@@ -744,5 +748,27 @@ def test_anti_gaming_guard_rejects_candidate_before_evaluator(tmp_path: Path):
         assert json.loads(exp["decision_json"])["reasons"] == ["LEAKAGE_GUARD"]
         assert "forbidden_marker" in exp["lesson"]
         assert store.campaign()["evaluator_calls"] == evaluator_calls_before
+    finally:
+        store.close()
+
+
+
+def test_holdout_budget_is_reserved_before_new_attempt(tmp_path: Path):
+    store, engine, _, _ = make_staged_engine(
+        tmp_path,
+        max_evaluator_calls=3,
+    )
+    try:
+        out = engine.run()
+
+        assert out["status"] == "STOPPED"
+        assert out["stop_reason"] == "BUDGET_EXHAUSTED"
+        assert out["attempt_count"] == 0
+        assert out["active_attempt_id"] is None
+        assert out["evaluator_calls"] == 3
+        assert len(store.evaluations("dev")) == 1
+        assert len(store.evaluations("validation")) == 1
+        assert len(store.evaluations("holdout")) == 1
+        assert store.action("final:holdout")["status"] == "COMPLETED"
     finally:
         store.close()
