@@ -101,8 +101,11 @@ class PiAdapter(AgentAdapter):
             instruction = (
                 "You are the proposer inside BananLoop. Inspect the repository and propose exactly one "
                 "bounded, falsifiable hypothesis. Do not modify files during this role. "
+                "Use the supplied research_state and planning_mode. Avoid repeating a mechanism unless "
+                "you explicitly mark it as refine, retry, or supersede and reference the prior experiment ordinal. "
                 "Your final assistant message MUST be exactly one JSON object with these keys: "
-                "hypothesis, rationale, expected_effect, files_or_area, falsification_condition, mechanism_key. "
+                "hypothesis, rationale, expected_effect, files_or_area, falsification_condition, mechanism_key, "
+                "relation, prior_experiment_refs, novelty_rationale. "
                 "If no useful hypothesis exists, return exactly {\"status\":\"NO_HYPOTHESIS\"}. "
                 "Do not use markdown fences and do not include prose outside the JSON object."
             )
@@ -184,7 +187,8 @@ class PiAdapter(AgentAdapter):
         if role == "propose":
             schema = (
                 '{"hypothesis":"...","rationale":"...","expected_effect":"...",'
-                '"files_or_area":["..."],"falsification_condition":"...","mechanism_key":"..."}'
+                '"files_or_area":["..."],"falsification_condition":"...","mechanism_key":"...",'
+                '"relation":"new","prior_experiment_refs":[],"novelty_rationale":"..."}'
             )
         elif role == "implement":
             schema = (
