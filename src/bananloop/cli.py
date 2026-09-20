@@ -119,6 +119,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         evaluation_assets=evaluation_assets,
         agent_hidden_paths=args.agent_hide or [],
         agent_visible_metrics=args.agent_metric or [],
+        agent_visible_diagnostics=args.agent_diagnostic or [],
         primary_metric=MetricSpec(
             name=args.metric,
             direction=Direction(args.direction),
@@ -211,6 +212,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     try:
         c = store.campaign()
         data = {k: c[k] for k in ("status", "stop_reason", "stage", "baseline_snapshot", "champion_snapshot", "experiment_count", "attempt_count", "agent_calls", "evaluator_calls", "non_improve_streak", "created_at", "updated_at")}
+        research = store.research_state()
+        if research:
+            data["planning_mode"] = research.get("planning_mode")
         print(json.dumps(data, indent=2) if args.json else "\n".join(f"{k}: {v}" for k, v in data.items()))
     finally:
         store.close()
@@ -297,6 +301,11 @@ def parser() -> argparse.ArgumentParser:
         "--agent-metric",
         action="append",
         help="metric name visible to the agent in baseline/champion/history; repeatable",
+    )
+    init.add_argument(
+        "--agent-diagnostic",
+        action="append",
+        help="aggregate DEV diagnostic key visible to adaptive planning; repeatable",
     )
     init.add_argument("--metric")
     init.add_argument("--direction", choices=["maximize", "minimize"])
