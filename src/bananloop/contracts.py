@@ -133,6 +133,20 @@ class CampaignSpec(BaseModel):
             raise ValueError("evaluation_command cannot be empty")
         return value
 
+    @model_validator(mode="after")
+    def validate_staged_evaluation_budget(self) -> "CampaignSpec":
+        if self.validation_timeout_seconds is not None and not self.validation_command:
+            raise ValueError("validation_timeout_seconds requires validation_command")
+        if self.holdout_timeout_seconds is not None and not self.holdout_command:
+            raise ValueError("holdout_timeout_seconds requires holdout_command")
+        minimum_calls = 1 + int(bool(self.validation_command)) + int(bool(self.holdout_command))
+        if self.budget.max_evaluator_calls < minimum_calls:
+            raise ValueError(
+                "max_evaluator_calls is too small for baseline staged evaluation; "
+                f"need at least {minimum_calls}"
+            )
+        return self
+
     def approved_hash(self) -> str:
         data = self.model_dump(mode="json")
         # Keep hashes compatible with v0.1 specs created before these fields existed.
