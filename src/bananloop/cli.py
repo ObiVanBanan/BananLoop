@@ -133,6 +133,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         mandatory_checks=args.check or [],
         editable_scope=args.editable or ["**"],
         protected_paths=protected_paths,
+        forbidden_diff_patterns=args.forbid_diff_regex or [],
         budget=BudgetSpec(
             max_experiments=args.max_experiments,
             max_attempts=args.max_attempts,
@@ -314,6 +315,14 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--check", action="append")
     init.add_argument("--editable", action="append")
     init.add_argument("--protect", action="append")
+    init.add_argument(
+        "--forbid-diff-regex",
+        action="append",
+        help=(
+            "reject a candidate before evaluation when a newly added diff line "
+            "matches this regex; repeatable anti-gaming/leakage guard"
+        ),
+    )
     init.add_argument("--agent", choices=["codex", "command", "pi"])
     init.add_argument("--agent-cmd")
     init.add_argument("--model")
