@@ -690,6 +690,7 @@ def test_staged_validation_gates_promotion_and_final_holdout_runs_once(tmp_path:
         assert len(store.evaluations("holdout")) == 1
 
         report = build_report(store)
+        assert report["final_assessment"] == "ACCEPTED"
         assert report["evaluation_protocol"]["validation"]["configured"] is True
         assert report["evaluation_protocol"]["validation"]["baseline"] == 0.0
         assert report["evaluation_protocol"]["validation"]["champion"] == 3.0
@@ -770,5 +771,6 @@ def test_holdout_budget_is_reserved_before_new_attempt(tmp_path: Path):
         assert len(store.evaluations("validation")) == 1
         assert len(store.evaluations("holdout")) == 1
         assert store.action("final:holdout")["status"] == "COMPLETED"
+        assert build_report(store)["final_assessment"] == "REJECTED"
     finally:
         store.close()
