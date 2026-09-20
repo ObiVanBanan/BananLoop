@@ -75,3 +75,17 @@ def test_init_cli_accepts_staged_evaluation_commands():
     assert args.holdout_eval_cmd == "python holdout.py --final-only"
     assert args.validation_timeout_seconds == 1200
     assert args.holdout_timeout_seconds == 3600
+
+
+
+def test_init_cli_accepts_repeatable_anti_gaming_patterns():
+    args = parser().parse_args([
+        "init",
+        "--forbid-diff-regex", r"\\bharness_gold\\b",
+        "--forbid-diff-regex", r"gold_q\\d+",
+    ])
+
+    assert args.forbid_diff_regex == [
+        r"\\bharness_gold\\b",
+        r"gold_q\\d+",
+    ]
