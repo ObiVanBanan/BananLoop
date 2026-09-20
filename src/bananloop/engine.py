@@ -228,26 +228,25 @@ class Engine:
         return self.store.campaign()
 
     def _budget_or_stop(self, kind: str) -> bool:
-        campaign = self.store.campaign()
         if kind == "final_evaluator":
             return False
-
-        # A configured final holdout owns the last evaluator-call slot. Iterative
-        # dev/validation work must stop before consuming it, otherwise a campaign
-        # could finish without its promised final-only assessment.
-        if (
-            kind == "evaluator"
-            and self.spec.holdout_command
-            and campaign["evaluator_calls"] >= self.spec.budget.max_evaluator_calls - 1
-        ):
-            self._stop(StopReason.BUDGET_EXHAUSTED)
-            return True
-
-        reason = pre_action_stop(campaign, self.spec.budget, kind)
+        reason = pre_action_stop(self.store.campaign(), self.spec.budget, kind)
         if reason:
             self._stop(reason)
             return True
         return False
+
+    def _new_attempt_fits_evaluator_budget(self) -> bool:
+        campaign = self.store.campaign()
+        required = 1  # dev evaluation
+        if self.validation_evaluator is not None:
+            required += 1  # worst case: dev ACCEPT also needs validation
+        if self.holdout_evaluator is not None:
+            required += 1  # reserved final-only holdout slot
+        return (
+            campaign["evaluator_calls"] + required
+            <= self.spec.budget.max_evaluator_calls
+        )
 
     def _action(
         self,
@@ -957,6 +956,8 @@ class Engine:
                 reason = pre_action_stop(campaign, self.spec.budget, "agent")
                 if reason:
                     return self._stop(reason)
+                if not self._new_attempt_fits_evaluator_budget():
+                    return self._stop(StopReason.BUDGET_EXHAUSTED)
                 self.workspace.checkout(campaign["champion_snapshot"])
                 self.store.create_attempt(campaign["champion_snapshot"])
                 campaign = self.store.campaign()
