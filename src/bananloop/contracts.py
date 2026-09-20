@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
@@ -111,8 +112,19 @@ class CampaignSpec(BaseModel):
     mandatory_checks: list[str] = Field(default_factory=list)
     editable_scope: list[str] = Field(default_factory=lambda: ["**"])
     protected_paths: list[str] = Field(default_factory=list)
+    forbidden_diff_patterns: list[str] = Field(default_factory=list)
     budget: BudgetSpec = Field(default_factory=BudgetSpec)
     agent: AgentConfig = Field(default_factory=AgentConfig)
+
+    @field_validator("forbidden_diff_patterns")
+    @classmethod
+    def valid_forbidden_diff_patterns(cls, value: list[str]) -> list[str]:
+        for pattern in value:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(f"invalid forbidden diff regex {pattern!r}: {exc}") from exc
+        return value
 
     @field_validator("evaluation_command")
     @classmethod
@@ -142,6 +154,8 @@ class CampaignSpec(BaseModel):
             data.pop("agent_visible_metrics", None)
         if not self.non_regression:
             data.pop("non_regression", None)
+        if not self.forbidden_diff_patterns:
+            data.pop("forbidden_diff_patterns", None)
         payload = json.dumps(data, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode()).hexdigest()
 
