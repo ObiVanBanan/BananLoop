@@ -245,7 +245,6 @@ def build_research_state(
         "experiments": max(0, spec.budget.max_experiments - int(campaign["experiment_count"])),
         "attempts": max(0, spec.budget.max_attempts - int(campaign["attempt_count"])),
         "agent_calls": max(0, spec.budget.max_agent_calls - int(campaign["agent_calls"])),
-        "evaluator_calls": max(0, spec.budget.max_evaluator_calls - int(campaign["evaluator_calls"])),
         "dev_experiments_until_reframe": max(
             0,
             spec.budget.plateau_experiments - 1 - dev_non_improve_streak,
