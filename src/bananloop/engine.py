@@ -86,6 +86,14 @@ class Engine:
         frozen = [asset.path for asset in self.spec.evaluation_assets]
         return list(dict.fromkeys([*self.spec.agent_hidden_paths, *frozen]))
 
+    def _agent_protected_paths(self) -> list[str]:
+        hidden = self._agent_hidden_paths()
+        return [
+            path
+            for path in self.spec.protected_paths
+            if not self.workspace._matches(path, hidden)
+        ]
+
     def _agent_evaluation_view(self, payload_json: str | None) -> dict[str, Any] | None:
         if not payload_json:
             return None
@@ -531,7 +539,7 @@ class Engine:
                 if not self.spec.agent_visible_metrics or g.metric in self.spec.agent_visible_metrics
             ],
             "editable_scope": self.spec.editable_scope,
-            "protected_paths": self.spec.protected_paths,
+            "protected_paths": self._agent_protected_paths(),
             "baseline": self._agent_evaluation_view(campaign["baseline_json"]),
             "champion": self._agent_evaluation_view(campaign["champion_json"]),
             "champion_snapshot": campaign["champion_snapshot"],
