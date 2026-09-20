@@ -777,6 +777,11 @@ class Engine:
         combined.setdefault("predicates", {})["validation"] = validation_decision.accepted
         if not validation_decision.accepted:
             combined["accepted"] = False
+            combined["reasons"] = [
+                reason
+                for reason in combined.get("reasons", [])
+                if reason != "ACCEPTED"
+            ]
             combined.setdefault("reasons", []).append("VALIDATION_REJECTED")
             combined["reasons"].extend(
                 f"VALIDATION:{reason}"
@@ -789,11 +794,21 @@ class Engine:
                 failure_category="VALIDATION_REJECTED",
                 lesson="Dev improvement did not reproduce on validation tier",
             )
+            self.store.record_decision(
+                experiment_id,
+                exp["candidate_snapshot"],
+                combined,
+            )
             self.store.set_stage(attempt_id, "REJECT")
         else:
             self.store.update_experiment(
                 experiment_id,
                 decision_json=json.dumps(combined),
+            )
+            self.store.record_decision(
+                experiment_id,
+                exp["candidate_snapshot"],
+                combined,
             )
             self.store.set_stage(attempt_id, "PROMOTE")
         self._checkpoint(self.store.attempt(attempt_id)["stage"])
