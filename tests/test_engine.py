@@ -93,7 +93,7 @@ def make_staged_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str
     paths = RuntimePaths.for_repo(repo, tmp_path / "staged-state")
     paths.ensure()
     spec = CampaignSpec(
-        goal="quality 3 with blind validation and final holdout",
+        goal="quality 3 with blind staged evaluation",
         source_repo=str(repo),
         base_commit=base,
         evaluation_command=[sys.executable, "evaluator.py"],
