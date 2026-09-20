@@ -715,3 +715,34 @@ def test_agent_history_never_contains_validation_payload(tmp_path: Path):
         assert "holdout_command" not in json.dumps(task)
     finally:
         store.close()
+
+
+
+def test_anti_gaming_guard_rejects_candidate_before_evaluator(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.spec.forbidden_diff_patterns = [r"forbidden_marker"]
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+
+        (engine.workspace.workspace / "value.txt").write_text(
+            "forbidden_marker\n",
+            encoding="utf-8",
+        )
+        snapshot = engine.workspace.snapshot("candidate with forbidden marker")
+        store.update_experiment(experiment_id, candidate_snapshot=snapshot)
+        store.set_stage(attempt_id, "VERIFY")
+        evaluator_calls_before = store.campaign()["evaluator_calls"]
+
+        engine._stage_verify(attempt_id, experiment_id)
+
+        exp = store.experiment(experiment_id)
+        assert store.attempt(attempt_id)["stage"] == "REJECT"
+        assert exp["failure_category"] == "LEAKAGE_GUARD"
+        assert json.loads(exp["decision_json"])["reasons"] == ["LEAKAGE_GUARD"]
+        assert "forbidden_marker" in exp["lesson"]
+        assert store.campaign()["evaluator_calls"] == evaluator_calls_before
+    finally:
+        store.close()
