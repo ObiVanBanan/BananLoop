@@ -103,6 +103,13 @@ def make_staged_engine(
         evaluation_command=[sys.executable, "evaluator.py"],
         validation_command=[sys.executable, "validation.py"],
         holdout_command=[sys.executable, "holdout.py"],
+        evaluation_assets=[
+            EvaluationAsset(
+                path=name,
+                sha256=hashlib.sha256((repo / name).read_bytes()).hexdigest(),
+            )
+            for name in ("evaluator.py", "validation.py", "holdout.py")
+        ],
         primary_metric=MetricSpec(
             name="quality",
             direction=Direction.MAXIMIZE,
