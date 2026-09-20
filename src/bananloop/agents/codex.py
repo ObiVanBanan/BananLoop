@@ -19,8 +19,21 @@ HYPOTHESIS_SCHEMA = {
         "files_or_area": {"type": "array", "items": {"type": "string"}},
         "falsification_condition": {"type": "string"},
         "mechanism_key": {"type": "string"},
+        "relation": {"type": "string", "enum": ["new", "refine", "retry", "supersede"]},
+        "prior_experiment_refs": {"type": "array", "items": {"type": "integer"}},
+        "novelty_rationale": {"type": "string"},
     },
-    "required": ["hypothesis", "rationale", "expected_effect", "files_or_area", "falsification_condition", "mechanism_key"],
+    "required": [
+        "hypothesis",
+        "rationale",
+        "expected_effect",
+        "files_or_area",
+        "falsification_condition",
+        "mechanism_key",
+        "relation",
+        "prior_experiment_refs",
+        "novelty_rationale",
+    ],
     "additionalProperties": False,
 }
 IMPLEMENT_SCHEMA = {
@@ -57,7 +70,9 @@ class CodexAdapter(AgentAdapter):
         if role == "propose":
             instruction = (
                 "Propose exactly one bounded, falsifiable hypothesis for this measurable campaign. "
-                "Do not modify files. Return only the requested structured result.\n\n"
+                "Use the supplied research_state and planning_mode. Avoid repeating a mechanism unless "
+                "you explicitly mark the hypothesis as refine, retry, or supersede and reference the prior "
+                "experiment ordinal. Do not modify files. Return only the requested structured result.\n\n"
             )
         else:
             instruction = (
