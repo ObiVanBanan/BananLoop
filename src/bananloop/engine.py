@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -14,6 +15,7 @@ from .contracts import (
     CampaignSpec,
     CampaignStatus,
     EvaluationResult,
+    FailureAnalysisResult,
     Hypothesis,
     ImplementResult,
     StopReason,
@@ -748,6 +750,61 @@ class Engine:
         self.store.set_stage(attempt_id, "DECIDE")
         self._checkpoint("DECIDE")
 
+    @staticmethod
+    def _redact_failure_text(value: str) -> str:
+        # Remove case-specific numeric/model/article tokens before adaptive LLM
+        # analysis. Field names and the shape of the contradiction remain visible.
+        value = re.sub(
+            r"(?<![A-Za-zА-Яа-я0-9_])(?:[A-Za-zА-Яа-я]*\d+[A-Za-zА-Яа-я0-9_.:/\\-]*|\d+(?:[.,/]\d+)*)(?![A-Za-zА-Яа-я0-9_])",
+            "<redacted>",
+            value,
+        )
+        return value
+
+    def _dev_failure_analysis_task(
+        self,
+        experiment_id: int,
+        candidate: EvaluationResult,
+    ) -> dict[str, Any]:
+        exp = self.store.experiment(experiment_id)
+        task = self._task_context("analyze", experiment_id)
+        task["hypothesis"] = (
+            json.loads(exp["hypothesis_json"]) if exp.get("hypothesis_json") else None
+        )
+        task["dev_evaluation"] = self._agent_evaluation_view(exp.get("evaluation_json"))
+        task["dev_decision"] = self._agent_decision_view(exp.get("dev_decision_json"))
+
+        safe_signals: list[dict[str, Any]] = []
+        for signal in candidate.failure_signals:
+            item = signal.model_dump(mode="json")
+            for field in ("symptom", "expected_behavior", "observed_behavior"):
+                item[field] = self._redact_failure_text(str(item.get(field) or ""))
+            item["evidence"] = [
+                self._redact_failure_text(str(value))
+                for value in item.get("evidence") or []
+            ]
+            safe_signals.append(item)
+        task["dev_failure_signals"] = safe_signals
+        task["analysis_requirements"] = {
+            "dev_only": True,
+            "generalize_not_memorize": True,
+            "forbid_case_ids": True,
+            "forbid_product_ids": True,
+            "forbid_gold_labels": True,
+            "forbid_exact_expected_answers": True,
+            "prefer_invariants_and_provenance": True,
+        }
+        return task
+
+    def _route_after_dev_analysis(self, attempt_id: int, decision: dict[str, Any]) -> None:
+        if decision.get("accepted") and self.validation_evaluator is not None:
+            self.store.set_stage(attempt_id, "VALIDATE")
+        else:
+            self.store.set_stage(
+                attempt_id,
+                "PROMOTE" if decision.get("accepted") else "REJECT",
+            )
+
     def _stage_decide(self, attempt_id: int, experiment_id: int) -> None:
         campaign = self.store.campaign()
         exp = self.store.experiment(experiment_id)
@@ -764,10 +821,97 @@ class Engine:
             exp["candidate_snapshot"],
             decision.model_dump(mode="json"),
         )
-        if decision.accepted and self.validation_evaluator is not None:
-            self.store.set_stage(attempt_id, "VALIDATE")
+        if candidate.failure_signals:
+            # Failure analysis is DEV-only and optional. Never consume validation
+            # or holdout evidence for adaptive research memory.
+            stop_reason = pre_action_stop(
+                self.store.campaign(),
+                self.spec.budget,
+                "agent",
+            )
+            if stop_reason is None:
+                self.store.set_stage(attempt_id, "ANALYZE")
+            else:
+                self.store.event(
+                    "DEV_FAILURE_ANALYSIS_SKIPPED",
+                    {
+                        "experiment_id": experiment_id,
+                        "reason": stop_reason.value,
+                    },
+                )
+                self.store.conn.commit()
+                self._route_after_dev_analysis(
+                    attempt_id,
+                    decision.model_dump(mode="json"),
+                )
         else:
-            self.store.set_stage(attempt_id, "PROMOTE" if decision.accepted else "REJECT")
+            self._route_after_dev_analysis(
+                attempt_id,
+                decision.model_dump(mode="json"),
+            )
+        self._checkpoint(self.store.attempt(attempt_id)["stage"])
+
+    def _stage_analyze(self, attempt_id: int, experiment_id: int) -> None:
+        exp = self.store.experiment(experiment_id)
+        candidate = EvaluationResult.model_validate_json(exp["evaluation_json"])
+        decision = json.loads(exp["dev_decision_json"])
+        if not candidate.failure_signals:
+            self._route_after_dev_analysis(attempt_id, decision)
+            return
+
+        self.workspace.checkout(exp["candidate_snapshot"])
+        task = self._dev_failure_analysis_task(experiment_id, candidate)
+        try:
+            raw = self._action(
+                action_id=f"exp:{experiment_id}:analyze-dev-failures",
+                experiment_id=experiment_id,
+                stage="ANALYZE",
+                kind="agent",
+                request=task,
+                invoke=lambda: self._invoke_agent(
+                    task,
+                    timeout=self._agent_timeout(900),
+                    apply_changes=False,
+                ),
+            )
+            raw = self.agent.normalize_result(task, raw)
+            analysis = FailureAnalysisResult.model_validate(raw)
+            self.store.update_experiment(
+                experiment_id,
+                failure_analysis_json=analysis.model_dump_json(),
+            )
+            self.store.event(
+                "DEV_FAILURE_ANALYSIS_RECORDED",
+                {
+                    "experiment_id": experiment_id,
+                    "capsule_count": len(analysis.capsules),
+                    "failure_classes": sorted(
+                        {capsule.failure_class for capsule in analysis.capsules}
+                    ),
+                },
+            )
+            self.store.conn.commit()
+        except UnknownActionOutcome as exc:
+            raise EngineError(str(exc)) from exc
+        except (AgentError, ValidationError, WorkspaceError) as exc:
+            # Analysis improves research intelligence but is not part of the
+            # scientific acceptance gate. A bad analysis must not invalidate a
+            # valid DEV measurement.
+            self.store.update_experiment(
+                experiment_id,
+                failure_analysis_json=json.dumps({"capsules": []}),
+            )
+            self.store.event(
+                "DEV_FAILURE_ANALYSIS_FAILED",
+                {
+                    "experiment_id": experiment_id,
+                    "error": str(exc)[:1000],
+                },
+            )
+            self.store.conn.commit()
+
+        self._refresh_research_state()
+        self._route_after_dev_analysis(attempt_id, decision)
         self._checkpoint(self.store.attempt(attempt_id)["stage"])
 
     def _stage_validate(self, attempt_id: int, experiment_id: int) -> None:
@@ -990,6 +1134,8 @@ class Engine:
                 self._stage_evaluate(attempt_id, experiment_id)
             elif stage == "DECIDE":
                 self._stage_decide(attempt_id, experiment_id)
+            elif stage == "ANALYZE":
+                self._stage_analyze(attempt_id, experiment_id)
             elif stage == "VALIDATE":
                 self._stage_validate(attempt_id, experiment_id)
             elif stage == "PROMOTE":
