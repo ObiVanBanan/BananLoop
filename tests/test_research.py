@@ -197,10 +197,20 @@ def test_raw_failure_signals_never_enter_normal_agent_evaluation_view():
                         "symptom": "specific benchmark identity",
                     }
                 ],
+                "failure_examples": [
+                    {
+                        "query": "secret public DEV query",
+                        "verdict": "FAIL_WRONG_NOT_FOUND",
+                        "expected": {"answer": 42},
+                        "actual": {"answer": 7},
+                        "pipeline_trace": {"field": "secret"},
+                    }
+                ],
             }
         ),
     )
     assert view["failure_signals"] == []
+    assert view["failure_examples"] == []
 
 
 def test_failure_capsules_enter_history_and_research_state_without_raw_dev_signal():
