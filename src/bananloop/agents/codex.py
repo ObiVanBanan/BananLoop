@@ -120,9 +120,10 @@ class CodexAdapter(AgentAdapter):
         elif role == "analyze":
             instruction = (
                 "Analyze the supplied DEV-only failure signals and public DEV teacher examples against the candidate implementation. "
-                "Do not modify files. Distill causal, reusable lessons rather than memorizing individual "
-                "benchmark cases. Never invent or emit case IDs, product IDs, GOLD labels, exact expected "
-                "answers, or special-case constants from the examples. Focus on stage attribution, conflicting "
+                "Do not modify files. Use the exact public DEV expected answers to diagnose the root cause, then "
+                "distill causal, reusable lessons rather than memorizing individual benchmark cases. Do not copy "
+                "case IDs, product IDs, exact expected answers, or case-specific constants into the resulting "
+                "capsules. Focus on stage attribution, conflicting "
                 "state/provenance, violated invariants, and general regression tests. Return only the requested "
                 "structured failure capsules. If evidence is insufficient, use a low confidence value rather "
                 "than fabricating a cause.\n\n"
