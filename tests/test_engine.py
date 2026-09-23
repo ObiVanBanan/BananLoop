@@ -818,7 +818,7 @@ class CapturingFailureAnalyzer(AgentAdapter):
         }
 
 
-def test_dev_failure_analysis_redacts_case_identity_and_persists_capsule(tmp_path: Path):
+def test_dev_failure_analyzer_sees_public_teacher_answer_but_proposer_does_not(tmp_path: Path):
     store, engine, _, _ = make_engine(tmp_path)
     try:
         engine.workspace.ensure(engine.spec.base_commit)
@@ -849,6 +849,26 @@ def test_dev_failure_analysis_redacts_case_identity_and_persists_capsule(tmp_pat
                         "evidence": ["product 123456 was filtered using DN15"],
                     }
                 ],
+                "failure_examples": [
+                    {
+                        "query": "Кран шаровый VT.217.N.05",
+                        "verdict": "FAIL_WRONG_NOT_FOUND",
+                        "expected": {
+                            "status": "MATCHED",
+                            "requirements": {"dn": 20},
+                            "known_positive_ids": [123456],
+                        },
+                        "actual": {
+                            "status": "NOT_FOUND",
+                            "returned_ld_id": None,
+                        },
+                        "pipeline_trace": {
+                            "attributes_before_web": {"dn": 15},
+                            "attributes": {"dn": 20},
+                            "hard_constraints": {"dn": 15},
+                        },
+                    }
+                ],
             }
         )
         decision = {
@@ -876,10 +896,11 @@ def test_dev_failure_analysis_redacts_case_identity_and_persists_capsule(tmp_pat
         assert store.attempt(attempt_id)["stage"] == "REJECT"
         assert analyzer.task is not None
         rendered_task = json.dumps(analyzer.task, ensure_ascii=False)
-        assert "VT.217.N.05" not in rendered_task
-        assert "123456" not in rendered_task
-        assert "DN20" not in rendered_task
-        assert "DN15" not in rendered_task
+        # Analyzer gets the exact public DEV teacher example.
+        assert "VT.217.N.05" in rendered_task
+        assert "123456" in rendered_task
+        assert '"dn": 20' in rendered_task
+        # Identity-free failure_signals are still redacted separately.
         assert "<redacted>" in rendered_task
 
         exp = store.experiment(experiment_id)
@@ -891,5 +912,20 @@ def test_dev_failure_analysis_redacts_case_identity_and_persists_capsule(tmp_pat
         assert state["recent_failure_capsules"][0]["general_rule"].startswith(
             "arbitrate source conflicts"
         )
+
+        # After reflection, raw teacher data must not reach the next proposer.
+        store.finish_attempt(
+            attempt_id,
+            experiment_id,
+            status="REJECTED",
+            scientific=True,
+            improved=False,
+        )
+        proposer_task = engine._task_context("propose", 999)
+        rendered_proposer = json.dumps(proposer_task, ensure_ascii=False)
+        assert "VT.217.N.05" not in rendered_proposer
+        assert "123456" not in rendered_proposer
+        assert "known_positive_ids" not in rendered_proposer
+        assert "Reconcile conflicting hard-field provenance" in rendered_proposer
     finally:
         store.close()
