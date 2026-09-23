@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS experiments (
   evaluation_json TEXT,
   decision_json TEXT,
   dev_decision_json TEXT,
+  failure_analysis_json TEXT,
   status TEXT NOT NULL,
   failure_category TEXT,
   lesson TEXT,
@@ -138,6 +139,8 @@ class CampaignStore:
         }
         if "dev_decision_json" not in experiment_columns:
             self.conn.execute("ALTER TABLE experiments ADD COLUMN dev_decision_json TEXT")
+        if "failure_analysis_json" not in experiment_columns:
+            self.conn.execute("ALTER TABLE experiments ADD COLUMN failure_analysis_json TEXT")
         self.conn.commit()
 
     def close(self) -> None:
