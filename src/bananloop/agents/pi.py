@@ -109,6 +109,19 @@ class PiAdapter(AgentAdapter):
                 "If no useful hypothesis exists, return exactly {\"status\":\"NO_HYPOTHESIS\"}. "
                 "Do not use markdown fences and do not include prose outside the JSON object."
             )
+        elif role == "analyze":
+            instruction = (
+                "You are the DEV failure analyst inside BananLoop. Analyze only the supplied DEV failure "
+                "signals and the current candidate repository. Do not modify files. Distill causal, reusable "
+                "lessons rather than memorizing benchmark cases. Never emit case IDs, product IDs, GOLD labels, "
+                "exact expected answers, or special-case constants from examples. Focus on stage attribution, "
+                "state/provenance conflicts, violated invariants, and generic regression tests. If evidence is "
+                "insufficient, lower confidence instead of inventing a cause. Your final assistant message MUST "
+                "be exactly one JSON object with key capsules. Each capsule must contain title, failure_class, "
+                "stage, affected_fields, observation, likely_mechanism, general_rule, suggested_regression, "
+                "confidence. Return {\"capsules\":[]} if no safe general lesson can be supported. "
+                "Do not use markdown fences and do not include prose outside the JSON object."
+            )
         elif role == "implement":
             instruction = (
                 "You are the implementer inside BananLoop. Implement exactly the approved hypothesis in the "
@@ -189,6 +202,12 @@ class PiAdapter(AgentAdapter):
                 '{"hypothesis":"...","rationale":"...","expected_effect":"...",'
                 '"files_or_area":["..."],"falsification_condition":"...","mechanism_key":"...",'
                 '"relation":"new","prior_experiment_refs":[],"novelty_rationale":"..."}'
+            )
+        elif role == "analyze":
+            schema = (
+                '{"capsules":[{"title":"...","failure_class":"...","stage":"...",'
+                '"affected_fields":["..."],"observation":"...","likely_mechanism":"...",'
+                '"general_rule":"...","suggested_regression":"...","confidence":0.8}]}'
             )
         elif role == "implement":
             schema = (
