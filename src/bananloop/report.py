@@ -25,6 +25,11 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             "decision": json.loads(row["decision_json"]) if row["decision_json"] else None,
             "failure_category": None if accepted else row["failure_category"],
             "lesson": "Promoted as new champion" if accepted else row["lesson"],
+            "failure_analysis": (
+                json.loads(row["failure_analysis_json"])
+                if row.get("failure_analysis_json")
+                else None
+            ),
         }
         experiments.append(item)
     baseline_value = metric_value(baseline, spec.primary_metric.name) if baseline else None
@@ -182,6 +187,13 @@ def render_markdown(report: dict[str, Any]) -> str:
         if research.get("recent_lessons"):
             lines.append("- Recent lessons:")
             lines.extend(f"  - {lesson}" for lesson in research["recent_lessons"])
+        if research.get("recent_failure_capsules"):
+            lines.append("- Recent DEV failure capsules:")
+            for capsule in research["recent_failure_capsules"]:
+                lines.append(
+                    f"  - [{capsule['failure_class']}] {capsule['title']}: "
+                    f"{capsule['general_rule']}"
+                )
 
     r = report["resources"]
     lines += [
