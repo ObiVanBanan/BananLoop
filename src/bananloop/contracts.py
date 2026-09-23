@@ -8,7 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Direction(StrEnum):
@@ -196,6 +196,47 @@ class ImplementResult(BaseModel):
     blockers: list[str] = Field(default_factory=list)
 
 
+class DevFailureSignal(BaseModel):
+    """Bounded DEV-only failure evidence safe for adaptive analysis.
+
+    The schema intentionally has no case id, expected answer id, product id,
+    GOLD label, or arbitrary metadata field. Evaluators should describe the
+    behavioural contradiction, not reveal benchmark identities.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    failure_type: str
+    stage: str = ""
+    symptom: str
+    expected_behavior: str = ""
+    observed_behavior: str = ""
+    affected_fields: list[str] = Field(default_factory=list, max_length=16)
+    evidence: list[str] = Field(default_factory=list, max_length=8)
+
+
+class FailureCapsule(BaseModel):
+    """Generalized causal lesson distilled from one or more DEV failures."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    failure_class: str
+    stage: str = ""
+    affected_fields: list[str] = Field(default_factory=list, max_length=16)
+    observation: str
+    likely_mechanism: str
+    general_rule: str
+    suggested_regression: str = ""
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class FailureAnalysisResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    capsules: list[FailureCapsule] = Field(default_factory=list, max_length=8)
+
+
 class MetricValue(BaseModel):
     value: float
     unit: str | None = None
@@ -214,6 +255,7 @@ class EvaluationResult(BaseModel):
     metrics: dict[str, MetricValue]
     checks: dict[str, CheckValue] = Field(default_factory=dict)
     diagnostics: dict[str, float] = Field(default_factory=dict)
+    failure_signals: list[DevFailureSignal] = Field(default_factory=list, max_length=8)
     artifacts: list[str] = Field(default_factory=list)
 
     @field_validator("metrics", mode="before")
@@ -260,6 +302,7 @@ class ResearchState(BaseModel):
     failure_counts: dict[str, int] = Field(default_factory=dict)
     mechanisms: list[MechanismEvidence] = Field(default_factory=list)
     recent_lessons: list[str] = Field(default_factory=list)
+    recent_failure_capsules: list[FailureCapsule] = Field(default_factory=list, max_length=16)
     remaining_budget: dict[str, int] = Field(default_factory=dict)
 
 
