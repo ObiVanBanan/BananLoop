@@ -5,7 +5,7 @@ import math
 from collections import Counter
 from typing import Any
 
-from .contracts import CampaignSpec, Hypothesis, MechanismEvidence, ResearchState
+from .contracts import CampaignSpec, FailureCapsule, Hypothesis, MechanismEvidence, ResearchState
 
 
 def planning_mode(non_improve_streak: int, plateau_experiments: int) -> str:
@@ -26,6 +26,10 @@ def agent_evaluation_view(
         return None
     payload = json.loads(payload_json)
     payload["artifacts"] = []
+    # Raw per-failure DEV evidence is privileged input for the dedicated
+    # analyzer role. Proposer/implementer context only receives generalized
+    # capsules persisted after analysis.
+    payload["failure_signals"] = []
 
     visible_metrics = set(spec.agent_visible_metrics)
     if visible_metrics:
@@ -173,6 +177,20 @@ def _lesson_for(outcome: str, mechanism: str) -> str:
     return f"{mechanism}: {messages[outcome]}"
 
 
+def _failure_capsules_from_row(row: dict[str, Any]) -> list[FailureCapsule]:
+    payload = row.get("failure_analysis_json")
+    if not payload:
+        return []
+    try:
+        data = json.loads(payload)
+        return [
+            FailureCapsule.model_validate(item)
+            for item in (data.get("capsules") or [])
+        ]
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+
+
 def build_history(
     spec: CampaignSpec,
     experiments: list[dict[str, Any]],
@@ -192,6 +210,10 @@ def build_history(
                 "dev_outcome": outcome,
                 "dev_evaluation": agent_evaluation_view(spec, row.get("evaluation_json")),
                 "dev_decision": decision,
+                "failure_capsules": [
+                    capsule.model_dump(mode="json")
+                    for capsule in _failure_capsules_from_row(row)
+                ],
                 "lesson": _lesson_for(
                     outcome,
                     (hypothesis or {}).get("mechanism_key", "unknown"),
@@ -209,6 +231,7 @@ def build_research_state(
     mechanism_rows: dict[str, dict[str, Any]] = {}
     failure_counts: Counter[str] = Counter()
     lessons: list[str] = []
+    failure_capsules: list[FailureCapsule] = []
 
     for row in experiments:
         if row.get("status") == "ACTIVE" or not row.get("hypothesis_json"):
@@ -230,6 +253,7 @@ def build_research_state(
         item["dev_outcomes"][outcome] = item["dev_outcomes"].get(outcome, 0) + 1
         item["last_relation"] = hypothesis.get("relation", "new")
         lessons.append(_lesson_for(outcome, key))
+        failure_capsules.extend(_failure_capsules_from_row(row))
 
     dev_non_improve_streak = 0
     for row in experiments:
@@ -261,6 +285,7 @@ def build_research_state(
             for _, value in sorted(mechanism_rows.items())
         ],
         recent_lessons=lessons[-8:],
+        recent_failure_capsules=failure_capsules[-16:],
         remaining_budget=remaining,
     )
 
