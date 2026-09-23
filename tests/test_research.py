@@ -179,3 +179,96 @@ def test_exact_mechanism_repeat_requires_genealogy_relation():
         }
     )
     assert redundancy_reason(refinement, previous) is None
+
+
+
+def test_raw_failure_signals_never_enter_normal_agent_evaluation_view():
+    s = spec(agent_visible_metrics=["quality"])
+    view = agent_evaluation_view(
+        s,
+        json.dumps(
+            {
+                "status": "ok",
+                "metrics": {"quality": 0.5},
+                "failure_signals": [
+                    {
+                        "failure_type": "SOURCE_CONFLICT",
+                        "stage": "enrichment",
+                        "symptom": "specific benchmark identity",
+                    }
+                ],
+            }
+        ),
+    )
+    assert view["failure_signals"] == []
+
+
+def test_failure_capsules_enter_history_and_research_state_without_raw_dev_signal():
+    s = spec(agent_visible_metrics=["quality"])
+    row = {
+        "ordinal": 1,
+        "status": "REJECTED",
+        "hypothesis_json": json.dumps(
+            {
+                "hypothesis": "reconcile evidence",
+                "rationale": "avoid stale constraints",
+                "expected_effect": "higher quality",
+                "files_or_area": ["src"],
+                "falsification_condition": "no DEV gain",
+                "mechanism_key": "constraint-provenance",
+            }
+        ),
+        "evaluation_json": json.dumps(
+            {
+                "status": "ok",
+                "metrics": {"quality": 0.5},
+                "failure_signals": [
+                    {
+                        "failure_type": "SOURCE_CONFLICT",
+                        "stage": "enrichment",
+                        "symptom": "raw case-specific evidence must stay hidden",
+                    }
+                ],
+            }
+        ),
+        "dev_decision_json": json.dumps(
+            {
+                "accepted": False,
+                "primary_value": 0.5,
+                "champion_value": 0.6,
+                "delta": -0.1,
+                "predicates": {"minimum_improvement": False},
+                "reasons": ["PRIMARY_NOT_IMPROVED"],
+            }
+        ),
+        "decision_json": None,
+        "failure_category": "PRIMARY_NOT_IMPROVED",
+        "failure_analysis_json": json.dumps(
+            {
+                "capsules": [
+                    {
+                        "title": "Reconcile hard-field provenance",
+                        "failure_class": "STALE_CONSTRAINT_AFTER_ENRICHMENT",
+                        "stage": "enrichment",
+                        "affected_fields": ["dn"],
+                        "observation": "later evidence contradicted a frozen hard field",
+                        "likely_mechanism": "hard constraints were materialized too early",
+                        "general_rule": "explicitly arbitrate provenance conflicts before filtering",
+                        "suggested_regression": "exercise conflicting sources without case constants",
+                        "confidence": 0.9,
+                    }
+                ]
+            }
+        ),
+    }
+
+    history = build_history(s, [row])
+    rendered = json.dumps(history)
+    assert "raw case-specific evidence" not in rendered
+    assert history[0]["failure_capsules"][0]["failure_class"] == (
+        "STALE_CONSTRAINT_AFTER_ENRICHMENT"
+    )
+
+    state = build_research_state(s, campaign(), [row])
+    assert state.recent_failure_capsules[0].affected_fields == ["dn"]
+    assert "raw case-specific evidence" not in state.model_dump_json()
