@@ -36,6 +36,44 @@ HYPOTHESIS_SCHEMA = {
     ],
     "additionalProperties": False,
 }
+FAILURE_ANALYSIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "capsules": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "failure_class": {"type": "string"},
+                    "stage": {"type": "string"},
+                    "affected_fields": {"type": "array", "items": {"type": "string"}},
+                    "observation": {"type": "string"},
+                    "likely_mechanism": {"type": "string"},
+                    "general_rule": {"type": "string"},
+                    "suggested_regression": {"type": "string"},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                },
+                "required": [
+                    "title",
+                    "failure_class",
+                    "stage",
+                    "affected_fields",
+                    "observation",
+                    "likely_mechanism",
+                    "general_rule",
+                    "suggested_regression",
+                    "confidence",
+                ],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["capsules"],
+    "additionalProperties": False,
+}
+
 IMPLEMENT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -66,13 +104,28 @@ class CodexAdapter(AgentAdapter):
 
     def execute(self, task: dict[str, Any], workspace: Path, timeout: int) -> dict[str, Any]:
         role = task.get("role")
-        schema = HYPOTHESIS_SCHEMA if role == "propose" else IMPLEMENT_SCHEMA
+        if role == "propose":
+            schema = HYPOTHESIS_SCHEMA
+        elif role == "analyze":
+            schema = FAILURE_ANALYSIS_SCHEMA
+        else:
+            schema = IMPLEMENT_SCHEMA
         if role == "propose":
             instruction = (
                 "Propose exactly one bounded, falsifiable hypothesis for this measurable campaign. "
                 "Use the supplied research_state and planning_mode. Avoid repeating a mechanism unless "
                 "you explicitly mark the hypothesis as refine, retry, or supersede and reference the prior "
                 "experiment ordinal. Do not modify files. Return only the requested structured result.\n\n"
+            )
+        elif role == "analyze":
+            instruction = (
+                "Analyze the supplied DEV-only failure signals against the candidate implementation. "
+                "Do not modify files. Distill causal, reusable lessons rather than memorizing individual "
+                "benchmark cases. Never invent or emit case IDs, product IDs, GOLD labels, exact expected "
+                "answers, or special-case constants from the examples. Focus on stage attribution, conflicting "
+                "state/provenance, violated invariants, and general regression tests. Return only the requested "
+                "structured failure capsules. If evidence is insufficient, use a low confidence value rather "
+                "than fabricating a cause.\n\n"
             )
         else:
             instruction = (
