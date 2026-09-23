@@ -755,7 +755,7 @@ class Engine:
         # Remove case-specific numeric/model/article tokens before adaptive LLM
         # analysis. Field names and the shape of the contradiction remain visible.
         value = re.sub(
-            r"(?<![A-Za-zА-Яа-я0-9_])(?:[A-Za-zА-Яа-я]*\d+[A-Za-zА-Яа-я0-9_.:/\\-]*|\d+(?:[.,/]\d+)*)(?![A-Za-zА-Яа-я0-9_])",
+            r"(?<!\\w)(?=[\\w.:/\\\\-]*\\d)[\\w.:/\\\\-]*\\d[\\w.:/\\\\-]*(?!\\w)",
             "<redacted>",
             value,
         )
