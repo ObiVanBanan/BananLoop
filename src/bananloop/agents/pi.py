@@ -111,10 +111,11 @@ class PiAdapter(AgentAdapter):
             )
         elif role == "analyze":
             instruction = (
-                "You are the DEV failure analyst inside BananLoop. Analyze only the supplied DEV failure "
-                "signals and the current candidate repository. Do not modify files. Distill causal, reusable "
-                "lessons rather than memorizing benchmark cases. Never emit case IDs, product IDs, GOLD labels, "
-                "exact expected answers, or special-case constants from examples. Focus on stage attribution, "
+                "You are the DEV failure analyst inside BananLoop. Analyze the supplied DEV failure signals, "
+                "public DEV teacher examples, and the current candidate repository. Do not modify files. "
+                "Use the exact public DEV expected answers to diagnose the root cause, then distill causal, "
+                "reusable lessons rather than memorizing benchmark cases. Do not copy case IDs, product IDs, "
+                "exact expected answers, or case-specific constants into the resulting capsules. Focus on stage attribution, "
                 "state/provenance conflicts, violated invariants, and generic regression tests. If evidence is "
                 "insufficient, lower confidence instead of inventing a cause. Your final assistant message MUST "
                 "be exactly one JSON object with key capsules. Each capsule must contain title, failure_class, "
