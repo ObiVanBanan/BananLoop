@@ -792,9 +792,9 @@ class Engine:
         task["analysis_requirements"] = {
             "dev_only": True,
             "generalize_not_memorize": True,
-            "forbid_case_ids": True,
-            "forbid_product_ids": True,
-            "forbid_gold_labels": True,
+            "do_not_copy_case_ids_into_capsules": True,
+            "do_not_copy_product_ids_into_capsules": True,
+            "do_not_copy_gold_labels_into_capsules": True,
             "teacher_examples_are_public_dev_only": True,
             "may_use_exact_expected_answers_for_diagnosis": True,
             "do_not_copy_case_specific_answers_into_capsules": True,
