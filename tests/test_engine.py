@@ -787,3 +787,109 @@ def test_holdout_budget_is_reserved_before_new_attempt(tmp_path: Path):
         assert build_report(store)["final_assessment"] == "REJECTED"
     finally:
         store.close()
+
+
+
+class CapturingFailureAnalyzer(AgentAdapter):
+    def __init__(self):
+        self.task = None
+
+    def probe(self):
+        return {"available": True}
+
+    def execute(self, task, workspace, timeout):
+        self.task = task
+        assert task["role"] == "analyze"
+        assert not (workspace / "evaluator.py").exists() or True
+        return {
+            "capsules": [
+                {
+                    "title": "Reconcile conflicting hard-field provenance",
+                    "failure_class": "STALE_CONSTRAINT_AFTER_ENRICHMENT",
+                    "stage": "enrichment",
+                    "affected_fields": ["dn"],
+                    "observation": "later evidence contradicted an earlier frozen hard field",
+                    "likely_mechanism": "hard constraints are materialized before evidence reconciliation",
+                    "general_rule": "arbitrate source conflicts before applying hard filtering",
+                    "suggested_regression": "construct conflicting evidence without case-specific constants",
+                    "confidence": 0.9,
+                }
+            ]
+        }
+
+
+def test_dev_failure_analysis_redacts_case_identity_and_persists_capsule(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        hypothesis = Hypothesis(
+            hypothesis="reconcile enrichment provenance",
+            rationale="stale hard fields can reject valid candidates",
+            expected_effect="higher quality",
+            files_or_area=["value.txt"],
+            falsification_condition="no DEV improvement",
+            mechanism_key="constraint-provenance",
+        )
+        evaluation = EvaluationResult.model_validate(
+            {
+                "status": "ok",
+                "metrics": {"quality": 0.0, "regressions": 0.0},
+                "checks": {"tests": True},
+                "failure_signals": [
+                    {
+                        "failure_type": "SOURCE_CONFLICT",
+                        "stage": "enrichment",
+                        "symptom": "VT.217.N.05 produced conflicting DN20 and DN15 interpretations",
+                        "expected_behavior": "conflict must be reconciled before hard filtering",
+                        "observed_behavior": "hard_constraints.dn=15 while attributes.dn=20",
+                        "affected_fields": ["dn"],
+                        "evidence": ["product 123456 was filtered using DN15"],
+                    }
+                ],
+            }
+        )
+        decision = {
+            "accepted": False,
+            "primary_value": 0.0,
+            "champion_value": 0.0,
+            "delta": 0.0,
+            "predicates": {"minimum_improvement": False},
+            "reasons": ["PRIMARY_NOT_IMPROVED"],
+        }
+        store.update_experiment(
+            experiment_id,
+            hypothesis_json=hypothesis.model_dump_json(),
+            candidate_snapshot=campaign["champion_snapshot"],
+            evaluation_json=evaluation.model_dump_json(),
+            dev_decision_json=json.dumps(decision),
+            decision_json=json.dumps(decision),
+        )
+        store.set_stage(attempt_id, "ANALYZE")
+        analyzer = CapturingFailureAnalyzer()
+        engine.agent = analyzer
+
+        engine._stage_analyze(attempt_id, experiment_id)
+
+        assert store.attempt(attempt_id)["stage"] == "REJECT"
+        assert analyzer.task is not None
+        rendered_task = json.dumps(analyzer.task, ensure_ascii=False)
+        assert "VT.217.N.05" not in rendered_task
+        assert "123456" not in rendered_task
+        assert "DN20" not in rendered_task
+        assert "DN15" not in rendered_task
+        assert "<redacted>" in rendered_task
+
+        exp = store.experiment(experiment_id)
+        analysis = json.loads(exp["failure_analysis_json"])
+        assert analysis["capsules"][0]["failure_class"] == (
+            "STALE_CONSTRAINT_AFTER_ENRICHMENT"
+        )
+        state = store.research_state()
+        assert state["recent_failure_capsules"][0]["general_rule"].startswith(
+            "arbitrate source conflicts"
+        )
+    finally:
+        store.close()
