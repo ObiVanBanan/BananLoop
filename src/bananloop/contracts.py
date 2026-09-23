@@ -215,6 +215,18 @@ class DevFailureSignal(BaseModel):
     evidence: list[str] = Field(default_factory=list, max_length=8)
 
 
+class DevFailureExample(BaseModel):
+    """Public DEV teacher example visible only to the failure analyzer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+    verdict: str
+    expected: dict[str, Any] = Field(default_factory=dict)
+    actual: dict[str, Any] = Field(default_factory=dict)
+    pipeline_trace: dict[str, Any] = Field(default_factory=dict)
+
+
 class FailureCapsule(BaseModel):
     """Generalized causal lesson distilled from one or more DEV failures."""
 
@@ -256,6 +268,7 @@ class EvaluationResult(BaseModel):
     checks: dict[str, CheckValue] = Field(default_factory=dict)
     diagnostics: dict[str, float] = Field(default_factory=dict)
     failure_signals: list[DevFailureSignal] = Field(default_factory=list, max_length=8)
+    failure_examples: list[DevFailureExample] = Field(default_factory=list, max_length=5)
     artifacts: list[str] = Field(default_factory=list)
 
     @field_validator("metrics", mode="before")
