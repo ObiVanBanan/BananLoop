@@ -808,7 +808,7 @@ class CapturingFailureAnalyzer(AgentAdapter):
                     "failure_class": "STALE_CONSTRAINT_AFTER_ENRICHMENT",
                     "stage": "enrichment",
                     "affected_fields": ["dn"],
-                    "observation": "later evidence contradicted an earlier frozen hard field",
+                    "observation": "VT.217.N.05 moved from DN15 to DN20 but the hard field stayed stale",
                     "likely_mechanism": "hard constraints are materialized before evidence reconciliation",
                     "general_rule": "arbitrate source conflicts before applying hard filtering",
                     "suggested_regression": "construct conflicting evidence without case-specific constants",
@@ -908,6 +908,12 @@ def test_dev_failure_analyzer_sees_public_teacher_answer_but_proposer_does_not(t
         assert analysis["capsules"][0]["failure_class"] == (
             "STALE_CONSTRAINT_AFTER_ENRICHMENT"
         )
+        durable_analysis = json.dumps(analysis, ensure_ascii=False)
+        assert "VT.217.N.05" not in durable_analysis
+        assert "DN15" not in durable_analysis
+        assert "DN20" not in durable_analysis
+        assert "<case-specific-query>" in durable_analysis
+        assert "<redacted>" in durable_analysis
         # After reflection, raw teacher data must not reach the next proposer.
         store.finish_attempt(
             attempt_id,
