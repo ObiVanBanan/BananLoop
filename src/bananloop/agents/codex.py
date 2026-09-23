@@ -119,7 +119,7 @@ class CodexAdapter(AgentAdapter):
             )
         elif role == "analyze":
             instruction = (
-                "Analyze the supplied DEV-only failure signals against the candidate implementation. "
+                "Analyze the supplied DEV-only failure signals and public DEV teacher examples against the candidate implementation. "
                 "Do not modify files. Distill causal, reusable lessons rather than memorizing individual "
                 "benchmark cases. Never invent or emit case IDs, product IDs, GOLD labels, exact expected "
                 "answers, or special-case constants from the examples. Focus on stage attribution, conflicting "
