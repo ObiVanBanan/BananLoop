@@ -755,7 +755,7 @@ class Engine:
         # Remove case-specific numeric/model/article tokens before adaptive LLM
         # analysis. Field names and the shape of the contradiction remain visible.
         value = re.sub(
-            r"(?<!\\w)(?=[\\w.:/\\\\-]*\\d)[\\w.:/\\\\-]*\\d[\\w.:/\\\\-]*(?!\\w)",
+            r"(?<!\w)(?=[\w.:/\\-]*\d)[\w.:/\\-]*\d[\w.:/\\-]*(?!\w)",
             "<redacted>",
             value,
         )
@@ -795,7 +795,9 @@ class Engine:
             "forbid_case_ids": True,
             "forbid_product_ids": True,
             "forbid_gold_labels": True,
-            "forbid_exact_expected_answers": True,
+            "teacher_examples_are_public_dev_only": True,
+            "may_use_exact_expected_answers_for_diagnosis": True,
+            "do_not_copy_case_specific_answers_into_capsules": True,
             "prefer_invariants_and_provenance": True,
         }
         return task
