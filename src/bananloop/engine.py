@@ -785,6 +785,10 @@ class Engine:
             ]
             safe_signals.append(item)
         task["dev_failure_signals"] = safe_signals
+        task["dev_failure_examples"] = [
+            example.model_dump(mode="json")
+            for example in candidate.failure_examples
+        ]
         task["analysis_requirements"] = {
             "dev_only": True,
             "generalize_not_memorize": True,
