@@ -802,6 +802,33 @@ class Engine:
         }
         return task
 
+    def _sanitize_failure_analysis(
+        self,
+        analysis: FailureAnalysisResult,
+        candidate: EvaluationResult,
+    ) -> FailureAnalysisResult:
+        queries = [
+            example.query.strip()
+            for example in candidate.failure_examples
+            if example.query.strip()
+        ]
+        payload = analysis.model_dump(mode="json")
+        for capsule in payload.get("capsules") or []:
+            for field in (
+                "title",
+                "failure_class",
+                "stage",
+                "observation",
+                "likely_mechanism",
+                "general_rule",
+                "suggested_regression",
+            ):
+                value = str(capsule.get(field) or "")
+                for query in queries:
+                    value = value.replace(query, "<case-specific-query>")
+                capsule[field] = self._redact_failure_text(value)
+        return FailureAnalysisResult.model_validate(payload)
+
     def _route_after_dev_analysis(self, attempt_id: int, decision: dict[str, Any]) -> None:
         if decision.get("accepted") and self.validation_evaluator is not None:
             self.store.set_stage(attempt_id, "VALIDATE")
@@ -882,6 +909,7 @@ class Engine:
             )
             raw = self.agent.normalize_result(task, raw)
             analysis = FailureAnalysisResult.model_validate(raw)
+            analysis = self._sanitize_failure_analysis(analysis, candidate)
             self.store.update_experiment(
                 experiment_id,
                 failure_analysis_json=analysis.model_dump_json(),
