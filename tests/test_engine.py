@@ -908,11 +908,6 @@ def test_dev_failure_analyzer_sees_public_teacher_answer_but_proposer_does_not(t
         assert analysis["capsules"][0]["failure_class"] == (
             "STALE_CONSTRAINT_AFTER_ENRICHMENT"
         )
-        state = store.research_state()
-        assert state["recent_failure_capsules"][0]["general_rule"].startswith(
-            "arbitrate source conflicts"
-        )
-
         # After reflection, raw teacher data must not reach the next proposer.
         store.finish_attempt(
             attempt_id,
@@ -920,6 +915,10 @@ def test_dev_failure_analyzer_sees_public_teacher_answer_but_proposer_does_not(t
             status="REJECTED",
             scientific=True,
             improved=False,
+        )
+        state = engine._refresh_research_state()
+        assert state["recent_failure_capsules"][0]["general_rule"].startswith(
+            "arbitrate source conflicts"
         )
         proposer_task = engine._task_context("propose", 999)
         rendered_proposer = json.dumps(proposer_task, ensure_ascii=False)
