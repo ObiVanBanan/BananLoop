@@ -30,6 +30,7 @@ def agent_evaluation_view(
     # analyzer role. Proposer/implementer context only receives generalized
     # capsules persisted after analysis.
     payload["failure_signals"] = []
+    payload["failure_examples"] = []
 
     visible_metrics = set(spec.agent_visible_metrics)
     if visible_metrics:
