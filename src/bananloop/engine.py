@@ -812,6 +812,16 @@ class Engine:
             for example in candidate.failure_examples
             if example.query.strip()
         ]
+        # Analyzers tend to paraphrase, so the exact query may survive only as
+        # one of its tokens (e.g. an article number like VT.217.N.05). Those
+        # digit-bearing tokens are still case-specific, so they must be
+        # scrubbed as case-specific data, not just as generic numbers.
+        query_tokens: list[str] = []
+        for query in queries:
+            for token in re.findall(r"[\w.:/\\-]+", query):
+                if any(char.isdigit() for char in token) and token not in query_tokens:
+                    query_tokens.append(token)
+        query_tokens.sort(key=len, reverse=True)
         payload = analysis.model_dump(mode="json")
         for capsule in payload.get("capsules") or []:
             for field in (
@@ -826,6 +836,9 @@ class Engine:
                 value = str(capsule.get(field) or "")
                 for query in queries:
                     value = value.replace(query, "<case-specific-query>")
+                for token in query_tokens:
+                    if token in value:
+                        value = value.replace(token, "<case-specific-query>")
                 capsule[field] = self._redact_failure_text(value)
         return FailureAnalysisResult.model_validate(payload)
 
