@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,7 @@ def run_process(
     timeout: int,
     input_text: str | None = None,
     check: bool = True,
+    env: dict[str, str] | None = None,
 ) -> ProcessResult:
     try:
         completed = subprocess.run(
@@ -37,6 +39,7 @@ def run_process(
             capture_output=True,
             timeout=timeout,
             shell=False,
+            env=({**os.environ, **env} if env else None),
         )
     except subprocess.TimeoutExpired as exc:
         raise ProcessError(f"process timed out after {timeout}s: {argv!r}") from exc
