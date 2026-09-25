@@ -97,6 +97,10 @@ def agent_decision_view(
         for name in ("primary_value", "champion_value", "delta"):
             if name in decision:
                 view[name] = decision[name]
+        if spec.evaluation_protocol.paired is not None and decision.get("paired_summary"):
+            # Aggregate paired statistics are safe adaptive feedback; opaque
+            # case keys and per-case values remain evaluator-only.
+            view["paired_summary"] = dict(decision["paired_summary"])
 
     predicates: dict[str, bool] = {}
     for key, value in (decision.get("predicates") or {}).items():
@@ -112,6 +116,8 @@ def agent_decision_view(
         elif key.startswith("non_regression:") and any(
             key.startswith(f"non_regression:{metric}:") for metric in visible
         ):
+            predicates[key] = bool(value)
+        elif key.startswith("paired:") and primary_visible:
             predicates[key] = bool(value)
     view["predicates"] = predicates
 
@@ -129,6 +135,8 @@ def agent_decision_view(
             metric = reason.split(":", 1)[1]
             if metric in visible:
                 reasons.append(reason)
+        elif reason.startswith("PAIRED_") and primary_visible:
+            reasons.append(reason)
     view["reasons"] = reasons
     return view
 
@@ -145,7 +153,9 @@ def classify_dev_outcome(
         if "PRIMARY_NOT_IMPROVED" in reasons:
             return "DEV_NO_EFFECT"
         if any(
-            reason.startswith(("GUARDRAIL_FAILED:", "REGRESSION:", "CHECK_FAILED:"))
+            reason.startswith(
+                ("GUARDRAIL_FAILED:", "REGRESSION:", "CHECK_FAILED:", "PAIRED_")
+            )
             for reason in reasons
         ):
             return "DEV_GUARD_REJECT"
