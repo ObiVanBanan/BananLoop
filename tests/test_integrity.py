@@ -67,7 +67,7 @@ def test_empty_evaluation_assets_preserve_legacy_spec_hash():
         "mandatory_checks": [],
         "editable_scope": ["**"],
         "protected_paths": [],
-        "budget": BudgetSpec().model_dump(mode="json"),
+        "budget": BudgetSpec().model_dump(mode="json", exclude={"max_evaluation_units", "evaluation_units_per_call"}),
         "agent": AgentConfig().model_dump(mode="json"),
     }
     expected = hashlib.sha256(
@@ -105,3 +105,4 @@ def test_explicit_external_eval_asset_is_rejected(tmp_path: Path):
 
     with pytest.raises(EvaluationIntegrityError, match="must be inside repository"):
         discover_evaluation_assets(repo, ["python"], [str(external)])
+

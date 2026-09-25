@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 from pydantic import ValidationError
 
@@ -15,11 +16,13 @@ class EvaluatorError(RuntimeError):
 class CommandEvaluator:
     def __init__(self, command: list[str]):
         self.command = command
+        self.context: dict[str, str] = {}
 
     def evaluate(self, workspace: Path, timeout: int) -> EvaluationResult:
         try:
-            result = run_process(self.command, cwd=workspace, timeout=timeout, check=True)
+            result = run_process(self.command, cwd=workspace, timeout=timeout, check=True, env={**os.environ, **self.context})
             data = parse_json_output(result.stdout)
             return EvaluationResult.model_validate(data)
         except (ProcessError, ValidationError) as exc:
             raise EvaluatorError(str(exc)) from exc
+

@@ -24,7 +24,11 @@ def agent_evaluation_view(
     """Return only DEV evidence explicitly allowed into adaptive agent context."""
     if not payload_json:
         return None
-    payload = json.loads(payload_json)
+    raw = json.loads(payload_json)
+    # Positive allowlist: future evaluator extensions are private by default.
+    payload = {key: value for key, value in raw.items() if key in {
+        "schema_version", "status", "metrics", "checks", "diagnostics"
+    }}
     payload["artifacts"] = []
     # Raw per-failure DEV evidence is privileged input for the dedicated
     # analyzer role. Proposer/implementer context only receives generalized
@@ -315,3 +319,4 @@ def redundancy_reason(
         f"mechanism_key {hypothesis.mechanism_key!r} already appeared in experiments "
         f"{same_mechanism}; use relation=refine|retry|supersede and reference a prior ordinal"
     )
+

@@ -114,6 +114,12 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 "target_met": target_met(spec, final_holdout) if final_holdout else None,
             },
         },
+        "paired_comparison": spec.paired_comparison.model_dump(mode="json") if spec.paired_comparison else None,
+        "measurements": [
+            {"experiment_id": row["experiment_id"], "candidate_snapshot": row["candidate_snapshot"],
+             "tier": row["tier"], "result": json.loads(row["result_json"])}
+            for row in store.evaluations()
+        ],
         "experiments": experiments,
         "research_state": research_state,
         "resources": {
@@ -173,6 +179,16 @@ def render_markdown(report: dict[str, Any]) -> str:
         hypothesis = (exp["hypothesis"] or {}).get("hypothesis", "-")
         decision = exp["decision"] or {}
         lines.append(f"- #{exp['ordinal']} **{exp['status']}** — {hypothesis}; delta={decision.get('delta', '-')}; failure={exp['failure_category'] or '-'}")
+    lines += ["", "## Measurements (operator-only)", ""]
+    for evaluation in report.get("measurements", []):
+        result = evaluation["result"]
+        lines += [f"### {evaluation['tier']} / experiment {evaluation['experiment_id']} / {evaluation['candidate_snapshot']}", "",
+                  f"Aggregate: `{json.dumps(result['metrics'], sort_keys=True)}`; reported units: `{result.get('resource_units')}`", "",
+                  "| Case | Repetition | Input SHA-256 | Measurements |", "|---|---:|---|---|"]
+        for case in result.get("cases", []):
+            lines.append(f"| {case['case_id']} | {case['repetition']} | {case['input_sha256']} | {json.dumps(case['metrics'], sort_keys=True)} |")
+        for artifact in result.get("artifact_manifest", []):
+            lines.append(f"- Artifact ({artifact['case_id']}): `{artifact['path']}`; SHA-256 `{artifact['sha256']}`")
     research = report.get("research_state")
     if research:
         lines += [
@@ -202,6 +218,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         f"- Agent calls: {r['agent_calls']}",
         f"- Evaluation calls: {r['evaluation_calls']}",
+        f"- Evaluation units: reserved {r['evaluation_units_reserved']} / {r['evaluation_units_limit']}; reported {r['evaluation_units_reported']}",
         f"- Scientific experiments: {r['experiments']}",
         f"- Attempts: {r['attempts']}",
         f"- Action wall time: {r['wall_time_seconds']:.3f} s",
@@ -210,3 +227,4 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
     ]
     return "\n".join(lines)
+

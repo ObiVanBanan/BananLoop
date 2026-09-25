@@ -65,7 +65,34 @@ class NonRegressionSpec(BaseModel):
     tolerance: float = Field(default=0.0, ge=0)
 
 
+class PairedComparison(BaseModel):
+    """Compare fixed case/repetition pairs, then count wins across case means."""
+    case_count: int = Field(ge=1)
+    repetitions: int = Field(default=1, ge=1)
+    metric: str
+    direction: Direction = Direction.MAXIMIZE
+    min_wins: int = Field(ge=1)
+    worst_case_tolerance: float = Field(default=0, ge=0, allow_inf_nan=False)
+    guardrails: list[GuardrailSpec] = Field(default_factory=list)
+    non_regression: list[NonRegressionSpec] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def valid_wins(self):
+        if self.min_wins > self.case_count:
+            raise ValueError("min_wins cannot exceed case_count")
+        return self
+
+
 class BudgetSpec(BaseModel):
+    max_evaluation_units: int | None = Field(default=None, ge=1)
+    evaluation_units_per_call: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def work_budget(self):
+        if (self.max_evaluation_units is None) != (self.evaluation_units_per_call is None):
+            raise ValueError("max_evaluation_units and evaluation_units_per_call must be set together")
+        return self
+
     max_experiments: int = Field(default=5, ge=1)
     max_attempts: int = Field(default=8, ge=1)
     max_agent_calls: int = Field(default=20, ge=1)
@@ -107,6 +134,7 @@ class CampaignSpec(BaseModel):
     agent_hidden_paths: list[str] = Field(default_factory=list)
     agent_visible_metrics: list[str] = Field(default_factory=list)
     agent_visible_diagnostics: list[str] = Field(default_factory=list)
+    paired_comparison: PairedComparison | None = None
     primary_metric: MetricSpec
     guardrails: list[GuardrailSpec] = Field(default_factory=list)
     non_regression: list[NonRegressionSpec] = Field(default_factory=list)
@@ -146,10 +174,18 @@ class CampaignSpec(BaseModel):
                 "max_evaluator_calls is too small for baseline staged evaluation; "
                 f"need at least {minimum_calls}"
             )
+        if self.budget.max_evaluation_units is not None:
+            if self.budget.max_evaluation_units < minimum_calls * self.budget.evaluation_units_per_call:
+                raise ValueError("evaluation work budget too small for baseline staged evaluation")
         return self
 
     def approved_hash(self) -> str:
         data = self.model_dump(mode="json")
+        if self.paired_comparison is None:
+            data.pop("paired_comparison", None)
+        for key in ("max_evaluation_units", "evaluation_units_per_call"):
+            if data["budget"][key] is None:
+                data["budget"].pop(key)
         # Keep hashes compatible with v0.1 specs created before these fields existed.
         if self.evaluator_timeout_seconds == 900:
             data.pop("evaluator_timeout_seconds", None)
@@ -261,6 +297,34 @@ class CheckValue(BaseModel):
     skipped: int | None = Field(default=None, ge=0)
 
 
+class CaseMeasurement(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    case_id: str = Field(min_length=1, max_length=200)
+    repetition: int = Field(default=0, ge=0)
+    # Covers input, reference, seed and fixed settings; evaluator-owned.
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    metrics: dict[str, float]
+
+    @field_validator("metrics")
+    @classmethod
+    def finite_metrics(cls, value):
+        import math
+        if not value or not all(math.isfinite(v) for v in value.values()):
+            raise ValueError("case measurements must be nonempty and finite")
+        return value
+
+
+class ArtifactRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    case_id: str
+    repetition: int = Field(default=0, ge=0)
+    path: str
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    metrics: dict[str, float] = Field(default_factory=dict)
+    experiment_id: int | None = None
+    candidate_snapshot: str | None = None
+
+
 class EvaluationResult(BaseModel):
     schema_version: int = 1
     status: Literal["ok", "invalid", "infra_error", "cancelled"] = "ok"
@@ -269,7 +333,20 @@ class EvaluationResult(BaseModel):
     diagnostics: dict[str, float] = Field(default_factory=dict)
     failure_signals: list[DevFailureSignal] = Field(default_factory=list, max_length=8)
     failure_examples: list[DevFailureExample] = Field(default_factory=list, max_length=5)
-    artifacts: list[str] = Field(default_factory=list)
+    artifacts: list[str] = Field(default_factory=list)  # legacy references
+    protocol_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    cases: list[CaseMeasurement] = Field(default_factory=list, max_length=10000)
+    artifact_manifest: list[ArtifactRecord] = Field(default_factory=list, max_length=10000)
+    resource_units: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def unique_cases(self):
+        keys = [(c.case_id, c.repetition) for c in self.cases]
+        if len(keys) != len(set(keys)):
+            raise ValueError("duplicate case/repetition")
+        if self.cases and self.protocol_sha256 is None:
+            raise ValueError("cases require protocol_sha256")
+        return self
 
     @field_validator("metrics", mode="before")
     @classmethod
@@ -350,3 +427,4 @@ class RuntimePaths(BaseModel):
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+

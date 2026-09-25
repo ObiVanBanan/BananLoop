@@ -265,7 +265,20 @@ class CampaignStore:
     def _resource_for_kind(kind: str) -> str:
         return "agent_call" if kind == "agent" else "evaluator_call"
 
+    def evaluation_work_reserved(self) -> int:
+        return int(self.conn.execute("SELECT COALESCE(SUM(amount),0) FROM reservations WHERE resource='evaluation_unit'").fetchone()[0])
+
     def _reserve_action(self, action_id: str, kind: str, now: str) -> None:
+        if kind != "agent":
+            units = self.spec().budget.evaluation_units_per_call
+            if units is not None:
+                # Never refund failed, cancelled or unknown work: it may have run.
+                if self.evaluation_work_reserved() + units > self.spec().budget.max_evaluation_units:
+                    raise StoreError("evaluation work budget exhausted")
+                self.conn.execute(
+                    "INSERT INTO reservations(action_id,resource,amount,status,quality,reserved_at) VALUES(?,?,?,?,?,?)",
+                    (action_id, "evaluation_unit", units, "RESERVED", "upper_bound", now),
+                )
         self.conn.execute(
             "INSERT INTO reservations(action_id,resource,amount,status,quality,reserved_at) VALUES(?,?,?,?,?,?)",
             (action_id, self._resource_for_kind(kind), 1.0, "RESERVED", "actual", now),
@@ -282,8 +295,8 @@ class CampaignStore:
         ended = datetime.fromisoformat(now)
         duration_ms = max(0.0, (ended - started).total_seconds() * 1000.0)
         self.conn.execute(
-            "UPDATE reservations SET status=?,settled_at=?,duration_ms=? WHERE id=?",
-            (status, now, duration_ms, row["id"]),
+            "UPDATE reservations SET status=?,settled_at=?,duration_ms=CASE WHEN resource='evaluation_unit' THEN NULL ELSE ? END WHERE action_id=? AND status='RESERVED'",
+            (status, now, duration_ms, action_id),
         )
 
     def start_action(self, action_id: str, experiment_id: int | None, stage: str, kind: str, request_hash: str) -> None:
@@ -349,6 +362,12 @@ class CampaignStore:
         *,
         tier: str = "dev",
     ) -> None:
+        existing = self.conn.execute(
+            "SELECT id FROM evaluations WHERE experiment_id IS ? AND candidate_snapshot=? AND tier=?",
+            (experiment_id, snapshot, tier),
+        ).fetchone()
+        if existing:
+            return
         self.conn.execute(
             "INSERT INTO evaluations(experiment_id,candidate_snapshot,tier,result_json,created_at) VALUES(?,?,?,?,?)",
             (experiment_id, snapshot, tier, json.dumps(result, sort_keys=True), utc_now()),
@@ -396,6 +415,12 @@ class CampaignStore:
         rows = self.reservations()
         wall_ms = sum(float(row["duration_ms"] or 0.0) for row in rows)
         return {
+            "evaluation_units_reserved": self.evaluation_work_reserved(),
+            "evaluation_units_limit": self.spec().budget.max_evaluation_units,
+            "evaluation_units_reported": sum(
+                json.loads(row["response_json"]).get("resource_units") or 0
+                for row in self.conn.execute("SELECT response_json FROM actions WHERE kind!='agent' AND status='COMPLETED'")
+            ),
             "wall_time_seconds": wall_ms / 1000.0,
             "open_reservations": sum(1 for row in rows if row["status"] == "RESERVED"),
             "unknown_outcomes": sum(1 for row in rows if row["status"] == "UNKNOWN"),
@@ -404,3 +429,4 @@ class CampaignStore:
 
     def events(self) -> list[dict[str, Any]]:
         return [dict(row) for row in self.conn.execute("SELECT * FROM events ORDER BY seq")]
+

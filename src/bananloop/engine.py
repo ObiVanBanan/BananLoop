@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from .agents import AgentAdapter, AgentError, CodexAdapter, CommandAgentAdapter, PiAdapter
 from .budget import pre_action_stop
+from .artifacts import retain_artifacts
 from .contracts import (
     CampaignSpec,
     CampaignStatus,
@@ -190,6 +191,13 @@ class Engine:
         return self.store.campaign()
 
     def _budget_or_stop(self, kind: str) -> bool:
+        if kind in {"evaluator", "final_evaluator"} and self.spec.budget.max_evaluation_units is not None:
+            calls = 1 + int(kind != "final_evaluator" and self.holdout_evaluator is not None)
+            if self.store.evaluation_work_reserved() + calls * self.spec.budget.evaluation_units_per_call > self.spec.budget.max_evaluation_units:
+                if kind == "final_evaluator":
+                    raise EngineError("no reserved work units for final holdout")
+                self._stop(StopReason.BUDGET_EXHAUSTED)
+                return True
         if kind == "final_evaluator":
             return False
         reason = pre_action_stop(self.store.campaign(), self.spec.budget, kind)
@@ -205,6 +213,9 @@ class Engine:
             required += 1  # worst case: dev ACCEPT also needs validation
         if self.holdout_evaluator is not None:
             required += 1  # reserved final-only holdout slot
+        if self.spec.budget.max_evaluation_units is not None:
+            if self.store.evaluation_work_reserved() + required * self.spec.budget.evaluation_units_per_call > self.spec.budget.max_evaluation_units:
+                return False
         return (
             campaign["evaluator_calls"] + required
             <= self.spec.budget.max_evaluator_calls
@@ -220,6 +231,10 @@ class Engine:
         request: dict[str, Any],
         invoke: Callable[[], dict[str, Any]],
     ) -> dict[str, Any]:
+        if kind != "agent":
+            violations = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
+            if violations:
+                raise EvaluatorError("frozen evaluation assets changed before measurement")
         existing = self.store.action(action_id)
         request_hash = _hash_payload(request)
         if existing:
@@ -227,7 +242,12 @@ class Engine:
                 raise EngineError(f"action input mismatch for {action_id}")
             if existing["status"] == "COMPLETED":
                 self._progress(f"{action_id}: reuse completed result")
-                return json.loads(existing["response_json"])
+                response = json.loads(existing["response_json"])
+                if kind != "agent" and response.get("artifact_manifest"):
+                    root = self.store.path.parent / "artifacts" / hashlib.sha256(action_id.encode()).hexdigest()[:24]
+                    retained = EvaluationResult.model_validate(response)
+                    retain_artifacts(retained, root, experiment_id, request["snapshot"])
+                return response
             if existing["status"] == "CANCELLED":
                 if self._budget_or_stop(kind):
                     raise EngineError("budget exhausted before action retry")
@@ -262,8 +282,29 @@ class Engine:
                 raise EngineError("budget exhausted before action")
             self.store.start_action(action_id, experiment_id, stage, kind, request_hash)
         self._progress(f"{action_id}: invoke {kind}")
+        output_dir = self.store.path.parent / "artifacts" / hashlib.sha256(action_id.encode()).hexdigest()[:24]
+        if kind != "agent":
+            output_dir.mkdir(parents=True, exist_ok=True)
+            context = {
+                "BANANLOOP_ARTIFACT_DIR": str(output_dir.resolve()),
+                "BANANLOOP_EVALUATION_ID": action_id,
+                "BANANLOOP_SNAPSHOT": request["snapshot"],
+                "BANANLOOP_EVALUATION_TIER": request.get("tier", "dev"),
+            }
+            if self.spec.budget.evaluation_units_per_call is not None:
+                context["BANANLOOP_EVALUATION_UNIT_LIMIT"] = str(self.spec.budget.evaluation_units_per_call)
+            for evaluator in (self.evaluator, self.validation_evaluator, self.holdout_evaluator):
+                if evaluator is not None:
+                    evaluator.context = context
         try:
             response = invoke()
+            if kind != "agent":
+                result = EvaluationResult.model_validate(response)
+                ceiling = self.spec.budget.evaluation_units_per_call
+                if ceiling is not None and (result.resource_units is None or result.resource_units > ceiling):
+                    raise EvaluatorError("missing resource_units or reported work exceeds reserved limit")
+                retain_artifacts(result, output_dir, experiment_id, request["snapshot"])
+                response = result.model_dump(mode="json")
         except KeyboardInterrupt:
             self.store.cancel_action(action_id, "user interrupt")
             self._progress(f"{action_id}: cancelled by user")
@@ -1195,3 +1236,4 @@ class Engine:
                     return self.store.campaign()
             else:
                 raise EngineError(f"unknown stage {stage}")
+

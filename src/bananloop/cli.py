@@ -6,7 +6,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, NonRegressionSpec, RuntimePaths
+from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, NonRegressionSpec, PairedComparison, RuntimePaths
 from .engine import ControlledInterruption, Engine, EngineError
 from .integrity import EvaluationIntegrityError, discover_evaluation_assets, evaluation_fingerprint
 from .lock import CampaignLock, CampaignLockError
@@ -120,6 +120,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         agent_hidden_paths=args.agent_hide or [],
         agent_visible_metrics=args.agent_metric or [],
         agent_visible_diagnostics=args.agent_diagnostic or [],
+        paired_comparison=PairedComparison.model_validate_json(Path(args.paired_policy).read_text()) if args.paired_policy else None,
         primary_metric=MetricSpec(
             name=args.metric,
             direction=Direction(args.direction),
@@ -136,6 +137,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         protected_paths=protected_paths,
         forbidden_diff_patterns=args.forbid_diff_regex or [],
         budget=BudgetSpec(
+            max_evaluation_units=args.max_evaluation_units,
+            evaluation_units_per_call=args.evaluation_units_per_call,
             max_experiments=args.max_experiments,
             max_attempts=args.max_attempts,
             max_agent_calls=args.max_agent_calls,
@@ -212,6 +215,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     try:
         c = store.campaign()
         data = {k: c[k] for k in ("status", "stop_reason", "stage", "baseline_snapshot", "champion_snapshot", "experiment_count", "attempt_count", "agent_calls", "evaluator_calls", "non_improve_streak", "created_at", "updated_at")}
+        data["resources"] = store.resource_summary()
+        data["evaluations"] = build_report(store)["measurements"]
         research = store.research_state()
         if research:
             data["planning_mode"] = research.get("planning_mode")
@@ -343,6 +348,9 @@ def parser() -> argparse.ArgumentParser:
     )
     init.add_argument("--codex-arg", action="append")
     init.add_argument("--pi-arg", action="append")
+    init.add_argument("--paired-policy", help="JSON file with domain-neutral paired comparison policy")
+    init.add_argument("--max-evaluation-units", type=int)
+    init.add_argument("--evaluation-units-per-call", type=int)
     init.add_argument("--max-experiments", type=int, default=5)
     init.add_argument("--max-attempts", type=int, default=8)
     init.add_argument("--max-agent-calls", type=int, default=20)
@@ -401,3 +409,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
