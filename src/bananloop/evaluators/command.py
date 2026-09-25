@@ -13,12 +13,19 @@ class EvaluatorError(RuntimeError):
 
 
 class CommandEvaluator:
-    def __init__(self, command: list[str]):
+    def __init__(self, command: list[str], env: dict[str, str] | None = None):
         self.command = command
+        self.env = dict(env or {})
 
     def evaluate(self, workspace: Path, timeout: int) -> EvaluationResult:
         try:
-            result = run_process(self.command, cwd=workspace, timeout=timeout, check=True)
+            result = run_process(
+                self.command,
+                cwd=workspace,
+                timeout=timeout,
+                check=True,
+                env=self.env,
+            )
             data = parse_json_output(result.stdout)
             return EvaluationResult.model_validate(data)
         except (ProcessError, ValidationError) as exc:
