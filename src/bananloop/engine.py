@@ -65,14 +65,18 @@ class Engine:
         self._retry_failed_actions = False
         self._agent_timeout_seconds: int | None = None
         self.spec = store.spec()
-        self.evaluator = CommandEvaluator(self.spec.evaluation_command)
+        protocol_env = self._evaluation_protocol_env()
+        self.evaluator = CommandEvaluator(
+            self.spec.evaluation_command,
+            env=protocol_env,
+        )
         self.validation_evaluator = (
-            CommandEvaluator(self.spec.validation_command)
+            CommandEvaluator(self.spec.validation_command, env=protocol_env)
             if self.spec.validation_command
             else None
         )
         self.holdout_evaluator = (
-            CommandEvaluator(self.spec.holdout_command)
+            CommandEvaluator(self.spec.holdout_command, env=protocol_env)
             if self.spec.holdout_command
             else None
         )
@@ -83,6 +87,24 @@ class Engine:
             self.agent = PiAdapter(self.spec.agent.model, self.spec.agent.extra_args)
         else:
             self.agent = CommandAgentAdapter(self.spec.agent.command)
+
+    def _evaluation_protocol_env(self) -> dict[str, str]:
+        protocol = self.spec.evaluation_protocol
+        env: dict[str, str] = {}
+        if protocol.sample_plan is not None:
+            sample = protocol.sample_plan
+            env.update(
+                {
+                    "BANANLOOP_SAMPLE_SIZE": str(sample.size),
+                    "BANANLOOP_SAMPLE_SEED": str(sample.seed),
+                    "BANANLOOP_SAMPLE_REPEATS": str(sample.repeats),
+                    "BANANLOOP_SAMPLE_POLICY": sample.policy,
+                }
+            )
+        if protocol.paired is not None:
+            env["BANANLOOP_PAIRED_METRIC"] = protocol.paired.metric
+        env["BANANLOOP_SPEC_HASH"] = self.spec.approved_hash()
+        return env
 
     def _progress(self, message: str) -> None:
         if self._progress_callback:
