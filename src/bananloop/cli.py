@@ -6,7 +6,19 @@ import shlex
 import sys
 from pathlib import Path
 
-from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, NonRegressionSpec, RuntimePaths
+from .contracts import (
+    AgentConfig,
+    BudgetSpec,
+    CampaignSpec,
+    Direction,
+    EvaluationProtocolSpec,
+    GuardrailSpec,
+    MetricSpec,
+    NonRegressionSpec,
+    PairedComparisonSpec,
+    RuntimePaths,
+    SamplePlanSpec,
+)
 from .engine import ControlledInterruption, Engine, EngineError
 from .integrity import EvaluationIntegrityError, discover_evaluation_assets, evaluation_fingerprint
 from .lock import CampaignLock, CampaignLockError
@@ -117,6 +129,31 @@ def cmd_init(args: argparse.Namespace) -> int:
         holdout_command=holdout_command,
         holdout_timeout_seconds=args.holdout_timeout_seconds,
         evaluation_assets=evaluation_assets,
+        evaluation_protocol=EvaluationProtocolSpec(
+            sample_plan=(
+                SamplePlanSpec(
+                    size=args.sample_size,
+                    seed=args.sample_seed,
+                    repeats=args.sample_repeats,
+                )
+                if args.sample_size is not None
+                else None
+            ),
+            paired=(
+                PairedComparisonSpec(
+                    metric=args.paired_metric,
+                    direction=(
+                        Direction(args.paired_direction)
+                        if args.paired_direction
+                        else None
+                    ),
+                    min_improved_fraction=args.paired_min_improved_fraction,
+                    worst_case_tolerance=args.paired_worst_case_tolerance,
+                )
+                if args.paired_metric
+                else None
+            ),
+        ),
         agent_hidden_paths=args.agent_hide or [],
         agent_visible_metrics=args.agent_metric or [],
         agent_visible_diagnostics=args.agent_diagnostic or [],
@@ -306,6 +343,42 @@ def parser() -> argparse.ArgumentParser:
         "--agent-diagnostic",
         action="append",
         help="aggregate DEV diagnostic key visible to adaptive planning; repeatable",
+    )
+    init.add_argument(
+        "--sample-size",
+        type=int,
+        help="freeze a deterministic evaluator sample size for every candidate",
+    )
+    init.add_argument(
+        "--sample-seed",
+        type=int,
+        default=42,
+        help="seed exported to evaluators as BANANLOOP_SAMPLE_SEED (default: 42)",
+    )
+    init.add_argument(
+        "--sample-repeats",
+        type=int,
+        default=1,
+        help="repeat count exported to evaluators (default: 1)",
+    )
+    init.add_argument(
+        "--paired-metric",
+        help="per-case metric used to compare champion and candidate on identical cases",
+    )
+    init.add_argument(
+        "--paired-direction",
+        choices=["maximize", "minimize"],
+        help="direction for --paired-metric; defaults to primary metric direction",
+    )
+    init.add_argument(
+        "--paired-min-improved-fraction",
+        type=float,
+        help="reject unless at least this fraction of paired cases improves",
+    )
+    init.add_argument(
+        "--paired-worst-case-tolerance",
+        type=float,
+        help="maximum allowed regression on the worst paired case",
     )
     init.add_argument("--metric")
     init.add_argument("--direction", choices=["maximize", "minimize"])
