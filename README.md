@@ -3,7 +3,7 @@
 BananLoop is a local supervisor for bounded, measurable improvement campaigns over an existing Git repository:
 
 ```text
-baseline -> hypothesis -> implement -> snapshot -> verify -> evaluate -> decide -> promote/reject -> repeat
+baseline -> hypothesis -> implement -> snapshot -> verify -> DEV evaluate -> decide -> validate -> promote/reject -> learn -> repeat -> final holdout
 ```
 
 The coding agent proposes and edits. The evaluator and deterministic policy decide. Rejected candidates never become the next starting point.
@@ -12,12 +12,13 @@ The coding agent proposes and edits. The evaluator and deterministic policy deci
 
 - immutable approved campaign spec + SHA-256 identity;
 - SQLite source of truth and append-style lifecycle events;
-- explicit durable stages: `PROPOSE -> EXECUTE -> SNAPSHOT -> VERIFY -> EVALUATE -> DECIDE -> PROMOTE/REJECT -> RECORD`;
+- explicit durable stages: `PROPOSE -> EXECUTE -> SNAPSHOT -> VERIFY -> EVALUATE -> DECIDE -> [VALIDATE] -> PROMOTE/REJECT -> RECORD`;
 - private evaluator Git clone, leaving the user's checkout untouched;
 - sanitized temporary agent workspace with frozen evaluator assets and selected hidden paths removed from both files and local Git history;
 - fixed baseline vs. moving champion;
-- structured command evaluator with metric/check validation;
+- structured command evaluators with first-class `dev -> validation -> final holdout` tiers;
 - deterministic min-improvement, target, guardrail and plateau policies;
+- Experimentation Intelligence v1: DEV-only research memory, hypothesis genealogy, duplicate-mechanism guard, budget-aware planning context, and exploit/explore/reframe modes;
 - Codex CLI adapter, Pi RPC adapter, and generic JSON-over-stdin/stdout command adapter;
 - action IDs that prevent completed agent/evaluator calls from being repeated on resume;
 - budgets for experiments, attempts, agent calls, evaluator calls and wall time;
@@ -98,6 +99,29 @@ For secondary metrics that should only avoid getting worse while the primary met
 ```
 
 The optional third field is an allowed tolerance. This is different from an absolute `--guard`: non-regression compares each candidate to the current champion instead of forcing every intermediate candidate to satisfy a final target immediately.
+
+## Experimentation Intelligence v1
+
+Adaptive planning uses only DEV evidence. Validation and final-holdout payloads are supervisor-only and are not written into agent history or research state.
+
+Each proposer task receives:
+
+- a durable `research_state` derived from prior DEV experiments;
+- failure-class and mechanism summaries;
+- remaining experiment/attempt/agent/evaluator budget;
+- a deterministic planning mode: `exploit`, `explore`, or `reframe`;
+- recent causal lessons generated from DEV outcomes.
+
+Hypotheses carry genealogy fields: `relation`, `prior_experiment_refs`, and `novelty_rationale`. Reusing the same `mechanism_key` without declaring a refinement/retry/supersession is rejected before implementation and does not consume a scientific experiment.
+
+Evaluators may expose numeric aggregate DEV diagnostics for planning. Diagnostics are hidden by default and must be explicitly allowlisted:
+
+```bash
+--agent-diagnostic wrong_not_found_rate
+--agent-diagnostic material_constraint_failures
+```
+
+Do not use validation or holdout-derived diagnostics here.
 
 ## Codex adapter
 
@@ -185,7 +209,50 @@ Use repeated `--agent-metric` flags to restrict evaluation feedback visible in t
 --agent-metric public_human_reject_rate
 ```
 
-When at least one agent-visible metric is configured, other metric values and guardrails are omitted from agent baseline/champion/history views. For a true final holdout, do not use hidden metrics in the iterative acceptance policy; evaluate them only after the campaign or in a separate final-validation step.
+When at least one agent-visible metric is configured, other metric values and guardrails are omitted from agent baseline/champion/history views.
+
+## Staged evaluation protocol
+
+BananLoop can own the full evaluation lifecycle instead of requiring a manual post-campaign holdout:
+
+- `--eval-cmd` is the **dev** evaluator. It runs on the baseline and every candidate and drives the ordinary iterative decision.
+- `--validation-eval-cmd` is a blind **validation** evaluator. It runs on the baseline and only on candidates that first pass the dev policy. A candidate is promoted only when the same metric/guardrail policy also improves against the current validation champion.
+- `--holdout-eval-cmd` is the **final holdout** evaluator. It runs once on the terminal champion after normal campaign termination. Its detailed result is never added to agent context or experiment history.
+- Validation/holdout commands may point at external datasets. Repository evaluator scripts/configs referenced by any tier are frozen and automatically hidden from the agent workspace.
+- When a holdout is configured, BananLoop reserves the final evaluator-call budget slot for it.
+
+Example:
+
+```bash
+bananloop init \
+  --repo . \
+  --goal "Improve matching quality without false positives" \
+  --eval-cmd "python scripts/evaluate.py --split dev" \
+  --validation-eval-cmd "python scripts/evaluate.py --split validation --aggregate-only" \
+  --holdout-eval-cmd "python scripts/evaluate.py --split holdout --aggregate-only" \
+  --metric quality \
+  --direction maximize \
+  --target 0.80 \
+  --min-improvement 0.01 \
+  --guard "false_match_rate<=0" \
+  --max-evaluator-calls 16
+```
+
+The three commands use the same evaluator JSON contract and metric names. Validation details remain supervisor-side; the agent can observe only the ordinary experiment outcome plus whatever dev metrics were explicitly allowed through `--agent-metric`. The final report renders dev, validation, and holdout results separately.
+
+### Anti-gaming diff guard
+
+Use repeatable `--forbid-diff-regex` rules to reject suspicious newly added production lines before any evaluator call. This is useful for blocking benchmark IDs, GOLD imports, known labels, or evaluator-module references:
+
+```bash
+bananloop init \
+  ... \
+  --forbid-diff-regex '\\b(?:harness_gold|deep_gold)\\b' \
+  --forbid-diff-regex '\\bgold_q[0-9]+\\b' \
+  --forbid-diff-regex '\\bknown_(?:positive|rejected)_ids\\b'
+```
+
+The scanner examines added diff lines only, so deleting an old forbidden reference is allowed. It is a deterministic anti-gaming tripwire, not an OS security boundary; keep evaluation assets hidden with `--agent-hide`/frozen evaluator assets as the primary isolation mechanism.
 
 ## Evaluator contract
 

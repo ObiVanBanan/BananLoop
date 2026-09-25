@@ -56,6 +56,15 @@ class WorkspaceManager:
         out = run_process(["git", "diff", "--name-only", f"{parent}..{candidate}"], cwd=self.workspace, timeout=20).stdout
         return [line.strip().replace("\\", "/") for line in out.splitlines() if line.strip()]
 
+    def diff_text(self, parent: str, candidate: str) -> str:
+        if parent == candidate:
+            return ""
+        return run_process(
+            ["git", "diff", "--unified=0", "--no-ext-diff", f"{parent}..{candidate}"],
+            cwd=self.workspace,
+            timeout=30,
+        ).stdout
+
     @staticmethod
     def _matches(path: str, patterns: list[str]) -> bool:
         normalized = path.replace("\\", "/")

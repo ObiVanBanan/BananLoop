@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
   baseline_snapshot TEXT,
   champion_json TEXT,
   champion_snapshot TEXT,
+  research_state_json TEXT,
   active_experiment_id INTEGER,
   active_attempt_id INTEGER,
   experiment_count INTEGER NOT NULL DEFAULT 0,
@@ -40,6 +41,8 @@ CREATE TABLE IF NOT EXISTS experiments (
   candidate_snapshot TEXT,
   evaluation_json TEXT,
   decision_json TEXT,
+  dev_decision_json TEXT,
+  failure_analysis_json TEXT,
   status TEXT NOT NULL,
   failure_category TEXT,
   lesson TEXT,
@@ -82,6 +85,7 @@ CREATE TABLE IF NOT EXISTS evaluations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   experiment_id INTEGER,
   candidate_snapshot TEXT NOT NULL,
+  tier TEXT NOT NULL DEFAULT 'dev',
   result_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -112,6 +116,32 @@ class CampaignStore:
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """Apply additive migrations so existing campaign state remains usable."""
+        evaluation_columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(evaluations)")
+        }
+        if "tier" not in evaluation_columns:
+            self.conn.execute(
+                "ALTER TABLE evaluations ADD COLUMN tier TEXT NOT NULL DEFAULT 'dev'"
+            )
+
+        campaign_columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(campaigns)")
+        }
+        if "research_state_json" not in campaign_columns:
+            self.conn.execute("ALTER TABLE campaigns ADD COLUMN research_state_json TEXT")
+
+        experiment_columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(experiments)")
+        }
+        if "dev_decision_json" not in experiment_columns:
+            self.conn.execute("ALTER TABLE experiments ADD COLUMN dev_decision_json TEXT")
+        if "failure_analysis_json" not in experiment_columns:
+            self.conn.execute("ALTER TABLE experiments ADD COLUMN failure_analysis_json TEXT")
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -136,6 +166,14 @@ class CampaignStore:
     def spec(self) -> CampaignSpec:
         return CampaignSpec.model_validate_json(self.campaign()["spec_json"])
 
+
+    def research_state(self) -> dict[str, Any] | None:
+        payload = self.campaign().get("research_state_json")
+        return json.loads(payload) if payload else None
+
+    def set_research_state(self, state: dict[str, Any]) -> None:
+        self.update_campaign(research_state_json=json.dumps(state, sort_keys=True))
+
     def update_campaign(self, **fields: Any) -> None:
         if not fields:
             return
@@ -159,7 +197,8 @@ class CampaignStore:
 
     def create_attempt(self, parent_snapshot: str) -> tuple[int, int]:
         campaign = self.campaign()
-        ordinal = campaign["experiment_count"] + 1
+        row = self.conn.execute("SELECT COALESCE(MAX(ordinal), 0) AS max_ordinal FROM experiments").fetchone()
+        ordinal = int(row["max_ordinal"]) + 1
         now = utc_now()
         cur = self.conn.execute(
             "INSERT INTO experiments(ordinal,parent_snapshot,status,created_at,updated_at) VALUES(?,?,?,?,?)",
@@ -302,16 +341,47 @@ class CampaignStore:
         self.event("ACTION_RETRIED", {"action_id": action_id, "kind": action["kind"], "stage": action["stage"]})
         self.conn.commit()
 
-    def record_evaluation(self, experiment_id: int | None, snapshot: str, result: dict[str, Any]) -> None:
+    def record_evaluation(
+        self,
+        experiment_id: int | None,
+        snapshot: str,
+        result: dict[str, Any],
+        *,
+        tier: str = "dev",
+    ) -> None:
         self.conn.execute(
-            "INSERT INTO evaluations(experiment_id,candidate_snapshot,result_json,created_at) VALUES(?,?,?,?)",
-            (experiment_id, snapshot, json.dumps(result, sort_keys=True), utc_now()),
+            "INSERT INTO evaluations(experiment_id,candidate_snapshot,tier,result_json,created_at) VALUES(?,?,?,?,?)",
+            (experiment_id, snapshot, tier, json.dumps(result, sort_keys=True), utc_now()),
         )
         self.conn.commit()
 
+    def evaluations(self, tier: str | None = None) -> list[dict[str, Any]]:
+        if tier is None:
+            rows = self.conn.execute("SELECT * FROM evaluations ORDER BY id")
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM evaluations WHERE tier=? ORDER BY id",
+                (tier,),
+            )
+        return [dict(row) for row in rows]
+
+    def latest_evaluation(self, snapshot: str, tier: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM evaluations WHERE candidate_snapshot=? AND tier=? ORDER BY id DESC LIMIT 1",
+            (snapshot, tier),
+        ).fetchone()
+        return dict(row) if row else None
+
     def record_decision(self, experiment_id: int, snapshot: str, decision: dict[str, Any]) -> None:
         self.conn.execute(
-            "INSERT OR IGNORE INTO decisions(experiment_id,candidate_snapshot,decision_json,created_at) VALUES(?,?,?,?)",
+            """
+            INSERT INTO decisions(experiment_id,candidate_snapshot,decision_json,created_at)
+            VALUES(?,?,?,?)
+            ON CONFLICT(experiment_id) DO UPDATE SET
+              candidate_snapshot=excluded.candidate_snapshot,
+              decision_json=excluded.decision_json,
+              created_at=excluded.created_at
+            """,
             (experiment_id, snapshot, json.dumps(decision, sort_keys=True), utc_now()),
         )
         self.conn.commit()

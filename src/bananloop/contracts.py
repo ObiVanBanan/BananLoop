@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Direction(StrEnum):
@@ -98,17 +99,33 @@ class CampaignSpec(BaseModel):
     base_commit: str
     evaluation_command: list[str]
     evaluator_timeout_seconds: int = Field(default=900, ge=1)
+    validation_command: list[str] = Field(default_factory=list)
+    validation_timeout_seconds: int | None = Field(default=None, ge=1)
+    holdout_command: list[str] = Field(default_factory=list)
+    holdout_timeout_seconds: int | None = Field(default=None, ge=1)
     evaluation_assets: list[EvaluationAsset] = Field(default_factory=list)
     agent_hidden_paths: list[str] = Field(default_factory=list)
     agent_visible_metrics: list[str] = Field(default_factory=list)
+    agent_visible_diagnostics: list[str] = Field(default_factory=list)
     primary_metric: MetricSpec
     guardrails: list[GuardrailSpec] = Field(default_factory=list)
     non_regression: list[NonRegressionSpec] = Field(default_factory=list)
     mandatory_checks: list[str] = Field(default_factory=list)
     editable_scope: list[str] = Field(default_factory=lambda: ["**"])
     protected_paths: list[str] = Field(default_factory=list)
+    forbidden_diff_patterns: list[str] = Field(default_factory=list)
     budget: BudgetSpec = Field(default_factory=BudgetSpec)
     agent: AgentConfig = Field(default_factory=AgentConfig)
+
+    @field_validator("forbidden_diff_patterns")
+    @classmethod
+    def valid_forbidden_diff_patterns(cls, value: list[str]) -> list[str]:
+        for pattern in value:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(f"invalid forbidden diff regex {pattern!r}: {exc}") from exc
+        return value
 
     @field_validator("evaluation_command")
     @classmethod
@@ -117,19 +134,45 @@ class CampaignSpec(BaseModel):
             raise ValueError("evaluation_command cannot be empty")
         return value
 
+    @model_validator(mode="after")
+    def validate_staged_evaluation_budget(self) -> "CampaignSpec":
+        if self.validation_timeout_seconds is not None and not self.validation_command:
+            raise ValueError("validation_timeout_seconds requires validation_command")
+        if self.holdout_timeout_seconds is not None and not self.holdout_command:
+            raise ValueError("holdout_timeout_seconds requires holdout_command")
+        minimum_calls = 1 + int(bool(self.validation_command)) + int(bool(self.holdout_command))
+        if self.budget.max_evaluator_calls < minimum_calls:
+            raise ValueError(
+                "max_evaluator_calls is too small for baseline staged evaluation; "
+                f"need at least {minimum_calls}"
+            )
+        return self
+
     def approved_hash(self) -> str:
         data = self.model_dump(mode="json")
         # Keep hashes compatible with v0.1 specs created before these fields existed.
         if self.evaluator_timeout_seconds == 900:
             data.pop("evaluator_timeout_seconds", None)
+        if not self.validation_command:
+            data.pop("validation_command", None)
+        if self.validation_timeout_seconds is None:
+            data.pop("validation_timeout_seconds", None)
+        if not self.holdout_command:
+            data.pop("holdout_command", None)
+        if self.holdout_timeout_seconds is None:
+            data.pop("holdout_timeout_seconds", None)
         if not self.evaluation_assets:
             data.pop("evaluation_assets", None)
         if not self.agent_hidden_paths:
             data.pop("agent_hidden_paths", None)
         if not self.agent_visible_metrics:
             data.pop("agent_visible_metrics", None)
+        if not self.agent_visible_diagnostics:
+            data.pop("agent_visible_diagnostics", None)
         if not self.non_regression:
             data.pop("non_regression", None)
+        if not self.forbidden_diff_patterns:
+            data.pop("forbidden_diff_patterns", None)
         payload = json.dumps(data, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode()).hexdigest()
 
@@ -141,6 +184,9 @@ class Hypothesis(BaseModel):
     files_or_area: list[str] = Field(default_factory=list)
     falsification_condition: str
     mechanism_key: str
+    relation: Literal["new", "refine", "retry", "supersede"] = "new"
+    prior_experiment_refs: list[int] = Field(default_factory=list)
+    novelty_rationale: str = ""
 
 
 class ImplementResult(BaseModel):
@@ -148,6 +194,59 @@ class ImplementResult(BaseModel):
     changed_paths: list[str] = Field(default_factory=list)
     verification_notes: str = ""
     blockers: list[str] = Field(default_factory=list)
+
+
+class DevFailureSignal(BaseModel):
+    """Bounded DEV-only failure evidence safe for adaptive analysis.
+
+    The schema intentionally has no case id, expected answer id, product id,
+    GOLD label, or arbitrary metadata field. Evaluators should describe the
+    behavioural contradiction, not reveal benchmark identities.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    failure_type: str
+    stage: str = ""
+    symptom: str
+    expected_behavior: str = ""
+    observed_behavior: str = ""
+    affected_fields: list[str] = Field(default_factory=list, max_length=16)
+    evidence: list[str] = Field(default_factory=list, max_length=8)
+
+
+class DevFailureExample(BaseModel):
+    """Public DEV teacher example visible only to the failure analyzer."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str
+    verdict: str
+    expected: dict[str, Any] = Field(default_factory=dict)
+    actual: dict[str, Any] = Field(default_factory=dict)
+    pipeline_trace: dict[str, Any] = Field(default_factory=dict)
+
+
+class FailureCapsule(BaseModel):
+    """Generalized causal lesson distilled from one or more DEV failures."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    failure_class: str
+    stage: str = ""
+    affected_fields: list[str] = Field(default_factory=list, max_length=16)
+    observation: str
+    likely_mechanism: str
+    general_rule: str
+    suggested_regression: str = ""
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class FailureAnalysisResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    capsules: list[FailureCapsule] = Field(default_factory=list, max_length=8)
 
 
 class MetricValue(BaseModel):
@@ -167,6 +266,9 @@ class EvaluationResult(BaseModel):
     status: Literal["ok", "invalid", "infra_error", "cancelled"] = "ok"
     metrics: dict[str, MetricValue]
     checks: dict[str, CheckValue] = Field(default_factory=dict)
+    diagnostics: dict[str, float] = Field(default_factory=dict)
+    failure_signals: list[DevFailureSignal] = Field(default_factory=list, max_length=8)
+    failure_examples: list[DevFailureExample] = Field(default_factory=list, max_length=5)
     artifacts: list[str] = Field(default_factory=list)
 
     @field_validator("metrics", mode="before")
@@ -197,6 +299,24 @@ class Decision(BaseModel):
     delta: float
     predicates: dict[str, bool]
     reasons: list[str]
+
+
+class MechanismEvidence(BaseModel):
+    mechanism_key: str
+    experiment_ordinals: list[int] = Field(default_factory=list)
+    dev_outcomes: dict[str, int] = Field(default_factory=dict)
+    last_relation: str | None = None
+
+
+class ResearchState(BaseModel):
+    schema_version: int = 1
+    planning_mode: Literal["exploit", "explore", "reframe"] = "exploit"
+    dev_non_improve_streak: int = Field(default=0, ge=0)
+    failure_counts: dict[str, int] = Field(default_factory=dict)
+    mechanisms: list[MechanismEvidence] = Field(default_factory=list)
+    recent_lessons: list[str] = Field(default_factory=list)
+    recent_failure_capsules: list[FailureCapsule] = Field(default_factory=list, max_length=16)
+    remaining_budget: dict[str, int] = Field(default_factory=dict)
 
 
 class RuntimePaths(BaseModel):

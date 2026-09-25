@@ -84,7 +84,26 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     agent = _agent_config(args)
     evaluation_command = shlex.split(args.eval_cmd)
-    evaluation_assets = discover_evaluation_assets(repo, evaluation_command, args.eval_asset)
+    validation_command = (
+        shlex.split(args.validation_eval_cmd)
+        if args.validation_eval_cmd
+        else []
+    )
+    holdout_command = (
+        shlex.split(args.holdout_eval_cmd)
+        if args.holdout_eval_cmd
+        else []
+    )
+
+    discovered_assets = {}
+    for command in (evaluation_command, validation_command, holdout_command):
+        if not command:
+            continue
+        for asset in discover_evaluation_assets(repo, command, args.eval_asset):
+            discovered_assets[asset.path] = asset
+    evaluation_assets = [
+        discovered_assets[path] for path in sorted(discovered_assets)
+    ]
     frozen_paths = [asset.path for asset in evaluation_assets]
     protected_paths = list(dict.fromkeys([*(args.protect or []), *frozen_paths]))
     spec = CampaignSpec(
@@ -93,9 +112,14 @@ def cmd_init(args: argparse.Namespace) -> int:
         base_commit=base,
         evaluation_command=evaluation_command,
         evaluator_timeout_seconds=args.evaluator_timeout_seconds,
+        validation_command=validation_command,
+        validation_timeout_seconds=args.validation_timeout_seconds,
+        holdout_command=holdout_command,
+        holdout_timeout_seconds=args.holdout_timeout_seconds,
         evaluation_assets=evaluation_assets,
         agent_hidden_paths=args.agent_hide or [],
         agent_visible_metrics=args.agent_metric or [],
+        agent_visible_diagnostics=args.agent_diagnostic or [],
         primary_metric=MetricSpec(
             name=args.metric,
             direction=Direction(args.direction),
@@ -110,6 +134,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         mandatory_checks=args.check or [],
         editable_scope=args.editable or ["**"],
         protected_paths=protected_paths,
+        forbidden_diff_patterns=args.forbid_diff_regex or [],
         budget=BudgetSpec(
             max_experiments=args.max_experiments,
             max_attempts=args.max_attempts,
@@ -187,6 +212,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     try:
         c = store.campaign()
         data = {k: c[k] for k in ("status", "stop_reason", "stage", "baseline_snapshot", "champion_snapshot", "experiment_count", "attempt_count", "agent_calls", "evaluator_calls", "non_improve_streak", "created_at", "updated_at")}
+        research = store.research_state()
+        if research:
+            data["planning_mode"] = research.get("planning_mode")
         print(json.dumps(data, indent=2) if args.json else "\n".join(f"{k}: {v}" for k, v in data.items()))
     finally:
         store.close()
@@ -231,12 +259,33 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--repo", default=".")
     init.add_argument("--state-dir")
     init.add_argument("--goal")
-    init.add_argument("--eval-cmd")
+    init.add_argument(
+        "--eval-cmd",
+        help="development evaluator command; runs on baseline and every candidate",
+    )
+    init.add_argument(
+        "--validation-eval-cmd",
+        help="blind validation evaluator; runs on baseline and dev-accepted candidates only",
+    )
+    init.add_argument(
+        "--holdout-eval-cmd",
+        help="final-only holdout evaluator; runs once on the terminal champion",
+    )
     init.add_argument(
         "--evaluator-timeout-seconds",
         type=int,
         default=900,
         help="maximum wall time for each evaluator invocation (default: 900)",
+    )
+    init.add_argument(
+        "--validation-timeout-seconds",
+        type=int,
+        help="wall time for validation evaluator; defaults to --evaluator-timeout-seconds",
+    )
+    init.add_argument(
+        "--holdout-timeout-seconds",
+        type=int,
+        help="wall time for final holdout evaluator; defaults to --evaluator-timeout-seconds",
     )
     init.add_argument(
         "--eval-asset",
@@ -252,6 +301,11 @@ def parser() -> argparse.ArgumentParser:
         "--agent-metric",
         action="append",
         help="metric name visible to the agent in baseline/champion/history; repeatable",
+    )
+    init.add_argument(
+        "--agent-diagnostic",
+        action="append",
+        help="aggregate DEV diagnostic key visible to adaptive planning; repeatable",
     )
     init.add_argument("--metric")
     init.add_argument("--direction", choices=["maximize", "minimize"])
@@ -270,6 +324,14 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--check", action="append")
     init.add_argument("--editable", action="append")
     init.add_argument("--protect", action="append")
+    init.add_argument(
+        "--forbid-diff-regex",
+        action="append",
+        help=(
+            "reject a candidate before evaluation when a newly added diff line "
+            "matches this regex; repeatable anti-gaming/leakage guard"
+        ),
+    )
     init.add_argument("--agent", choices=["codex", "command", "pi"])
     init.add_argument("--agent-cmd")
     init.add_argument("--model")

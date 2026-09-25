@@ -19,10 +19,61 @@ HYPOTHESIS_SCHEMA = {
         "files_or_area": {"type": "array", "items": {"type": "string"}},
         "falsification_condition": {"type": "string"},
         "mechanism_key": {"type": "string"},
+        "relation": {"type": "string", "enum": ["new", "refine", "retry", "supersede"]},
+        "prior_experiment_refs": {"type": "array", "items": {"type": "integer"}},
+        "novelty_rationale": {"type": "string"},
     },
-    "required": ["hypothesis", "rationale", "expected_effect", "files_or_area", "falsification_condition", "mechanism_key"],
+    "required": [
+        "hypothesis",
+        "rationale",
+        "expected_effect",
+        "files_or_area",
+        "falsification_condition",
+        "mechanism_key",
+        "relation",
+        "prior_experiment_refs",
+        "novelty_rationale",
+    ],
     "additionalProperties": False,
 }
+FAILURE_ANALYSIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "capsules": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "failure_class": {"type": "string"},
+                    "stage": {"type": "string"},
+                    "affected_fields": {"type": "array", "items": {"type": "string"}},
+                    "observation": {"type": "string"},
+                    "likely_mechanism": {"type": "string"},
+                    "general_rule": {"type": "string"},
+                    "suggested_regression": {"type": "string"},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                },
+                "required": [
+                    "title",
+                    "failure_class",
+                    "stage",
+                    "affected_fields",
+                    "observation",
+                    "likely_mechanism",
+                    "general_rule",
+                    "suggested_regression",
+                    "confidence",
+                ],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["capsules"],
+    "additionalProperties": False,
+}
+
 IMPLEMENT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -53,11 +104,29 @@ class CodexAdapter(AgentAdapter):
 
     def execute(self, task: dict[str, Any], workspace: Path, timeout: int) -> dict[str, Any]:
         role = task.get("role")
-        schema = HYPOTHESIS_SCHEMA if role == "propose" else IMPLEMENT_SCHEMA
+        if role == "propose":
+            schema = HYPOTHESIS_SCHEMA
+        elif role == "analyze":
+            schema = FAILURE_ANALYSIS_SCHEMA
+        else:
+            schema = IMPLEMENT_SCHEMA
         if role == "propose":
             instruction = (
                 "Propose exactly one bounded, falsifiable hypothesis for this measurable campaign. "
-                "Do not modify files. Return only the requested structured result.\n\n"
+                "Use the supplied research_state and planning_mode. Avoid repeating a mechanism unless "
+                "you explicitly mark the hypothesis as refine, retry, or supersede and reference the prior "
+                "experiment ordinal. Do not modify files. Return only the requested structured result.\n\n"
+            )
+        elif role == "analyze":
+            instruction = (
+                "Analyze the supplied DEV-only failure signals and public DEV teacher examples against the candidate implementation. "
+                "Do not modify files. Use the exact public DEV expected answers to diagnose the root cause, then "
+                "distill causal, reusable lessons rather than memorizing individual benchmark cases. Do not copy "
+                "case IDs, product IDs, exact expected answers, or case-specific constants into the resulting "
+                "capsules. Focus on stage attribution, conflicting "
+                "state/provenance, violated invariants, and general regression tests. Return only the requested "
+                "structured failure capsules. If evidence is insufficient, use a low confidence value rather "
+                "than fabricating a cause.\n\n"
             )
         else:
             instruction = (

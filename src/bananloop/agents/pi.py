@@ -101,9 +101,26 @@ class PiAdapter(AgentAdapter):
             instruction = (
                 "You are the proposer inside BananLoop. Inspect the repository and propose exactly one "
                 "bounded, falsifiable hypothesis. Do not modify files during this role. "
+                "Use the supplied research_state and planning_mode. Avoid repeating a mechanism unless "
+                "you explicitly mark it as refine, retry, or supersede and reference the prior experiment ordinal. "
                 "Your final assistant message MUST be exactly one JSON object with these keys: "
-                "hypothesis, rationale, expected_effect, files_or_area, falsification_condition, mechanism_key. "
+                "hypothesis, rationale, expected_effect, files_or_area, falsification_condition, mechanism_key, "
+                "relation, prior_experiment_refs, novelty_rationale. "
                 "If no useful hypothesis exists, return exactly {\"status\":\"NO_HYPOTHESIS\"}. "
+                "Do not use markdown fences and do not include prose outside the JSON object."
+            )
+        elif role == "analyze":
+            instruction = (
+                "You are the DEV failure analyst inside BananLoop. Analyze the supplied DEV failure signals, "
+                "public DEV teacher examples, and the current candidate repository. Do not modify files. "
+                "Use the exact public DEV expected answers to diagnose the root cause, then distill causal, "
+                "reusable lessons rather than memorizing benchmark cases. Do not copy case IDs, product IDs, "
+                "exact expected answers, or case-specific constants into the resulting capsules. Focus on stage attribution, "
+                "state/provenance conflicts, violated invariants, and generic regression tests. If evidence is "
+                "insufficient, lower confidence instead of inventing a cause. Your final assistant message MUST "
+                "be exactly one JSON object with key capsules. Each capsule must contain title, failure_class, "
+                "stage, affected_fields, observation, likely_mechanism, general_rule, suggested_regression, "
+                "confidence. Return {\"capsules\":[]} if no safe general lesson can be supported. "
                 "Do not use markdown fences and do not include prose outside the JSON object."
             )
         elif role == "implement":
@@ -184,7 +201,14 @@ class PiAdapter(AgentAdapter):
         if role == "propose":
             schema = (
                 '{"hypothesis":"...","rationale":"...","expected_effect":"...",'
-                '"files_or_area":["..."],"falsification_condition":"...","mechanism_key":"..."}'
+                '"files_or_area":["..."],"falsification_condition":"...","mechanism_key":"...",'
+                '"relation":"new","prior_experiment_refs":[],"novelty_rationale":"..."}'
+            )
+        elif role == "analyze":
+            schema = (
+                '{"capsules":[{"title":"...","failure_class":"...","stage":"...",'
+                '"affected_fields":["..."],"observation":"...","likely_mechanism":"...",'
+                '"general_rule":"...","suggested_regression":"...","confidence":0.8}]}'
             )
         elif role == "implement":
             schema = (

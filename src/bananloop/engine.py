@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -14,13 +15,22 @@ from .contracts import (
     CampaignSpec,
     CampaignStatus,
     EvaluationResult,
+    FailureAnalysisResult,
     Hypothesis,
     ImplementResult,
     StopReason,
 )
 from .evaluators import CommandEvaluator, EvaluatorError
 from .integrity import evaluation_fingerprint, verify_evaluation_assets
+from .leakage import scan_forbidden_diff_patterns
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
+from .research import (
+    agent_decision_view,
+    agent_evaluation_view,
+    build_history,
+    build_research_state,
+    redundancy_reason,
+)
 from .store import CampaignStore
 from .workspace import WorkspaceError, WorkspaceManager
 
@@ -56,6 +66,16 @@ class Engine:
         self._agent_timeout_seconds: int | None = None
         self.spec = store.spec()
         self.evaluator = CommandEvaluator(self.spec.evaluation_command)
+        self.validation_evaluator = (
+            CommandEvaluator(self.spec.validation_command)
+            if self.spec.validation_command
+            else None
+        )
+        self.holdout_evaluator = (
+            CommandEvaluator(self.spec.holdout_command)
+            if self.spec.holdout_command
+            else None
+        )
         self.agent: AgentAdapter
         if self.spec.agent.kind == "codex":
             self.agent = CodexAdapter(self.spec.agent.model, self.spec.agent.extra_args)
@@ -75,68 +95,32 @@ class Engine:
         frozen = [asset.path for asset in self.spec.evaluation_assets]
         return list(dict.fromkeys([*self.spec.agent_hidden_paths, *frozen]))
 
+    def _agent_protected_paths(self) -> list[str]:
+        hidden = self._agent_hidden_paths()
+        return [
+            path
+            for path in self.spec.protected_paths
+            if not self.workspace._matches(path, hidden)
+        ]
+
     def _agent_evaluation_view(self, payload_json: str | None) -> dict[str, Any] | None:
-        if not payload_json:
-            return None
-        payload = json.loads(payload_json)
-        payload["artifacts"] = []
-        visible = set(self.spec.agent_visible_metrics)
-        if visible:
-            payload["metrics"] = {
-                name: value
-                for name, value in (payload.get("metrics") or {}).items()
-                if name in visible
-            }
-        return payload
+        return agent_evaluation_view(self.spec, payload_json)
 
     def _agent_decision_view(self, decision_json: str | None) -> dict[str, Any] | None:
         if not decision_json:
             return None
         decision = json.loads(decision_json)
-        visible = set(self.spec.agent_visible_metrics)
-        if not visible:
-            return decision
-
-        primary_visible = self.spec.primary_metric.name in visible
-        view: dict[str, Any] = {"accepted": bool(decision.get("accepted"))}
-        if primary_visible:
-            for name in ("primary_value", "champion_value", "delta"):
-                if name in decision:
-                    view[name] = decision[name]
-
-        predicates: dict[str, bool] = {}
-        for key, value in (decision.get("predicates") or {}).items():
-            if key == "minimum_improvement":
-                if primary_visible:
-                    predicates[key] = bool(value)
-            elif key.startswith("check:"):
-                predicates[key] = bool(value)
-            elif key.startswith("guard:") and any(
-                key.startswith(f"guard:{metric}") for metric in visible
-            ):
-                predicates[key] = bool(value)
-            elif key.startswith("non_regression:") and any(
-                key.startswith(f"non_regression:{metric}:") for metric in visible
-            ):
-                predicates[key] = bool(value)
-        view["predicates"] = predicates
-
-        reasons: list[str] = []
-        for reason in decision.get("reasons") or []:
-            if reason == "ACCEPTED" or reason.startswith("CHECK_FAILED:"):
-                reasons.append(reason)
-            elif reason == "PRIMARY_NOT_IMPROVED" and primary_visible:
-                reasons.append(reason)
-            elif reason.startswith("GUARDRAIL_FAILED:"):
-                metric = reason.split(":", 1)[1]
-                if metric in visible:
-                    reasons.append(reason)
-            elif reason.startswith("REGRESSION:"):
-                metric = reason.split(":", 1)[1]
-                if metric in visible:
-                    reasons.append(reason)
-        view["reasons"] = reasons
-        return view
+        decision.pop("validation", None)
+        predicates = dict(decision.get("predicates") or {})
+        predicates.pop("validation", None)
+        decision["predicates"] = predicates
+        decision["reasons"] = [
+            reason
+            for reason in (decision.get("reasons") or [])
+            if reason not in {"VALIDATION_REJECTED", "INVALID_VALIDATION"}
+            and not reason.startswith("VALIDATION:")
+        ]
+        return agent_decision_view(self.spec, decision)
 
     def _invoke_agent(
         self,
@@ -160,6 +144,36 @@ class Engine:
             raise ControlledInterruption(f"forced interruption after durable stage {stage}")
 
     def _stop(self, reason: StopReason, status: CampaignStatus = CampaignStatus.STOPPED) -> dict[str, Any]:
+        finalizable = reason not in {
+            StopReason.PAUSED_INFRA,
+            StopReason.PAUSED_NEEDS_INPUT,
+            StopReason.USER_STOPPED,
+        }
+        final_holdout: dict[str, Any] | None = None
+        if finalizable and self.holdout_evaluator is not None:
+            self._progress("final holdout: evaluate champion")
+            try:
+                final_holdout = self._finalize_holdout()
+            except (
+                EvaluatorError,
+                InvalidEvaluation,
+                ValidationError,
+                UnknownActionOutcome,
+                WorkspaceError,
+                EngineError,
+            ) as exc:
+                self.store.update_campaign(
+                    status=CampaignStatus.PAUSED_INFRA.value,
+                    stop_reason=reason.value,
+                    stage="FINAL_HOLDOUT",
+                )
+                self.store.event(
+                    "FINAL_HOLDOUT_FAILED",
+                    {"pending_stop_reason": reason.value, "error": str(exc)[:1000]},
+                )
+                self.store.conn.commit()
+                raise EngineError(f"final holdout failed: {exc}") from exc
+
         if reason == StopReason.GOAL_MET:
             status = CampaignStatus.GOAL_MET
         if reason == StopReason.PAUSED_INFRA:
@@ -167,16 +181,34 @@ class Engine:
         if reason == StopReason.PAUSED_NEEDS_INPUT:
             status = CampaignStatus.PAUSED_NEEDS_INPUT
         self.store.update_campaign(status=status.value, stop_reason=reason.value, stage=None)
-        self.store.event("CAMPAIGN_STOPPED", {"reason": reason.value, "status": status.value})
+        event_payload: dict[str, Any] = {"reason": reason.value, "status": status.value}
+        if final_holdout is not None:
+            event_payload["final_holdout_target_met"] = final_holdout["target_met"]
+            event_payload["final_holdout_snapshot"] = final_holdout["snapshot"]
+        self.store.event("CAMPAIGN_STOPPED", event_payload)
         self.store.conn.commit()
         return self.store.campaign()
 
     def _budget_or_stop(self, kind: str) -> bool:
+        if kind == "final_evaluator":
+            return False
         reason = pre_action_stop(self.store.campaign(), self.spec.budget, kind)
         if reason:
             self._stop(reason)
             return True
         return False
+
+    def _new_attempt_fits_evaluator_budget(self) -> bool:
+        campaign = self.store.campaign()
+        required = 1  # dev evaluation
+        if self.validation_evaluator is not None:
+            required += 1  # worst case: dev ACCEPT also needs validation
+        if self.holdout_evaluator is not None:
+            required += 1  # reserved final-only holdout slot
+        return (
+            campaign["evaluator_calls"] + required
+            <= self.spec.budget.max_evaluator_calls
+        )
 
     def _action(
         self,
@@ -243,12 +275,103 @@ class Engine:
         self._progress(f"{action_id}: completed")
         return response
 
-    def _evaluation_request(self, snapshot: str) -> dict[str, Any]:
+    def _evaluation_request(
+        self,
+        snapshot: str,
+        *,
+        tier: str = "dev",
+        command: list[str] | None = None,
+    ) -> dict[str, Any]:
         return {
             "snapshot": snapshot,
-            "command": self.spec.evaluation_command,
+            "tier": tier,
+            "command": command or self.spec.evaluation_command,
             "evaluation_fingerprint": evaluation_fingerprint(self.spec.evaluation_assets),
         }
+
+    def _validation_reference(self) -> EvaluationResult:
+        snapshot = self.store.campaign()["champion_snapshot"]
+        row = self.store.latest_evaluation(snapshot, "validation")
+        if row is None:
+            raise EngineError(
+                f"validation reference missing for champion snapshot {snapshot}"
+            )
+        return EvaluationResult.model_validate_json(row["result_json"])
+
+    def _holdout_assessment(self, result: EvaluationResult) -> dict[str, Any]:
+        validate_evaluation(self.spec, result)
+        return {
+            "snapshot": self.store.campaign()["champion_snapshot"],
+            "target_met": target_met(self.spec, result),
+            "result": result.model_dump(mode="json"),
+        }
+
+    def _finalize_holdout(self) -> dict[str, Any] | None:
+        if self.holdout_evaluator is None:
+            return None
+
+        campaign = self.store.campaign()
+        snapshot = campaign["champion_snapshot"]
+        if not snapshot:
+            return None
+
+        existing = self.store.latest_evaluation(snapshot, "holdout")
+        if existing is not None:
+            result = EvaluationResult.model_validate_json(existing["result_json"])
+            return self._holdout_assessment(result)
+
+        if campaign["evaluator_calls"] >= self.spec.budget.max_evaluator_calls:
+            raise EngineError(
+                "final holdout could not run: evaluator-call budget has no reserved slot"
+            )
+
+        self.workspace.checkout(snapshot)
+        integrity_violations = verify_evaluation_assets(
+            self.workspace.workspace, self.spec.evaluation_assets
+        )
+        if integrity_violations:
+            raise EngineError(
+                "evaluation assets changed before final holdout: "
+                + ", ".join(integrity_violations)
+            )
+
+        request = self._evaluation_request(
+            snapshot,
+            tier="holdout",
+            command=self.spec.holdout_command,
+        )
+        raw = self._action(
+            action_id="final:holdout",
+            experiment_id=None,
+            stage="FINAL_HOLDOUT",
+            kind="final_evaluator",
+            request=request,
+            invoke=lambda: self.holdout_evaluator.evaluate(
+                self.workspace.workspace,
+                timeout=(
+                    self.spec.holdout_timeout_seconds
+                    or self.spec.evaluator_timeout_seconds
+                ),
+            ).model_dump(mode="json"),
+        )
+        result = EvaluationResult.model_validate(raw)
+        validate_evaluation(self.spec, result)
+        self.store.record_evaluation(
+            None,
+            snapshot,
+            result.model_dump(mode="json"),
+            tier="holdout",
+        )
+        assessment = self._holdout_assessment(result)
+        self.store.event(
+            "FINAL_HOLDOUT_RECORDED",
+            {
+                "snapshot": snapshot,
+                "target_met": assessment["target_met"],
+            },
+        )
+        self.store.conn.commit()
+        return assessment
 
     def _baseline(self) -> None:
         campaign = self.store.campaign()
@@ -284,7 +407,54 @@ class Engine:
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(f"baseline failed: {exc}") from exc
         snapshot = self.workspace.head()
-        self.store.record_evaluation(None, snapshot, result.model_dump(mode="json"))
+        self.store.record_evaluation(
+            None,
+            snapshot,
+            result.model_dump(mode="json"),
+            tier="dev",
+        )
+
+        if self.validation_evaluator is not None:
+            validation_request = self._evaluation_request(
+                snapshot,
+                tier="validation",
+                command=self.spec.validation_command,
+            )
+            try:
+                validation_raw = self._action(
+                    action_id="baseline:validation",
+                    experiment_id=None,
+                    stage="BASELINE_VALIDATION",
+                    kind="evaluator",
+                    request=validation_request,
+                    invoke=lambda: self.validation_evaluator.evaluate(
+                        self.workspace.workspace,
+                        timeout=(
+                            self.spec.validation_timeout_seconds
+                            or self.spec.evaluator_timeout_seconds
+                        ),
+                    ).model_dump(mode="json"),
+                )
+                validation_result = EvaluationResult.model_validate(validation_raw)
+                validate_evaluation(self.spec, validation_result)
+            except (
+                EvaluatorError,
+                InvalidEvaluation,
+                ValidationError,
+                UnknownActionOutcome,
+            ) as exc:
+                self.store.event("BASELINE_VALIDATION_FAILED", {"error": str(exc)})
+                self.store.conn.commit()
+                self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+                raise EngineError(f"baseline validation failed: {exc}") from exc
+            self.store.record_evaluation(
+                None,
+                snapshot,
+                validation_result.model_dump(mode="json"),
+                tier="validation",
+            )
+            self.store.event("BASELINE_VALIDATION_RECORDED", {"snapshot": snapshot})
+
         self.store.update_campaign(
             baseline_json=result.model_dump_json(),
             baseline_snapshot=snapshot,
@@ -296,23 +466,24 @@ class Engine:
         )
         self.store.event("BASELINE_RECORDED", {"snapshot": snapshot})
         self.store.conn.commit()
+        self._refresh_research_state()
         self._checkpoint("BASELINE")
 
     def _history(self) -> list[dict[str, Any]]:
-        history: list[dict[str, Any]] = []
-        for exp in self.store.experiments()[-8:]:
-            if exp["status"] == "ACTIVE":
-                continue
-            history.append({
-                "ordinal": exp["ordinal"],
-                "hypothesis": json.loads(exp["hypothesis_json"]) if exp["hypothesis_json"] else None,
-                "status": exp["status"],
-                "failure_category": exp["failure_category"],
-                "decision": self._agent_decision_view(exp["decision_json"]),
-            })
-        return history
+        return build_history(self.spec, self.store.experiments(), limit=8)
+
+    def _refresh_research_state(self) -> dict[str, Any]:
+        state = build_research_state(
+            self.spec,
+            self.store.campaign(),
+            self.store.experiments(),
+        )
+        payload = state.model_dump(mode="json")
+        self.store.set_research_state(payload)
+        return payload
 
     def _task_context(self, role: str, experiment_id: int) -> dict[str, Any]:
+        research_state = self._refresh_research_state()
         campaign = self.store.campaign()
         return {
             "schema_version": 1,
@@ -330,11 +501,22 @@ class Engine:
                 if not self.spec.agent_visible_metrics or g.metric in self.spec.agent_visible_metrics
             ],
             "editable_scope": self.spec.editable_scope,
-            "protected_paths": self.spec.protected_paths,
+            "protected_paths": self._agent_protected_paths(),
             "baseline": self._agent_evaluation_view(campaign["baseline_json"]),
             "champion": self._agent_evaluation_view(campaign["champion_json"]),
             "champion_snapshot": campaign["champion_snapshot"],
             "history": self._history(),
+            "research_state": research_state,
+            "planning_mode": research_state["planning_mode"],
+            "planning_requirements": {
+                "exploit": "build on the strongest DEV-supported mechanism without duplicating prior work",
+                "explore": "test a materially different mechanism family from recent failed attempts",
+                "reframe": "challenge the current framing and choose a new mechanism family before plateau",
+                "genealogy": (
+                    "If reusing a mechanism_key, set relation to refine/retry/supersede "
+                    "and cite a matching prior experiment ordinal."
+                ),
+            },
             "experiment_id": experiment_id,
         }
 
@@ -358,6 +540,7 @@ class Engine:
             if raw.get("status") == "NO_HYPOTHESIS":
                 self.store.update_experiment(experiment_id, failure_category="NO_HYPOTHESIS", lesson="Agent proposed no further hypothesis")
                 self.store.finish_attempt(attempt_id, experiment_id, status="NO_HYPOTHESIS", scientific=False, improved=False)
+                self._refresh_research_state()
                 self._stop(StopReason.NO_HYPOTHESIS)
                 return
             hypothesis = Hypothesis.model_validate(raw)
@@ -365,6 +548,34 @@ class Engine:
             self.store.update_experiment(experiment_id, failure_category="AGENT_PROTOCOL_ERROR", lesson=str(exc)[:1000])
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(f"propose failed: {exc}") from exc
+
+        duplicate = redundancy_reason(hypothesis, self.store.experiments())
+        if duplicate:
+            self.store.update_experiment(
+                experiment_id,
+                hypothesis_json=hypothesis.model_dump_json(),
+                failure_category="REDUNDANT_HYPOTHESIS",
+                lesson=duplicate[:1000],
+            )
+            self.store.event(
+                "REDUNDANT_HYPOTHESIS_REJECTED",
+                {
+                    "experiment_id": experiment_id,
+                    "ordinal": self.store.experiment(experiment_id)["ordinal"],
+                    "mechanism_key": hypothesis.mechanism_key,
+                    "reason": duplicate[:1000],
+                },
+            )
+            self.store.finish_attempt(
+                attempt_id,
+                experiment_id,
+                status="REDUNDANT",
+                scientific=False,
+                improved=False,
+            )
+            self._refresh_research_state()
+            return
+
         self.store.update_experiment(
             experiment_id,
             hypothesis_json=hypothesis.model_dump_json(),
@@ -451,6 +662,46 @@ class Engine:
             self.store.update_experiment(experiment_id, decision_json=json.dumps(decision), failure_category="SCOPE_VIOLATION", lesson="Candidate changed protected/out-of-scope paths")
             self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
             self.store.set_stage(attempt_id, "REJECT")
+        elif self.spec.forbidden_diff_patterns:
+            leakage_violations = scan_forbidden_diff_patterns(
+                self.workspace.diff_text(
+                    exp["parent_snapshot"],
+                    exp["candidate_snapshot"],
+                ),
+                self.spec.forbidden_diff_patterns,
+            )
+            if leakage_violations:
+                decision = {
+                    "accepted": False,
+                    "primary_value": None,
+                    "champion_value": None,
+                    "delta": None,
+                    "predicates": {"anti_gaming": False},
+                    "reasons": ["LEAKAGE_GUARD"],
+                }
+                self.store.update_experiment(
+                    experiment_id,
+                    decision_json=json.dumps(decision),
+                    failure_category="LEAKAGE_GUARD",
+                    lesson="; ".join(leakage_violations)[:1000],
+                )
+                self.store.record_decision(
+                    experiment_id,
+                    exp["candidate_snapshot"],
+                    decision,
+                )
+                self.store.event(
+                    "LEAKAGE_GUARD_REJECTED",
+                    {
+                        "experiment_id": experiment_id,
+                        "snapshot": exp["candidate_snapshot"],
+                        "violations": leakage_violations,
+                    },
+                )
+                self.store.conn.commit()
+                self.store.set_stage(attempt_id, "REJECT")
+            else:
+                self.store.set_stage(attempt_id, "EVALUATE")
         else:
             self.store.set_stage(attempt_id, "EVALUATE")
         self._checkpoint(self.store.attempt(attempt_id)["stage"])
@@ -489,10 +740,116 @@ class Engine:
         except UnknownActionOutcome as exc:
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(str(exc)) from exc
-        self.store.record_evaluation(experiment_id, exp["candidate_snapshot"], result.model_dump(mode="json"))
+        self.store.record_evaluation(
+            experiment_id,
+            exp["candidate_snapshot"],
+            result.model_dump(mode="json"),
+            tier="dev",
+        )
         self.store.update_experiment(experiment_id, evaluation_json=result.model_dump_json())
         self.store.set_stage(attempt_id, "DECIDE")
         self._checkpoint("DECIDE")
+
+    @staticmethod
+    def _redact_failure_text(value: str) -> str:
+        # Remove case-specific numeric/model/article tokens before adaptive LLM
+        # analysis. Field names and the shape of the contradiction remain visible.
+        value = re.sub(
+            r"(?<!\w)(?=[\w.:/\\-]*\d)[\w.:/\\-]*\d[\w.:/\\-]*(?!\w)",
+            "<redacted>",
+            value,
+        )
+        return value
+
+    def _dev_failure_analysis_task(
+        self,
+        experiment_id: int,
+        candidate: EvaluationResult,
+    ) -> dict[str, Any]:
+        exp = self.store.experiment(experiment_id)
+        task = self._task_context("analyze", experiment_id)
+        task["hypothesis"] = (
+            json.loads(exp["hypothesis_json"]) if exp.get("hypothesis_json") else None
+        )
+        task["dev_evaluation"] = self._agent_evaluation_view(exp.get("evaluation_json"))
+        task["dev_decision"] = self._agent_decision_view(exp.get("dev_decision_json"))
+
+        safe_signals: list[dict[str, Any]] = []
+        for signal in candidate.failure_signals:
+            item = signal.model_dump(mode="json")
+            for field in ("symptom", "expected_behavior", "observed_behavior"):
+                item[field] = self._redact_failure_text(str(item.get(field) or ""))
+            item["evidence"] = [
+                self._redact_failure_text(str(value))
+                for value in item.get("evidence") or []
+            ]
+            safe_signals.append(item)
+        task["dev_failure_signals"] = safe_signals
+        task["dev_failure_examples"] = [
+            example.model_dump(mode="json")
+            for example in candidate.failure_examples
+        ]
+        task["analysis_requirements"] = {
+            "dev_only": True,
+            "generalize_not_memorize": True,
+            "do_not_copy_case_ids_into_capsules": True,
+            "do_not_copy_product_ids_into_capsules": True,
+            "do_not_copy_gold_labels_into_capsules": True,
+            "teacher_examples_are_public_dev_only": True,
+            "may_use_exact_expected_answers_for_diagnosis": True,
+            "do_not_copy_case_specific_answers_into_capsules": True,
+            "prefer_invariants_and_provenance": True,
+        }
+        return task
+
+    def _sanitize_failure_analysis(
+        self,
+        analysis: FailureAnalysisResult,
+        candidate: EvaluationResult,
+    ) -> FailureAnalysisResult:
+        queries = [
+            example.query.strip()
+            for example in candidate.failure_examples
+            if example.query.strip()
+        ]
+        # Analyzers tend to paraphrase, so the exact query may survive only as
+        # one of its tokens (e.g. an article number like VT.217.N.05). Those
+        # digit-bearing tokens are still case-specific, so they must be
+        # scrubbed as case-specific data, not just as generic numbers.
+        query_tokens: list[str] = []
+        for query in queries:
+            for token in re.findall(r"[\w.:/\\-]+", query):
+                if any(char.isdigit() for char in token) and token not in query_tokens:
+                    query_tokens.append(token)
+        query_tokens.sort(key=len, reverse=True)
+        payload = analysis.model_dump(mode="json")
+        for capsule in payload.get("capsules") or []:
+            for field in (
+                "title",
+                "failure_class",
+                "stage",
+                "observation",
+                "likely_mechanism",
+                "general_rule",
+                "suggested_regression",
+            ):
+                value = str(capsule.get(field) or "")
+                for query in queries:
+                    value = value.replace(query, "<case-specific-query>")
+                for token in query_tokens:
+                    if token in value:
+                        value = value.replace(token, "<case-specific-query>")
+                capsule[field] = self._redact_failure_text(value)
+        return FailureAnalysisResult.model_validate(payload)
+
+    def _route_after_dev_analysis(self, attempt_id: int, decision: dict[str, Any]) -> None:
+        if decision.get("accepted") and self.validation_evaluator is not None:
+            self.store.set_stage(attempt_id, "VALIDATE")
+        else:
+            self.store.set_stage(
+                attempt_id,
+                "PROMOTE" if decision.get("accepted") else "REJECT",
+            )
 
     def _stage_decide(self, attempt_id: int, experiment_id: int) -> None:
         campaign = self.store.campaign()
@@ -500,9 +857,214 @@ class Engine:
         champion = EvaluationResult.model_validate_json(campaign["champion_json"])
         candidate = EvaluationResult.model_validate_json(exp["evaluation_json"])
         decision = decide(self.spec, champion, candidate)
-        self.store.update_experiment(experiment_id, decision_json=decision.model_dump_json())
-        self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision.model_dump(mode="json"))
-        self.store.set_stage(attempt_id, "PROMOTE" if decision.accepted else "REJECT")
+        self.store.update_experiment(
+            experiment_id,
+            dev_decision_json=decision.model_dump_json(),
+            decision_json=decision.model_dump_json(),
+        )
+        self.store.record_decision(
+            experiment_id,
+            exp["candidate_snapshot"],
+            decision.model_dump(mode="json"),
+        )
+        if candidate.failure_signals:
+            # Failure analysis is DEV-only and optional. Never consume validation
+            # or holdout evidence for adaptive research memory.
+            stop_reason = pre_action_stop(
+                self.store.campaign(),
+                self.spec.budget,
+                "agent",
+            )
+            if stop_reason is None:
+                self.store.set_stage(attempt_id, "ANALYZE")
+            else:
+                self.store.event(
+                    "DEV_FAILURE_ANALYSIS_SKIPPED",
+                    {
+                        "experiment_id": experiment_id,
+                        "reason": stop_reason.value,
+                    },
+                )
+                self.store.conn.commit()
+                self._route_after_dev_analysis(
+                    attempt_id,
+                    decision.model_dump(mode="json"),
+                )
+        else:
+            self._route_after_dev_analysis(
+                attempt_id,
+                decision.model_dump(mode="json"),
+            )
+        self._checkpoint(self.store.attempt(attempt_id)["stage"])
+
+    def _stage_analyze(self, attempt_id: int, experiment_id: int) -> None:
+        exp = self.store.experiment(experiment_id)
+        candidate = EvaluationResult.model_validate_json(exp["evaluation_json"])
+        decision = json.loads(exp["dev_decision_json"])
+        if not candidate.failure_signals:
+            self._route_after_dev_analysis(attempt_id, decision)
+            return
+
+        self.workspace.checkout(exp["candidate_snapshot"])
+        task = self._dev_failure_analysis_task(experiment_id, candidate)
+        try:
+            raw = self._action(
+                action_id=f"exp:{experiment_id}:analyze-dev-failures",
+                experiment_id=experiment_id,
+                stage="ANALYZE",
+                kind="agent",
+                request=task,
+                invoke=lambda: self._invoke_agent(
+                    task,
+                    timeout=self._agent_timeout(900),
+                    apply_changes=False,
+                ),
+            )
+            raw = self.agent.normalize_result(task, raw)
+            analysis = FailureAnalysisResult.model_validate(raw)
+            analysis = self._sanitize_failure_analysis(analysis, candidate)
+            self.store.update_experiment(
+                experiment_id,
+                failure_analysis_json=analysis.model_dump_json(),
+            )
+            self.store.event(
+                "DEV_FAILURE_ANALYSIS_RECORDED",
+                {
+                    "experiment_id": experiment_id,
+                    "capsule_count": len(analysis.capsules),
+                    "failure_classes": sorted(
+                        {capsule.failure_class for capsule in analysis.capsules}
+                    ),
+                },
+            )
+            self.store.conn.commit()
+        except UnknownActionOutcome as exc:
+            raise EngineError(str(exc)) from exc
+        except (AgentError, ValidationError, WorkspaceError) as exc:
+            # Analysis improves research intelligence but is not part of the
+            # scientific acceptance gate. A bad analysis must not invalidate a
+            # valid DEV measurement.
+            self.store.update_experiment(
+                experiment_id,
+                failure_analysis_json=json.dumps({"capsules": []}),
+            )
+            self.store.event(
+                "DEV_FAILURE_ANALYSIS_FAILED",
+                {
+                    "experiment_id": experiment_id,
+                    "error": str(exc)[:1000],
+                },
+            )
+            self.store.conn.commit()
+
+        self._refresh_research_state()
+        self._route_after_dev_analysis(attempt_id, decision)
+        self._checkpoint(self.store.attempt(attempt_id)["stage"])
+
+    def _stage_validate(self, attempt_id: int, experiment_id: int) -> None:
+        exp = self.store.experiment(experiment_id)
+        self.workspace.checkout(exp["candidate_snapshot"])
+        request = self._evaluation_request(
+            exp["candidate_snapshot"],
+            tier="validation",
+            command=self.spec.validation_command,
+        )
+        try:
+            raw = self._action(
+                action_id=f"exp:{experiment_id}:validation",
+                experiment_id=experiment_id,
+                stage="VALIDATE",
+                kind="evaluator",
+                request=request,
+                invoke=lambda: self.validation_evaluator.evaluate(
+                    self.workspace.workspace,
+                    timeout=(
+                        self.spec.validation_timeout_seconds
+                        or self.spec.evaluator_timeout_seconds
+                    ),
+                ).model_dump(mode="json"),
+            )
+            result = EvaluationResult.model_validate(raw)
+            validate_evaluation(self.spec, result)
+            reference = self._validation_reference()
+            validation_decision = decide(self.spec, reference, result)
+        except (EvaluatorError, InvalidEvaluation, ValidationError) as exc:
+            combined = json.loads(exp["decision_json"])
+            combined["accepted"] = False
+            combined["reasons"] = [
+                reason
+                for reason in combined.get("reasons", [])
+                if reason != "ACCEPTED"
+            ]
+            combined.setdefault("predicates", {})["validation"] = False
+            combined.setdefault("reasons", []).append("INVALID_VALIDATION")
+            combined["validation"] = {
+                "accepted": False,
+                "reasons": ["INVALID_VALIDATION"],
+            }
+            self.store.update_experiment(
+                experiment_id,
+                decision_json=json.dumps(combined),
+                failure_category="INVALID_VALIDATION",
+                lesson=str(exc)[:1000],
+            )
+            self.store.record_decision(
+                experiment_id,
+                exp["candidate_snapshot"],
+                combined,
+            )
+            self.store.set_stage(attempt_id, "REJECT")
+            return
+        except UnknownActionOutcome as exc:
+            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+            raise EngineError(str(exc)) from exc
+
+        self.store.record_evaluation(
+            experiment_id,
+            exp["candidate_snapshot"],
+            result.model_dump(mode="json"),
+            tier="validation",
+        )
+
+        combined = json.loads(exp["decision_json"])
+        combined["validation"] = validation_decision.model_dump(mode="json")
+        combined.setdefault("predicates", {})["validation"] = validation_decision.accepted
+        if not validation_decision.accepted:
+            combined["accepted"] = False
+            combined["reasons"] = [
+                reason
+                for reason in combined.get("reasons", [])
+                if reason != "ACCEPTED"
+            ]
+            combined.setdefault("reasons", []).append("VALIDATION_REJECTED")
+            combined["reasons"].extend(
+                f"VALIDATION:{reason}"
+                for reason in validation_decision.reasons
+                if reason != "ACCEPTED"
+            )
+            self.store.update_experiment(
+                experiment_id,
+                decision_json=json.dumps(combined),
+                failure_category="VALIDATION_REJECTED",
+                lesson="Dev improvement did not reproduce on validation tier",
+            )
+            self.store.record_decision(
+                experiment_id,
+                exp["candidate_snapshot"],
+                combined,
+            )
+            self.store.set_stage(attempt_id, "REJECT")
+        else:
+            self.store.update_experiment(
+                experiment_id,
+                decision_json=json.dumps(combined),
+            )
+            self.store.record_decision(
+                experiment_id,
+                exp["candidate_snapshot"],
+                combined,
+            )
+            self.store.set_stage(attempt_id, "PROMOTE")
         self._checkpoint(self.store.attempt(attempt_id)["stage"])
 
     def _stage_promote(self, attempt_id: int, experiment_id: int) -> None:
@@ -535,12 +1097,22 @@ class Engine:
                 failure = (decision.get("reasons") or ["REJECTED"])[0]
             lesson = exp["lesson"] or f"Rejected: {failure}"
         self.store.update_experiment(experiment_id, failure_category=failure, lesson=lesson)
-        self.store.finish_attempt(attempt_id, experiment_id, status=status, scientific=scientific, improved=accepted)
+        self.store.finish_attempt(
+            attempt_id,
+            experiment_id,
+            status=status,
+            scientific=scientific,
+            improved=accepted,
+        )
+        self._refresh_research_state()
 
     def _post_iteration_stop(self) -> bool:
         campaign = self.store.campaign()
         champion = EvaluationResult.model_validate_json(campaign["champion_json"])
-        if target_met(self.spec, champion):
+        goal_met = target_met(self.spec, champion)
+        if goal_met and self.validation_evaluator is not None:
+            goal_met = target_met(self.spec, self._validation_reference())
+        if goal_met:
             self._stop(StopReason.GOAL_MET, CampaignStatus.GOAL_MET)
             return True
         if campaign["non_improve_streak"] >= self.spec.budget.plateau_experiments:
@@ -587,6 +1159,8 @@ class Engine:
                 reason = pre_action_stop(campaign, self.spec.budget, "agent")
                 if reason:
                     return self._stop(reason)
+                if not self._new_attempt_fits_evaluator_budget():
+                    return self._stop(StopReason.BUDGET_EXHAUSTED)
                 self.workspace.checkout(campaign["champion_snapshot"])
                 self.store.create_attempt(campaign["champion_snapshot"])
                 campaign = self.store.campaign()
@@ -607,6 +1181,10 @@ class Engine:
                 self._stage_evaluate(attempt_id, experiment_id)
             elif stage == "DECIDE":
                 self._stage_decide(attempt_id, experiment_id)
+            elif stage == "ANALYZE":
+                self._stage_analyze(attempt_id, experiment_id)
+            elif stage == "VALIDATE":
+                self._stage_validate(attempt_id, experiment_id)
             elif stage == "PROMOTE":
                 self._stage_promote(attempt_id, experiment_id)
             elif stage == "REJECT":
