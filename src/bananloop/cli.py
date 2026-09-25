@@ -19,6 +19,7 @@ from .contracts import (
     RuntimePaths,
     SamplePlanSpec,
 )
+from .discovery import discover_repository, render_discovery
 from .engine import ControlledInterruption, Engine, EngineError
 from .integrity import EvaluationIntegrityError, discover_evaluation_assets, evaluation_fingerprint
 from .lock import CampaignLock, CampaignLockError
@@ -72,6 +73,18 @@ def _agent_config(args: argparse.Namespace) -> AgentConfig:
         model=args.model,
         extra_args=extra_args,
     )
+
+
+def cmd_discover(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).resolve()
+    data = discover_repository(repo, goal=args.goal)
+    output = render_discovery(data)
+    if args.output:
+        Path(args.output).write_text(output + "\n", encoding="utf-8")
+        print(args.output)
+    else:
+        print(output)
+    return 0
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -292,6 +305,16 @@ def cmd_report(args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bananloop")
     sub = p.add_subparsers(dest="command", required=True)
+
+    discover = sub.add_parser(
+        "discover",
+        help="inspect a repository without modifying it and emit campaign bootstrap facts",
+    )
+    discover.add_argument("--repo", default=".")
+    discover.add_argument("--goal")
+    discover.add_argument("--output")
+    discover.set_defaults(func=cmd_discover)
+
     init = sub.add_parser("init", help="approve and persist a campaign specification")
     init.add_argument("--repo", default=".")
     init.add_argument("--state-dir")
