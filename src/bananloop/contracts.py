@@ -79,6 +79,32 @@ class EvaluationAsset(BaseModel):
     sha256: str
 
 
+class SamplePlanSpec(BaseModel):
+    """Frozen sampling policy shared by baseline/champion/candidates."""
+
+    size: int = Field(ge=1)
+    seed: int = 42
+    repeats: int = Field(default=1, ge=1)
+    policy: Literal["frozen_random", "fixed"] = "frozen_random"
+
+
+class PairedComparisonSpec(BaseModel):
+    """Optional case-level guardrails for noisy/stochastic evaluations."""
+
+    metric: str
+    direction: Direction | None = None
+    min_improved_fraction: float | None = Field(default=None, ge=0.0, le=1.0)
+    worst_case_tolerance: float | None = Field(default=None, ge=0.0)
+    require_same_cases: bool = True
+
+
+class EvaluationProtocolSpec(BaseModel):
+    """Domain-neutral reproducibility controls for an evaluator."""
+
+    sample_plan: SamplePlanSpec | None = None
+    paired: PairedComparisonSpec | None = None
+
+
 class AgentConfig(BaseModel):
     kind: Literal["codex", "command", "pi"] = "codex"
     command: list[str] = Field(default_factory=list)
@@ -104,6 +130,7 @@ class CampaignSpec(BaseModel):
     holdout_command: list[str] = Field(default_factory=list)
     holdout_timeout_seconds: int | None = Field(default=None, ge=1)
     evaluation_assets: list[EvaluationAsset] = Field(default_factory=list)
+    evaluation_protocol: EvaluationProtocolSpec = Field(default_factory=EvaluationProtocolSpec)
     agent_hidden_paths: list[str] = Field(default_factory=list)
     agent_visible_metrics: list[str] = Field(default_factory=list)
     agent_visible_diagnostics: list[str] = Field(default_factory=list)
@@ -163,6 +190,8 @@ class CampaignSpec(BaseModel):
             data.pop("holdout_timeout_seconds", None)
         if not self.evaluation_assets:
             data.pop("evaluation_assets", None)
+        if self.evaluation_protocol == EvaluationProtocolSpec():
+            data.pop("evaluation_protocol", None)
         if not self.agent_hidden_paths:
             data.pop("agent_hidden_paths", None)
         if not self.agent_visible_metrics:
@@ -261,6 +290,34 @@ class CheckValue(BaseModel):
     skipped: int | None = Field(default=None, ge=0)
 
 
+class CaseResult(BaseModel):
+    """One opaque evaluation case.
+
+    case_key identifies the frozen sample for pairing. It should not reveal
+    hidden labels or sensitive evaluator assets to the adaptive agent.
+    """
+
+    case_key: str
+    metrics: dict[str, MetricValue] = Field(default_factory=dict)
+
+    @field_validator("metrics", mode="before")
+    @classmethod
+    def normalize_metrics(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        return {
+            key: {"value": item} if isinstance(item, (int, float)) else item
+            for key, item in value.items()
+        }
+
+
+class ArtifactRef(BaseModel):
+    path: str
+    kind: str = "file"
+    sha256: str | None = None
+    visibility: Literal["agent", "analyzer", "evaluator_only", "report"] = "report"
+
+
 class EvaluationResult(BaseModel):
     schema_version: int = 1
     status: Literal["ok", "invalid", "infra_error", "cancelled"] = "ok"
@@ -269,7 +326,8 @@ class EvaluationResult(BaseModel):
     diagnostics: dict[str, float] = Field(default_factory=dict)
     failure_signals: list[DevFailureSignal] = Field(default_factory=list, max_length=8)
     failure_examples: list[DevFailureExample] = Field(default_factory=list, max_length=5)
-    artifacts: list[str] = Field(default_factory=list)
+    cases: list[CaseResult] = Field(default_factory=list)
+    artifacts: list[ArtifactRef] = Field(default_factory=list)
 
     @field_validator("metrics", mode="before")
     @classmethod
@@ -291,6 +349,18 @@ class EvaluationResult(BaseModel):
             normalized[key] = {"passed": item} if isinstance(item, bool) else item
         return normalized
 
+    @field_validator("artifacts", mode="before")
+    @classmethod
+    def normalize_artifacts(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        return [
+            {"path": item, "kind": "file", "visibility": "report"}
+            if isinstance(item, str)
+            else item
+            for item in value
+        ]
+
 
 class Decision(BaseModel):
     accepted: bool
@@ -299,6 +369,7 @@ class Decision(BaseModel):
     delta: float
     predicates: dict[str, bool]
     reasons: list[str]
+    paired_summary: dict[str, float | int] = Field(default_factory=dict)
 
 
 class MechanismEvidence(BaseModel):
