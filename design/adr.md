@@ -2,6 +2,10 @@
 
 ## Status
 
+Historical design input. The standalone repository now implements this design
+incrementally; see [current scope and verification](../docs/completion-readiness.md).
+The proposed features below are not all release claims.
+
 **Proposed**, 2026-09-19. Решение относится к будущему standalone repository. Оно не изменяет runtime `rag_tender`.
 
 ## Task

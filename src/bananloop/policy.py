@@ -119,10 +119,10 @@ def decide(spec: CampaignSpec, champion: EvaluationResult, candidate: Evaluation
             # Worst repetition, not just the mean: a bad seed cannot be concealed.
             predicates["paired:worst_case"] = min(d for ds in deltas.values() for d in ds) >= -paired.worst_case_tolerance
             for guard in paired.guardrails:
-                predicates[f"paired:guard:{guard.metric}"] = all(_compare(c.metrics[guard.metric], guard) for c in right.values())
+                predicates[f"paired:guard:{guard.metric}:{guard.operator}:{guard.bound}"] = all(_compare(c.metrics[guard.metric], guard) for c in right.values())
             for guard in paired.non_regression:
                 sign = 1 if guard.direction == Direction.MAXIMIZE else -1
-                predicates[f"paired:non_regression:{guard.metric}"] = all(
+                predicates[f"paired:non_regression:{guard.metric}:{guard.direction.value}:{guard.tolerance}"] = all(
                     sign * (right[k].metrics[guard.metric] - left[k].metrics[guard.metric]) >= -guard.tolerance for k in left)
             if not all(v for k, v in predicates.items() if k.startswith("paired:")):
                 reasons.append("PAIRED_REGRESSION_OR_INSUFFICIENT_WINS")
@@ -153,4 +153,3 @@ def target_met(spec: CampaignSpec, result: EvaluationResult) -> bool:
             if not all(_compare(case.metrics[guard.metric], guard) for case in result.cases):
                 return False
     return all(result.checks[name].passed for name in spec.mandatory_checks)
-

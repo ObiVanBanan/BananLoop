@@ -27,6 +27,7 @@ class CampaignStatus(StrEnum):
 
 class StopReason(StrEnum):
     GOAL_MET = "GOAL_MET"
+    FINAL_HOLDOUT_REJECTED = "FINAL_HOLDOUT_REJECTED"
     BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
     DEADLINE_REACHED = "DEADLINE_REACHED"
     PLATEAU = "PLATEAU"
@@ -427,4 +428,3 @@ class RuntimePaths(BaseModel):
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-

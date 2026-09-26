@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
   spec_hash TEXT NOT NULL,
   status TEXT NOT NULL,
   stop_reason TEXT,
+  stop_requested INTEGER NOT NULL DEFAULT 0,
   stage TEXT,
   baseline_json TEXT,
   baseline_snapshot TEXT,
@@ -64,6 +65,7 @@ CREATE TABLE IF NOT EXISTS actions (
   kind TEXT NOT NULL,
   status TEXT NOT NULL,
   request_hash TEXT NOT NULL,
+  request_json TEXT,
   response_json TEXT,
   error TEXT,
   created_at TEXT NOT NULL,
@@ -133,6 +135,12 @@ class CampaignStore:
         }
         if "research_state_json" not in campaign_columns:
             self.conn.execute("ALTER TABLE campaigns ADD COLUMN research_state_json TEXT")
+        if "stop_requested" not in campaign_columns:
+            self.conn.execute("ALTER TABLE campaigns ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0")
+
+        action_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(actions)")}
+        if "request_json" not in action_columns:
+            self.conn.execute("ALTER TABLE actions ADD COLUMN request_json TEXT")
 
         experiment_columns = {
             row["name"] for row in self.conn.execute("PRAGMA table_info(experiments)")
@@ -181,6 +189,18 @@ class CampaignStore:
         sql = ",".join(f"{key}=?" for key in fields)
         self.conn.execute(f"UPDATE campaigns SET {sql} WHERE id=1", tuple(fields.values()))
         self.conn.commit()
+
+    def request_stop(self) -> bool:
+        """Signal the owner; never overwrite a stage while its process is running."""
+        with self.conn:
+            changed = self.conn.execute(
+                "UPDATE campaigns SET stop_requested=1,updated_at=? WHERE id=1 "
+                "AND status NOT IN ('STOPPED','GOAL_MET') AND stop_requested=0",
+                (utc_now(),),
+            ).rowcount
+            if changed:
+                self.event("STOP_REQUESTED", {})
+        return bool(changed)
 
     def increment(self, field: str, amount: int = 1) -> None:
         allowed = {"experiment_count", "attempt_count", "agent_calls", "evaluator_calls", "non_improve_streak"}
@@ -244,6 +264,13 @@ class CampaignStore:
         self.conn.commit()
 
     def finish_attempt(self, attempt_id: int, experiment_id: int, *, status: str, scientific: bool, improved: bool) -> None:
+        attempt = self.attempt(attempt_id)
+        if attempt["experiment_id"] != experiment_id:
+            raise StoreError("attempt/experiment mismatch")
+        if attempt["status"] == "COMPLETED":
+            return
+        if self.campaign()["active_attempt_id"] != attempt_id:
+            raise StoreError("cannot finish an inactive attempt")
         now = utc_now()
         self.conn.execute("UPDATE attempts SET status='COMPLETED',updated_at=? WHERE id=?", (now, attempt_id))
         self.conn.execute("UPDATE experiments SET status=?,updated_at=? WHERE id=?", (status, now, experiment_id))
@@ -256,6 +283,48 @@ class CampaignStore:
         self.conn.execute("UPDATE campaigns SET active_experiment_id=NULL,active_attempt_id=NULL,stage=NULL,updated_at=? WHERE id=1", (now,))
         self.event("ATTEMPT_COMPLETED", {"attempt_id": attempt_id, "experiment_id": experiment_id, "status": status})
         self.conn.commit()
+
+    def promote_attempt(self, attempt_id: int, experiment_id: int) -> None:
+        """Commit champion, promotion receipt and next stage as one transaction."""
+        attempt = self.attempt(attempt_id)
+        experiment = self.experiment(experiment_id)
+        campaign = self.campaign()
+        if attempt["experiment_id"] != experiment_id:
+            raise StoreError("attempt/experiment mismatch")
+        if attempt["stage"] == "RECORD" and campaign["champion_snapshot"] == experiment["candidate_snapshot"]:
+            return
+        if attempt["stage"] != "PROMOTE" or campaign["active_attempt_id"] != attempt_id:
+            raise StoreError("promotion requires the active PROMOTE stage")
+        if not json.loads(experiment["decision_json"] or "{}").get("accepted"):
+            raise StoreError("cannot promote a rejected candidate")
+        if campaign["champion_snapshot"] not in {experiment["parent_snapshot"], experiment["candidate_snapshot"]}:
+            raise StoreError("champion changed before promotion")
+        now = utc_now()
+        with self.conn:
+            self.conn.execute(
+                "UPDATE campaigns SET champion_snapshot=?,champion_json=?,stage='RECORD',updated_at=? WHERE id=1",
+                (experiment["candidate_snapshot"], experiment["evaluation_json"], now),
+            )
+            self.conn.execute("UPDATE attempts SET stage='RECORD',updated_at=? WHERE id=?", (now, attempt_id))
+            self.event("CHAMPION_PROMOTED", {"experiment_id": experiment_id, "snapshot": experiment["candidate_snapshot"]})
+            self.event("STAGE_ENTERED", {"attempt_id": attempt_id, "stage": "RECORD"})
+
+    def abandon_active_attempt(self, reason: str) -> None:
+        campaign = self.campaign()
+        if campaign["active_attempt_id"] is None:
+            return
+        now = utc_now()
+        with self.conn:
+            self.conn.execute(
+                "UPDATE attempts SET status='CANCELLED',updated_at=? WHERE id=?",
+                (now, campaign["active_attempt_id"]),
+            )
+            self.conn.execute(
+                "UPDATE experiments SET status='CANCELLED',failure_category=?,lesson=?,updated_at=? WHERE id=?",
+                (reason, "Campaign ended before this attempt completed", now, campaign["active_experiment_id"]),
+            )
+            self.conn.execute("UPDATE campaigns SET active_attempt_id=NULL,active_experiment_id=NULL WHERE id=1")
+            self.event("ATTEMPT_CANCELLED", {"attempt_id": campaign["active_attempt_id"], "reason": reason})
 
     def action(self, action_id: str) -> dict[str, Any] | None:
         row = self.conn.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
@@ -299,17 +368,17 @@ class CampaignStore:
             (status, now, duration_ms, action_id),
         )
 
-    def start_action(self, action_id: str, experiment_id: int | None, stage: str, kind: str, request_hash: str) -> None:
+    def start_action(self, action_id: str, experiment_id: int | None, stage: str, kind: str, request_hash: str, request: dict[str, Any] | None = None) -> None:
         now = utc_now()
-        self.conn.execute(
-            "INSERT INTO actions(id,experiment_id,stage,kind,status,request_hash,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-            (action_id, experiment_id, stage, kind, "RUNNING", request_hash, now, now),
-        )
-        counter = "agent_calls" if kind == "agent" else "evaluator_calls"
-        self._reserve_action(action_id, kind, now)
-        self.conn.execute(f"UPDATE campaigns SET {counter}={counter}+1,updated_at=? WHERE id=1", (now,))
-        self.event("ACTION_STARTED", {"action_id": action_id, "kind": kind, "stage": stage})
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO actions(id,experiment_id,stage,kind,status,request_hash,request_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (action_id, experiment_id, stage, kind, "RUNNING", request_hash, json.dumps(request, sort_keys=True) if request is not None else None, now, now),
+            )
+            counter = "agent_calls" if kind == "agent" else "evaluator_calls"
+            self._reserve_action(action_id, kind, now)
+            self.conn.execute(f"UPDATE campaigns SET {counter}={counter}+1,updated_at=? WHERE id=1", (now,))
+            self.event("ACTION_STARTED", {"action_id": action_id, "kind": kind, "stage": stage})
 
     def finish_action(self, action_id: str, response: dict[str, Any]) -> None:
         now = utc_now()
@@ -344,15 +413,15 @@ class CampaignStore:
             raise StoreError(f"action {action_id} missing")
         now = utc_now()
         counter = "agent_calls" if action["kind"] == "agent" else "evaluator_calls"
-        self._settle_reservation(action_id, "UNKNOWN", now)
-        self.conn.execute(
-            "UPDATE actions SET status='RUNNING',response_json=NULL,error=NULL,updated_at=? WHERE id=?",
-            (now, action_id),
-        )
-        self._reserve_action(action_id, action["kind"], now)
-        self.conn.execute(f"UPDATE campaigns SET {counter}={counter}+1,updated_at=? WHERE id=1", (now,))
-        self.event("ACTION_RETRIED", {"action_id": action_id, "kind": action["kind"], "stage": action["stage"]})
-        self.conn.commit()
+        with self.conn:
+            self._settle_reservation(action_id, "UNKNOWN", now)
+            self.conn.execute(
+                "UPDATE actions SET status='RUNNING',response_json=NULL,error=NULL,updated_at=? WHERE id=?",
+                (now, action_id),
+            )
+            self._reserve_action(action_id, action["kind"], now)
+            self.conn.execute(f"UPDATE campaigns SET {counter}={counter}+1,updated_at=? WHERE id=1", (now,))
+            self.event("ACTION_RETRIED", {"action_id": action_id, "kind": action["kind"], "stage": action["stage"]})
 
     def record_evaluation(
         self,
@@ -429,4 +498,3 @@ class CampaignStore:
 
     def events(self) -> list[dict[str, Any]]:
         return [dict(row) for row in self.conn.execute("SELECT * FROM events ORDER BY seq")]
-

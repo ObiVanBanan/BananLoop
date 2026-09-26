@@ -10,7 +10,7 @@ from typing import Any, Callable
 from pydantic import ValidationError
 
 from .agents import AgentAdapter, AgentError, CodexAdapter, CommandAgentAdapter, PiAdapter
-from .budget import pre_action_stop
+from .budget import deadline_reached, pre_action_stop
 from .artifacts import retain_artifacts
 from .contracts import (
     CampaignSpec,
@@ -25,6 +25,7 @@ from .evaluators import CommandEvaluator, EvaluatorError
 from .integrity import evaluation_fingerprint, verify_evaluation_assets
 from .leakage import scan_forbidden_diff_patterns
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
+from .process import ProcessCancelled, check_process_control, process_control
 from .research import (
     agent_decision_view,
     agent_evaluation_view,
@@ -46,6 +47,10 @@ class EngineError(RuntimeError):
 
 class UnknownActionOutcome(EngineError):
     pass
+
+
+class CampaignHalted(Exception):
+    """A budget gate has durably stopped the campaign; unwind the active stage."""
 
 
 def _hash_payload(payload: dict[str, Any]) -> str:
@@ -149,9 +154,13 @@ class Engine:
             StopReason.PAUSED_INFRA,
             StopReason.PAUSED_NEEDS_INPUT,
             StopReason.USER_STOPPED,
+            StopReason.DEADLINE_REACHED,
         }
         final_holdout: dict[str, Any] | None = None
         if finalizable and self.holdout_evaluator is not None:
+            # Persist the terminal intent before any holdout observation. Resume
+            # can only finish this assessment, never return to adaptive planning.
+            self.store.update_campaign(stage="FINAL_HOLDOUT", stop_reason=reason.value)
             self._progress("final holdout: evaluate champion")
             try:
                 final_holdout = self._finalize_holdout()
@@ -175,12 +184,28 @@ class Engine:
                 self.store.conn.commit()
                 raise EngineError(f"final holdout failed: {exc}") from exc
 
+        if reason == StopReason.GOAL_MET and self.holdout_evaluator is not None:
+            if final_holdout is None or not final_holdout["target_met"]:
+                reason = StopReason.FINAL_HOLDOUT_REJECTED
+                status = CampaignStatus.STOPPED
+
         if reason == StopReason.GOAL_MET:
             status = CampaignStatus.GOAL_MET
         if reason == StopReason.PAUSED_INFRA:
             status = CampaignStatus.PAUSED_INFRA
         if reason == StopReason.PAUSED_NEEDS_INPUT:
             status = CampaignStatus.PAUSED_NEEDS_INPUT
+        if status in {CampaignStatus.STOPPED, CampaignStatus.GOAL_MET}:
+            campaign = self.store.campaign()
+            if campaign["active_attempt_id"] is not None:
+                attempt = self.store.attempt(campaign["active_attempt_id"])
+                if attempt["stage"] == "RECORD":
+                    self._stage_record(attempt["id"], attempt["experiment_id"])
+                else:
+                    self.store.abandon_active_attempt(reason.value)
+            snapshot = self.store.campaign()["champion_snapshot"]
+            if snapshot and self.workspace.workspace.exists():
+                self.workspace.checkout(snapshot)
         self.store.update_campaign(status=status.value, stop_reason=reason.value, stage=None)
         event_payload: dict[str, Any] = {"reason": reason.value, "status": status.value}
         if final_holdout is not None:
@@ -191,6 +216,17 @@ class Engine:
         return self.store.campaign()
 
     def _budget_or_stop(self, kind: str) -> bool:
+        control_reason = self._control_reason()
+        if control_reason:
+            raise ProcessCancelled(control_reason)
+        campaign = self.store.campaign()
+        if kind in {"evaluator", "final_evaluator"}:
+            reserve = int(kind != "final_evaluator" and self.holdout_evaluator is not None)
+            if campaign["evaluator_calls"] + 1 + reserve > self.spec.budget.max_evaluator_calls:
+                if kind == "final_evaluator":
+                    raise EngineError("no reserved evaluator call for final holdout")
+                self._stop(StopReason.BUDGET_EXHAUSTED)
+                return True
         if kind in {"evaluator", "final_evaluator"} and self.spec.budget.max_evaluation_units is not None:
             calls = 1 + int(kind != "final_evaluator" and self.holdout_evaluator is not None)
             if self.store.evaluation_work_reserved() + calls * self.spec.budget.evaluation_units_per_call > self.spec.budget.max_evaluation_units:
@@ -205,6 +241,14 @@ class Engine:
             self._stop(reason)
             return True
         return False
+
+    def _control_reason(self) -> str | None:
+        campaign = self.store.campaign()
+        if campaign.get("stop_requested"):
+            return StopReason.USER_STOPPED.value
+        if deadline_reached(campaign["created_at"], self.spec.budget):
+            return StopReason.DEADLINE_REACHED.value
+        return None
 
     def _new_attempt_fits_evaluator_budget(self) -> bool:
         campaign = self.store.campaign()
@@ -250,7 +294,7 @@ class Engine:
                 return response
             if existing["status"] == "CANCELLED":
                 if self._budget_or_stop(kind):
-                    raise EngineError("budget exhausted before action retry")
+                    raise CampaignHalted()
                 self._progress(f"{action_id}: retry cancelled action")
                 self.store.restart_action(action_id)
             elif existing["status"] == "RUNNING":
@@ -260,7 +304,7 @@ class Engine:
                         "resume with --retry-running-action only if you know the previous local process is gone"
                     )
                 if self._budget_or_stop(kind):
-                    raise EngineError("budget exhausted before action retry")
+                    raise CampaignHalted()
                 self._progress(f"{action_id}: explicitly retry orphaned RUNNING action")
                 self.store.restart_action(action_id)
             elif existing["status"] == "FAILED":
@@ -270,7 +314,7 @@ class Engine:
                         "resume with --retry-failed-action to retry it"
                     )
                 if self._budget_or_stop(kind):
-                    raise EngineError("budget exhausted before failed action retry")
+                    raise CampaignHalted()
                 self._progress(f"{action_id}: explicitly retry FAILED action")
                 self.store.restart_action(action_id)
             else:
@@ -279,8 +323,8 @@ class Engine:
                 )
         else:
             if self._budget_or_stop(kind):
-                raise EngineError("budget exhausted before action")
-            self.store.start_action(action_id, experiment_id, stage, kind, request_hash)
+                raise CampaignHalted()
+            self.store.start_action(action_id, experiment_id, stage, kind, request_hash, request)
         self._progress(f"{action_id}: invoke {kind}")
         output_dir = self.store.path.parent / "artifacts" / hashlib.sha256(action_id.encode()).hexdigest()[:24]
         if kind != "agent":
@@ -297,7 +341,10 @@ class Engine:
                 if evaluator is not None:
                     evaluator.context = context
         try:
-            response = invoke()
+            with process_control(self._control_reason):
+                check_process_control()
+                response = invoke()
+                check_process_control()
             if kind != "agent":
                 result = EvaluationResult.model_validate(response)
                 ceiling = self.spec.budget.evaluation_units_per_call
@@ -305,6 +352,9 @@ class Engine:
                     raise EvaluatorError("missing resource_units or reported work exceeds reserved limit")
                 retain_artifacts(result, output_dir, experiment_id, request["snapshot"])
                 response = result.model_dump(mode="json")
+        except ProcessCancelled as exc:
+            self.store.cancel_action(action_id, exc.reason)
+            raise
         except KeyboardInterrupt:
             self.store.cancel_action(action_id, "user interrupt")
             self._progress(f"{action_id}: cancelled by user")
@@ -360,11 +410,6 @@ class Engine:
         if existing is not None:
             result = EvaluationResult.model_validate_json(existing["result_json"])
             return self._holdout_assessment(result)
-
-        if campaign["evaluator_calls"] >= self.spec.budget.max_evaluator_calls:
-            raise EngineError(
-                "final holdout could not run: evaluator-call budget has no reserved slot"
-            )
 
         self.workspace.checkout(snapshot)
         integrity_violations = verify_evaluation_assets(
@@ -524,6 +569,15 @@ class Engine:
         return payload
 
     def _task_context(self, role: str, experiment_id: int) -> dict[str, Any]:
+        action_role = "analyze-dev-failures" if role == "analyze" else role
+        action = self.store.action(f"exp:{experiment_id}:{action_role}")
+        if action and action.get("request_json"):
+            request = json.loads(action["request_json"])
+            if _hash_payload(request) != action["request_hash"]:
+                raise EngineError("stored agent request hash mismatch")
+            # Call reservations change remaining_budget. Replays must use the
+            # originally approved input, not a newly generated planning context.
+            return request
         research_state = self._refresh_research_state()
         campaign = self.store.campaign()
         return {
@@ -590,7 +644,10 @@ class Engine:
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(f"propose failed: {exc}") from exc
 
-        duplicate = redundancy_reason(hypothesis, self.store.experiments())
+        duplicate = redundancy_reason(
+            hypothesis,
+            [row for row in self.store.experiments() if row["id"] != experiment_id],
+        )
         if duplicate:
             self.store.update_experiment(
                 experiment_id,
@@ -1109,11 +1166,7 @@ class Engine:
         self._checkpoint(self.store.attempt(attempt_id)["stage"])
 
     def _stage_promote(self, attempt_id: int, experiment_id: int) -> None:
-        exp = self.store.experiment(experiment_id)
-        self.store.update_campaign(champion_snapshot=exp["candidate_snapshot"], champion_json=exp["evaluation_json"])
-        self.store.event("CHAMPION_PROMOTED", {"experiment_id": experiment_id, "snapshot": exp["candidate_snapshot"]})
-        self.store.conn.commit()
-        self.store.set_stage(attempt_id, "RECORD")
+        self.store.promote_attempt(attempt_id, experiment_id)
         self._checkpoint("RECORD")
 
     def _stage_reject(self, attempt_id: int, experiment_id: int) -> None:
@@ -1149,6 +1202,8 @@ class Engine:
 
     def _post_iteration_stop(self) -> bool:
         campaign = self.store.campaign()
+        if campaign["active_attempt_id"] is not None:
+            return False
         champion = EvaluationResult.model_validate_json(campaign["champion_json"])
         goal_met = target_met(self.spec, champion)
         if goal_met and self.validation_evaluator is not None:
@@ -1173,6 +1228,26 @@ class Engine:
         retry_failed_actions: bool = False,
         agent_timeout_seconds: int | None = None,
     ) -> dict[str, Any]:
+        try:
+            return self._run(
+                resume=resume,
+                retry_running_actions=retry_running_actions,
+                retry_failed_actions=retry_failed_actions,
+                agent_timeout_seconds=agent_timeout_seconds,
+            )
+        except CampaignHalted:
+            return self.store.campaign()
+        except ProcessCancelled as exc:
+            return self._stop(StopReason(exc.reason))
+
+    def _run(
+        self,
+        *,
+        resume: bool,
+        retry_running_actions: bool,
+        retry_failed_actions: bool,
+        agent_timeout_seconds: int | None,
+    ) -> dict[str, Any]:
         self._retry_running_actions = retry_running_actions
         self._retry_failed_actions = retry_failed_actions
         self._agent_timeout_seconds = agent_timeout_seconds
@@ -1181,6 +1256,11 @@ class Engine:
             raise EngineError("approved campaign spec hash mismatch")
         if campaign["status"] in {CampaignStatus.GOAL_MET.value, CampaignStatus.STOPPED.value}:
             return campaign
+        control_reason = self._control_reason()
+        if control_reason:
+            return self._stop(StopReason(control_reason))
+        if campaign["stage"] == "FINAL_HOLDOUT":
+            return self._stop(StopReason(campaign["stop_reason"]))
         if resume and campaign["status"] in {CampaignStatus.PAUSED_INFRA.value, CampaignStatus.PAUSED_NEEDS_INPUT.value}:
             self.store.update_campaign(status=CampaignStatus.RUNNING.value, stop_reason=None)
         probe = self.agent.probe()
@@ -1194,6 +1274,9 @@ class Engine:
 
         while True:
             campaign = self.store.campaign()
+            control_reason = self._control_reason()
+            if control_reason:
+                return self._stop(StopReason(control_reason))
             if campaign["status"] not in {CampaignStatus.RUNNING.value, CampaignStatus.READY.value}:
                 return campaign
             if campaign["active_attempt_id"] is None:
@@ -1236,4 +1319,3 @@ class Engine:
                     return self.store.campaign()
             else:
                 raise EngineError(f"unknown stage {stage}")
-

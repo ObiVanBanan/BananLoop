@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, NonRegressionSpec, PairedComparison, RuntimePaths
 from .engine import ControlledInterruption, Engine, EngineError
+from .export import export_champion
 from .integrity import EvaluationIntegrityError, discover_evaluation_assets, evaluation_fingerprint
 from .lock import CampaignLock, CampaignLockError
 from .report import build_report, render_markdown
@@ -231,12 +232,20 @@ def cmd_stop(args: argparse.Namespace) -> int:
     paths = _paths(repo, args.state_dir)
     store = CampaignStore(paths.db)
     try:
-        store.update_campaign(status="STOPPED", stop_reason="USER_STOPPED", stage=None)
-        store.event("USER_STOPPED", {})
-        store.conn.commit()
+        store.campaign()  # Fail clearly if the state directory is uninitialized.
+        store.request_stop()
+        try:
+            with CampaignLock(paths.root / "campaign.lock"):
+                # No live owner: reconcile a stop without launching an agent.
+                spec = store.spec()
+                workspace = WorkspaceManager(Path(spec.source_repo), paths.workspace)
+                Engine(store, workspace).run()
+        except CampaignLockError:
+            print("Stop requested. The running supervisor will cancel its local process and preserve the champion.")
+            return 0
     finally:
         store.close()
-    print("Campaign stopped. Durable state and champion were preserved.")
+    print("Campaign is terminal. Durable state and champion were preserved.")
     return 0
 
 
@@ -254,6 +263,22 @@ def cmd_report(args: argparse.Namespace) -> int:
         print(args.output)
     else:
         print(output)
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).resolve()
+    paths = _paths(repo, args.state_dir)
+    try:
+        with CampaignLock(paths.root / "campaign.lock"):
+            store = CampaignStore(paths.db)
+            try:
+                output = export_champion(store, paths.workspace, Path(args.output))
+            finally:
+                store.close()
+    except CampaignLockError as exc:
+        raise StoreError("stop or pause the campaign before exporting its champion") from exc
+    print(f"Champion patch, manifest and operator reports exported to {output}")
     return 0
 
 
@@ -362,7 +387,7 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--yes", action="store_true", help="approve an interactive CampaignSpec without confirmation")
     init.set_defaults(func=cmd_init)
 
-    for name in ("run", "resume", "status", "stop", "report"):
+    for name in ("run", "resume", "status", "stop", "report", "export"):
         sp = sub.add_parser(name)
         sp.add_argument("--repo", default=".")
         sp.add_argument("--state-dir")
@@ -381,6 +406,9 @@ def parser() -> argparse.ArgumentParser:
             sp.add_argument("--json", action="store_true")
             sp.add_argument("--output")
             sp.set_defaults(func=cmd_report)
+        elif name == "export":
+            sp.add_argument("--output", required=True, help="new directory for champion.patch, manifest and reports")
+            sp.set_defaults(func=cmd_export)
         elif name == "resume":
             sp.add_argument(
                 "--retry-running-action",
@@ -409,4 +437,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

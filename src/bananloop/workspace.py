@@ -27,6 +27,7 @@ class WorkspaceManager:
         self.source_repo = source_repo.resolve()
         self.workspace = workspace.resolve()
         self.agent_workspace: Path | None = None
+        self._agent_base: str | None = None
 
     def ensure(self, base_commit: str) -> None:
         if not self.workspace.exists():
@@ -108,12 +109,15 @@ class WorkspaceManager:
         run_process(["git", "config", "user.name", "BananLoop Agent Sandbox"], cwd=self.agent_workspace, timeout=10)
         run_process(["git", "add", "-A"], cwd=self.agent_workspace, timeout=30)
         run_process(["git", "commit", "-m", "bananloop sanitized agent baseline"], cwd=self.agent_workspace, timeout=60)
+        self._agent_base = run_process(["git", "rev-parse", "HEAD"], cwd=self.agent_workspace, timeout=10).stdout.strip()
         return self.agent_workspace
 
     def apply_agent_changes(self, agent_workspace: Path, hidden_paths: list[str]) -> list[str]:
+        if agent_workspace != self.agent_workspace or self._agent_base is None:
+            raise WorkspaceError("agent workspace has no supervisor-owned baseline")
         run_process(["git", "add", "-A"], cwd=agent_workspace, timeout=30)
         changed_out = run_process(
-            ["git", "diff", "--cached", "--name-only"],
+            ["git", "diff", "--cached", "--name-only", self._agent_base],
             cwd=agent_workspace,
             timeout=20,
         ).stdout
@@ -125,7 +129,7 @@ class WorkspaceManager:
                 "agent attempted to write hidden path(s): " + ", ".join(sorted(violations))
             )
         patch = run_process(
-            ["git", "diff", "--cached", "--binary", "--full-index"],
+            ["git", "diff", "--cached", "--binary", "--full-index", self._agent_base],
             cwd=agent_workspace,
             timeout=30,
         ).stdout
@@ -141,6 +145,7 @@ class WorkspaceManager:
     def cleanup_agent_workspace(self) -> None:
         workspace = self.agent_workspace
         self.agent_workspace = None
+        self._agent_base = None
         if workspace is None or not workspace.exists():
             return
         try:

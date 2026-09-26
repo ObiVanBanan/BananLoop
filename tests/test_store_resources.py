@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import pytest
 from pathlib import Path
 
 from bananloop.contracts import AgentConfig, CampaignSpec, Direction, MetricSpec
-from bananloop.store import CampaignStore
+from bananloop.store import CampaignStore, StoreError
 
 
 def make_store(tmp_path: Path) -> CampaignStore:
@@ -115,5 +116,29 @@ def test_existing_state_db_migrates_evaluations_to_dev_tier(tmp_path: Path):
         assert len(rows) == 1
         assert rows[0]["candidate_snapshot"] == "abc"
         assert rows[0]["tier"] == "dev"
+    finally:
+        store.close()
+
+
+def test_failed_work_reservation_rolls_back_action_and_retry(tmp_path):
+    store = make_store(tmp_path)
+    try:
+        spec = store.spec()
+        spec.budget.max_evaluation_units = 1
+        spec.budget.evaluation_units_per_call = 1
+        store.update_campaign(spec_json=spec.model_dump_json(), spec_hash=spec.approved_hash())
+        store.start_action("spent", None, "BASELINE", "evaluator", "hash")
+        store.fail_action("spent", "known failure")
+        for retry in (False, True):
+            with pytest.raises(StoreError, match="work budget exhausted"):
+                if retry:
+                    store.restart_action("spent")
+                else:
+                    store.start_action("extra", None, "BASELINE", "evaluator", "hash")
+            assert store.action("extra") is None
+            assert store.action("spent")["status"] == "FAILED"
+            assert store.action("spent")["error"] == "known failure"
+            assert store.campaign()["evaluator_calls"] == 1
+            assert store.evaluation_work_reserved() == 1
     finally:
         store.close()

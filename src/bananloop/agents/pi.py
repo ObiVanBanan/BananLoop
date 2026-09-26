@@ -11,7 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from .base import AgentAdapter, AgentError
-from ..process import ProcessError, run_process
+from ..process import (
+    ProcessError, check_process_control, process_group_options,
+    run_process, terminate_process_tree,
+)
 
 
 class _JsonlReader:
@@ -270,14 +273,7 @@ class PiAdapter(AgentAdapter):
 
     @staticmethod
     def _terminate(proc: subprocess.Popen[str]) -> None:
-        if proc.poll() is not None:
-            return
-        proc.terminate()
-        try:
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=2)
+        terminate_process_tree(proc)
 
     def _next_event(
         self,
@@ -287,6 +283,7 @@ class PiAdapter(AgentAdapter):
         stderr_lines: list[str],
     ) -> dict[str, Any]:
         while True:
+            check_process_control()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 self._terminate(proc)
@@ -368,6 +365,7 @@ class PiAdapter(AgentAdapter):
         return text
 
     def execute(self, task: dict[str, Any], workspace: Path, timeout: int) -> dict[str, Any]:
+        check_process_control()
         argv = self._argv()
         action_id = self._action_id(task)
         stderr_lines: list[str] = []
@@ -382,6 +380,7 @@ class PiAdapter(AgentAdapter):
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
+                **process_group_options(),
             )
         except OSError as exc:
             raise AgentError(f"cannot start Pi RPC: {argv!r}: {exc}") from exc

@@ -1,5 +1,9 @@
 # BananLoop v0.1
 
+Current integration and remaining release gates: [completion readiness](docs/completion-readiness.md).
+The September 19 proposal/research documents describe the original extraction;
+the repository already contains the standalone engine, experiments and adapters.
+
 BananLoop is a local supervisor for bounded, measurable improvement campaigns over an existing Git repository:
 
 ```text
@@ -24,6 +28,7 @@ The coding agent proposes and edits. The evaluator and deterministic policy deci
 - budgets for experiments, attempts, agent calls, evaluator calls and wall time;
 - `init`, `run`, `status`, `resume`, `stop`, `report` CLI;
 - Markdown/JSON reports built only from durable records;
+- explicit champion patch export with a manifest and operator reports;
 - deterministic fixture demonstrating accept -> reject -> accept;
 - documented `rag_tender` bridge boundary.
 
@@ -221,6 +226,13 @@ BananLoop can own the full evaluation lifecycle instead of requiring a manual po
 - Validation/holdout commands may point at external datasets. Repository evaluator scripts/configs referenced by any tier are frozen and automatically hidden from the agent workspace.
 - When a holdout is configured, BananLoop reserves the final evaluator-call budget slot for it.
 
+`GOAL_MET` requires the final holdout to meet the target and mandatory guards.
+A valid final measurement below target ends as `STOPPED / FINAL_HOLDOUT_REJECTED`;
+it never reopens adaptive search. A failed final invocation pauses at
+`FINAL_HOLDOUT`; `resume --retry-failed-action` retries only that assessment,
+within the remaining call/work/time limits. A completed final receipt is reused
+even when it consumed the last permitted call.
+
 Example:
 
 ```bash
@@ -292,9 +304,27 @@ bananloop report --repo .
 bananloop report --repo . --json --output campaign.json
 bananloop stop --repo .
 bananloop resume --repo .
+bananloop export --repo . --output ../champion-export
 ```
 
 Use `--state-dir PATH` on all commands to keep campaign state in an explicit directory (useful for CI/tests).
+
+`stop` sends a durable cancellation request to the running supervisor. Managed
+local processes are polled for cancellation and the campaign deadline. The
+supervisor terminates the owned process group/tree, settles the reservation and
+keeps the last champion. Neither user stop nor an expired deadline launches a
+new holdout call; its final assessment remains pending if it has not run.
+Ctrl+C interrupts the active action and allows `resume` to continue within the
+original budget. Remote jobs and deliberately detached processes remain outside
+these local cancellation guarantees.
+
+`export` requires an idle campaign and a new output directory. It writes
+`champion.patch` (including binary changes), `manifest.json`, `report.json` and
+`report.md`. It never applies the patch or changes the source checkout. The
+manifest names the required base commit and the final assessment, including a
+rejected/pending holdout. Artifact files remain in the state directory; the
+export contains their references, so preserve the complete state for full evidence.
+Review these operator reports before sharing them or placing them in agent context.
 
 ## Scope boundaries
 
