@@ -202,6 +202,7 @@ def bootstrap_campaign(
         "source_base_commit": source_base,
         "bootstrap_snapshot": bootstrap_snapshot,
         "changed_paths": changed,
+        "bootstrap_request": task,
         "plan": plan.model_dump(mode="json"),
     }
     (paths.root / "bootstrap-plan.json").write_text(
