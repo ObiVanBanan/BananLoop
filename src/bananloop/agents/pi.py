@@ -103,7 +103,11 @@ class PiAdapter(AgentAdapter):
         if role == "bootstrap":
             instruction = (
                 "You are the campaign bootstrapper inside BananLoop. Inspect the repository and human goal and "
-                "build an executable measurement contract. You may create or modify files only under "
+                "build an executable measurement contract. The top-level goal field is authoritative human intent. "
+                "Never request a repository-side goal/fix/brief file just to confirm that intent; do not require "
+                ".hermes/fix.md when goal is present. If evaluators conflict, choose the one whose semantics best "
+                "match the explicit goal. Use repository.detected_python_runtimes and probe those executables before "
+                "claiming that Python or a required package environment is missing. You may create or modify files only under "
                 ".bananloop_eval/. Never modify production code, tests, reference assets, or user configuration. "
                 "Prefer an existing trustworthy evaluator; otherwise create a thin evaluator adapter. Freeze cases "
                 "and randomness where possible, avoid per-evaluation LLM planning, and use paired case-level "
