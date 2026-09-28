@@ -218,14 +218,52 @@ def bootstrap_campaign(
         raise BootstrapError(f"bootstrap agent unavailable: {probe}")
 
     task = _bootstrap_task(repo, goal, source_base, agent_config)
-    try:
-        raw = adapter.execute(task, workspace.workspace, timeout=agent_timeout_seconds)
-        raw = adapter.normalize_result(task, raw)
-        plan = BootstrapPlan.model_validate(raw)
-    except (AgentError, ValueError) as exc:
-        workspace.checkout(source_base)
-        raise BootstrapError(f"campaign bootstrap failed: {exc}") from exc
+    bootstrap_attempts: list[dict[str, Any]] = []
+    plan: BootstrapPlan | None = None
+    for attempt_index in range(2):
+        try:
+            raw = adapter.execute(
+                task,
+                workspace.workspace,
+                timeout=agent_timeout_seconds,
+            )
+            raw = adapter.normalize_result(task, raw)
+            plan = BootstrapPlan.model_validate(raw)
+        except (AgentError, ValueError) as exc:
+            workspace.checkout(source_base)
+            raise BootstrapError(f"campaign bootstrap failed: {exc}") from exc
 
+        contract_error = _bootstrap_contract_error(plan, task)
+        bootstrap_attempts.append(
+            {
+                "attempt": attempt_index + 1,
+                "request": task,
+                "plan": plan.model_dump(mode="json"),
+                "contract_error": contract_error,
+            }
+        )
+        if contract_error is None:
+            break
+        if attempt_index == 0:
+            task = {
+                **task,
+                "repair": {
+                    "reason": contract_error,
+                    "instruction": (
+                        "Correct the plan using the already supplied authoritative "
+                        "goal. Do not ask the operator to repeat information already "
+                        "present in this request."
+                    ),
+                    "previous_plan": plan.model_dump(mode="json"),
+                },
+            }
+            continue
+        workspace.checkout(source_base)
+        raise BootstrapError(
+            "bootstrap agent violated the input contract twice: " + contract_error
+        )
+
+    assert plan is not None
     bootstrap_snapshot = workspace.snapshot("bananloop: bootstrap evaluator")
     changed = workspace.changed_paths(source_base, bootstrap_snapshot)
     violations = [path for path in changed if not _bootstrap_path(path)]
@@ -240,7 +278,8 @@ def bootstrap_campaign(
         "source_base_commit": source_base,
         "bootstrap_snapshot": bootstrap_snapshot,
         "changed_paths": changed,
-        "bootstrap_request": task,
+        "bootstrap_request": bootstrap_attempts[0]["request"],
+        "bootstrap_attempts": bootstrap_attempts,
         "plan": plan.model_dump(mode="json"),
     }
     (paths.root / "bootstrap-plan.json").write_text(
