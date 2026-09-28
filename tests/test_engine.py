@@ -1095,7 +1095,6 @@ def test_snapshot_that_loses_material_changes_pauses_infra(
     store, engine, _, _ = make_engine(tmp_path)
     try:
         experiment_id, attempt_id = _prepare_execute_stage(store, engine)
-        engine.agent = IsolatedImplementAgent()
         engine._stage_execute(attempt_id, experiment_id)
         assert store.attempt(attempt_id)["stage"] == "SNAPSHOT"
         parent = store.experiment(experiment_id)["parent_snapshot"]
