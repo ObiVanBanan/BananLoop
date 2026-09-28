@@ -154,6 +154,8 @@ def test_repo_goal_bootstrap_creates_campaign_without_touching_source(tmp_path: 
     record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
     assert record["source_base_commit"] == source_base
     assert record["changed_paths"] == [".bananloop_eval/evaluator.py"]
+    assert record["bootstrap_request"]["goal"] == "improve fixture quality"
+    assert record["bootstrap_request"]["repository"]["detected_python_runtimes"]
 
 
 
