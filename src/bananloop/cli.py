@@ -6,6 +6,7 @@ import shlex
 import sys
 from pathlib import Path
 
+from .bootstrap import BootstrapError, bootstrap_campaign
 from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, NonRegressionSpec, PairedComparison, RuntimePaths
 from .engine import ControlledInterruption, Engine, EngineError
 from .export import export_champion
@@ -168,6 +169,49 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_start(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).resolve()
+    if not args.allow_dirty:
+        assert_clean_source(repo)
+    if args.agent is None:
+        args.agent = "codex"
+
+    paths = _paths(repo, args.state_dir)
+    plan, spec = bootstrap_campaign(
+        repo=repo,
+        goal=args.goal,
+        paths=paths,
+        agent_config=_agent_config(args),
+        agent_timeout_seconds=args.bootstrap_timeout_seconds,
+        max_experiments=args.max_experiments,
+        max_attempts=args.max_attempts,
+        max_agent_calls=args.max_agent_calls,
+        max_evaluator_calls=args.max_evaluator_calls,
+        deadline_seconds=args.deadline_seconds,
+        plateau_experiments=args.plateau,
+    )
+    if spec is None:
+        print(json.dumps({
+            "status": "PAUSED_NEEDS_INPUT",
+            "summary": plan.summary,
+            "needs_input": plan.needs_input,
+            "bootstrap_plan": str(paths.root / "bootstrap-plan.json"),
+        }, indent=2, ensure_ascii=False))
+        return 3
+
+    print(json.dumps({
+        "status": "READY",
+        "summary": plan.summary,
+        "primary_metric": spec.primary_metric.model_dump(mode="json"),
+        "paired_comparison": spec.paired_comparison.model_dump(mode="json") if spec.paired_comparison else None,
+        "state": str(paths.root),
+        "spec": spec.approved_hash(),
+    }, indent=2, ensure_ascii=False))
+    if args.prepare_only:
+        return 0
+    return cmd_run(args, resume=False)
+
+
 def _open(args: argparse.Namespace) -> tuple[RuntimePaths, CampaignStore, Engine]:
     repo = Path(args.repo).resolve()
     paths = _paths(repo, args.state_dir)
@@ -285,6 +329,49 @@ def cmd_export(args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bananloop")
     sub = p.add_subparsers(dest="command", required=True)
+    start = sub.add_parser(
+        "start",
+        help="autonomously turn repo + goal into a campaign and run it",
+    )
+    start.add_argument("--repo", default=".")
+    start.add_argument("--state-dir")
+    start.add_argument("--goal", required=True)
+    start.add_argument("--agent", choices=["codex", "command", "pi"], default="codex")
+    start.add_argument("--agent-cmd")
+    start.add_argument("--model")
+    start.add_argument("--provider", help="Pi provider, e.g. ollama-cloud")
+    start.add_argument(
+        "--thinking",
+        choices=["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+        help="Pi thinking level",
+    )
+    start.add_argument("--codex-arg", action="append")
+    start.add_argument("--pi-arg", action="append")
+    start.add_argument(
+        "--bootstrap-timeout-seconds",
+        type=int,
+        default=1800,
+        help="maximum time for repository discovery and evaluator construction",
+    )
+    start.add_argument(
+        "--agent-timeout-seconds",
+        type=int,
+        help="override per-agent-call wall time during the optimization loop",
+    )
+    start.add_argument("--max-experiments", type=int, default=4)
+    start.add_argument("--max-attempts", type=int, default=7)
+    start.add_argument("--max-agent-calls", type=int, default=18)
+    start.add_argument("--max-evaluator-calls", type=int, default=16)
+    start.add_argument("--deadline-seconds", type=int, default=14400)
+    start.add_argument("--plateau", type=int, default=3)
+    start.add_argument("--allow-dirty", action="store_true")
+    start.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help="build and persist CampaignSpec but do not start optimization",
+    )
+    start.set_defaults(func=cmd_start)
+
     init = sub.add_parser("init", help="approve and persist a campaign specification")
     init.add_argument("--repo", default=".")
     init.add_argument("--state-dir")
@@ -430,7 +517,7 @@ def main() -> None:
     try:
         code = parser().parse_args()
         raise SystemExit(code.func(code))
-    except (StoreError, WorkspaceError, EvaluationIntegrityError, ValueError) as exc:
+    except (BootstrapError, StoreError, WorkspaceError, EvaluationIntegrityError, ValueError) as exc:
         print(f"BananLoop error: {exc}", file=sys.stderr)
         raise SystemExit(2)
 
