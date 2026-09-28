@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -170,15 +171,28 @@ class CodexAdapter(AgentAdapter):
         self.model = model
         self.extra_args = extra_args or []
 
-    def probe(self) -> dict[str, Any]:
+    def _resolved_command(self) -> list[str]:
         path = shutil.which("codex")
         if not path:
+            raise AgentError("Codex executable not found")
+        suffix = Path(path).suffix.lower()
+        if os.name == "nt" and suffix in {".cmd", ".bat"}:
+            return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", path]
+        if os.name == "nt" and suffix == ".ps1":
+            powershell = shutil.which("powershell.exe") or shutil.which("pwsh.exe") or "powershell.exe"
+            return [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path]
+        return [path]
+
+    def probe(self) -> dict[str, Any]:
+        try:
+            command = self._resolved_command()
+        except AgentError:
             return {"available": False, "kind": "codex"}
         try:
-            version = run_process(["codex", "--version"], cwd=Path.cwd(), timeout=10).stdout.strip()
+            version = run_process([*command, "--version"], cwd=Path.cwd(), timeout=10).stdout.strip()
         except ProcessError:
             version = "unknown"
-        return {"available": True, "kind": "codex", "path": path, "version": version}
+        return {"available": True, "kind": "codex", "command": command, "version": version}
 
     def execute(self, task: dict[str, Any], workspace: Path, timeout: int) -> dict[str, Any]:
         role = task.get("role")
@@ -236,7 +250,7 @@ class CodexAdapter(AgentAdapter):
             schema_path = Path(td) / "schema.json"
             result_path = Path(td) / "result.json"
             schema_path.write_text(json.dumps(schema), encoding="utf-8")
-            argv = ["codex", "exec", "--skip-git-repo-check", "--output-schema", str(schema_path), "-o", str(result_path)]
+            argv = [*self._resolved_command(), "exec", "--skip-git-repo-check", "--output-schema", str(schema_path), "-o", str(result_path)]
             if self.model:
                 argv += ["-m", self.model]
             argv += self.extra_args
