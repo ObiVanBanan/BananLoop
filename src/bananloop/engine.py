@@ -584,6 +584,7 @@ class Engine:
             "schema_version": 1,
             "role": role,
             "goal": self.spec.goal,
+            "project_context": self.spec.project_context,
             "primary_metric": self.spec.primary_metric.model_dump(mode="json"),
             "guardrails": [
                 g.model_dump(mode="json")
