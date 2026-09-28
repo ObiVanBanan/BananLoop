@@ -1162,5 +1162,8 @@ def test_evaluation_request_records_candidate_materialization_proof(tmp_path: Pa
         assert "value.txt" in proof["changed_paths"]
         assert len(proof["diff_sha256"]) == 64
         assert proof["tree"]
+
+        report = build_report(store)
+        assert report["experiments"][0]["candidate_proof"] == proof
     finally:
         store.close()
