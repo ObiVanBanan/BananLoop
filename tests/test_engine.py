@@ -934,3 +934,234 @@ def test_dev_failure_analyzer_sees_public_teacher_answer_but_proposer_does_not(t
         assert "Reconcile conflicting hard-field provenance" in rendered_proposer
     finally:
         store.close()
+
+
+
+class MissingContextProposer(AgentAdapter):
+    def probe(self):
+        return {"available": True}
+
+    def execute(self, task, workspace, timeout):
+        return {
+            "hypothesis": "Cannot form a useful hypothesis because research_state was not provided",
+            "rationale": "planning_mode and research_state are missing from campaign context",
+            "expected_effect": "unknown until context is supplied",
+            "files_or_area": ["value.txt"],
+            "falsification_condition": "n/a",
+            "mechanism_key": "missing-context-deflection",
+        }
+
+
+class PhantomImplementAgent(AgentAdapter):
+    def probe(self):
+        return {"available": True}
+
+    def execute(self, task, workspace, timeout):
+        return {
+            "summary": "claimed a change without materializing it",
+            "changed_paths": ["value.txt"],
+            "verification_notes": "none",
+            "blockers": [],
+        }
+
+
+class NoOpImplementAgent(AgentAdapter):
+    def probe(self):
+        return {"available": True}
+
+    def execute(self, task, workspace, timeout):
+        return {
+            "summary": "no applicable change",
+            "changed_paths": [],
+            "verification_notes": "no-op",
+            "blockers": [],
+        }
+
+
+class BlockedImplementAgent(AgentAdapter):
+    def probe(self):
+        return {"available": True}
+
+    def execute(self, task, workspace, timeout):
+        return {
+            "summary": "cannot implement within allowed scope",
+            "changed_paths": [],
+            "verification_notes": "blocked before editing",
+            "blockers": ["required mechanism is outside editable scope"],
+        }
+
+
+def _prepare_execute_stage(store: CampaignStore, engine: Engine) -> tuple[int, int]:
+    engine.workspace.ensure(engine.spec.base_commit)
+    engine._baseline()
+    campaign = store.campaign()
+    experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+    store.update_experiment(
+        experiment_id,
+        hypothesis_json=Hypothesis(
+            hypothesis="change fixture",
+            rationale="exercise materialization guard",
+            expected_effect="quality up",
+            files_or_area=["value.txt"],
+            falsification_condition="quality unchanged",
+            mechanism_key=f"fixture-{experiment_id}",
+        ).model_dump_json(),
+    )
+    store.set_stage(attempt_id, "EXECUTE")
+    return experiment_id, attempt_id
+
+
+def test_missing_context_deflection_is_rejected_as_ungrounded_not_scientific(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        engine.agent = MissingContextProposer()
+
+        engine._stage_propose(attempt_id, experiment_id)
+
+        exp = store.experiment(experiment_id)
+        assert exp["status"] == "UNGROUNDED"
+        assert exp["failure_category"] == "UNGROUNDED_HYPOTHESIS"
+        assert "research_state" in exp["lesson"]
+        assert store.campaign()["experiment_count"] == 0
+        assert store.campaign()["active_attempt_id"] is None
+    finally:
+        store.close()
+
+
+def test_claimed_changes_that_never_reach_supervisor_pause_infra(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        evaluator_calls = store.campaign()["evaluator_calls"]
+        engine.agent = PhantomImplementAgent()
+
+        with pytest.raises(EngineError, match="no changes reached the supervisor workspace"):
+            engine._stage_execute(attempt_id, experiment_id)
+
+        exp = store.experiment(experiment_id)
+        campaign = store.campaign()
+        assert exp["failure_category"] == "CANDIDATE_NOT_MATERIALIZED"
+        assert campaign["status"] == "PAUSED_INFRA"
+        assert campaign["evaluator_calls"] == evaluator_calls
+        assert store.action(f"exp:{experiment_id}:evaluate") is None
+    finally:
+        store.close()
+
+
+def test_noop_implementation_is_rejected_before_snapshot_or_evaluation(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        evaluator_calls = store.campaign()["evaluator_calls"]
+        engine.agent = NoOpImplementAgent()
+
+        engine._stage_execute(attempt_id, experiment_id)
+
+        exp = store.experiment(experiment_id)
+        assert exp["failure_category"] == "NO_CHANGES"
+        assert store.attempt(attempt_id)["stage"] == "REJECT"
+        assert store.campaign()["evaluator_calls"] == evaluator_calls
+        assert store.action(f"exp:{experiment_id}:evaluate") is None
+    finally:
+        store.close()
+
+
+def test_implementation_blocker_is_rejected_without_fake_candidate(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        evaluator_calls = store.campaign()["evaluator_calls"]
+        engine.agent = BlockedImplementAgent()
+
+        engine._stage_execute(attempt_id, experiment_id)
+
+        exp = store.experiment(experiment_id)
+        assert exp["failure_category"] == "IMPLEMENTATION_BLOCKED"
+        assert "outside editable scope" in exp["lesson"]
+        assert store.attempt(attempt_id)["stage"] == "REJECT"
+        assert store.campaign()["evaluator_calls"] == evaluator_calls
+    finally:
+        store.close()
+
+
+def test_snapshot_that_loses_material_changes_pauses_infra(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        engine.agent = IsolatedImplementAgent()
+        engine._stage_execute(attempt_id, experiment_id)
+        assert store.attempt(attempt_id)["stage"] == "SNAPSHOT"
+        parent = store.experiment(experiment_id)["parent_snapshot"]
+
+        monkeypatch.setattr(engine.workspace, "snapshot", lambda message: parent)
+
+        with pytest.raises(EngineError, match="candidate snapshot failed"):
+            engine._stage_snapshot(attempt_id, experiment_id)
+
+        exp = store.experiment(experiment_id)
+        assert exp["failure_category"] == "CANDIDATE_NOT_MATERIALIZED"
+        assert store.campaign()["status"] == "PAUSED_INFRA"
+        assert store.action(f"exp:{experiment_id}:evaluate") is None
+    finally:
+        store.close()
+
+
+def test_evaluate_doctor_blocks_empty_candidate_before_evaluator(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        store.update_experiment(
+            experiment_id,
+            candidate_snapshot=campaign["champion_snapshot"],
+        )
+        store.set_stage(attempt_id, "EVALUATE")
+        evaluator_calls = store.campaign()["evaluator_calls"]
+
+        with pytest.raises(EngineError, match="not materialized in evaluator workspace"):
+            engine._stage_evaluate(attempt_id, experiment_id)
+
+        exp = store.experiment(experiment_id)
+        assert exp["failure_category"] == "CANDIDATE_NOT_MATERIALIZED"
+        assert store.campaign()["status"] == "PAUSED_INFRA"
+        assert store.campaign()["evaluator_calls"] == evaluator_calls
+        assert store.action(f"exp:{experiment_id}:evaluate") is None
+    finally:
+        store.close()
+
+
+def test_evaluation_request_records_candidate_materialization_proof(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+
+        engine._stage_propose(attempt_id, experiment_id)
+        engine._stage_execute(attempt_id, experiment_id)
+        engine._stage_snapshot(attempt_id, experiment_id)
+        engine._stage_verify(attempt_id, experiment_id)
+        assert store.attempt(attempt_id)["stage"] == "EVALUATE"
+
+        engine._stage_evaluate(attempt_id, experiment_id)
+
+        action = store.action(f"exp:{experiment_id}:evaluate")
+        request = json.loads(action["request_json"])
+        proof = request["candidate_proof"]
+        assert proof["candidate_snapshot"] == store.experiment(experiment_id)["candidate_snapshot"]
+        assert proof["parent_snapshot"] == store.experiment(experiment_id)["parent_snapshot"]
+        assert "value.txt" in proof["changed_paths"]
+        assert len(proof["diff_sha256"]) == 64
+        assert proof["tree"]
+    finally:
+        store.close()
