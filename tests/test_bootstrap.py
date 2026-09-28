@@ -1,0 +1,155 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+from bananloop.bootstrap import BootstrapPlan, _bootstrap_path, bootstrap_campaign
+from bananloop.contracts import AgentConfig, RuntimePaths
+from bananloop.store import CampaignStore
+
+
+def git(args: list[str], cwd: Path) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+
+
+def make_repo(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "project"
+    repo.mkdir()
+    (repo / "value.txt").write_text("0\n", encoding="utf-8")
+    (repo / "bootstrap_agent.py").write_text(
+        "import json\n"
+        "from pathlib import Path\n"
+        "root=Path('.bananloop_eval')\n"
+        "root.mkdir(exist_ok=True)\n"
+        "(root/'evaluator.py').write_text("
+        "\"import json\\nprint(json.dumps({'status':'ok','metrics':{'quality':0.0}}))\\n\""
+        ")\n"
+        "print(json.dumps({"
+        "'status':'ready',"
+        "'summary':'fixture campaign',"
+        "'project_context':'value.txt is the production lever; evaluator.py scores it',"
+        "'needs_input':[],"
+        "'evaluation_command':[" + repr(sys.executable) + ",'.bananloop_eval/evaluator.py'],"
+        "'validation_command':[],"
+        "'holdout_command':[],"
+        "'primary_metric':{'name':'quality','direction':'maximize','target':1.0,'min_improvement':0.1},"
+        "'guardrails':[],"
+        "'non_regression':[],"
+        "'mandatory_checks':[],"
+        "'editable_scope':['value.txt'],"
+        "'protected_paths':[],"
+        "'agent_visible_metrics':['quality'],"
+        "'agent_visible_diagnostics':[],"
+        "'paired_comparison':{'enabled':False,'case_count':1,'repetitions':1,'metric':'quality','direction':'maximize','min_wins':1,'worst_case_tolerance':0.0},"
+        "'evaluator_timeout_seconds':60"
+        "}))\n",
+        encoding="utf-8",
+    )
+    git(["init"], repo)
+    git(["config", "user.email", "test@example.com"], repo)
+    git(["config", "user.name", "Test"], repo)
+    git(["add", "."], repo)
+    git(["commit", "-m", "baseline"], repo)
+    return repo, git(["rev-parse", "HEAD"], repo)
+
+
+def test_bootstrap_plan_rejects_ambiguous_needs_input():
+    payload = {
+        "status": "needs_input",
+        "summary": "missing refs",
+        "project_context": "",
+        "needs_input": [],
+        "evaluation_command": [],
+        "validation_command": [],
+        "holdout_command": [],
+        "primary_metric": {
+            "name": "quality",
+            "direction": "maximize",
+            "target": 1.0,
+            "min_improvement": 0.1,
+        },
+        "guardrails": [],
+        "non_regression": [],
+        "mandatory_checks": [],
+        "editable_scope": ["**"],
+        "protected_paths": [],
+        "agent_visible_metrics": [],
+        "agent_visible_diagnostics": [],
+        "paired_comparison": {
+            "enabled": False,
+            "case_count": 1,
+            "repetitions": 1,
+            "metric": "quality",
+            "direction": "maximize",
+            "min_wins": 1,
+            "worst_case_tolerance": 0.0,
+        },
+        "evaluator_timeout_seconds": 60,
+    }
+    try:
+        BootstrapPlan.model_validate(payload)
+    except ValueError as exc:
+        assert "must explain what input is missing" in str(exc)
+    else:
+        raise AssertionError("needs_input without actionable input must fail")
+
+
+def test_bootstrap_path_is_restricted_to_private_evaluator_area():
+    assert _bootstrap_path(".bananloop_eval/evaluator.py")
+    assert _bootstrap_path(".bananloop_eval/config/cases.json")
+    assert not _bootstrap_path("src/product.py")
+    assert not _bootstrap_path("tests/test_product.py")
+
+
+def test_repo_goal_bootstrap_creates_campaign_without_touching_source(tmp_path: Path):
+    repo, source_base = make_repo(tmp_path)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "state")
+
+    plan, spec = bootstrap_campaign(
+        repo=repo,
+        goal="improve fixture quality",
+        paths=paths,
+        agent_config=AgentConfig(
+            kind="command",
+            command=[sys.executable, "bootstrap_agent.py"],
+        ),
+        max_experiments=2,
+        max_attempts=3,
+        max_agent_calls=6,
+        max_evaluator_calls=4,
+        deadline_seconds=600,
+    )
+
+    assert plan.status == "ready"
+    assert spec is not None
+    assert spec.project_context.startswith("value.txt")
+    assert spec.base_commit != source_base
+    assert ".bananloop_eval/evaluator.py" in {
+        asset.path for asset in spec.evaluation_assets
+    }
+    assert ".bananloop_eval/**" in spec.protected_paths
+    assert ".bananloop_eval/**" in spec.agent_hidden_paths
+
+    assert git(["rev-parse", "HEAD"], repo) == source_base
+    assert git(["status", "--porcelain"], repo) == ""
+    assert not (repo / ".bananloop_eval").exists()
+
+    store = CampaignStore(paths.db)
+    try:
+        persisted = store.spec()
+        assert persisted.approved_hash() == spec.approved_hash()
+        assert persisted.primary_metric.name == "quality"
+    finally:
+        store.close()
+
+    record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
+    assert record["source_base_commit"] == source_base
+    assert record["changed_paths"] == [".bananloop_eval/evaluator.py"]
