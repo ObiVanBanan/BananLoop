@@ -16,12 +16,19 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
     experiments: list[dict[str, Any]] = []
     for row in store.experiments():
         accepted = row["status"] == "ACCEPTED"
+        evaluation_action = store.action(f"exp:{row['id']}:evaluate")
+        evaluation_request = (
+            json.loads(evaluation_action["request_json"])
+            if evaluation_action and evaluation_action.get("request_json")
+            else {}
+        )
         item = {
             "id": row["id"],
             "ordinal": row["ordinal"],
             "status": row["status"],
             "hypothesis": json.loads(row["hypothesis_json"]) if row["hypothesis_json"] else None,
             "candidate_snapshot": row["candidate_snapshot"],
+            "candidate_proof": evaluation_request.get("candidate_proof"),
             "decision": json.loads(row["decision_json"]) if row["decision_json"] else None,
             "failure_category": None if accepted else row["failure_category"],
             "lesson": "Promoted as new champion" if accepted else row["lesson"],
@@ -179,6 +186,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         hypothesis = (exp["hypothesis"] or {}).get("hypothesis", "-")
         decision = exp["decision"] or {}
         lines.append(f"- #{exp['ordinal']} **{exp['status']}** — {hypothesis}; delta={decision.get('delta', '-')}; failure={exp['failure_category'] or '-'}")
+        proof = exp.get("candidate_proof")
+        if proof:
+            lines.append(
+                f"  - Candidate proof: tree=`{proof['tree']}`; diff=`{proof['diff_sha256']}`; "
+                f"paths=`{json.dumps(proof['changed_paths'])}`"
+            )
     lines += ["", "## Measurements (operator-only)", ""]
     for evaluation in report.get("measurements", []):
         result = evaluation["result"]
