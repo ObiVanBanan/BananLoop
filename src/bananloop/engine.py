@@ -334,7 +334,21 @@ class Engine:
                 "BANANLOOP_EVALUATION_ID": action_id,
                 "BANANLOOP_SNAPSHOT": request["snapshot"],
                 "BANANLOOP_EVALUATION_TIER": request.get("tier", "dev"),
+                "BANANLOOP_WORKSPACE": str(self.workspace.workspace.resolve()),
             }
+            candidate_proof = request.get("candidate_proof")
+            if candidate_proof:
+                context["BANANLOOP_PARENT_SNAPSHOT"] = str(
+                    candidate_proof["parent_snapshot"]
+                )
+                context["BANANLOOP_CANDIDATE_TREE"] = str(candidate_proof["tree"])
+                context["BANANLOOP_CANDIDATE_DIFF_SHA256"] = str(
+                    candidate_proof["diff_sha256"]
+                )
+                context["BANANLOOP_CANDIDATE_CHANGED_PATHS"] = json.dumps(
+                    candidate_proof["changed_paths"],
+                    ensure_ascii=False,
+                )
             if self.spec.budget.evaluation_units_per_call is not None:
                 context["BANANLOOP_EVALUATION_UNIT_LIMIT"] = str(self.spec.budget.evaluation_units_per_call)
             for evaluator in (self.evaluator, self.validation_evaluator, self.holdout_evaluator):
@@ -372,13 +386,17 @@ class Engine:
         *,
         tier: str = "dev",
         command: list[str] | None = None,
+        candidate_proof: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return {
+        request = {
             "snapshot": snapshot,
             "tier": tier,
             "command": command or self.spec.evaluation_command,
             "evaluation_fingerprint": evaluation_fingerprint(self.spec.evaluation_assets),
         }
+        if candidate_proof is not None:
+            request["candidate_proof"] = candidate_proof
+        return request
 
     def _validation_reference(self) -> EvaluationResult:
         snapshot = self.store.campaign()["champion_snapshot"]
@@ -616,6 +634,60 @@ class Engine:
             "experiment_id": experiment_id,
         }
 
+    @staticmethod
+    def _hypothesis_grounding_error(
+        hypothesis: Hypothesis,
+        task: dict[str, Any],
+    ) -> str | None:
+        if not hypothesis.files_or_area:
+            return "hypothesis has no concrete files_or_area grounding"
+        supplied = {
+            "research_state": bool(task.get("research_state")),
+            "planning_mode": bool((task.get("research_state") or {}).get("planning_mode")),
+            "project_context": bool(task.get("project_context")),
+        }
+        text = " ".join(
+            [
+                hypothesis.hypothesis,
+                hypothesis.rationale,
+                hypothesis.expected_effect,
+                hypothesis.novelty_rationale,
+            ]
+        ).lower()
+        patterns = (
+            ("research_state", r"(research_state|research state).{0,100}(missing|not provided|unavailable|absent|not supplied)"),
+            ("research_state", r"(missing|not provided|unavailable|absent|not supplied).{0,100}(research_state|research state)"),
+            ("planning_mode", r"(planning_mode|planning mode).{0,100}(missing|not provided|unavailable|absent|not supplied)"),
+            ("planning_mode", r"(missing|not provided|unavailable|absent|not supplied).{0,100}(planning_mode|planning mode)"),
+            ("project_context", r"(project_context|project context|campaign context).{0,100}(missing|not provided|unavailable|absent|not supplied|insufficient)"),
+            ("project_context", r"(missing|not provided|unavailable|absent|not supplied|insufficient).{0,100}(project_context|project context|campaign context)"),
+        )
+        for key, pattern in patterns:
+            if supplied[key] and re.search(pattern, text):
+                return f"hypothesis falsely claims supplied {key} is missing"
+        return None
+
+    def _candidate_materialization_proof(
+        self,
+        experiment_id: int,
+        *,
+        require_changes: bool = True,
+    ) -> dict[str, Any]:
+        exp = self.store.experiment(experiment_id)
+        candidate = exp.get("candidate_snapshot")
+        parent = exp.get("parent_snapshot")
+        if not candidate or not parent:
+            raise WorkspaceError(
+                f"experiment {experiment_id} is missing parent/candidate snapshot"
+            )
+        self.workspace.checkout(candidate)
+        proof = self.workspace.snapshot_proof(parent, candidate)
+        if require_changes and not proof["changed_paths"]:
+            raise WorkspaceError(
+                f"candidate snapshot {candidate} has no diff from parent {parent}"
+            )
+        return proof
+
     def _stage_propose(self, attempt_id: int, experiment_id: int) -> None:
         self.workspace.checkout(self.store.campaign()["champion_snapshot"])
         task = self._task_context("propose", experiment_id)
@@ -644,6 +716,32 @@ class Engine:
             self.store.update_experiment(experiment_id, failure_category="AGENT_PROTOCOL_ERROR", lesson=str(exc)[:1000])
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(f"propose failed: {exc}") from exc
+
+        grounding_error = self._hypothesis_grounding_error(hypothesis, task)
+        if grounding_error:
+            self.store.update_experiment(
+                experiment_id,
+                hypothesis_json=hypothesis.model_dump_json(),
+                failure_category="UNGROUNDED_HYPOTHESIS",
+                lesson=grounding_error[:1000],
+            )
+            self.store.event(
+                "UNGROUNDED_HYPOTHESIS_REJECTED",
+                {
+                    "experiment_id": experiment_id,
+                    "ordinal": self.store.experiment(experiment_id)["ordinal"],
+                    "reason": grounding_error[:1000],
+                },
+            )
+            self.store.finish_attempt(
+                attempt_id,
+                experiment_id,
+                status="UNGROUNDED",
+                scientific=False,
+                improved=False,
+            )
+            self._refresh_research_state()
+            return
 
         duplicate = redundancy_reason(
             hypothesis,
@@ -707,7 +805,69 @@ class Engine:
                 ),
             )
             raw = self.agent.normalize_result(task, raw)
-            ImplementResult.model_validate(raw)
+            implementation = ImplementResult.model_validate(raw)
+            if implementation.blockers:
+                self.store.update_experiment(
+                    experiment_id,
+                    failure_category="IMPLEMENTATION_BLOCKED",
+                    lesson="; ".join(implementation.blockers)[:1000],
+                )
+                self.store.event(
+                    "IMPLEMENTATION_BLOCKED",
+                    {
+                        "experiment_id": experiment_id,
+                        "blockers": implementation.blockers[:8],
+                    },
+                )
+                self.store.conn.commit()
+                self.store.set_stage(attempt_id, "REJECT")
+                self._checkpoint("REJECT")
+                return
+
+            observed_changes = self.workspace.working_tree_changed_paths()
+            if not observed_changes:
+                if implementation.changed_paths:
+                    error = (
+                        "implementer reported changed_paths but no changes reached the "
+                        "supervisor workspace: " + ", ".join(implementation.changed_paths)
+                    )
+                    self.store.update_experiment(
+                        experiment_id,
+                        failure_category="CANDIDATE_NOT_MATERIALIZED",
+                        lesson=error[:1000],
+                    )
+                    self.store.event(
+                        "CANDIDATE_TRANSFER_FAILED",
+                        {
+                            "experiment_id": experiment_id,
+                            "reported_paths": implementation.changed_paths,
+                        },
+                    )
+                    self.store.conn.commit()
+                    self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+                    raise EngineError(error)
+                self.store.update_experiment(
+                    experiment_id,
+                    failure_category="NO_CHANGES",
+                    lesson="Implementer produced no material repository changes",
+                )
+                self.store.event(
+                    "NO_CHANGES_REJECTED",
+                    {"experiment_id": experiment_id},
+                )
+                self.store.conn.commit()
+                self.store.set_stage(attempt_id, "REJECT")
+                self._checkpoint("REJECT")
+                return
+
+            self.store.event(
+                "IMPLEMENTATION_TRANSFER_VERIFIED",
+                {
+                    "experiment_id": experiment_id,
+                    "observed_paths": observed_changes,
+                    "reported_paths": implementation.changed_paths,
+                },
+            )
             self.store.update_experiment(
                 experiment_id,
                 failure_category=None,
@@ -721,8 +881,39 @@ class Engine:
         self._checkpoint("SNAPSHOT")
 
     def _stage_snapshot(self, attempt_id: int, experiment_id: int) -> None:
+        exp = self.store.experiment(experiment_id)
         snapshot = self.workspace.snapshot(f"bananloop experiment {experiment_id}")
         self.store.update_experiment(experiment_id, candidate_snapshot=snapshot)
+        try:
+            proof = self.workspace.snapshot_proof(exp["parent_snapshot"], snapshot)
+            if not proof["changed_paths"]:
+                raise WorkspaceError(
+                    "snapshot persisted no candidate diff after a material implementation"
+                )
+        except WorkspaceError as exc:
+            self.store.update_experiment(
+                experiment_id,
+                failure_category="CANDIDATE_NOT_MATERIALIZED",
+                lesson=str(exc)[:1000],
+            )
+            self.store.event(
+                "CANDIDATE_SNAPSHOT_FAILED",
+                {
+                    "experiment_id": experiment_id,
+                    "parent_snapshot": exp["parent_snapshot"],
+                    "candidate_snapshot": snapshot,
+                    "error": str(exc)[:1000],
+                },
+            )
+            self.store.conn.commit()
+            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+            raise EngineError(f"candidate snapshot failed: {exc}") from exc
+
+        self.store.event(
+            "CANDIDATE_SNAPSHOT_RECORDED",
+            {"experiment_id": experiment_id, **proof},
+        )
+        self.store.conn.commit()
         self.store.set_stage(attempt_id, "VERIFY")
         self._checkpoint("VERIFY")
 
@@ -807,7 +998,28 @@ class Engine:
 
     def _stage_evaluate(self, attempt_id: int, experiment_id: int) -> None:
         exp = self.store.experiment(experiment_id)
-        self.workspace.checkout(exp["candidate_snapshot"])
+        try:
+            candidate_proof = self._candidate_materialization_proof(experiment_id)
+        except WorkspaceError as exc:
+            self.store.update_experiment(
+                experiment_id,
+                failure_category="CANDIDATE_NOT_MATERIALIZED",
+                lesson=str(exc)[:1000],
+            )
+            self.store.event(
+                "CANDIDATE_EVALUATION_BLOCKED",
+                {"experiment_id": experiment_id, "error": str(exc)[:1000]},
+            )
+            self.store.conn.commit()
+            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+            raise EngineError(
+                f"candidate is not materialized in evaluator workspace: {exc}"
+            ) from exc
+        self.store.event(
+            "CANDIDATE_EVALUATION_READY",
+            {"experiment_id": experiment_id, **candidate_proof},
+        )
+        self.store.conn.commit()
         integrity_violations = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
         if integrity_violations:
             self.store.update_experiment(
@@ -817,7 +1029,10 @@ class Engine:
             )
             self.store.set_stage(attempt_id, "REJECT")
             return
-        request = self._evaluation_request(exp["candidate_snapshot"])
+        request = self._evaluation_request(
+            exp["candidate_snapshot"],
+            candidate_proof=candidate_proof,
+        )
         try:
             raw = self._action(
                 action_id=f"exp:{experiment_id}:evaluate",
