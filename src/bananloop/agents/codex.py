@@ -27,7 +27,7 @@ BOOTSTRAP_SCHEMA = {
                 "name": {"type": "string"},
                 "direction": {"type": "string", "enum": ["maximize", "minimize"]},
                 "target": {"type": "number"},
-                "min_improvement": {"type": "number", "exclusiveMinimum": 0}
+                "min_improvement": {"type": "number", "minimum": 0.000001}
             },
             "required": ["name", "direction", "target", "min_improvement"],
             "additionalProperties": False
@@ -211,6 +211,8 @@ class CodexAdapter(AgentAdapter):
                 "You MAY create or modify files only under .bananloop_eval/. Never change production code, tests, "
                 "reference assets, or user configuration during bootstrap. Prefer an existing trustworthy evaluator "
                 "when one already exists; otherwise create a thin evaluator adapter under .bananloop_eval/. "
+                "Before returning status=ready, run a cheap baseline smoke check of the evaluator yourself and repair "
+                "contract/startup errors; avoid a full expensive benchmark when a smaller smoke path is possible. "
                 "The evaluator must compare the same frozen inputs/settings for baseline and candidates, emit the "
                 "BananLoop JSON evaluation contract, use stable case IDs/input fingerprints, and avoid per-evaluation "
                 "LLM planning or other avoidable nondeterminism. For stochastic generation, freeze cases and seeds and "
