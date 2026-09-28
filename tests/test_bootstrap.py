@@ -5,9 +5,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from bananloop.bootstrap import BootstrapPlan, _bootstrap_path, bootstrap_campaign
+from bananloop.bootstrap import BootstrapPlan, _bootstrap_path, _bootstrap_task, bootstrap_campaign
 from bananloop.contracts import AgentConfig, RuntimePaths
 from bananloop.store import CampaignStore
+from bananloop.wizard import _parse_py_launcher_paths, discover_project
 
 
 def git(args: list[str], cwd: Path) -> str:
@@ -153,3 +154,44 @@ def test_repo_goal_bootstrap_creates_campaign_without_touching_source(tmp_path: 
     record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
     assert record["source_base_commit"] == source_base
     assert record["changed_paths"] == [".bananloop_eval/evaluator.py"]
+
+
+
+def test_py_launcher_output_discovers_windows_python_paths():
+    output = """ -V:3.13 *        C:\\Python313\\python.exe
+ -V:3.12          C:\\Users\\test\\AppData\\Local\\Programs\\Python\\Python312\\python.exe
+"""
+    assert _parse_py_launcher_paths(output) == [
+        r"C:\Python313\python.exe",
+        r"C:\Users\test\AppData\Local\Programs\Python\Python312\python.exe",
+    ]
+
+
+def test_project_discovery_always_reports_current_python(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    discovery = discover_project(repo)
+
+    assert any(
+        runtime["executable"] == sys.executable
+        for runtime in discovery["python_runtimes"]
+    )
+    assert all(runtime["version"] for runtime in discovery["python_runtimes"])
+
+
+def test_bootstrap_task_makes_cli_goal_authoritative(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    task = _bootstrap_task(
+        repo,
+        "improve similarity to reference images",
+        "deadbeef",
+        AgentConfig(kind="codex"),
+    )
+
+    assert task["goal"] == "improve similarity to reference images"
+    assert task["requirements"]["goal_is_authoritative"] is True
+    assert task["requirements"]["do_not_request_goal_file_when_goal_is_present"] is True
+    assert task["requirements"]["resolve_conflicting_evaluators_by_goal_semantics"] is True
+    assert task["requirements"]["use_detected_runtimes_before_requesting_python_environment"] is True
+    assert task["repository"]["detected_python_runtimes"]
