@@ -125,6 +125,7 @@ class CampaignSpec(BaseModel):
     goal: str
     source_repo: str
     base_commit: str
+    project_context: str = ""
     evaluation_command: list[str]
     evaluator_timeout_seconds: int = Field(default=900, ge=1)
     validation_command: list[str] = Field(default_factory=list)
@@ -188,6 +189,8 @@ class CampaignSpec(BaseModel):
             if data["budget"][key] is None:
                 data["budget"].pop(key)
         # Keep hashes compatible with v0.1 specs created before these fields existed.
+        if not self.project_context:
+            data.pop("project_context", None)
         if self.evaluator_timeout_seconds == 900:
             data.pop("evaluator_timeout_seconds", None)
         if not self.validation_command:
