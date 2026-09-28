@@ -329,6 +329,12 @@ class Engine:
         output_dir = self.store.path.parent / "artifacts" / hashlib.sha256(action_id.encode()).hexdigest()[:24]
         if kind != "agent":
             output_dir.mkdir(parents=True, exist_ok=True)
+            candidate_proof = request.get("candidate_proof")
+            if candidate_proof:
+                (output_dir / "candidate-proof.json").write_text(
+                    json.dumps(candidate_proof, indent=2, sort_keys=True),
+                    encoding="utf-8",
+                )
             context = {
                 "BANANLOOP_ARTIFACT_DIR": str(output_dir.resolve()),
                 "BANANLOOP_EVALUATION_ID": action_id,
@@ -336,7 +342,6 @@ class Engine:
                 "BANANLOOP_EVALUATION_TIER": request.get("tier", "dev"),
                 "BANANLOOP_WORKSPACE": str(self.workspace.workspace.resolve()),
             }
-            candidate_proof = request.get("candidate_proof")
             if candidate_proof:
                 context["BANANLOOP_PARENT_SNAPSHOT"] = str(
                     candidate_proof["parent_snapshot"]
@@ -1277,11 +1282,28 @@ class Engine:
 
     def _stage_validate(self, attempt_id: int, experiment_id: int) -> None:
         exp = self.store.experiment(experiment_id)
-        self.workspace.checkout(exp["candidate_snapshot"])
+        try:
+            candidate_proof = self._candidate_materialization_proof(experiment_id)
+        except WorkspaceError as exc:
+            self.store.update_experiment(
+                experiment_id,
+                failure_category="CANDIDATE_NOT_MATERIALIZED",
+                lesson=str(exc)[:1000],
+            )
+            self.store.event(
+                "CANDIDATE_VALIDATION_BLOCKED",
+                {"experiment_id": experiment_id, "error": str(exc)[:1000]},
+            )
+            self.store.conn.commit()
+            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+            raise EngineError(
+                f"candidate is not materialized in validation workspace: {exc}"
+            ) from exc
         request = self._evaluation_request(
             exp["candidate_snapshot"],
             tier="validation",
             command=self.spec.validation_command,
+            candidate_proof=candidate_proof,
         )
         try:
             raw = self._action(
