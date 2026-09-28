@@ -350,7 +350,7 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument(
         "--bootstrap-timeout-seconds",
         type=int,
-        default=1800,
+        default=1200,
         help="maximum time for repository discovery and evaluator construction",
     )
     start.add_argument(
