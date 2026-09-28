@@ -10,6 +10,84 @@ from .base import AgentAdapter, AgentError
 from ..process import ProcessError, run_process
 
 
+BOOTSTRAP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["ready", "needs_input"]},
+        "summary": {"type": "string"},
+        "project_context": {"type": "string"},
+        "needs_input": {"type": "array", "items": {"type": "string"}},
+        "evaluation_command": {"type": "array", "items": {"type": "string"}},
+        "validation_command": {"type": "array", "items": {"type": "string"}},
+        "holdout_command": {"type": "array", "items": {"type": "string"}},
+        "primary_metric": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "direction": {"type": "string", "enum": ["maximize", "minimize"]},
+                "target": {"type": "number"},
+                "min_improvement": {"type": "number", "exclusiveMinimum": 0}
+            },
+            "required": ["name", "direction", "target", "min_improvement"],
+            "additionalProperties": False
+        },
+        "guardrails": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "metric": {"type": "string"},
+                    "operator": {"type": "string", "enum": ["<=", ">=", "<", ">", "=="]},
+                    "bound": {"type": "number"}
+                },
+                "required": ["metric", "operator", "bound"],
+                "additionalProperties": False
+            }
+        },
+        "non_regression": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "metric": {"type": "string"},
+                    "direction": {"type": "string", "enum": ["maximize", "minimize"]},
+                    "tolerance": {"type": "number", "minimum": 0}
+                },
+                "required": ["metric", "direction", "tolerance"],
+                "additionalProperties": False
+            }
+        },
+        "mandatory_checks": {"type": "array", "items": {"type": "string"}},
+        "editable_scope": {"type": "array", "items": {"type": "string"}},
+        "protected_paths": {"type": "array", "items": {"type": "string"}},
+        "agent_visible_metrics": {"type": "array", "items": {"type": "string"}},
+        "agent_visible_diagnostics": {"type": "array", "items": {"type": "string"}},
+        "paired_comparison": {
+            "type": "object",
+            "properties": {
+                "enabled": {"type": "boolean"},
+                "case_count": {"type": "integer", "minimum": 1},
+                "repetitions": {"type": "integer", "minimum": 1},
+                "metric": {"type": "string"},
+                "direction": {"type": "string", "enum": ["maximize", "minimize"]},
+                "min_wins": {"type": "integer", "minimum": 1},
+                "worst_case_tolerance": {"type": "number", "minimum": 0}
+            },
+            "required": ["enabled", "case_count", "repetitions", "metric", "direction", "min_wins", "worst_case_tolerance"],
+            "additionalProperties": False
+        },
+        "evaluator_timeout_seconds": {"type": "integer", "minimum": 1}
+    },
+    "required": [
+        "status", "summary", "project_context", "needs_input",
+        "evaluation_command", "validation_command", "holdout_command",
+        "primary_metric", "guardrails", "non_regression", "mandatory_checks",
+        "editable_scope", "protected_paths", "agent_visible_metrics",
+        "agent_visible_diagnostics", "paired_comparison", "evaluator_timeout_seconds"
+    ],
+    "additionalProperties": False
+}
+
 HYPOTHESIS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -104,13 +182,31 @@ class CodexAdapter(AgentAdapter):
 
     def execute(self, task: dict[str, Any], workspace: Path, timeout: int) -> dict[str, Any]:
         role = task.get("role")
-        if role == "propose":
+        if role == "bootstrap":
+            schema = BOOTSTRAP_SCHEMA
+        elif role == "propose":
             schema = HYPOTHESIS_SCHEMA
         elif role == "analyze":
             schema = FAILURE_ANALYSIS_SCHEMA
         else:
             schema = IMPLEMENT_SCHEMA
-        if role == "propose":
+        if role == "bootstrap":
+            instruction = (
+                "You are the campaign bootstrapper for BananLoop. Inspect the repository and the human goal, "
+                "then turn them into an executable measurement contract with minimal operator work. "
+                "You MAY create or modify files only under .bananloop_eval/. Never change production code, tests, "
+                "reference assets, or user configuration during bootstrap. Prefer an existing trustworthy evaluator "
+                "when one already exists; otherwise create a thin evaluator adapter under .bananloop_eval/. "
+                "The evaluator must compare the same frozen inputs/settings for baseline and candidates, emit the "
+                "BananLoop JSON evaluation contract, use stable case IDs/input fingerprints, and avoid per-evaluation "
+                "LLM planning or other avoidable nondeterminism. For stochastic generation, freeze cases and seeds and "
+                "use paired case-level measurements. Do not invent missing reference data or credentials: when an "
+                "essential input is absent, return status=needs_input with a short exact list of what the operator must "
+                "provide. Keep evaluator/scoring files separate from editable production scope. project_context must "
+                "summarize architecture, execution entrypoints, output path, and plausible improvement levers so later "
+                "proposers can act without rediscovering the project. Return only the requested structured result.\n\n"
+            )
+        elif role == "propose":
             instruction = (
                 "Propose exactly one bounded, falsifiable hypothesis for this measurable campaign. "
                 "Use the supplied research_state and planning_mode. Avoid repeating a mechanism unless "
