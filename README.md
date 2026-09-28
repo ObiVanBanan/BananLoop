@@ -26,7 +26,7 @@ The coding agent proposes and edits. The evaluator and deterministic policy deci
 - Codex CLI adapter, Pi RPC adapter, and generic JSON-over-stdin/stdout command adapter;
 - action IDs that prevent completed agent/evaluator calls from being repeated on resume;
 - budgets for experiments, attempts, agent calls, evaluator calls and wall time;
-- `init`, `run`, `status`, `resume`, `stop`, `report` CLI;
+- `start` autopilot bootstrap plus expert `init`, `run`, `status`, `resume`, `stop`, `report` CLI;
 - Markdown/JSON reports built only from durable records;
 - explicit champion patch export with a manifest and operator reports;
 - deterministic fixture demonstrating accept -> reject -> accept;
@@ -49,6 +49,34 @@ With `uv`:
 uv sync --extra test
 uv run pytest
 ```
+
+## Autopilot MVP: repo + goal
+
+The default product path is now a single command:
+
+```bash
+bananloop start --repo . --goal "Improve measured project quality without regressions"
+```
+
+`start` runs a bounded bootstrap role before the ordinary campaign engine:
+
+1. inspect the repository and detected test entrypoints;
+2. reuse an existing evaluator or create a thin adapter under `.bananloop_eval/`;
+3. freeze cases/randomness when possible and choose deterministic or paired measurement;
+4. smoke-check the evaluator before declaring the setup ready;
+5. persist a project-context summary for later proposer/implementer calls;
+6. create the immutable `CampaignSpec`;
+7. immediately run baseline and the experiment loop.
+
+Bootstrap may write only `.bananloop_eval/**` inside BananLoop's private managed workspace. Any attempted production/test/config edit during setup is rejected and rolled back. The user's source checkout stays unchanged. If essential references or credentials genuinely do not exist, bootstrap returns `PAUSED_NEEDS_INPUT` with the exact missing inputs instead of inventing them.
+
+For an inspection-only setup:
+
+```bash
+bananloop start --repo . --goal "Improve measured project quality" --prepare-only
+```
+
+Use the existing detailed `bananloop init ...` interface as expert mode when the evaluator contract is already known or externally governed.
 
 ## 2-minute fixture demo
 
