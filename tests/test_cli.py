@@ -89,3 +89,30 @@ def test_init_cli_accepts_repeatable_anti_gaming_patterns():
         r"\\bharness_gold\\b",
         r"gold_q\\d+",
     ]
+
+
+
+def test_start_cli_requires_only_repo_goal_for_default_codex_flow():
+    args = parser().parse_args([
+        "start",
+        "--repo", ".",
+        "--goal", "improve measured quality",
+    ])
+
+    assert args.command == "start"
+    assert args.agent == "codex"
+    assert args.goal == "improve measured quality"
+    assert args.max_experiments == 4
+    assert args.deadline_seconds == 14400
+
+
+def test_start_cli_can_prepare_without_running():
+    args = parser().parse_args([
+        "start",
+        "--goal", "improve measured quality",
+        "--prepare-only",
+        "--model", "gpt-5.6-codex",
+    ])
+
+    assert args.prepare_only is True
+    assert args.model == "gpt-5.6-codex"
