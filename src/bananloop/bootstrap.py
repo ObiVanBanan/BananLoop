@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -121,6 +122,43 @@ def _bootstrap_task(
             "do_not_modify_production_code_during_bootstrap": True,
         },
     }
+
+
+def _bootstrap_contract_error(
+    plan: BootstrapPlan,
+    task: dict[str, Any],
+) -> str | None:
+    if plan.status != "needs_input":
+        return None
+    if not str(task.get("goal") or "").strip():
+        return None
+
+    goal_need = re.compile(
+        r"(goal|objective|human intent|authoritative intent|brief|fix\.md)",
+        re.IGNORECASE,
+    )
+    request_words = re.compile(
+        r"(provide|clarify|missing|need|required|not present|not available)",
+        re.IGNORECASE,
+    )
+    for item in plan.needs_input:
+        if goal_need.search(item) and request_words.search(item):
+            return (
+                "bootstrap requested goal/intent input even though the top-level "
+                "goal is already present and authoritative"
+            )
+
+    summary = plan.summary or ""
+    if goal_need.search(summary) and re.search(
+        r"(not present|missing|not available|not supplied)",
+        summary,
+        re.IGNORECASE,
+    ):
+        return (
+            "bootstrap summary claims the goal is missing even though the "
+            "top-level goal is present"
+        )
+    return None
 
 
 def _bootstrap_path(path: str) -> bool:
