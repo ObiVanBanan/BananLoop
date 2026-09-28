@@ -356,6 +356,6 @@ Review these operator reports before sharing them or placing them in agent conte
 
 ## Scope boundaries
 
-Not in v0.1: parallel experiments, DAG orchestration, model routing, generated evaluators, vector memory, SaaS/web UI, auto push/merge, generic LLM judges, distributed workers, or a full security sandbox.
+Not in v0.1: parallel experiments, DAG orchestration, model routing, autonomous invention of a trustworthy evaluation objective from no evidence, vector memory, SaaS/web UI, auto push/merge, generic LLM judges, distributed workers, or a full security sandbox.
 
 See `design/adr.md`, `standalone_harness_proposal.md`, and `examples/rag_tender/README.md` for rationale and integration guidance.
