@@ -54,7 +54,15 @@ class CampaignHalted(Exception):
 
 
 def _hash_payload(payload: dict[str, Any]) -> str:
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    durable = dict(payload)
+    # candidate_proof is derived deterministically from the immutable snapshot.
+    # Excluding it preserves replay compatibility with evaluator actions created
+    # before provenance proofs were added; the proof is re-verified before every
+    # candidate evaluation.
+    durable.pop("candidate_proof", None)
+    return hashlib.sha256(
+        json.dumps(durable, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 class Engine:
