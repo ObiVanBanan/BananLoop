@@ -100,7 +100,24 @@ class PiAdapter(AgentAdapter):
     @staticmethod
     def _prompt(task: dict[str, Any]) -> str:
         role = task.get("role")
-        if role == "propose":
+        if role == "bootstrap":
+            instruction = (
+                "You are the campaign bootstrapper inside BananLoop. Inspect the repository and human goal and "
+                "build an executable measurement contract. You may create or modify files only under "
+                ".bananloop_eval/. Never modify production code, tests, reference assets, or user configuration. "
+                "Prefer an existing trustworthy evaluator; otherwise create a thin evaluator adapter. Freeze cases "
+                "and randomness where possible, avoid per-evaluation LLM planning, and use paired case-level "
+                "measurements for stochastic outputs. Do not invent missing references or credentials. If essential "
+                "inputs are missing, set status to needs_input and list exactly what the operator must provide. "
+                "Your final assistant message MUST be exactly one JSON object with keys: status, summary, "
+                "project_context, needs_input, evaluation_command, validation_command, holdout_command, "
+                "primary_metric, guardrails, non_regression, mandatory_checks, editable_scope, protected_paths, "
+                "agent_visible_metrics, agent_visible_diagnostics, paired_comparison, evaluator_timeout_seconds. "
+                "primary_metric must contain name, direction, target, min_improvement. paired_comparison must "
+                "contain enabled, case_count, repetitions, metric, direction, min_wins, worst_case_tolerance. "
+                "Do not use markdown fences or prose outside the JSON object."
+            )
+        elif role == "propose":
             instruction = (
                 "You are the proposer inside BananLoop. Inspect the repository and propose exactly one "
                 "bounded, falsifiable hypothesis. Do not modify files during this role. "
@@ -201,7 +218,19 @@ class PiAdapter(AgentAdapter):
     @staticmethod
     def _repair_prompt(task: dict[str, Any]) -> str:
         role = task.get("role")
-        if role == "propose":
+        if role == "bootstrap":
+            schema = (
+                '{"status":"ready","summary":"...","project_context":"...","needs_input":[],'
+                '"evaluation_command":["python",".bananloop_eval/evaluator.py"],'
+                '"validation_command":[],"holdout_command":[],'
+                '"primary_metric":{"name":"quality","direction":"maximize","target":1.0,"min_improvement":0.01},'
+                '"guardrails":[],"non_regression":[],"mandatory_checks":[],"editable_scope":["**"],'
+                '"protected_paths":[".bananloop_eval/**"],"agent_visible_metrics":["quality"],'
+                '"agent_visible_diagnostics":[],"paired_comparison":{"enabled":false,"case_count":1,'
+                '"repetitions":1,"metric":"quality","direction":"maximize","min_wins":1,'
+                '"worst_case_tolerance":0.0},"evaluator_timeout_seconds":900}'
+            )
+        elif role == "propose":
             schema = (
                 '{"hypothesis":"...","rationale":"...","expected_effect":"...",'
                 '"files_or_area":["..."],"falsification_condition":"...","mechanism_key":"...",'
