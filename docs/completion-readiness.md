@@ -84,10 +84,7 @@ See [artifact evaluation](artifact-evaluation-v1.md) for the seven-case protocol
 - The product-goal performance and bugfix campaigns, plus a live additional
   coding-agent campaign, require separate real evidence. Existing fixture/adapter
   tests do not substitute for those results.
-- The original proposal's autonomy presets and baseline-measuring onboarding
-  wizard are not implemented. The current CLI approves the spec at `init` and
-  measures baseline at `run`; no autonomous evaluator invention, hard USD cap,
-  hostile-code sandbox, remote-job cancellation or automatic merge is claimed.
+- PR #32 adds a bounded repo+goal bootstrap path that may reuse an existing evaluator or create a thin adapter under `.bananloop_eval/**`, then persists project context for the campaign. It still does not claim that an agent can invent a trustworthy evaluation objective when the project supplies no measurable evidence/reference at all; such cases stop with explicit `PAUSED_NEEDS_INPUT`. Hard USD caps, hostile-code sandboxing, remote-job cancellation and automatic merge are not claimed.
 
 Keep the original PRs/main unchanged until the applicable dogfood gates are
 reviewed. The integrated branch is suitable for the short verification above.
