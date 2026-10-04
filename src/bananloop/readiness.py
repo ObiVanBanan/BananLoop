@@ -6,6 +6,7 @@ from typing import Any
 
 from .contracts import EvaluationResult
 from .evaluators import CommandEvaluator, EvaluatorError
+from .process import run_process
 
 
 class ReadinessError(RuntimeError):
@@ -145,12 +146,26 @@ def run_bootstrap_readiness(
         try:
             result = evaluator.evaluate(workspace, timeout=timeout)
             summary = _validate_result(plan, result)
+            dirty = run_process(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                cwd=workspace,
+                timeout=10,
+            ).stdout.strip()
+            if dirty:
+                raise ReadinessError(
+                    "smoke evaluator dirtied the managed workspace; write artifacts "
+                    "to BANANLOOP_ARTIFACT_DIR instead: " + dirty[:1000]
+                )
         except (EvaluatorError, ReadinessError) as exc:
             receipt["status"] = "FAILED"
             receipt["error"] = str(exc)
+            run_process(["git", "reset", "--hard", snapshot], cwd=workspace, timeout=30)
+            run_process(["git", "clean", "-fd"], cwd=workspace, timeout=30)
             raise ReadinessError(str(exc), receipt) from exc
         results.append(result)
         receipt["runs"].append(summary)
+        run_process(["git", "reset", "--hard", snapshot], cwd=workspace, timeout=30)
+        run_process(["git", "clean", "-fd"], cwd=workspace, timeout=30)
 
     first_inputs = {
         (case.case_id, case.repetition, case.input_sha256)
