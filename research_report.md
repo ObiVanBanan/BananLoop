@@ -1,121 +1,100 @@
-# Исследование существующего harness rag_tender
+# BananLoop: запуск, измерение и автономный цикл — AS IS
 
-Дата: 2026-09-19. Исследованный HEAD: `e6e4df230edb07ac89999be4856807af9dcab119`.
+Дата: 2026-10-04. HEAD: 62f7830. Исследован текущий checkout, включая существовавшую локальную правку src/bananloop/agents/codex.py. Production-код не изменялся.
 
 ## Введение
 
-Область исследования: `harness_rag/`, его CLI entrypoints, связанные тесты, конфигурация и документы целей. Отчёт описывает фактическую реализацию. Предлагаемые изменения вынесены в [standalone_harness_proposal.md](standalone_harness_proposal.md) и [design/adr.md](design/adr.md).
+Запрос: репозиторий + человеческая цель, автоматическая подготовка измерения и автономное улучшение, возможная интеграция в Codex через plugin/skills/hooks. Здесь зафиксированы факты; предлагаемое решение находится в [ADR](design/adr.md).
 
-Проверка выполнена чтением кода и запуском unit-тестов. Живая campaign, платные agent calls, Qdrant evaluation и приватные holdout не запускались. Внешнее состояние прежних campaign не исследовалось. Поэтому наличие механизмов подтверждено, но фактический прирост качества, стоимость и надёжность длительных campaign этим исследованием не измерены.
+Предыдущий корневой research_report.md описывал извлечение harness из rag_tender от 19 сентября, а не нынешний BananLoop. Его точная копия сохранена в [историческом отчёте](docs/research-rag-tender-2026-09-19.md); относительные ссылки внутри копии относятся к исходному расположению и старому репозиторию.
 
 ## Обзор архитектуры
 
-Оба пользовательских entrypoint направляют выполнение в `optimization_runner.main`: [scripts/run_rag_harness.py](scripts/run_rag_harness.py), [harness_rag/__main__.py](harness_rag/__main__.py).
+Действующий путь: cli.cmd_start -> bootstrap_campaign -> CampaignSpec/SQLite -> cli.cmd_run -> Engine.run. start требует только --goal, --repo имеет default ".". Есть --prepare-only. Это уже реализация repo+goal, а не только предложение в документации. Источники: src/bananloop/cli.py:172,329; src/bananloop/bootstrap.py:150.
 
-Активная композиция в [optimization_runner.py:159](harness_rag/optimization_runner.py#L159):
-
-1. `install_research_first()` устанавливает research-first поведение.
-2. `install_campaign_provenance()` добавляет campaign-scoped артефакты и provenance.
-3. `install_current_dataset_optimization()` добавляет evaluation текущего корпуса и A/A сравнение.
-4. Подменяются функции policy, rollback diagnostics и adoption champion.
-5. Под OS-level lock выполняются recovery и `v2_runner.main()`.
-6. `v2_runner.main()` вызывает stage engine `v2._execute_active()`.
-
-Это композиция через замену функций модулей во время выполнения, а не иерархия runner-классов. `orchestrator.py`, `supervisor.py`, `resume.py` и `resume_dispatch.py` содержат предшествующие варианты orchestration. Их наличие само по себе не означает выполнение соответствующего поведения в текущем entrypoint.
+Основной цикл: PROPOSE -> EXECUTE -> SNAPSHOT -> VERIFY -> EVALUATE -> DECIDE -> ANALYZE/VALIDATE -> PROMOTE/REJECT -> RECORD. Финальная holdout-оценка выполняется отдельно. Источник: src/bananloop/engine.py:1294.
 
 ## Компоненты
 
-| Компонент | Проверенная роль | Основные символы и источник |
+| Компонент | Реальная ответственность | Источник и символ |
 | --- | --- | --- |
-| CLI и жизненный цикл | Чтение конфигурации, preflight, baseline, циклы, resume, итоговый outcome | [v2_runner.py:201](harness_rag/v2_runner.py#L201), `main`; [v2.py:799](harness_rag/v2.py#L799), `_parser` |
-| Stage engine | Planner, researcher, implementer, tests, public/hidden, review, optional fixer, promotion | [v2.py:941](harness_rag/v2.py#L941), `_execute_active` |
-| Research-first слой | Начальное исследование, причинная память, контекст реальных тендеров, изменение prompt/schema | [research_first_runner.py](harness_rag/research_first_runner.py), `install_research_first` |
-| Provenance | Изоляция campaign-артефактов, связь campaign/attempt/experiment, механизмы и corpus evidence | [provenance_runner.py](harness_rag/provenance_runner.py), `install_campaign_provenance` |
-| Текущий корпус | `match_batch.py`, компактные результаты по строкам, сравнение стадий/товаров, cache и A/A | [current_dataset_runner.py:278](harness_rag/current_dataset_runner.py#L278), `_run_dataset`, `_ensure_champion_current`, `_evaluate_candidate`, `_ensure_champion_repeatability` |
-| Evaluation hook | GOLD evaluation, классификация ошибок процесса, public diagnostics, агрегированный hidden result | [hook.py:25](harness_rag/hook.py#L25), `_classify_eval_failure`, `run_eval`, `run_hidden_eval` |
-| Metric policy | Восемь специализированных метрик, правила safety и финальный floor | [policy.py:11](harness_rag/policy.py#L11), `Metrics`, `accept_candidate`, `final_goal_met` |
-| Активная acceptance policy | Пропускает flat public/hidden guardrails к проверке пользы validator-ом | [diagnostic_runner.py:75](harness_rag/diagnostic_runner.py#L75), `_accept_candidate` |
-| Runtime | Git, subprocess, Codex CLI, JSON persistence, lock, rollback, tests, reindex | [runtime.py](harness_rag/runtime.py), `run_codex`, `harness_process_lock`, `rollback`, `rebuild_index` |
-| Конфигурация и цель | Конкретные корпуса, модели, бюджеты, команды и текущая исследовательская гипотеза | [config.json](harness_rag/config.json), [GOAL.md](harness_rag/GOAL.md) |
+| CLI | start/init, run/resume, stop/status/report/export | src/bananloop/cli.py:172,225,271,289,329 |
+| Discovery | Эвристики pytest/npm/make/tox и обнаружение Python runtimes | src/bananloop/wizard.py:58,106, discover_project |
+| Bootstrap | Один вызов агента, проверка JSON и области изменений, заморозка assets, создание spec | src/bananloop/bootstrap.py:150, bootstrap_campaign |
+| Контракты | MetricSpec, BudgetSpec, AgentConfig, CampaignSpec, EvaluationResult | src/bananloop/contracts.py:69,87,110,123 |
+| Engine | Стадии, вызовы агентов/evaluator, recovery, финализация | src/bananloop/engine.py:61,268,400,1244 |
+| Evaluator | Запуск проектной argv-команды, чтение JSON, валидация EvaluationResult | src/bananloop/evaluators/command.py:16, evaluate |
+| Policy | Primary delta, guards, non-regression, checks, paired cases | src/bananloop/policy.py:64, decide |
+| Workspace | Private clone, sanitized agent copy, перенос patch, scope | src/bananloop/workspace.py:32,82,115,158 |
+| Integrity | SHA файлов evaluator и проверка неизменности | src/bananloop/integrity.py:35,80 |
+| Store | Spec, actions, receipts, reservations, atomic promotion | src/bananloop/store.py:157,266,287,371 |
+| Research | DEV-only память, механизмы, lessons, режимы планирования | src/bananloop/research.py:20,231,298 |
+| Adapters | Codex exec, Pi RPC, произвольная JSON stdin/stdout-команда | src/bananloop/agents/codex.py:197; agents/pi.py:93; agents/command.py:12 |
 
-## Поток выполнения
+### Что автоматизировано при start
 
-Новая campaign требует чистое рабочее дерево и запрещает branch `main`/`master`. Preflight проверяет public/hidden datasets, обязательные OpenAI/DeepSeek credentials и готовность непустой Qdrant collection. Эти требования зашиты в [v2_runner.py:201](harness_rag/v2_runner.py#L201) и [v2.py:477](harness_rag/v2.py#L477).
+Bootstrap получает human goal, test-command hints и обнаруженные Python runtimes. В prompt требуется выбрать существующий подходящий evaluator или создать адаптер в .bananloop_eval, фиксировать входы/случайность, проверить smoke и исправить ошибки запуска. Проектный контекст сохраняется для следующих ролей. Источники: bootstrap.py:87–123; agents/codex.py:209–230.
 
-Согласно активным wrappers и [README](harness_rag/README.md), рабочий поток: champion -> исследование -> план одной гипотезы -> реализация -> tests -> public GOLD -> adaptive hidden -> полный текущий корпус -> validator -> promotion либо rollback. Полный candidate run текущего корпуса выполняется после public/hidden gates. Baseline champion и его A/A comparison кэшируются.
+Разрешены изменения только .bananloop_eval/**. После agent call создаётся snapshot, проверяется diff; нарушения откатываются. Все файлы этой директории и обнаруженные evaluator assets хешируются и защищаются. Источник: bootstrap.py:131–147,191–199,217–275.
 
-Принятое изменение становится новым champion; последующие эксперименты сравниваются с ним. Rollback отклонённого кандидата возвращает текущий champion, а не исходный commit campaign. См. [v2.py:571](harness_rag/v2.py#L571), `_rollback_and_record`, и [v2.py:890](harness_rag/v2.py#L890), `_promote`.
+### Что start пока не подтверждает самостоятельно
 
-Текущий конфиг: 5 scientific iterations, предел CLI 1..7; 28 agent calls, 7 research calls, 7 reviewer calls, 0 fixer calls, 5 index builds. Модели выбираются статически по ролям. Это значения исследованного [config.json](harness_rag/config.json), а не рекомендация для standalone.
+- ready проверяет непустые evaluation_command/project_context и отсутствие needs_input. Сам bootstrap не запускает отдельный evaluator probe и не требует проверяемый smoke receipt. Smoke пока является обязанностью агента в prompt. Источник: bootstrap.py:65–75,184–186,217–290.
+- Это один supervisor-level agent call: отдельного цикла smoke -> diagnosis -> repair в bootstrap нет. Ошибка агента/схемы вызывает BootstrapError. Внутри собственного вызова агент может делать несколько действий. Источник: bootstrap.py:183–215.
+- CampaignStore создаётся после bootstrap. Будущие campaign budgets не учитывают bootstrap как обычный engine action; его ограничивает отдельный timeout, по умолчанию 1200 секунд. Источник: bootstrap.py:150–186,267–290; cli.py:350.
+- Default state directory определяется хешем пути repo. Новая цель для repo с существующей DB требует другого state-dir либо обращения к старой кампании. Источник: contracts.py:410–423; bootstrap.py:166–169.
+- --allow-dirty только отключает clean-check. Базой остаётся HEAD; незакоммиченные изменения не включаются автоматически. Источник: cli.py:172–175; bootstrap.py:172–175; workspace.py:32–42.
+- Expert init и wizard продолжают запрашивать command/metric/target/min_improvement. Wizard не превращает произвольную test-команду в evaluator JSON самостоятельно. Источник: wizard.py:163–209; cli.py:67–152.
 
-Команд `init` и диалогового согласования цели текущий parser не содержит: постановка поступает из фиксированных `GOAL.md`/config, а CLI требует `--holdout`. Источник: [v2.py:799](harness_rag/v2.py#L799), `_parser`.
+## Паттерны и гарантии
 
-## Состояние и память
+1. **Evaluator отделён от coding agent.** Agent workspace не содержит исходную .git-историю, .bananloop_eval и frozen/hidden assets; implementation возвращается patch. Вердикт вычисляет policy, а не self-report агента. Источники: engine.py:100–146; workspace.py:82–142; policy.py:64–138.
+2. **Immutable measurement contract.** CampaignSpec canonical JSON хешируется; engine проверяет hash. Файлы assets сверяются перед оценкой. Источники: contracts.py:184; store.py:157; engine.py:1255; integrity.py:80.
+3. **Replay через durable receipts.** COMPLETED action переиспользуется; неизвестный исход RUNNING не исполняется слепо повторно. Входы сохраняются/сверяются по hash. Источник: engine.py:268–367.
+4. **Atomic promotion.** Champion, promotion event и следующая стадия сохраняются транзакционно; повторное завершение не удваивает счётчики. Rejection возвращает champion. Источники: store.py:266–310; engine.py:1173.
+5. **DEV, validation, final holdout.** Validation проверяет только прошедших DEV кандидатов. Configured holdout влияет на GOAL_MET и не возвращает поиск в adaptive loop. Validation/holdout optional. Источники: engine.py:152–189,400–451,1063–1166; contracts.py:131.
+6. **Контекст и бюджет.** Агент получает DEV-view; diagnostics разрешаются явно. Лимиты включают calls, attempts, experiments, work units, wall time и plateau; финальный evaluator slot резервируется. Источники: research.py:20–54,231–295; contracts.py:87–102; engine.py:218–265.
 
-Default state хранится вне репозитория в `~/.rag-trend-harness/<branch>/`; отдельные campaign получают собственные каталоги артефактов. Данные включают `state.json`, `history_v2.jsonl`, `events.jsonl`, preflight, agent outputs, evaluation summaries и compact rows. Источники: [v2.py:825](harness_rag/v2.py#L825), `_state_dir`; [provenance_runner.py](harness_rag/provenance_runner.py); [README](harness_rag/README.md).
+## Интеграции и модели
 
-В состоянии присутствуют champion commit/collection/metrics, active stage, plan, результаты стадий, usage, history, hypothesis ledger и research memory. `_result_row` сохраняет гипотезу, решение, причины, метрики, ошибки и уроки; research/provenance wrappers дополняют причинные данные. См. [v2.py:286](harness_rag/v2.py#L286), `_compact_memory`, `_update_ledger`, и [v2.py:533](harness_rag/v2.py#L533), `_result_row`.
+В CampaignSpec один AgentConfig для bootstrap/propose/implement/analyze. Нет выбора модели по роли. --model передаётся Codex как -m; если он отсутствует, адаптер его не добавляет. Extra args позволяют передать настройки Codex. --thinking и --provider CLI относятся к Pi. Источники: contracts.py:110–148; cli.py:49–64; engine.py:85–91; agents/codex.py:258–285.
 
-`attempts_started` отделён от `scientific_iterations`: блокировка реализации или infrastructure pause не равна научно проверенной неудаче. Stable experiment ID связывает повторные attempts одной гипотезы. См. [v2_runner.py:18](harness_rag/v2_runner.py#L18), `_experiment_id`, `_ensure_execution_counters`, `_stamp_completion`, `_record_cycle_scientific`.
+Текущая локальная правка CodexAdapter передаёт большой prompt через stdin "-", сохраняя schema/output-file протокол. Правка существовала до анализа и не менялась.
 
-Для повторяющихся blockers предусмотрены mechanism counts/suppression; причинная память передаётся в prompts. Эти механизмы не устанавливают семантическую эквивалентность любых двух произвольных гипотез. См. [v2.py:672](harness_rag/v2.py#L672), `_blocked_mechanism_counts`, `_suppressed_mechanisms`; [research_first_runner.py](harness_rag/research_first_runner.py).
+В src/pyproject/.github не обнаружены plugin manifest, skill, hook bridge, MCP server или собственный loader профилей BananLoop. Entrypoint — Python CLI. Локально проверены codex-cli 0.158.0 и codex exec --help: доступны -m, -c, --profile, --output-schema и stdin "-". Реальные model calls при исследовании не выполнялись.
 
-## Паттерны надёжности
+Официальная документация на дату анализа подтверждает:
 
-| Механизм | Наблюдаемое поведение | Граница доказательства |
-| --- | --- | --- |
-| Atomic JSON replacement | `write_json` пишет `.tmp`, затем заменяет файл | Отдельные state/history/events/Git операции не образуют общую транзакцию: [runtime.py:30](harness_rag/runtime.py#L30), [v2.py:510](harness_rag/v2.py#L510) |
-| OS-level lock | `msvcrt` на Windows, `flock` на POSIX; owner JSON диагностический | Lock принадлежит Git directory текущего worktree; это не изоляция всех внешних ресурсов: [runtime.py:77](harness_rag/runtime.py#L77) |
-| Resume по стадии | Active stage сохраняется; infrastructure pause не закрывает experiment | Есть специальные recovery paths, а не общая транзакционная модель: [v2.py:599](harness_rag/v2.py#L599), [optimization_runner.py:66](harness_rag/optimization_runner.py#L66) |
-| Persisted verdict | Сохранённый reviewer result применяется без второго agent call | Проверено соответствующим unit-test: [test_rag_harness_resume_review.py](tests/test_rag_harness_resume_review.py) |
-| Partial rollback recovery | Чистое дерево при сохранённой candidate stage распознаётся как уже удалённый candidate | Закрывается как non-scientific failure, а не evaluation champion под именем candidate: [optimization_runner.py:66](harness_rag/optimization_runner.py#L66) |
-| Promotion allowlist | Перед commit сравнивается множество текущих и ожидаемых paths, затем staged paths | Проверяются пути; content hash полного evaluated tree здесь не сопоставляется: [v2.py:853](harness_rag/v2.py#L853), `_promotion_paths`, `_promote` |
-| No-op guard | Только tests/OpenSpec/harness changes не считаются causal product diff | Это существующая policy данного проекта: [v2.py:831](harness_rag/v2.py#L831), `_candidate_path_snapshot` |
+- Plugin может объединять skills, MCP и lifecycle hooks: [упаковка плагина](https://developers.openai.com/plugins/build/plugins).
+- Stop hook может запросить продолжение через decision=block/reason. Непроверенные non-managed hooks пропускаются до trust review; Stop matcher не поддерживается. Это событие завершения хода, а не evaluator-контракт BananLoop: [Hooks](https://learn.chatgpt.com/docs/hooks).
+- /goal поддерживает продолжение работы между ходами; документация требует определить критерий завершения и проверку: [Follow a goal](https://learn.chatgpt.com/use-cases/follow-goals).
+- Модель/reasoning задаются в custom agent TOML или настройках запуска; CLI profiles представлены отдельными name.config.toml: [Subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents), [Profiles](https://learn.chatgpt.com/docs/config-file/config-advanced).
 
-Promotion сначала выполняет `git commit`, затем обновляет champion state и записывает completion. Из этой последовательности не следует гарантия exactly-once при аварии между commit и persistence. См. [v2.py:890](harness_rag/v2.py#L890).
+Работоспособность конкретного hook в текущем desktop runtime не испытывалась. Документированная поддержка не равна E2E-проверке здесь.
 
-## Интеграции и границы доступа
+## Проверки и метрики
 
-`run_codex` вызывает один конкретный CLI: `codex exec`, с моделью, reasoning effort, sandbox, schema и output file. Structured output разбирается как JSON object. Отдельного общего `AgentAdapter` в runtime нет. См. [runtime.py:282](harness_rag/runtime.py#L282).
+Текущий запуск существующих tests/test_bootstrap.py, test_policy.py, test_cli.py, test_wizard.py: **24 passed in 4.94s**.
 
-`ROOT` определяется расположением harness-файла. Runtime subprocess работают в этом ROOT. `v2.py` импортирует `nomenclature_matcher.settings.Settings`; preflight и reindex знают Qdrant, LD catalog и provider credentials. См. [runtime.py:14](harness_rag/runtime.py#L14), [v2.py:36](harness_rag/v2.py#L36), [v2.py:477](harness_rag/v2.py#L477), [runtime.py:343](harness_rag/runtime.py#L343).
+Команда:
 
-Protected paths содержат `harness_rag/`, `data/`, catalog, index/evaluation scripts и domain rules. Проверка реализована через анализ изменённых paths. `tests/` не входит в этот protected list. См. [runtime.py:16](harness_rag/runtime.py#L16), `protected_changes`.
+    .\.venv\Scripts\python.exe -m pytest tests/test_bootstrap.py tests/test_policy.py tests/test_cli.py tests/test_wizard.py -o addopts='' -q -p no:cacheprovider --basetemp C:\Users\theso\Desktop\job\BananLoop\.tmp\analysis-20261004-pytest-01 --tb=short
 
-Hidden dataset должен быть вне ROOT. После успешной hidden evaluation raw rows удаляются, сохраняется summary. `_agent_env` удаляет переменные с holdout-префиксами, но начинается с `os.environ.copy()`. Эти меры ограничивают передаваемый контекст; в этих функциях нет OS-level запрета чтения произвольного внешнего файла или общего env allowlist. Raw output существует до удаления; авария в этом интервале не покрывается обещанием отсутствия приватных файлов. См. [hook.py:128](harness_rag/hook.py#L128), [runtime.py:253](harness_rag/runtime.py#L253).
+Первый запуск упёрся в WinError 5 в общем pytest temp/cache; повтор с отдельным workspace basetemp и отключённым cache прошёл. Это инфраструктурное ограничение, не провал поведения bootstrap.
 
-Rollback выполняет `git reset --hard` и `git clean -fd` в текущем ROOT с исключениями runtime temp-каталогов. Отдельного sandbox checkout для каждого кандидата в данном runtime нет. См. [runtime.py:212](harness_rag/runtime.py#L212).
+tests/test_bootstrap.py:113–158 использует command fixture, не живой Codex. Исторические 106 passed в docs/completion-readiness.md:30–38 относятся к прошлой Linux-проверке и не являются результатом текущего запуска.
 
-Отдельный legacy [scripts/codex_loop.py](scripts/codex_loop.py) содержит timeout для agent/verification (`run_codex`, `verify`), diff budget с учётом untracked files (`diff_stats`, `enforce_diff_budget`) и блокировку повторяющегося failure по plan hash (`register_failure`, `iteration`). Эти функции не являются доказательством аналогичного поведения активного v2 entrypoint.
+В существующем локальном архиве .tmp/experiment_archive_work/report.md записан DEV public_hard_pass_rate 0.6333 -> 0.7000, пять экспериментов, два ACCEPTED, остановка по бюджету. Это прочитанный исторический отчёт; исходные измерения не воспроизводились и обобщение на unseen cases этим не подтверждается.
 
-## Метрики и ограничения
+## Технические ограничения и неизвестности
 
-1. **Primary evidence и goal predicate различаются.** [GOAL.md](harness_rag/GOAL.md) определяет текущие 783 mostly-unlabeled rows как primary corpus. `_accept_candidate` допускает flat labeled guardrails; пользу затем оценивает validator. Однако финальный `GOAL_MET` вычисляется через `final_goal_met(public, hidden, coverage_floor)`; метрики 783 корпуса в predicate не участвуют. Источники: [diagnostic_runner.py:75](harness_rag/diagnostic_runner.py#L75), [current_dataset_runner.py:577](harness_rag/current_dataset_runner.py#L577), [v2_runner.py:340](harness_rag/v2_runner.py#L340), [policy.py:85](harness_rag/policy.py#L85).
-2. **Sealed final является отдельным отчётным измерением.** `_maybe_run_sealed_final` запускается только после выполнения public/hidden goal и сохраняет summary. Outcome текущего runner после этого снова вычисляется по champion public/hidden; sealed final summary не включается в `goal_met`. Источники: [v2.py:1561](harness_rag/v2.py#L1561), [v2_runner.py:346](harness_rag/v2_runner.py#L346).
-3. **Отсутствующая метрика получает 0.0.** `Metrics.from_summary` заменяет `None`/отсутствие значения нулём. Нет общего контракта completeness для произвольного metric set. Источник: [policy.py:22](harness_rag/policy.py#L22).
-4. **Budget ограничивает counts.** `_remaining_budgets` проверяет agent/role/index calls; elapsed и reported tokens собираются как телеметрия. Токены извлекаются regex из текстового лога. В этих бюджетах нет денежного ceiling или campaign deadline; основные `subprocess.run` вызовы не задают timeout. Источники: [v2.py:355](harness_rag/v2.py#L355), [runtime.py:37](harness_rag/runtime.py#L37), [runtime.py:282](harness_rag/runtime.py#L282), [hook.py:72](harness_rag/hook.py#L72).
-5. **Usage фиксируется после agent call.** Счётчики обновляются в `finally`; до запуска внешнего процесса durable reservation не производится. При прекращении процесса до `finally` соответствующая запись может отсутствовать. Источник: [v2.py:390](harness_rag/v2.py#L390).
-6. **Cache не является полным execution fingerprint.** Champion cache использует commit, dataset SHA и наличие output. Candidate fingerprint строится по `git diff --`, который не включает staged/untracked содержимое. В cache predicate нет полного набора зависимостей, environment, evaluator и внешнего index state. Источник: [current_dataset_runner.py:364](harness_rag/current_dataset_runner.py#L364), `_ensure_champion_current`, `_evaluate_candidate`.
-7. **A/A существует как evidence.** Выполняется один cached repeat champion, сравниваются row-level переходы. Результат включается в validator prompt. Это не реализованный общий статистический тест улучшения. Источник: [current_dataset_runner.py:510](harness_rag/current_dataset_runner.py#L510), `_ensure_champion_repeatability`, `_current_prompt_block`.
-8. **Adaptive hidden используется в цикле.** Его агрегаты участвуют в сравнении кандидатов и передаются через разрешённый summary. Существует отдельный optional sealed final. Разделение явно описано в [GOAL.md](harness_rag/GOAL.md) и реализовано в [v2.py](harness_rag/v2.py), `_visible_hidden`, `_execute_active`, `_maybe_run_sealed_final`.
-9. **Итоговый отчёт уже есть, но его метрики специализированы.** `FINAL_REPORT_V2.md` содержит outcome, counts, champion, public/hidden/final hard-pass и историю. Это не общий отчёт с произвольными objective/guardrail units и денежной стоимостью. Источник: [v2_runner.py:161](harness_rag/v2_runner.py#L161).
+- Asset discovery не отслеживает автоматически весь граф импортов/внешние datasets. Identity внешних inputs/reference/seed/settings должен обеспечивать evaluator. Источники: integrity.py:35–65; contracts.py:304–309.
+- Hash и корректный JSON не доказывают соответствие измерения человеческой цели. Aggregate metrics считаются доверенным вычислением evaluator. Источник: docs/artifact-evaluation-v1.md:138.
+- Автоматической A/A noise calibration в runtime не найдено: _baseline делает один DEV action; repetitions/min_wins/tolerances задаются spec, confidence intervals не вычисляются. Источники: engine.py:462–500; policy.py:101–128.
+- Это логическая изоляция trusted local projects, не OS boundary против враждебного процесса. Hard USD budget не реализован. Источники: README.md:35; contracts.py:87–102.
+- Автономная подготовка корректного evaluator для произвольного нового repo не подтверждена текущими fixture tests. В этом исследовании не запускались платные модели, GPU, внешние сервисы или длительная кампания.
+- Публикация плагина и интеграция с OpenSpec не исследовались как отдельные продукты; OpenSpec в запросе рассматривается как аналог привычного UX.
 
-## Проверка тестами
+## Заключение
 
-`python -m pytest -q`: **263 passed, 1 warning in 4.62s**. Предупреждение: pytest не смог записать `.pytest_cache/v/cache` из-за Windows permissions. Первый запуск в sandbox завершился `233 passed, 30 errors`; ошибки возникли при доступе fixture `tmp_path` к системному `pytest-of-theso`. Повтор с необходимым доступом прошёл.
-
-| Область | Примеры проверяющих файлов |
-| --- | --- |
-| Acceptance и final floor | [test_rag_harness_policy.py](tests/test_rag_harness_policy.py), [test_rag_harness_v2_diagnostics.py](tests/test_rag_harness_v2_diagnostics.py) |
-| Counts и scientific semantics | [test_rag_harness_v2_scientific_budget.py](tests/test_rag_harness_v2_scientific_budget.py), [test_rag_harness_v2.py](tests/test_rag_harness_v2.py) |
-| Resume и recovery | [test_rag_harness_resume_review.py](tests/test_rag_harness_resume_review.py), [test_rag_harness_optimization_recovery.py](tests/test_rag_harness_optimization_recovery.py), [test_rag_harness_v2_recovery.py](tests/test_rag_harness_v2_recovery.py) |
-| Память и provenance | [test_rag_harness_planner_memory.py](tests/test_rag_harness_planner_memory.py), [test_rag_harness_v2_research_first.py](tests/test_rag_harness_v2_research_first.py), [test_rag_harness_v2_provenance.py](tests/test_rag_harness_v2_provenance.py) |
-| Current corpus и A/A | [test_rag_harness_current_dataset.py](tests/test_rag_harness_current_dataset.py) |
-| Lock и Windows paths | [test_rag_harness_runtime_windows.py](tests/test_rag_harness_runtime_windows.py) |
-| Hidden summary | [test_rag_harness_v2_hidden_summary.py](tests/test_rag_harness_v2_hidden_summary.py) |
-
-Наличие passing tests не подтверждает все интеграционные свойства. Например, `test_v2_entrypoints_route_directly_to_v2` ищет строку импорта, которая теперь сохранена в compatibility comment entrypoint; фактическая цепочка установлена чтением executable imports, а не только этим тестом.
-
-## Вывод
-
-В прототипе присутствуют законченные механизмы iteration, champion promotion, staged gates, experiment memory, counts, resume и reports. Их реализация тесно связана с конкретным репозиторием, Codex CLI, OpenSpec, RAG datasets, Qdrant и доменными метриками. Не установлены фактическая эффективность прошлых campaign, стоимость достижения результата, общая изоляция скрытых данных и переносимость на другой проект. Дизайн самостоятельного продукта должен опираться на эти факты, не считать такие свойства уже доказанными.
+В текущем BananLoop есть простой CLI entrypoint и независимое исполняемое ядро оценки/состояния. Подготовка измерителя содержит LLM-driven шаги, часть требований к которым пока контролируется инструкцией, а не отдельным readiness gate. Codex-интеграция отсутствует. Эти факты являются входом для предлагаемого [архитектурного решения](design/adr.md).

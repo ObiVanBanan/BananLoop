@@ -1,286 +1,208 @@
-# ADR: локальный supervisor измеримых AI-campaign
+# ADR: простой запуск BananLoop через Codex с сохранением независимой оценки
 
 ## Status
 
-Historical design input. The standalone repository now implements this design
-incrementally; see [current scope and verification](../docs/completion-readiness.md).
-The proposed features below are not all release claims.
+**Proposed**, 2026-10-04. Это проект решения, не реализованная plugin-функциональность.
 
-**Proposed**, 2026-09-19. Решение относится к будущему standalone repository. Оно не изменяет runtime `rag_tender`.
+Предыдущий ADR об извлечении standalone core сохранён без изменений в [adr-standalone-2026-09-19.md](adr-standalone-2026-09-19.md). Текущее решение сохраняет его границы evaluator/store/policy, меняя пользовательский вход и подготовку кампании.
 
 ## Task
 
-Пользователь задаёт техническую цель, подтверждает способ измерения и ограничения, затем получает управляемую серию experiments с baseline, лучшим допустимым результатом, resume и доказательной историей. Coding-agent остаётся внешним исполнителем.
+Пользователь открывает репозиторий в Codex и задаёт цель человеческим языком. BananLoop сам разбирается в проекте, подготавливает рабочее измерение, проводит ограниченную серию улучшений и возвращает лучший проверенный результат. Ручная сборка evaluator, датасета и длинной CLI-команды не является нормальным пользовательским путём.
+
+Пример желаемого UX после установки плагина:
+
+> BananLoop, улучши поиск аналогов. Сократи пропуски, не увеличивая ложные совпадения.
+
+Имена инструментов и настроек ниже — предлагаемый контракт, а не существующий API.
 
 ## Research Inputs
 
-- [research_report.md](../research_report.md): активный loop, domain coupling, budgets, persistence, protected paths, unit-tests и неизвестные свойства.
-- [standalone_harness_proposal.md](../standalone_harness_proposal.md): продуктовая граница, пользовательский путь, extraction matrix, риски и release criteria.
-- Исследованный commit `e6e4df230edb07ac89999be4856807af9dcab119`.
-- Официальные протоколы интеграции: [Codex non-interactive](https://learn.chatgpt.com/docs/non-interactive-mode), [Pi coding agent](https://github.com/earendil-works/pi/tree/main/packages/coding-agent). Первый предоставляет JSONL/structured output, второй имеет RPC/JSON режимы; версии фактических CLI будут фиксироваться adapter-ом.
+- [research_report.md](../research_report.md): факты текущего checkout, места ручной настройки, границы runtime и 24 прошедших targeted tests.
+- src/bananloop/bootstrap.py:65,150 — ready-валидация и автоматическая подготовка.
+- src/bananloop/engine.py:268,400,462,1063 — receipts, holdout, baseline, validation.
+- src/bananloop/contracts.py:110,123 — один AgentConfig и campaign contract.
+- [Plugin packaging](https://developers.openai.com/plugins/build/plugins), [Hooks](https://learn.chatgpt.com/docs/hooks), [Skills](https://developers.openai.com/plugins/concepts/skills).
+- [Goals](https://learn.chatgpt.com/use-cases/follow-goals), [Subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents), [Profiles](https://learn.chatgpt.com/docs/config-file/config-advanced).
 
 ## Context
 
-Прототип имеет stage engine, public/hidden guards, текущий corpus evaluation, champion, experiment memory и специализированные recovery paths. Общие функции подменяются несколькими wrappers, state представлен словарями и несколькими файлами, Git commit и state completion разнесены во времени.
+Короткий start уже реализован. Основная недостающая способность — надёжно превращать цель в проверенный измерительный контракт, восстанавливаться после ошибок подготовки и понятно показывать ход работы.
 
-Hardcoded RAG metrics и Qdrant/LD preflight не являются подходящим контрактом для других задач. Анализ также обнаружил разные источники primary evidence и `GOAL_MET`, неполный candidate cache fingerprint, post-hoc path protection и отсутствие универсального денежного/time enforcement. Подробные источники приведены в research report.
+Текущий core уже содержит baseline/champion, DEV/validation/final holdout, deterministic accept/reject, rollback, durable receipts, reservations и research memory. Их перенос только в инструкции лишит систему программных проверок.
+
+Разные проекты требуют разных evaluators, но формат вызова, хранение receipts, принятие результата и управление бюджетом могут оставаться одинаковыми.
 
 ## Decision
 
-Создать один local Python CLI supervisor с явной последовательной state machine. Domain logic остаётся в evaluator проекта. Принять versioned typed contracts; Pydantic для validation, SQLite для campaign state/events/reservations, файловые артефакты для больших outputs.
+Сделать Codex plugin основным пользовательским интерфейсом. Сохранить Python core как владельца измерений, политики принятия, состояния и восстановления. В первом варианте core остаётся и владельцем существующего experiment loop; замена его на native Codex execution — отдельная потенциальная эволюция после проверки эквивалентности гарантий.
 
-Четыре интеграционные границы: `AgentAdapter`, `Evaluator`, `WorkspaceManager`, `CampaignStore`. Acceptance/stop/budget predicates принадлежат core. Один executor может выполнять planning и implementation в разных invocations. Отдельный routing engine не требуется.
+Разделить ответственность:
 
-```mermaid
-flowchart LR
-    U[User / CLI] --> I[Init dialogue]
-    I --> C[Approved CampaignSpec]
-    C --> E[Sequential engine]
-    E --> P[Deterministic policies]
-    E --> A[AgentAdapter]
-    A --> W[Private candidate workspace]
-    E --> W
-    W --> S[Frozen candidate snapshot]
-    S --> V[Trusted evaluator runner]
-    V --> P
-    E --> D[(SQLite campaign store)]
-    V --> F[Evidence artifacts]
-    D --> R[Markdown / JSON report]
-    F --> R
-```
+| Слой | Ответственность |
+| --- | --- |
+| Skill плагина | Понять цель, вызвать подготовку, объяснить выбранное измерение и прогресс, запросить только действительно недостающий смысл/доступ |
+| Подготовка кампании | Discovery, выбор measurement recipe, генерация адаптера, readiness проверки, ограниченный ремонт и фиксация protocol |
+| Core BananLoop | Snapshot, выполнение evaluator, durable receipt, budgets, policy, promotion/rejection, recovery |
+| Пакет оценки проекта | Команды, fixtures/cases, рубрика, split, seeds/settings, fingerprints, checks, optional judge |
+| Codex hook | Связать завершение хода с уже существующим состоянием кампании; не вычислять научный verdict самостоятельно |
 
-Agent output не является доверенным verdict. Evaluation measurements поступают из evaluator runner, а не из implementer self-report. Store и approved spec принадлежат supervisor. Схема показывает логические границы; OS-level изоляция зависит от execution backend и проверяется отдельно.
+Для первой локальной интеграции достаточно skill + структурированный CLI bridge. MCP добавляет удобные типизированные инструменты и асинхронный status API, но не является условием независимости оценки. Установка должна проверять Python/Git/Codex и доступ к выбранной модели; работающий plugin manifest сам по себе не доставляет Python runtime.
+
+### Подготовка становится полноценным этапом
+
+Вместо одного доверенного ready-ответа:
+
+1. Найти существующие тесты, benchmarks, datasets, reference outputs, команды и runtime.
+2. Выбрать способ измерения, согласованный с целью; сохранить объяснение выбора и ограничения.
+3. Собрать evaluator adapter и замкнутый manifest зависимостей измерения в managed workspace.
+4. Core запускает дешёвый smoke: валидный JSON, нужные metrics/checks, ненулевое число реальных кейсов, запуск из candidate snapshot.
+5. Проверить смысл сигнала на доступных известных good/bad examples или контролируемом ухудшении. Например, ухудшенная реализация не должна получать тот же высокий балл. Такие проверки не доказывают бизнес-валидность полностью, но ловят константный scorer и измерение постороннего свойства.
+6. При шуме провести ограниченную A/A калибровку, выбрать repeats/порог, сверить одинаковые inputs и окружение.
+7. При технической ошибке вернуть builder только диагностический контекст, дать ограниченное число repair attempts, повторить gate.
+8. Заморозить проверенный пакет; измерить baseline и начать улучшение автоматически в разрешённом бюджете.
+
+Bootstrap имеет собственные durable stages и reservations внутри общего лимита запуска. Время и вызовы подготовки перестают быть невидимыми расходами до campaign.
+
+Если готовых labels нет, система сначала использует доступные контракты, invariants, metamorphic checks, regression tests и references. Синтетические кейсы имеют явное происхождение; они не объявляются независимым GOLD. Если задача требует неизвестного продуктового предпочтения, задаётся один предметный вопрос, например о цене ложного совпадения. Пользователю не предлагается самому писать evaluator.
+
+Test pass rate подходит для цели «починить эти тесты», но не автоматически для «сделать поиск качественнее». Если численная цель не дана, выбранный критерий и его ограничения показываются в кратком описании кампании. При простом поиске улучшений до лимита результат называется «улучшение найдено» или «бюджет исчерпан», а не необоснованным GOAL_MET.
+
+### Project-specific evaluation без project-specific lifecycle hook
+
+Постоянный dispatcher узнаёт campaign по repo/session binding в supervisor state. Для каждой кампании создаётся отдельный versioned EvaluationBundle:
+
+- назначение измерения и связь с goal;
+- evaluator argv + runtime/environment identities;
+- metrics, checks, targets, guards и критерий остановки;
+- immutable cases/references/splits/seeds и hashes;
+- optional LLM judge: модель, версия rubric/prompt, настройки и правила агрегации;
+- readiness receipts, оценка шума и допустимые ограничения evidence.
+
+Содержимое меняется между проектами. После начала поиска тот же пакет не переписывается в ответ на плохой candidate score. Изменение измерения создаёт новую protocol version с новой baseline; старые и новые числа не склеиваются в одну историю.
+
+Builder может видеть материалы подготовки; implementer получает чистый DEV-only контекст. Настоящий финальный holdout не создаётся из уже просмотренных implementer примеров. Если такой независимой проверки нет, результат имеет evidence level DEV_ONLY.
+
+### Hook и /goal
+
+/goal полезен для продолжения работы между ходами; BananLoop определяет, какие измерения позволяют объявить успех. Официальная документация /goal не обещает BananLoop-специфичные rollback, champion policy и sealed holdout.
+
+Stop hook проверяет зарегистрированную кампанию и её receipt/status. Он может запросить продолжение хода, если осталась разрешённая работа. Вызов hook сам по себе не значит «кандидат готов к оценке»: candidate должен быть явно отправлен с snapshot identity. Дорогой benchmark запускается core как job, а не заново при каждом завершении хода.
+
+Правила bridge:
+
+- Нет активной campaign/session binding — no-op.
+- READY/RUNNING — получить состояние, при необходимости дождаться/продолжить предусмотренную работу.
+- Candidate уже оценён — вернуть имеющийся receipt, не запускать evaluator повторно.
+- NEEDS_INPUT/PAUSED_INFRA/BUDGET_EXHAUSTED/USER_STOP — не запускать бесконечные продолжения.
+- Только core может записать научный результат и champion; hook не доверяет тексту «готово».
+- Проверять campaign_id, session_id, snapshot, protocol hash и budget; не маршрутизировать по последнему assistant message.
+- Hook обязан учитывать stop_hook_active, concurrency и идемпотентность.
+- Nested codex exec worker с уже имеющимся владельцем loop не запускает второй BananLoop loop.
+- Ошибка, timeout, отсутствие trust или отсутствие callback не превращаются в успешную сертификацию. Campaign остаётся незавершённой/непроверенной.
+
+Codex требует trust review точного определения non-managed hook. Поэтому dispatcher поставляется стабильным компонентом плагина; генерация кода нового lifecycle hook на каждый проект не нужна. Это не способ обойти проверку: project evaluator code остаётся отдельной исполняемой частью и запускается с явной границей доверия.
+
+Официальная документация описывает local hooks, но некоторые cloud orchestration режимы имеют другие ограничения. MVP нацелен на локальный Codex; совместимость Windows/Desktop/CLI надо проверить callback-тестом до обещания UX.
+
+### Модели и reasoning
+
+Настройки моделей должны храниться один раз как роль -> backend/model/reasoning/profile, а не передаваться пользователем двадцатью флагами. Минимально нужен один default execution profile; overrides по ролям опциональны.
+
+| Роль | Как выбирать |
+| --- | --- |
+| Общение/постановка цели | Текущая модель чата |
+| Builder и proposer | Настроенный execution profile, overrides при необходимости |
+| Implementer | Настроенный coding profile |
+| Проверка измерителя | Отдельный контекст reviewer плюс исполняемые проверки core |
+| Judge артефакта | Отдельно зафиксированная часть EvaluationBundle; может вообще отсутствовать |
+
+Независимость измерения не требует обязательно другой модели: важнее отсутствие у implementer права менять scorer/данные/решение. Другой LLM reviewer даёт дополнительное мнение, но не заменяет проверяемый evaluator.
+
+Сейчас есть один AgentConfig на кампанию. В первом MVP допускается сохранить его, добавив понятный профиль; расширение ролей может быть простым отображением, без отдельного routing engine.
+
+CLI worker не наследует автоматически модель открытого чата: текущий адаптер запускает отдельный codex exec. Разрешённую effective configuration нужно явно определить и сохранить в launch receipt. Native subagent execution, если будет добавлен позже, может использовать Codex custom agent TOML с model/model_reasoning_effort. Текущий CLI 0.158.0 использует отдельные name.config.toml для --profile; старый пример [profiles.name] не применять.
+
+Profile не меняет утверждённую model/rubric evaluator посреди кампании. Недоступная модель возвращает понятный capability error; silent fallback не допускается. Не обещать hard dollar cap для opaque CLI; поддерживаемые calls/time/work budgets сохраняются.
 
 ## Alternatives
 
-### Option A: выделить текущий harness почти целиком
-
-- Pros: максимальная начальная преемственность, уже существуют многочисленные edge-case fixes.
-- Cons: fixed ROOT, domain metrics, обязательный Qdrant, OpenSpec flow, monkey-patching и legacy migration semantics переходят в публичный API.
-- Decision: отклонить как основу core. Переносить отдельные утилиты, инварианты и regression scenarios.
-
-### Option B: небольшое standalone ядро и project evaluator bridge
-
-- Pros: независимость от `rag_tender`, небольшой публичный contract, понятная проверка переносимости вторым проектом/adapter.
-- Cons: state machine и recovery необходимо реализовать и проверить заново; это не упаковка за несколько дней.
-- Decision: принять.
-
-### Option C: сразу строить configurable workflow/multi-agent platform
-
-- Pros: гибкий порядок стадий и execution topology.
-- Cons: текущий scope требует один последовательный loop; расширяется объём публичных контрактов и recovery cases до проверки спроса.
-- Decision: отложить. Не вводить DAG/queue/orchestrator framework без потребности, которую текущая machine не покрывает.
-
-### Option D: JSON state + JSONL journal вместо SQLite
-
-- Pros: легко читать и переносить prototype utilities.
-- Cons: counters, active stage и decision history нужно вручную согласовывать после crash.
-- Decision: SQLite является source of truth; JSONL/Markdown только export. Крупные файлы всё равно сохраняются вне DB с digest и completion receipt.
-
-### Option E: linked worktree исходного repository вместо частной копии
-
-- Pros: меньше дискового копирования, быстрый checkout.
-- Cons: shared Git metadata/refs требуют дополнительных ограничений относительно пользовательского repository; это не security boundary. [Git worktree documentation](https://git-scm.com/docs/git-worktree).
-- Decision: private local clone по умолчанию. Linked worktree внутри специально выделенного repository может быть поздней оптимизацией. Supervisor не выполняет destructive cleanup пользовательского checkout.
+| Вариант | Плюсы | Издержки и решение |
+| --- | --- | --- |
+| Только skill и /goal | Быстрый UX-прототип, работа в чате | Нет замены транзакциям, receipts, rollback и защищённому протоколу. Не подходит как равнозначная замена core |
+| Skill + script на Stop, без core | Внешняя проверка при завершении хода | Понадобится заново реализовать identity, бюджеты, replay, champion и recovery; фактически новое ядро. Отклонить |
+| Plugin + нынешний core | Сохраняет существующие гарантии, позволяет сосредоточиться на bootstrap | В первом варианте остаются фоновые codex exec workers. Рекомендуемый MVP |
+| Native Codex execution + core measurement service | Редактирование в native sessions, больше контроля UX | Нужен новый durable job/lease API, изоляция agent context и доказательство parity. Возможная следующая архитектура |
+| Только улучшить CLI | Самый малый технический объём | Не решает предпочтение работы из Codex. Сохранить как headless/expert интерфейс |
 
 ## Contracts
 
 ### API
 
-HTTP API: **Not applicable** в v0.1; public boundary является CLI и adapter protocols.
+Предлагаемый небольшой интерфейс, общий для CLI bridge и будущего MCP:
 
-| CLI | Контракт |
-| --- | --- |
-| `harness init` | Discovery, диалог, разрешённое baseline measurement, preview и approval; результат DRAFT либо READY |
-| `harness run` | Запускает только approved spec с matching hash; не изменяет его на основании prompt |
-| `harness status [--json]` | Campaign/stage/champion/budget/stop reason, без повторных agent calls |
-| `harness resume` | Reconcile активное action, проверить fingerprint и budgets, продолжить сохранённую campaign |
-| `harness stop` | Запросить отмену owned process tree, сохранить checkpoint и champion |
-| `harness report` | Детерминированный Markdown/JSON export из durable records |
+| Операция | Вход | Выход |
+| --- | --- | --- |
+| start | repo, goal, optional profile/budget, request_id | campaign_id, preparation status, summary, missing inputs |
+| status | campaign_id, optional event cursor | stage, baseline/champion summary, budget, permitted DEV feedback, next event cursor |
+| resume | campaign_id, expected revision, optional missing-input values | existing/new job identity и status |
+| stop | campaign_id | durable cancellation acknowledgement |
+| export | campaign_id, expected champion | patch/manifest/report references |
 
-Draft и approval привязаны к spec hash. Изменение target/scope/budget требует нового approval event. Изменение evaluator/dataset/protocol делает прежние measurements несопоставимыми: новая campaign с новым baseline, при необходимости с provenance link на предыдущую. Расширение бюджета не обнуляет spent amounts.
+Long-running start возвращает job identity, не удерживает MCP request на часы. Supervisor process владеет durable state/lock; restart восстанавливает receipt-based execution. На первом шаге adapter оборачивает существующие методы, а не реализует policy второй раз.
 
-Campaign v0.1 начинается с выбранного committed snapshot. Dirty source требует явного выбора начать от этого commit либо отложить запуск; автоматические stash/reset и неявное исключение пользовательских изменений запрещены. Baseline и candidate исполняются в одинаково подготовленной private workspace environment, отдельно от source checkout. Подготовительные commands также требуют разрешения и входят в учёт ресурсов.
+status для LLM не возвращает сырые operator reports и holdout details: сейчас report рассчитан на оператора, поэтому его нельзя просто передать в chat model. Финальные подробности могут быть отдельным пользовательским артефактом вне adaptive context.
 
-#### AgentAdapter
-
-```text
-probe() -> AgentCapabilities
-execute(AgentTask, ExecutionContext) -> AgentResult
-cancel(action_id) -> CancellationResult
-```
-
-`AgentTask`: `schema_version`, `task_id`, `role=propose|implement`, approved goal excerpt, bounded context, hypothesis, required result schema. Proposer output: hypothesis/rationale/expected_effect/falsification/scope/mechanism_key/prior_experiment_refs либо `NO_HYPOTHESIS`. Implementer output: summary, claimed changed paths, verification notes и blockers; реальные paths определяет supervisor.
-
-`ExecutionContext`: `action_id`, managed workspace, approved capabilities, explicit env references, deadline, reserved budget, output directory. Prompt и result files не могут задавать новый cwd, credentials или расширять permissions.
-
-`AgentResult`: `status=completed|failed|cancelled|unknown`, validated payload, adapter/model/version, timing, usage items, logs/artifact refs, provider call/session IDs при наличии. `UsageItem` содержит unit/amount/source/quality (`actual|estimated|unknown`); отсутствующий расход не заменяется нулём.
-
-Первый adapter реализует Codex transport; `CommandAgentAdapter` требует wrapper, принимающий JSON request и выдающий schema-valid JSON result. CLI exit 0 без подходящего structured result является `AGENT_PROTOCOL_ERROR`. Raw token events не означают, что adapter обеспечивает hard USD limit.
-
-#### Evaluator
-
-```text
-evaluate(EvaluationRequest, ExecutionContext) -> EvaluationResult
-```
-
-`EvaluationRequest`: `evaluation_id`, frozen candidate snapshot, `evaluator_id/version/hash`, dataset/protocol/environment fingerprints, repeats/seed policy и supervisor-owned output destination.
-
-Минимальный result, иллюстративные значения:
-
-```json
-{
-  "schema_version": 1,
-  "status": "ok",
-  "metrics": {
-    "recall_at_5": {"value": 0.81, "unit": "ratio", "n": 100},
-    "latency_p95": {"value": 225.0, "unit": "ms", "n": 1000}
-  },
-  "checks": {
-    "acceptance_tests": {"passed": true, "executed": 263, "skipped": 0}
-  },
-  "artifacts": ["results/cases.json"]
-}
-```
-
-Result schema принадлежит harness, а числа производит утверждённый evaluator. Supervisor добавляет binding к action/candidate/protocol, timestamps и hash output; не доверяет self-declared candidate ID из arbitrary JSON. Artifacts разрешаются только внутри owned output directory с проверкой symlink/reparse traversal.
-
-Варианты `status`: `ok`, `invalid`, `infra_error`, `cancelled`. Провал quality/guardrail при корректно выполненной проверке остаётся `ok` с плохими metrics/checks, затем policy принимает `REJECT`. Crash, malformed JSON и missing output не считаются доказанным ухудшением качества.
-
-Validation: все required metrics присутствуют, имеют конечные числовые значения и ожидаемые units/ranges; sample count положителен и соответствует protocol; dataset/case IDs и skips проверены. `NaN`, `Infinity`, missing value, пустой набор или неожиданно пропущенные cases дают `INVALID_EVALUATION`. Custom commands по умолчанию возвращают JSON, а не произвольные regex-friendly логи. Test-command adapter нормализует ожидаемый test-failure exit отдельно от инфраструктурного crash.
-
-Команды задаются `argv` массивами; shell interpolation и произвольная строка из agent output не используются. Shell script допустим как явно утверждённый executable artifact. Setup/build/index команды имеют timeout, budget и declared outputs; автоматически предложенная моделью команда не становится разрешённой.
-
-#### Acceptance и target
-
-Один `MetricSpec`: name, unit, direction, valid range, aggregation/repeats, target, min_improvement. В v0.1 один primary objective, любое небольшое число conjunctive guardrails.
-
-Для maximize incremental effect `candidate - champion`; для minimize `champion - candidate`. Принимаем, если effect >= positive `min_improvement`, comparisons valid, все guard predicates true и mandatory review approval получено при выбранном режиме. Равенство и inconclusive не меняют champion.
-
-Guard имеет explicit anchor `absolute|baseline|champion`, operator, bound и tolerance. Default для допустимого cumulative ухудшения: baseline anchor. Relative thresholds при нулевом reference не вычисляются: init требует absolute limit. Relative target один раз преобразуется из измеренного baseline и закрепляется approval; его не пересчитывают от каждого champion.
-
-`GOAL_MET` означает target, guards и обязательные final checks на одном подтверждённом candidate. `best_observed` и `best_feasible` сохраняются отдельно. Acceptance промежуточного улучшения не означает достижения target.
+Для позднего native-execution варианта понадобятся lease/submit API: lease выдаётся на конкретную роль, parent champion и protocol; submit принимает snapshot/patch и структурированный результат. Evaluate/promote остаются core-owned. Это не часть первой упаковки.
 
 ### Data
 
-Минимальные таблицы:
+Сохранить SQLite actions/evaluations/decisions/events и прежние immutable CampaignSpec. Добавить campaign registry (несколько целей на repo), BootstrapRun/EvaluationBundle readiness records и host-session bindings. У active campaign отдельный state dir без ручного --state-dir в обычном UX.
 
-| Таблица | Содержание и ключи |
-| --- | --- |
-| `campaigns` | ID, repository ID, spec JSON/hash/version, lifecycle, baseline/champion refs, stop reason |
-| `experiments` | ID, campaign ID, hypothesis, mechanism key, rationale, parent snapshot, previous experiment links |
-| `attempts` | ID, experiment ID, ordinal, current stage, snapshot, status, scientific-completion flag |
-| `actions` | Unique action ID, attempt/stage, input hash, intent/status, process identity, receipt, error |
-| `evaluations` | ID, action ID, candidate/protocol refs, result/hash, comparison eligibility |
-| `decisions` | Unique attempt decision, predicates/reasons, selected champion, baseline/champion deltas |
-| `reservations` | Action/resource, reserved/consumed/settled amounts и quality |
-| `events` | Monotonic sequence, timestamp, entity refs, type и bounded payload |
-| `artifacts` | Hash, size, type, owned relative path, visibility, producing action |
+Новый старт не перезаписывает существующую кампанию. Незакоммиченная работа требует явной snapshot policy: default — сохранить отдельный managed snapshot и точно показать состав включённого diff; никогда не коммитить/сбрасывать исходный checkout молча. Если input-policy не позволяет безопасно выбрать состав изменений, запросить только этот выбор.
 
-SQLite migrations имеют explicit schema version и backup перед изменением. Неизвестная future version открывается только для безопасного чтения либо отклоняется. Default storage local disk, не network share.
-
-Файлы пишутся в action-specific temp path, затем atomically renamed; completion receipt содержит hashes. Только после этого transaction фиксирует completed stage. Осиротевшие outputs не считаются measurements без receipt. Shared memory между разными campaign не используется для автоматического acceptance; импортированное знание всегда содержит provenance.
-
-`repository_id` создаётся локально и проверяется против выбранного Git root/repository identity. Branch name сам по себе не является идентификатором. User-state root содержит private clone, DB, artifacts и reports. Approved project config не содержит tokens/passwords.
-
-Runtime lifecycle:
-
-```text
-DRAFT -> BASELINING -> READY -> RUNNING
-RUNNING -> PAUSED_INFRA | PAUSED_NEEDS_INPUT | FINALIZING | STOPPED
-PAUSED_* -> RUNNING                  (same spec, reconciled state, valid budget)
-FINALIZING -> GOAL_MET | STOPPED | PAUSED_INFRA
-```
-
-Attempt stages: `PROPOSE -> EXECUTE -> SNAPSHOT -> VERIFY -> MEASURE -> DECIDE -> PROMOTE/REJECT -> RECORD`. Все stage transitions сохраняются. Для baseline уже достигшего target EXECUTE не нужен.
+Изменения схемы additive; старые spec hashes и replay сохраняются. Новые поля не должны ломать canonical identity старых кампаний.
 
 ### Events / Jobs
 
-Distributed queue: **Not applicable**. Один supervisor и одна активная attempt на campaign. OS lock и store constraints предотвращают второго writer; разные campaigns не должны совместно мутировать external resource.
-
-До side effect transaction создаёт action intent и budget reservation. Runner получает immutable action ID и deadline. После выполнения записывает receipt и переводит action в completed/failed. Повторный completion с тем же ID не увеличивает counters и не меняет решение повторно.
-
-Resources: agent calls, evaluation calls, preparation calls, attempts, evaluated experiments, wall deadline. Evaluation repeats и baseline входят в расходы. Scientific count увеличивается один раз для валидно оценённого experiment, включая guard rejection; infrastructure/protocol failures увеличивают attempts/errors, но не scientific count. Evaluation crash не признаётся валидной отрицательной метрикой.
-
-Retries ограничены per-action и campaign counters. Допускается retry подтверждённой transient infrastructure error. Неизвестный исход остаётся `UNKNOWN_OUTCOME`, расход зарезервирован; сначала reconciliation. Semantic failure, scope violation и guard rejection не повторяются как «network retry».
-
-Promotion protocol:
-
-1. Supervisor сохраняет immutable candidate commit/tree и verified evaluation refs до decision; agent уже остановлен.
-2. Transaction фиксирует `PROMOTION_INTENT(expected_champion, candidate, decision_id)`.
-3. Supervisor обновляет только собственный champion Git ref через compare-and-swap с expected previous ref.
-4. Transaction завершает intent, пишет новый champion, decision/event и final attempt status.
-5. При resume ref равен candidate -> завершить запись без нового commit; ref равен expected -> повторить CAS; иное состояние -> `PAUSED_NEEDS_INPUT`.
-
-Git и SQLite не образуют общую транзакцию. Этот протокол делает promotion восстанавливаемым; он не обещает exactly-once выполнение внешних API. Rejected snapshot сохраняется как evidence по retention policy, но не становится champion. Cleanup касается только resolved paths внутри managed root; пользовательский repository не reset/clean.
-
-Resume проверяет process ownership/start identity и наличие ещё работающих children прежде, чем запускать новое действие. Watchdog/process backend обязан ограничивать wall time и завершать owned process tree, включая при потере supervisor. Для Windows и POSIX нужны отдельные integration cases. Detached services и remote jobs без управляемой отмены в v0.1 не запускаются.
+Единственный owner на campaign. Bootstrap actions и evaluator jobs имеют request hash, stable action_id, reservations до побочного эффекта и durable completion. Повторный hook/status не создаёт новую evaluation. Unknown external outcome сохраняет нынешнюю conservative recovery semantics.
 
 ### Errors
 
-| Error | Поведение |
-| --- | --- |
-| `INVALID_SPEC` / `UNSUPPORTED_CAPABILITY` / `UNSUPPORTED_BUDGET` | Run не начинается; объяснить конкретное неподдерживаемое требование |
-| `BASELINE_FAILED` / `UNSTABLE_EVALUATION` | Не объявлять baseline измеренным; вернуться к подготовке/исправлению protocol |
-| `AGENT_PROTOCOL_ERROR` | Сохранить logs/result, ограниченный retry только по declared rule |
-| `SCOPE_VIOLATION` / `EVALUATOR_CHANGED` | Отклонить attempt до expensive measurement; сохранить diff и причину |
-| `INVALID_EVALUATION` / `ENVIRONMENT_DRIFT` | Не сравнивать и не принимать candidate; pause для восстановления comparable setup |
-| `INFRA_UNAVAILABLE` | Bounded retry, затем checkpoint/pause |
-| `UNKNOWN_OUTCOME` | Reconcile receipt/process/provider status; не дублировать действие автоматически |
-| `STATE_CONFLICT` | Pause; не выбирать произвольно между Git и DB |
-| `CANCELLED` | Зафиксировать unfinished stage, settle known usage, сохранить champion |
-
-User-visible stop reasons отличны от error codes, чтобы «не достигнута цель», «инфраструктура недоступна» и «исчерпан бюджет» не смешивались. Report содержит outcome, baseline, best feasible, best observed с причинами недопустимости, delta, experiments, accepted changes, costs с coverage, stop reason и untested next directions. Numeric sections строятся из store без LLM; optional narrative не может менять числа/verdict.
+Разделять missing product input, runtime/credential failure, invalid evaluator, unstable measurement, candidate rejection и budget stop. Техническая ошибка запуска не объявляется плохим качеством кандидата. Ремонт evaluator до freeze ограничен; после freeze protocol mutation создаёт новую measurement epoch.
 
 ## Security
 
-Trust model v0.1: доверенный локальный проект, ограниченный existing coding executor, supervisor-owned policy/evaluation. Это не среда безопасного исполнения произвольного враждебного кода.
+Сохранить private evaluator workspace, sanitized implementer workspace, hidden labels, scope и integrity guards. Исходный checkout остаётся пользовательским. Hook/MCP не выдают implementer полный доступ к operator evidence.
 
-Внутри поддерживаемой policy executor не получает запись в store, frozen assets, approval record, Git champion refs и evaluation output. В private clone нет исходного remote/token configuration; agent не имеет полномочия push/deploy. Path canonicalization учитывает Windows case/reparse points и POSIX symlinks. Allowed writes проверяются backend-ом и diff guard; одно post-hoc сравнение paths не объявляется предотвращением side effects.
+Если native Codex продолжает редактирование в исходном repo с доступными evaluator assets и общей историей, нельзя утверждать прежнюю изоляцию. Нужны прежние sanitized worker contexts или отдельная runtime sandbox. Простое расположение scorer «в другом файле» недостаточно.
 
-Private clone исключает необходимость rollback пользовательского checkout, но не является filesystem sandbox. Процесс с неограниченным доступом к диску способен выйти из clone; запрет обеспечивает только проверенный execution backend. Git hooks/global configuration также не должны неявно запускать сторонние действия в managed clone.
-
-Credential policy использует env allowlist и process-specific secret references. Provider credentials нужны agent transport, но не произвольным evaluator subprocess; обратное также верно. Repository instructions, generated code и logs считаются недоверенными данными относительно supervisor policy. Они не расширяют budget, сеть или filesystem scope.
-
-Capabilities проверяются до запуска: adapter transport и execution backend раздельны. Произвольный CLI без проверяемого sandbox не допускается к campaign с обязательным запретом доступа/действий. Локальный trusted mode не маркируется строгой изоляцией. Разрешения auto-режимов меняют необходимость подтверждения в пределах spec, а не разрешённые действия.
-
-Frozen evaluation assets включают transitive scoring helpers/config и case manifest. Там, где scorer выполняется в одном процессе с candidate code, гарантии ограничены; cryptographic hashes подтверждают версию файлов, но не честность произвольного исполняемого кода. Для строгой независимости нужен отдельно изолированный scorer или black-box service evaluation.
-
-Private holdout не монтируется agent-у и candidate runtime; labels/row errors не входят в prompts/log exports. Сам candidate может видеть входы, необходимые для inference, поэтому изоляция scorer и отсутствие обратной выдачи labels обязательны. Если backend этого не обеспечивает, strict holdout campaign блокируется. Встроенный универсальный backend для такой проверки отложен.
-
-Hard currency cap разрешается только при проверенной верхней границе всех billable actions. Иначе отображается estimate/unknown и используется исполнимый count/time contract. Подписки, tool costs и evaluation API calls не игнорируются. Remote cancellation и расходы после disconnect не считаются решёнными локальным timeout.
+Локальный пользователь/враждебный процесс с доступом ко всем файлам остаётся за пределами текущих гарантий. Секреты — через разрешённые credentials/environment, не в bundle/report. Новые сетевые сервисы или платные providers не выбираются скрыто.
 
 ## Testing Strategy
 
-Тестирование относится к будущей реализации; текущий unit-suite `rag_tender` уже проверен отдельно в research report.
+Критерий «проще, не менее эффективно» измеряется отдельно для UX и качества:
 
-- Policy: maximize/minimize, baseline/champion anchors, relative-zero error, missing/NaN metrics, sample loss, cumulative regression, baseline already at goal, target/final consistency, budget-vs-target precedence.
-- State/budget: reserve-before-launch, failure settlement, exactly-once counters, pause deadline, no budget reset on resume, bounded retries.
-- Crash matrix: до/после launch, receipt, evaluation persistence, decision, Git CAS, DB completion; recovery никогда не принимает неизвестный snapshot и не повторяет promotion.
-- Workspace: dirty source остаётся неизменным; staged/untracked/renamed/binary files влияют на tree identity; late content mutation инвалидирует result; original refs не меняются.
-- Evaluation protection: deleted/skipped tests, edited grader/import helper/config, malformed result, stale cache, path traversal и доступ к protected outputs блокируются.
-- Adapter contract: Codex + fake fixtures для errors/usage; второй реальный command wrapper smoke. Unsupported cancel/isolation/cost capability выявляется preflight.
-- Runtime integration: Windows и POSIX process-tree termination, orphan recovery, locks, Unicode filenames, CLI executable resolution. Local fake processes вместо платных calls в CI.
-- Product acceptance: три разных project integrations и release gates из proposal. Live calls выполняются только в явно разрешённом dogfood budget.
+- На трёх типах реальных проектов — bugfix, performance, качество outputs — запустить от repo+goal без ручного evaluator/CLI. Измерить время до первой валидной baseline, число вопросов, ручных правок, bootstrap failure/repair rate.
+- Проверить wrong-metric и constant-score evaluator, недостающие refs, missing credentials, drift external inputs, noise и бюджет подготовки.
+- Сравнить прежний expert path и plugin path на одинаковых starts/protocol/budgets: acceptance, champion, regressions, holdout, затраты и качество. Один красивый пример не доказывает parity.
+- Проверить hook trust/disabled/error/timeout, повторные callbacks, user stop, nested workers, Windows quoting, несколько кампаний, disconnect/restart.
+- Сохранить существующие policy/store/isolation/replay tests. Проверить совместимость исторических CampaignSpec и отсутствие holdout leakage в chat-facing tools.
+- GOAL_MET выдаётся только с нужным terminal evidence; receipt связан с тем самым snapshot, который экспортируется.
+
+Текущие 24 теста — исходная проверка существующего кода, не проверка предлагаемого плагина.
 
 ## Consequences
 
-Core станет меньше domain-specific runtime, но потребует явных моделей и recovery протокола. SQLite добавляет migration responsibility, сохраняя читаемые JSON/Markdown exports. Private clone требует больше диска; artifact retention/cleanup проверяется как отдельное действие над owned paths.
+MVP boundary: один skill, локальный bridge, усиленная автоматическая подготовка, минимальный профиль, registry кампаний и понятный progress/result. Дополнительный Stop hook — контроль на границе хода; он не требуется для самостоятельной корректности уже работающего engine.
 
-`rag_tender` не зависит от нового пакета до отдельного решения о подключении. Новый пример вызывает существующий evaluator через wrapper; обратная совместимость старого `state.json` в v0.1 не обещается. Старые evidence могут импортироваться только как historical records с явно указанной provenance, без продолжения старой active stage.
+Сохранить CLI/headless режим, Codex/Pi/command adapters и existing campaign semantics. Не переписывать engine ради нового entrypoint. При отключении плагина кампанию можно inspect/resume/export обычным CLI.
 
-Публикация/merge результата исключены из automation v0.1. Пользователь получает private branch/commit bundle или patch для review. Stop/failed campaign возвращает последний подтверждённый champion, а не рабочее дерево незавершённого агента.
+Перенос native исполнения в Codex допустим после проверки parity. Отказ от Python core не является необходимым условием простого UX и не входит в это решение.
 
 ## Open Questions
 
-| Вопрос | Тип | Принятое допущение / действие перед реализацией |
-| --- | --- | --- |
-| Нужен ли strict USD cap с первого релиза? | Scope decision | Default count/time budgets; strict money backend отдельный объём |
-| Нужна ли приватная final evaluation сразу? | Scope decision | Встроенная strict holdout isolation отложена; existing isolated evaluator допустим после проверки |
-| Какой второй CLI проверять? | Не блокирует дизайн | Предпочтительно Pi; version/protocol/cancel проверить коротким contract spike |
-| Насколько стабилен project evaluator? | Блокирует конкретную campaign | Измерить baseline/repeatability до approval/run |
-| Какие ресурсы можно snapshot/reset вне Git? | Блокирует интеграцию с mutable services | v0.1 read-only или отдельные disposable ресурсы; production mutation исключена |
-| Какие backend capabilities доступны на Windows/POSIX? | Блокирует обещания enforcement | Подтвердить process-tree cancellation и permissions интеграционными проверками до release |
-| Package name и license | Блокирует публикацию, не дизайн | Рабочее имя `harness`; выбрать владельцу repository перед publication |
-
-Эти вопросы не требуют изменения `rag_tender` для продолжения проектирования. Следующий шаг после принятия proposal: отдельный repository и план реализации на основе данного ADR; в текущей работе код нового продукта не создаётся.
+1. Реальная поддержка lifecycle callback и trust UI в целевой версии desktop/CLI: проверить перед обещанием интеграции. Это blocker для hook-based UX, но не для skill + CLI.
+2. Выбор первых реальных repo+goal acceptance cases и доступных references: необходим для подтверждения автономного setup и качества.
+3. Для native execution: доступный session/subagent API, сохранение контекста и sandbox boundaries. Это blocker только для последующего native режима.
+4. Дистрибуция runtime и локального MCP: выбрать способ установки после проверки target-host возможностей. Не обещать, что web-install автоматически доставит локальные скрипты.
