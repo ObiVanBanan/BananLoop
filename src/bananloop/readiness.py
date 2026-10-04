@@ -185,21 +185,55 @@ def run_bootstrap_readiness(
         receipt["error"] = "smoke evaluator changed case/input identity across A/A runs"
         raise ReadinessError(receipt["error"], receipt)
 
+    protocols = [result.protocol_sha256 for result in results]
+    stable_protocol = len(set(protocols)) <= 1
+    receipt["protocol_sha256_values"] = protocols
+    receipt["protocol_identity_stable"] = stable_protocol
+    if not stable_protocol:
+        receipt["status"] = "FAILED"
+        receipt["error"] = "smoke evaluator changed protocol identity across A/A runs"
+        raise ReadinessError(receipt["error"], receipt)
+
     values = [_primary_value(plan, result) for result in results]
     primary_range = max(values) - min(values)
+    threshold = float(plan.primary_metric.min_improvement)
     receipt["input_identity_stable"] = True
     receipt["primary_values"] = values
     receipt["primary_range"] = primary_range
-    receipt["min_improvement"] = float(plan.primary_metric.min_improvement)
+    receipt["min_improvement"] = threshold
 
-    if primary_range >= float(plan.primary_metric.min_improvement):
+    if primary_range >= threshold:
         receipt["status"] = "FAILED"
         receipt["error"] = (
             "A/A smoke noise is as large as the minimum accepted improvement: "
-            f"range={primary_range:g}, "
-            f"min_improvement={float(plan.primary_metric.min_improvement):g}"
+            f"range={primary_range:g}, min_improvement={threshold:g}"
         )
         raise ReadinessError(receipt["error"], receipt)
+
+    if plan.paired_comparison.enabled and results[0].cases:
+        metric = plan.paired_comparison.metric
+        per_run = []
+        for result in results:
+            per_run.append(
+                {
+                    (case.case_id, case.repetition, case.input_sha256): case.metrics[metric]
+                    for case in result.cases
+                }
+            )
+        max_case_range = 0.0
+        for key in first_inputs:
+            case_values = [run[key] for run in per_run]
+            max_case_range = max(max_case_range, max(case_values) - min(case_values))
+        receipt["paired_metric"] = metric
+        receipt["max_case_metric_range"] = max_case_range
+        if max_case_range >= threshold:
+            receipt["status"] = "FAILED"
+            receipt["error"] = (
+                "paired-case A/A noise is as large as the minimum accepted "
+                f"improvement: range={max_case_range:g}, "
+                f"min_improvement={threshold:g}"
+            )
+            raise ReadinessError(receipt["error"], receipt)
 
     receipt["status"] = "PASSED"
     return receipt
