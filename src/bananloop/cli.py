@@ -199,11 +199,21 @@ def cmd_start(args: argparse.Namespace) -> int:
         }, indent=2, ensure_ascii=False))
         return 3
 
+    bootstrap_record = json.loads(
+        (paths.root / "bootstrap-plan.json").read_text(encoding="utf-8")
+    )
+    last_attempt = bootstrap_record["bootstrap_attempts"][-1]
+    readiness = last_attempt.get("readiness")
     print(json.dumps({
         "status": "READY",
         "summary": plan.summary,
         "primary_metric": spec.primary_metric.model_dump(mode="json"),
         "paired_comparison": spec.paired_comparison.model_dump(mode="json") if spec.paired_comparison else None,
+        "preparation": {
+            "attempts": len(bootstrap_record["bootstrap_attempts"]),
+            "snapshot": last_attempt.get("snapshot"),
+            "readiness": readiness,
+        },
         "state": str(paths.root),
         "spec": spec.approved_hash(),
     }, indent=2, ensure_ascii=False))
