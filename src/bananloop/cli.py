@@ -14,7 +14,7 @@ from .integrity import EvaluationIntegrityError, discover_evaluation_assets, eva
 from .lock import CampaignLock, CampaignLockError
 from .report import build_report, render_markdown
 from .store import CampaignStore, StoreError
-from .wizard import confirm_spec, needs_interactive_init, run_init_wizard
+from .wizard import confirm_spec, discover_project, needs_interactive_init, run_init_wizard
 from .workspace import WorkspaceError, WorkspaceManager, assert_clean_source, current_commit
 
 
@@ -166,6 +166,30 @@ def cmd_init(args: argparse.Namespace) -> int:
         f"Campaign initialized\nstate: {paths.root}\nbase: {base}"
         f"\nspec: {spec.approved_hash()}\nevaluator_fingerprint: {fingerprint}"
     )
+    return 0
+
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).resolve()
+    discovery = discover_project(repo)
+    paths = RuntimePaths.for_repo(
+        repo,
+        Path(args.state_dir) if args.state_dir else None,
+    )
+    payload = {
+        "repo": str(repo),
+        "base_commit": current_commit(repo),
+        "state": str(paths.root),
+        "campaign_exists": paths.db.exists(),
+        "detected_agents": discovery["agents"],
+        "detected_test_commands": discovery["test_commands"],
+        "detected_python_runtimes": discovery["python_runtimes"],
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print("\n".join(f"{key}: {value}" for key, value in payload.items()))
     return 0
 
 
@@ -339,6 +363,51 @@ def cmd_export(args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bananloop")
     sub = p.add_subparsers(dest="command", required=True)
+
+    goal = sub.add_parser(
+        "goal",
+        help="chat-first autopilot: repo + one human goal",
+    )
+    goal.add_argument(
+        "goal",
+        help="human-language improvement goal",
+    )
+    goal.add_argument("--repo", default=".")
+    goal.add_argument("--state-dir")
+    goal.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help="prepare and freeze the evaluator contract without starting optimization",
+    )
+    goal.set_defaults(
+        func=cmd_start,
+        agent="codex",
+        agent_cmd=None,
+        model=None,
+        provider=None,
+        thinking=None,
+        codex_arg=None,
+        pi_arg=None,
+        bootstrap_timeout_seconds=1200,
+        agent_timeout_seconds=None,
+        max_experiments=4,
+        max_attempts=7,
+        max_agent_calls=18,
+        max_evaluator_calls=16,
+        deadline_seconds=14400,
+        plateau=3,
+        allow_dirty=False,
+    )
+
+    doctor = sub.add_parser(
+        "doctor",
+        help="show the environment BananLoop will use before bootstrap",
+    )
+    doctor.add_argument("--repo", default=".")
+    doctor.add_argument("--state-dir")
+    doctor.add_argument("--json", action="store_true")
+    doctor.set_defaults(func=cmd_doctor)
+
     start = sub.add_parser(
         "start",
         help="autonomously turn repo + goal into a campaign and run it",

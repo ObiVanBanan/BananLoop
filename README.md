@@ -52,10 +52,25 @@ uv run pytest
 
 ## Autopilot MVP: repo + goal
 
-The default product path is now a single command:
+The shortest product path is intentionally goal-shaped:
+
+```bash
+bananloop goal "Improve measured project quality without regressions"
+```
+
+Run it from the target repository. BananLoop discovers the project, prepares and
+freezes an evaluator contract, then runs the independent campaign supervisor.
+The existing explicit form remains available when the repository path or agent
+backend must be overridden:
 
 ```bash
 bananloop start --repo . --goal "Improve measured project quality without regressions"
+```
+
+Before spending an agent call, inspect exactly what BananLoop can see:
+
+```bash
+bananloop doctor --json
 ```
 
 `start` runs a bounded bootstrap role before the ordinary campaign engine:
@@ -353,6 +368,46 @@ manifest names the required base commit and the final assessment, including a
 rejected/pending holdout. Artifact files remain in the state directory; the
 export contains their references, so preserve the complete state for full evidence.
 Review these operator reports before sharing them or placing them in agent context.
+
+## Codex plugin: chat UX, independent core
+
+BananLoop now ships a Codex plugin bundle under `plugins/bananloop/` plus a
+repo-local marketplace entry. The plugin deliberately does **not** move
+accept/reject decisions into the Codex conversation. Its skill is the UX/router;
+the BananLoop process remains the measurement authority.
+
+From a checkout of this repository, add it as a Codex plugin marketplace and
+install the plugin using the normal Codex plugin flow. Then a Codex conversation
+can use `$bananloop-goal` with a human goal instead of reconstructing the CLI
+surface.
+
+The boundary is intentional:
+
+```text
+Codex chat / skill
+      |
+      | repo + human goal
+      v
+BananLoop bootstrap ----> project-specific evaluator adapter
+      |                         |
+      |                    smoke / repair
+      |                         |
+      +-------------------- freeze + hash
+                                |
+Codex proposer/implementer <----+---- hidden evaluator assets
+      |
+      v
+BananLoop DEV -> VALIDATION -> FINAL HOLDOUT -> accept/reject
+```
+
+Codex lifecycle hooks are not the evaluation authority in this MVP. A Stop hook
+can steer a conversation, but putting the scientific decision there would weaken
+the existing evaluator isolation and durable replay boundary. See
+`docs/codex-plugin.md`.
+
+Model selection also stays simple: when BananLoop does not receive `--model`,
+the Codex adapter leaves model selection to the user's Codex configuration.
+Advanced `start`/expert `init` flags remain available for explicit overrides.
 
 ## Scope boundaries
 

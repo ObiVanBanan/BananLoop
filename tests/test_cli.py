@@ -116,3 +116,43 @@ def test_start_cli_can_prepare_without_running():
 
     assert args.prepare_only is True
     assert args.model == "gpt-5.6-codex"
+
+
+
+def test_goal_cli_is_minimal_chat_first_surface():
+    args = parser().parse_args([
+        "goal",
+        "improve generated image quality against repository reference evidence",
+    ])
+
+    assert args.command == "goal"
+    assert args.goal.startswith("improve generated image quality")
+    assert args.repo == "."
+    assert args.agent == "codex"
+    assert args.model is None
+    assert args.max_experiments == 4
+    assert args.max_evaluator_calls == 16
+
+
+def test_goal_cli_can_prepare_only():
+    args = parser().parse_args([
+        "goal",
+        "improve measured quality",
+        "--repo", "project",
+        "--prepare-only",
+    ])
+
+    assert args.repo == "project"
+    assert args.prepare_only is True
+
+
+def test_doctor_cli_has_json_mode():
+    args = parser().parse_args([
+        "doctor",
+        "--repo", ".",
+        "--json",
+    ])
+
+    assert args.command == "doctor"
+    assert args.repo == "."
+    assert args.json is True
