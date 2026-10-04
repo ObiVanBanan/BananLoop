@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -9,6 +10,27 @@ import pytest
 
 from bananloop.bootstrap import BootstrapPairedPlan, BootstrapPlan
 from bananloop.readiness import ReadinessError, run_bootstrap_readiness
+
+
+
+
+def init_repo(path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True, text=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    (path / ".gitignore").write_text("state/\ncounter.txt\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-m", "fixture"], cwd=path, check=True, capture_output=True, text=True)
+
+
+def snapshot(path: Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
 
 def plan(command: list[str], *, paired: bool = False, min_improvement: float = 0.1) -> BootstrapPlan:
@@ -61,11 +83,12 @@ def test_readiness_runs_twice_and_records_stable_inputs(tmp_path: Path):
         "'metrics':{'quality':0.5}}]}))\n",
         encoding="utf-8",
     )
+    init_repo(tmp_path)
 
     receipt = run_bootstrap_readiness(
         plan=plan([sys.executable, str(script)], paired=True),
         workspace=tmp_path,
-        snapshot="abc123",
+        snapshot=snapshot(tmp_path),
         state_root=tmp_path / "state",
         attempt=1,
     )
@@ -85,12 +108,13 @@ def test_readiness_rejects_missing_required_metric(tmp_path: Path):
         "print(json.dumps({'status':'ok','metrics':{'other':1},'checks':{'tests':True}}))\n",
         encoding="utf-8",
     )
+    init_repo(tmp_path)
 
     with pytest.raises(ReadinessError, match="missing required metric"):
         run_bootstrap_readiness(
             plan=plan([sys.executable, str(script)]),
             workspace=tmp_path,
-            snapshot="abc123",
+            snapshot=snapshot(tmp_path),
             state_root=tmp_path / "state",
             attempt=1,
         )
@@ -103,12 +127,13 @@ def test_readiness_rejects_failed_mandatory_check(tmp_path: Path):
         "print(json.dumps({'status':'ok','metrics':{'quality':0.5},'checks':{'tests':False}}))\n",
         encoding="utf-8",
     )
+    init_repo(tmp_path)
 
     with pytest.raises(ReadinessError, match="failed mandatory check"):
         run_bootstrap_readiness(
             plan=plan([sys.executable, str(script)]),
             workspace=tmp_path,
-            snapshot="abc123",
+            snapshot=snapshot(tmp_path),
             state_root=tmp_path / "state",
             attempt=1,
         )
@@ -131,12 +156,13 @@ def test_readiness_rejects_unstable_input_identity(tmp_path: Path):
         "'metrics':{'quality':0.5}}]}))\n",
         encoding="utf-8",
     )
+    init_repo(tmp_path)
 
     with pytest.raises(ReadinessError, match="changed case/input identity"):
         run_bootstrap_readiness(
             plan=plan([sys.executable, str(script)], paired=True),
             workspace=tmp_path,
-            snapshot="abc123",
+            snapshot=snapshot(tmp_path),
             state_root=tmp_path / "state",
             attempt=1,
         )
@@ -155,6 +181,7 @@ def test_readiness_rejects_noise_at_or_above_min_improvement(tmp_path: Path):
         "print(json.dumps({'status':'ok','metrics':{'quality':value},'checks':{'tests':True}}))\n",
         encoding="utf-8",
     )
+    init_repo(tmp_path)
 
     with pytest.raises(ReadinessError, match="A/A smoke noise"):
         run_bootstrap_readiness(
@@ -163,7 +190,7 @@ def test_readiness_rejects_noise_at_or_above_min_improvement(tmp_path: Path):
                 min_improvement=0.1,
             ),
             workspace=tmp_path,
-            snapshot="abc123",
+            snapshot=snapshot(tmp_path),
             state_root=tmp_path / "state",
             attempt=1,
         )
