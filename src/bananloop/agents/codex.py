@@ -19,6 +19,7 @@ BOOTSTRAP_SCHEMA = {
         "project_context": {"type": "string"},
         "needs_input": {"type": "array", "items": {"type": "string"}},
         "evaluation_command": {"type": "array", "items": {"type": "string"}},
+        "smoke_command": {"type": "array", "items": {"type": "string"}},
         "validation_command": {"type": "array", "items": {"type": "string"}},
         "holdout_command": {"type": "array", "items": {"type": "string"}},
         "primary_metric": {
@@ -81,7 +82,7 @@ BOOTSTRAP_SCHEMA = {
     },
     "required": [
         "status", "summary", "project_context", "needs_input",
-        "evaluation_command", "validation_command", "holdout_command",
+        "evaluation_command", "smoke_command", "validation_command", "holdout_command",
         "primary_metric", "guardrails", "non_regression", "mandatory_checks",
         "editable_scope", "protected_paths", "agent_visible_metrics",
         "agent_visible_diagnostics", "paired_comparison", "evaluator_timeout_seconds"
@@ -217,9 +218,12 @@ class CodexAdapter(AgentAdapter):
                 "when one already exists; otherwise create a thin evaluator adapter under .bananloop_eval/. "
                 "Use repository.detected_python_runtimes before declaring a Python environment missing; probe those "
                 "executables directly for required packages and versions. Only request a runtime if no discovered "
-                "candidate can satisfy the project requirement. Before returning status=ready, run a cheap baseline "
-                "smoke check of the evaluator yourself and repair "
-                "contract/startup errors; avoid a full expensive benchmark when a smaller smoke path is possible. "
+                "candidate can satisfy the project requirement. Return a cheap smoke_command whenever possible; "
+                "it should exercise the real evaluator contract on a small real subset without changing semantics. "
+                "Do not claim readiness based on your own smoke result: BananLoop core will execute the command twice, "
+                "validate required metrics/checks/case identities, and measure A/A noise before READY. If the core "
+                "returns a repair.readiness_error, diagnose and repair only the measurement package, then return an "
+                "updated plan. Avoid a full expensive benchmark when a smaller smoke path is possible. "
                 "The evaluator must compare the same frozen inputs/settings for baseline and candidates, emit the "
                 "BananLoop JSON evaluation contract, use stable case IDs/input fingerprints, and avoid per-evaluation "
                 "LLM planning or other avoidable nondeterminism. For stochastic generation, freeze cases and seeds and "
@@ -263,9 +267,15 @@ class CodexAdapter(AgentAdapter):
             if self.model:
                 argv += ["-m", self.model]
             argv += self.extra_args
-            argv.append(prompt)
+            argv.append("-")
             try:
-                run_process(argv, cwd=workspace, timeout=timeout, check=True)
+                run_process(
+                    argv,
+                    cwd=workspace,
+                    timeout=timeout,
+                    check=True,
+                    input_text=prompt,
+                )
                 if not result_path.exists():
                     raise AgentError("Codex completed without structured result file")
                 data = json.loads(result_path.read_text(encoding="utf-8"))
