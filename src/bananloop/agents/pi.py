@@ -114,7 +114,7 @@ class PiAdapter(AgentAdapter):
                 "measurements for stochastic outputs. Do not invent missing references or credentials. If essential "
                 "inputs are missing, set status to needs_input and list exactly what the operator must provide. "
                 "Your final assistant message MUST be exactly one JSON object with keys: status, summary, "
-                "project_context, needs_input, evaluation_command, validation_command, holdout_command, "
+                "project_context, needs_input, evaluation_command, smoke_command, validation_command, holdout_command, "
                 "primary_metric, guardrails, non_regression, mandatory_checks, editable_scope, protected_paths, "
                 "agent_visible_metrics, agent_visible_diagnostics, paired_comparison, evaluator_timeout_seconds. "
                 "primary_metric must contain name, direction, target, min_improvement. paired_comparison must "
@@ -226,6 +226,7 @@ class PiAdapter(AgentAdapter):
             schema = (
                 '{"status":"ready","summary":"...","project_context":"...","needs_input":[],'
                 '"evaluation_command":["python",".bananloop_eval/evaluator.py"],'
+                '"smoke_command":["python",".bananloop_eval/evaluator.py","--smoke"],'
                 '"validation_command":[],"holdout_command":[],'
                 '"primary_metric":{"name":"quality","direction":"maximize","target":1.0,"min_improvement":0.01},'
                 '"guardrails":[],"non_regression":[],"mandatory_checks":[],"editable_scope":["**"],'
