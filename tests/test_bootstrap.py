@@ -311,3 +311,62 @@ def test_bootstrap_auto_repairs_false_goal_request(tmp_path: Path):
     assert record["bootstrap_attempts"][1]["contract_error"] is None
     assert record["bootstrap_request"]["goal"] == "improve similarity to reference images"
     assert git(["rev-parse", "HEAD"], repo) == source_base
+
+
+
+def test_bootstrap_repairs_failed_core_owned_smoke(tmp_path: Path):
+    repo, _ = make_repo(tmp_path)
+    payload = _bootstrap_payload(
+        status="ready",
+        needs_input=[],
+        summary="fixture evaluator",
+    )
+    payload["smoke_command"] = [sys.executable, ".bananloop_eval/evaluator.py"]
+    agent = repo / "smoke_repair_agent.py"
+    agent.write_text(
+        "import json,sys\n"
+        "from pathlib import Path\n"
+        "task=json.load(sys.stdin)\n"
+        "root=Path('.bananloop_eval'); root.mkdir(exist_ok=True)\n"
+        "if task.get('repair',{}).get('readiness_error'):\n"
+        " root.joinpath('evaluator.py').write_text("
+        "\"import json\\nprint(json.dumps({'status':'ok','metrics':{'quality':0.2},'checks':{}}))\\n\""
+        ")\n"
+        "else:\n"
+        " root.joinpath('evaluator.py').write_text("
+        "\"import json\\nprint(json.dumps({'status':'ok','metrics':{'wrong':0.2},'checks':{}}))\\n\""
+        ")\n"
+        f"print(json.dumps({payload!r}))\n",
+        encoding="utf-8",
+    )
+    git(["add", "smoke_repair_agent.py"], repo)
+    git(["commit", "-m", "add smoke repair fixture"], repo)
+    source_base = git(["rev-parse", "HEAD"], repo)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "smoke-repair-state")
+
+    plan, spec = bootstrap_campaign(
+        repo=repo,
+        goal="improve fixture quality",
+        paths=paths,
+        agent_config=AgentConfig(
+            kind="command",
+            command=[sys.executable, "smoke_repair_agent.py"],
+        ),
+        max_experiments=1,
+        max_attempts=2,
+        max_agent_calls=4,
+        max_evaluator_calls=2,
+        deadline_seconds=300,
+    )
+
+    assert plan.status == "ready"
+    assert spec is not None
+    record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
+    assert len(record["bootstrap_attempts"]) == 2
+    assert record["bootstrap_attempts"][0]["readiness"]["status"] == "FAILED"
+    assert "missing required metric" in record["bootstrap_attempts"][0]["readiness"]["error"]
+    assert record["bootstrap_attempts"][1]["readiness"]["status"] == "PASSED"
+    assert record["bootstrap_attempts"][1]["readiness"]["primary_values"] == [0.2, 0.2]
+    assert spec.base_commit == record["bootstrap_snapshot"]
+    assert git(["rev-parse", "HEAD"], repo) == source_base
+    assert git(["status", "--porcelain"], repo) == ""
