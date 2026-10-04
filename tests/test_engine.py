@@ -407,7 +407,7 @@ def test_report_hides_stale_failure_for_historical_accepted_experiment(tmp_path:
 
 
 
-def test_verify_rejects_frozen_evaluator_drift(tmp_path: Path):
+def test_verify_pauses_for_frozen_evaluator_drift(tmp_path: Path):
     store, engine, _, _ = make_engine(tmp_path)
     try:
         engine.workspace.ensure(engine.spec.base_commit)
@@ -431,14 +431,14 @@ def test_verify_rejects_frozen_evaluator_drift(tmp_path: Path):
         tampered = engine.workspace.snapshot("tamper evaluator")
         store.update_experiment(experiment_id, candidate_snapshot=tampered)
 
-        engine._stage_verify(attempt_id, experiment_id)
+        with pytest.raises(EngineError, match="frozen evaluation assets changed"):
+            engine._stage_verify(attempt_id, experiment_id)
 
         exp = store.experiment(experiment_id)
-        assert store.attempt(attempt_id)["stage"] == "REJECT"
+        assert store.attempt(attempt_id)["stage"] == "VERIFY"
         assert exp["failure_category"] == "EVALUATOR_CHANGED"
-        decision = json.loads(exp["decision_json"])
-        assert decision["reasons"][0] == "EVALUATOR_CHANGED"
-        assert "hash_mismatch:evaluator.py" in decision["reasons"]
+        assert exp["decision_json"] is None
+        assert store.campaign()["status"] == "PAUSED_INFRA"
     finally:
         store.close()
 
@@ -1066,6 +1066,11 @@ def test_noop_implementation_is_rejected_before_snapshot_or_evaluation(tmp_path:
         assert store.attempt(attempt_id)["stage"] == "REJECT"
         assert store.campaign()["evaluator_calls"] == evaluator_calls
         assert store.action(f"exp:{experiment_id}:evaluate") is None
+        engine._stage_reject(attempt_id, experiment_id)
+        engine._stage_record(attempt_id, experiment_id)
+        assert store.experiment(experiment_id)["status"] == "NO_CHANGES"
+        assert store.campaign()["experiment_count"] == 0
+        assert store.campaign()["non_improve_streak"] == 0
     finally:
         store.close()
 
@@ -1084,6 +1089,42 @@ def test_implementation_blocker_is_rejected_without_fake_candidate(tmp_path: Pat
         assert "outside editable scope" in exp["lesson"]
         assert store.attempt(attempt_id)["stage"] == "REJECT"
         assert store.campaign()["evaluator_calls"] == evaluator_calls
+        engine._stage_reject(attempt_id, experiment_id)
+        engine._stage_record(attempt_id, experiment_id)
+        assert store.experiment(experiment_id)["status"] == "IMPLEMENTATION_BLOCKED"
+        assert store.campaign()["experiment_count"] == 0
+    finally:
+        store.close()
+
+
+def test_invalid_validation_pauses_without_scientific_rejection(tmp_path: Path):
+    store, engine, _, _ = make_staged_engine(tmp_path)
+
+    class InvalidValidation:
+        def evaluate(self, workspace, timeout):
+            return EvaluationResult(metrics={"quality": 1}, checks={})
+
+    try:
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        engine._stage_execute(attempt_id, experiment_id)
+        engine._stage_snapshot(attempt_id, experiment_id)
+        engine._stage_verify(attempt_id, experiment_id)
+        engine._stage_evaluate(attempt_id, experiment_id)
+        engine._stage_decide(attempt_id, experiment_id)
+        assert store.attempt(attempt_id)["stage"] == "VALIDATE"
+        engine.validation_evaluator = InvalidValidation()
+
+        with pytest.raises(EngineError):
+            engine._stage_validate(attempt_id, experiment_id)
+
+        exp = store.experiment(experiment_id)
+        campaign = store.campaign()
+        assert exp["failure_category"] == "INVALID_VALIDATION"
+        assert exp["decision_json"] is None
+        assert exp["status"] == "ACTIVE"
+        assert campaign["status"] == "PAUSED_INFRA"
+        assert campaign["experiment_count"] == 0
+        assert campaign["non_improve_streak"] == 0
     finally:
         store.close()
 

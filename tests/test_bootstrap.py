@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from bananloop.bootstrap import BootstrapPlan, _bootstrap_contract_error, _bootstrap_path, _bootstrap_task, bootstrap_campaign
 from bananloop.contracts import AgentConfig, RuntimePaths
 from bananloop.store import CampaignStore
@@ -256,6 +258,51 @@ def test_bootstrap_contract_rejects_request_to_repeat_supplied_goal(tmp_path: Pa
 
     assert error is not None
     assert "goal" in error
+
+
+@pytest.mark.parametrize(
+    "message_text",
+    [
+        "Provide a Python interpreter path.",
+        "The Python runtime is unavailable.",
+        "Укажите путь к интерпретатору Python.",
+    ],
+)
+def test_bootstrap_contract_repairs_request_for_detected_runtime(tmp_path: Path, message_text: str):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    task = _bootstrap_task(repo, "Improve quality", "deadbeef", AgentConfig(kind="codex"))
+    task["repository"]["detected_python_runtimes"] = [
+        {"executable": "C:/Python313/python.exe", "version": "3.13.1"}
+    ]
+    plan = BootstrapPlan.model_validate(
+        _bootstrap_payload(status="needs_input", needs_input=[message_text], summary=message_text)
+    )
+
+    assert _bootstrap_contract_error(plan, task) is not None
+
+
+@pytest.mark.parametrize(
+    "message_text",
+    [
+        "Install the missing package pillow.",
+        "Provide the API token.",
+        "Provide the missing reference images.",
+        "Require Python >=3.14 for this project.",
+    ],
+)
+def test_bootstrap_contract_preserves_real_prerequisites(tmp_path: Path, message_text: str):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    task = _bootstrap_task(repo, "Improve quality", "deadbeef", AgentConfig(kind="codex"))
+    task["repository"]["detected_python_runtimes"] = [
+        {"executable": "C:/Python313/python.exe", "version": "3.13.1"}
+    ]
+    plan = BootstrapPlan.model_validate(
+        _bootstrap_payload(status="needs_input", needs_input=[message_text], summary=message_text)
+    )
+
+    assert _bootstrap_contract_error(plan, task) is None
 
 
 def test_bootstrap_auto_repairs_false_goal_request(tmp_path: Path):

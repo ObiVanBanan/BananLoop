@@ -1,6 +1,6 @@
 # BananLoop: запуск, измерение и автономный цикл — AS IS
 
-Дата: 2026-10-04. HEAD: 62f7830. Исследован текущий checkout, включая существовавшую локальную правку src/bananloop/agents/codex.py. Production-код не изменялся.
+Дата: 2026-10-04. Исходный снимок исследования: HEAD 62f7830. Основной текст ниже описывает этот исторический снимок; обновление для f062cba приведено в конце. Исходный анализ включал существовавшую локальную правку src/bananloop/agents/codex.py.
 
 ## Введение
 
@@ -98,3 +98,16 @@ tests/test_bootstrap.py:113–158 использует command fixture, не ж�
 ## Заключение
 
 В текущем BananLoop есть простой CLI entrypoint и независимое исполняемое ядро оценки/состояния. Подготовка измерителя содержит LLM-driven шаги, часть требований к которым пока контролируется инструкцией, а не отдельным readiness gate. Codex-интеграция отсутствует. Эти факты являются входом для предлагаемого [архитектурного решения](design/adr.md).
+
+## Обновление AS IS для f062cba, перед исправлениями P0
+
+Этот раздел фиксирует изменения после исходного анализа, не переоценивая его исторические тесты.
+
+- `cli.py:cmd_goal` и `plugins/bananloop/skills/bananloop-goal/SKILL.md` теперь предоставляют путь goal/skill. Есть compatibility manifest `.codex-plugin/plugin.json`, root manifest отсутствует.
+- `bootstrap.py:bootstrap_campaign` выполняет до трёх preparation attempts и вызывает `readiness.py:run_bootstrap_readiness`. Core проверяет два smoke-прогона, required metrics/checks, чистоту workspace, case/input/protocol identity и разброс относительно min_improvement. Поэтому старые утверждения об отсутствии integration/readiness относятся только к 62f7830.
+- `bootstrap.py:_bootstrap_contract_error` распознаёт некоторые англоязычные повторные запросы goal; обнаруженные runtimes передаются агенту, но проверки false-runtime requests в этой функции нет.
+- `engine.py:_stage_execute/_stage_snapshot/_stage_evaluate/_stage_validate` проверяют materialization. Phantom changes приводят к PAUSED_INFRA. `workspace.py:snapshot_proof` связывает parent/candidate/tree/diff hash; полный runtime/evaluator attestation этим не обеспечивается.
+- `store.py:finish_attempt` меняет experiment_count/non_improve_streak только при scientific=True. Однако `engine.py:_stage_record` определяет scientific только наличием evaluation_json и присваивает REJECTED любому непринятому исходу. NO_CHANGES и IMPLEMENTATION_BLOCKED тоже проходят через RECORD; INVALID_VALIDATION может иметь DEV evaluation_json.
+- `research.py:build_research_state` считает DEV streak для завершённых строк с evaluation_json. `report.py:build_report` показывает общие resources counters, но отдельного attempt_accounting нет.
+- Existing tests проверяют no-op/blocker на стадии EXECUTE, phantom transfer/snapshot и readiness. Полная проверка итогового статуса no-op, plateau после смешанных попыток и отчётных bucket counts требует отдельного покрытия.
+- Локальная незакоммиченная правка `agents/codex.py` состоит из трёх комментариев к stdin transport. Внешние кампании, runtime probes к платным моделям и GPU не запускались в этом обновлении.

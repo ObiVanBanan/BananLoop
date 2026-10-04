@@ -5,6 +5,7 @@ from typing import Any
 
 from .contracts import CampaignSpec, EvaluationResult
 from .policy import metric_value, target_met
+from .research import attempt_bucket
 from .store import CampaignStore
 
 
@@ -39,6 +40,30 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             ),
         }
         experiments.append(item)
+    accounting_buckets = (
+        "scientific_trials",
+        "ungrounded",
+        "redundant",
+        "no_hypothesis",
+        "no_changes",
+        "implementation_blocked",
+        "pre_evaluation_rejected",
+        "infra_failures",
+        "active",
+        "cancelled",
+        "other",
+    )
+    attempt_accounting = {"total_attempts": 0, **dict.fromkeys(accounting_buckets, 0)}
+    for row in store.experiments():
+        attempt_accounting[attempt_bucket(row)] += 1
+        attempt_accounting["total_attempts"] += 1
+    # The campaign counter is retained for old state files. For campaigns
+    # created before attempt classification existed, it can include invalid
+    # measurements that older versions incorrectly counted as science.
+    attempt_accounting["durable_experiment_counter"] = campaign["experiment_count"]
+    attempt_accounting["counter_matches_classification"] = (
+        campaign["experiment_count"] == attempt_accounting["scientific_trials"]
+    )
     baseline_value = metric_value(baseline, spec.primary_metric.name) if baseline else None
     final_value = metric_value(champion, spec.primary_metric.name) if champion else None
     validation_baseline = None
@@ -128,6 +153,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             for row in store.evaluations()
         ],
         "experiments": experiments,
+        "attempt_accounting": attempt_accounting,
         "research_state": research_state,
         "resources": {
             "agent_calls": campaign["agent_calls"],
@@ -192,6 +218,20 @@ def render_markdown(report: dict[str, Any]) -> str:
                 f"  - Candidate proof: tree=`{proof['tree']}`; diff=`{proof['diff_sha256']}`; "
                 f"paths=`{json.dumps(proof['changed_paths'])}`"
             )
+    accounting = report.get("attempt_accounting")
+    if accounting:
+        lines += [
+            "",
+            "## Attempt accounting",
+            "",
+            f"- Total attempts: {accounting['total_attempts']}",
+            f"- Scientific trials: {accounting['scientific_trials']}",
+            f"- Stored experiment counter: {accounting['durable_experiment_counter']} (matches classified rows: {accounting['counter_matches_classification']})",
+            f"- Ungrounded / redundant / no hypothesis: {accounting['ungrounded']} / {accounting['redundant']} / {accounting['no_hypothesis']}",
+            f"- No changes / implementation blocked: {accounting['no_changes']} / {accounting['implementation_blocked']}",
+            f"- Pre-evaluation rejects / infrastructure failures: {accounting['pre_evaluation_rejected']} / {accounting['infra_failures']}",
+            f"- Active / cancelled / other: {accounting['active']} / {accounting['cancelled']} / {accounting['other']}",
+        ]
     lines += ["", "## Measurements (operator-only)", ""]
     for evaluation in report.get("measurements", []):
         result = evaluation["result"]

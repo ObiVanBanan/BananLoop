@@ -136,34 +136,37 @@ def _bootstrap_contract_error(
 ) -> str | None:
     if plan.status != "needs_input":
         return None
-    if not str(task.get("goal") or "").strip():
-        return None
-
     goal_need = re.compile(
-        r"(goal|objective|human intent|authoritative intent|brief|fix\.md)",
+        r"(\bgoal\b|\bobjective\b|human intent|authoritative intent|\bbrief\b|fix\.md|\bцел[ьиь]\b|описани\w* задач\w*)",
         re.IGNORECASE,
     )
     request_words = re.compile(
-        r"(provide|clarify|missing|need|required|not present|not available)",
+        r"(provide|clarify|missing|need|required|not present|not available|not supplied|not found|unavailable|укаж|предостав|уточн|отсутств|не найден|нуж|требу|не задан|не передан)",
         re.IGNORECASE,
     )
-    for item in plan.needs_input:
-        if goal_need.search(item) and request_words.search(item):
+    # A working interpreter does not establish package, credential, dataset or
+    # version readiness. Preserve genuine external prerequisites, even when a
+    # request also mentions the goal or Python.
+    prerequisite = re.compile(
+        r"(credential|api.?key|token|secret|reference|dataset|package|dependenc|module|library|"
+        r"version|python\s*[<>=!~\d]|доступ|ключ|токен|секрет|референс|эталон|датасет|"
+        r"пакет|зависим|модул|библиотек|верси)",
+        re.IGNORECASE,
+    )
+    if any(prerequisite.search(item) for item in plan.needs_input):
+        return None
+    supplied_goal = bool(str(task.get("goal") or "").strip())
+    runtimes = task.get("repository", {}).get("detected_python_runtimes", [])
+    for item in [*plan.needs_input, plan.summary or ""]:
+        if prerequisite.search(item):
+            continue
+        if supplied_goal and goal_need.search(item) and request_words.search(item):
             return (
                 "bootstrap requested goal/intent input even though the top-level "
                 "goal is already present and authoritative"
             )
-
-    summary = plan.summary or ""
-    if goal_need.search(summary) and re.search(
-        r"(not present|missing|not available|not supplied)",
-        summary,
-        re.IGNORECASE,
-    ):
-        return (
-            "bootstrap summary claims the goal is missing even though the "
-            "top-level goal is present"
-        )
+        if runtimes and re.search(r"python|интерпретатор", item, re.IGNORECASE) and request_words.search(item):
+            return "bootstrap requested a Python interpreter/path despite detected working runtimes; try the supplied runtimes first"
     return None
 
 

@@ -106,3 +106,28 @@ That mode is acceptable only if the evaluator still lives outside the worker's
 editable/visible workspace, the hook cannot mutate the frozen contract, and all
 verdicts/budgets remain durable in BananLoop state. Until those invariants are
 implemented and dogfooded, the plugin is intentionally skill-only.
+
+## Portable plugin layout
+
+The distributable plugin lives at `plugins/bananloop/`. Its root `plugin.json`
+contains the portable Agent Plugins identity (`name`, `version`, and
+`description`) and places Codex-specific presentation fields under
+`extensions.com.openai`. The bundled `skills/bananloop-goal/SKILL.md` is
+discovered from the plugin's `skills/` directory. The existing
+`.codex-plugin/plugin.json` remains as a compatibility manifest for Codex
+installations that still use the legacy layout.
+
+Install or link the plugin from the `plugins/bananloop` directory using the
+Codex plugin workflow. Keep the portable root manifest and legacy manifest's
+name, version, and user-facing descriptions aligned when changing plugin
+metadata. The plugin only supplies the chat entry point; independent
+measurement and campaign accounting remain in the BananLoop CLI/core.
+
+Campaign reports include `attempt_accounting`, which groups attempts into
+mutually exclusive outcomes. `scientific_trials` counts valid measured
+decisions; no-ops, blocked work, ungrounded proposals, pre-evaluation rejects,
+and infrastructure failures are reported separately. Older campaign files
+remain readable; `durable_experiment_counter` preserves their stored
+counter, and
+`counter_matches_classification` makes any historical discrepancy visible
+without rewriting the campaign.

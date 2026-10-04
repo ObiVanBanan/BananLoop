@@ -27,6 +27,7 @@ from .leakage import scan_forbidden_diff_patterns
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
 from .process import ProcessCancelled, check_process_control, process_control
 from .research import (
+    attempt_bucket,
     agent_decision_view,
     agent_evaluation_view,
     build_history,
@@ -937,22 +938,16 @@ class Engine:
         valid, violations = self.workspace.verify_scope(changed, self.spec.editable_scope, self.spec.protected_paths)
         integrity_violations = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
         if integrity_violations:
-            decision = {
-                "accepted": False,
-                "primary_value": None,
-                "champion_value": None,
-                "delta": None,
-                "predicates": {"evaluation_integrity": False},
-                "reasons": ["EVALUATOR_CHANGED", *integrity_violations],
-            }
             self.store.update_experiment(
                 experiment_id,
-                decision_json=json.dumps(decision),
                 failure_category="EVALUATOR_CHANGED",
                 lesson="Frozen evaluation assets changed",
             )
-            self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
-            self.store.set_stage(attempt_id, "REJECT")
+            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+            raise EngineError(
+                "frozen evaluation assets changed before measurement: "
+                + ", ".join(integrity_violations)
+            )
         elif not valid:
             decision = {
                 "accepted": False,
@@ -1040,8 +1035,11 @@ class Engine:
                 failure_category="EVALUATOR_CHANGED",
                 lesson="Frozen evaluation assets changed before measurement: " + ", ".join(integrity_violations),
             )
-            self.store.set_stage(attempt_id, "REJECT")
-            return
+            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+            raise EngineError(
+                "frozen evaluation assets changed before measurement: "
+                + ", ".join(integrity_violations)
+            )
         request = self._evaluation_request(
             exp["candidate_snapshot"],
             candidate_proof=candidate_proof,
@@ -1053,18 +1051,16 @@ class Engine:
                 stage="EVALUATE",
                 kind="evaluator",
                 request=request,
-                invoke=lambda: self.evaluator.evaluate(
-                    self.workspace.workspace,
-                    timeout=self.spec.evaluator_timeout_seconds,
-                ).model_dump(mode="json"),
+                invoke=lambda: self._checked_candidate_evaluation(
+                    self.evaluator,
+                    self.spec.evaluator_timeout_seconds,
+                    EvaluationResult.model_validate_json(self.store.campaign()["champion_json"]),
+                ),
             )
             result = EvaluationResult.model_validate(raw)
             validate_evaluation(self.spec, result)
-        except (EvaluatorError, InvalidEvaluation, ValidationError) as exc:
+        except (EvaluatorError, InvalidEvaluation, ValidationError, EngineError) as exc:
             self.store.update_experiment(experiment_id, failure_category="INVALID_EVALUATION", lesson=str(exc)[:1000])
-            self.store.set_stage(attempt_id, "REJECT")
-            return
-        except UnknownActionOutcome as exc:
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(str(exc)) from exc
         self.store.record_evaluation(
@@ -1073,9 +1069,20 @@ class Engine:
             result.model_dump(mode="json"),
             tier="dev",
         )
-        self.store.update_experiment(experiment_id, evaluation_json=result.model_dump_json())
+        self.store.update_experiment(experiment_id, evaluation_json=result.model_dump_json(), failure_category=None, lesson=None)
         self.store.set_stage(attempt_id, "DECIDE")
         self._checkpoint("DECIDE")
+
+    def _checked_candidate_evaluation(
+        self, evaluator: CommandEvaluator, timeout: int, reference: EvaluationResult,
+    ) -> dict[str, Any]:
+        # Validate before completing the action receipt, so a known invalid
+        # measurement can use the explicit FAILED-action retry path.
+        result = evaluator.evaluate(self.workspace.workspace, timeout=timeout)
+        decision = decide(self.spec, reference, result)
+        if "PAIRED_INPUT_MISMATCH" in decision.reasons:
+            raise InvalidEvaluation("PAIRED_INPUT_MISMATCH")
+        return result.model_dump(mode="json")
 
     @staticmethod
     def _redact_failure_text(value: str) -> str:
@@ -1183,7 +1190,15 @@ class Engine:
         exp = self.store.experiment(experiment_id)
         champion = EvaluationResult.model_validate_json(campaign["champion_json"])
         candidate = EvaluationResult.model_validate_json(exp["evaluation_json"])
-        decision = decide(self.spec, champion, candidate)
+        try:
+            decision = decide(self.spec, champion, candidate)
+            if "PAIRED_INPUT_MISMATCH" in decision.reasons:
+                raise InvalidEvaluation("PAIRED_INPUT_MISMATCH")
+        except (InvalidEvaluation, ValidationError) as exc:
+            self.store.update_experiment(experiment_id, failure_category="INVALID_EVALUATION", lesson=str(exc)[:1000])
+            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+            raise EngineError(str(exc)) from exc
+        self.store.update_experiment(experiment_id, failure_category=None, lesson=None)
         self.store.update_experiment(
             experiment_id,
             dev_decision_json=decision.model_dump_json(),
@@ -1320,49 +1335,29 @@ class Engine:
                 stage="VALIDATE",
                 kind="evaluator",
                 request=request,
-                invoke=lambda: self.validation_evaluator.evaluate(
-                    self.workspace.workspace,
-                    timeout=(
-                        self.spec.validation_timeout_seconds
-                        or self.spec.evaluator_timeout_seconds
-                    ),
-                ).model_dump(mode="json"),
+                invoke=lambda: self._checked_candidate_evaluation(
+                    self.validation_evaluator,
+                    self.spec.validation_timeout_seconds or self.spec.evaluator_timeout_seconds,
+                    self._validation_reference(),
+                ),
             )
             result = EvaluationResult.model_validate(raw)
             validate_evaluation(self.spec, result)
             reference = self._validation_reference()
             validation_decision = decide(self.spec, reference, result)
-        except (EvaluatorError, InvalidEvaluation, ValidationError) as exc:
-            combined = json.loads(exp["decision_json"])
-            combined["accepted"] = False
-            combined["reasons"] = [
-                reason
-                for reason in combined.get("reasons", [])
-                if reason != "ACCEPTED"
-            ]
-            combined.setdefault("predicates", {})["validation"] = False
-            combined.setdefault("reasons", []).append("INVALID_VALIDATION")
-            combined["validation"] = {
-                "accepted": False,
-                "reasons": ["INVALID_VALIDATION"],
-            }
+            if "PAIRED_INPUT_MISMATCH" in validation_decision.reasons:
+                raise InvalidEvaluation("PAIRED_INPUT_MISMATCH")
+        except (EvaluatorError, InvalidEvaluation, ValidationError, EngineError) as exc:
             self.store.update_experiment(
                 experiment_id,
-                decision_json=json.dumps(combined),
+                decision_json=None,
                 failure_category="INVALID_VALIDATION",
                 lesson=str(exc)[:1000],
             )
-            self.store.record_decision(
-                experiment_id,
-                exp["candidate_snapshot"],
-                combined,
-            )
-            self.store.set_stage(attempt_id, "REJECT")
-            return
-        except UnknownActionOutcome as exc:
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(str(exc)) from exc
 
+        self.store.update_experiment(experiment_id, failure_category=None, lesson=None)
         self.store.record_evaluation(
             experiment_id,
             exp["candidate_snapshot"],
@@ -1370,7 +1365,7 @@ class Engine:
             tier="validation",
         )
 
-        combined = json.loads(exp["decision_json"])
+        combined = json.loads(exp["dev_decision_json"] or exp["decision_json"])
         combined["validation"] = validation_decision.model_dump(mode="json")
         combined.setdefault("predicates", {})["validation"] = validation_decision.accepted
         if not validation_decision.accepted:
@@ -1422,11 +1417,19 @@ class Engine:
 
     def _stage_record(self, attempt_id: int, experiment_id: int) -> None:
         exp = self.store.experiment(experiment_id)
-        scientific = bool(exp["evaluation_json"])
         accepted = False
         if exp["decision_json"]:
             accepted = bool(json.loads(exp["decision_json"]).get("accepted"))
         status = "ACCEPTED" if accepted else "REJECTED"
+        bucket = attempt_bucket({**exp, "status": status, "failure_category": None if accepted else exp["failure_category"]})
+        scientific = bucket == "scientific_trials"
+        if not accepted:
+            status = {
+                "no_changes": "NO_CHANGES",
+                "implementation_blocked": "IMPLEMENTATION_BLOCKED",
+                "pre_evaluation_rejected": "PRE_EVALUATION_REJECTED",
+                "infra_failures": "INFRA_FAILED",
+            }.get(bucket, status)
         if accepted:
             failure = None
             lesson = "Promoted as new champion"

@@ -1,7 +1,7 @@
 {
   "name": "bananloop",
   "version": "0.1.0",
-  "description": "Chat-first entry point for independent, reproducible autonomous improvement campaigns.",
+  "description": "Turn a repository and a human goal into an independently evaluated improvement campaign.",
   "author": {
     "name": "ObiVanBanan",
     "url": "https://github.com/ObiVanBanan"
@@ -11,7 +11,7 @@
   "interface": {
     "displayName": "BananLoop",
     "shortDescription": "Turn a repo and goal into an independently evaluated improvement loop.",
-    "longDescription": "Use Codex for the conversational entry point while BananLoop owns evaluator freezing, staged evaluation, budgets, champion promotion and durable campaign state.",
+    "longDescription": "Use Codex as the conversational entry point while BananLoop owns evaluator freezing, staged evaluation, budgets, champion promotion and durable campaign state.",
     "developerName": "ObiVanBanan",
     "category": "Developer Tools",
     "capabilities": ["Write"],
