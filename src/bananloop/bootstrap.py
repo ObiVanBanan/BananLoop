@@ -19,6 +19,7 @@ from .contracts import (
     RuntimePaths,
 )
 from .integrity import discover_evaluation_assets, sha256_file
+from .readiness import ReadinessError, run_bootstrap_readiness
 from .store import CampaignStore, StoreError
 from .wizard import discover_project
 from .workspace import WorkspaceManager, current_commit
@@ -50,6 +51,7 @@ class BootstrapPlan(BaseModel):
     project_context: str
     needs_input: list[str] = Field(default_factory=list)
     evaluation_command: list[str] = Field(default_factory=list)
+    smoke_command: list[str] = Field(default_factory=list)
     validation_command: list[str] = Field(default_factory=list)
     holdout_command: list[str] = Field(default_factory=list)
     primary_metric: MetricSpec
@@ -117,6 +119,10 @@ def _bootstrap_task(
             "freeze_inputs_and_randomness_when_possible": True,
             "no_per_evaluation_llm_planning": True,
             "smoke_test_evaluator_before_ready": True,
+            "core_owns_smoke_verdict": True,
+            "provide_cheap_smoke_command_when_possible": True,
+            "same_inputs_required_across_smoke_repeats": True,
+            "aa_noise_must_be_below_min_improvement": True,
             "emit_bananloop_evaluation_contract": True,
             "do_not_invent_missing_reference_data": True,
             "do_not_modify_production_code_during_bootstrap": True,
@@ -220,7 +226,24 @@ def bootstrap_campaign(
     task = _bootstrap_task(repo, goal, source_base, agent_config)
     bootstrap_attempts: list[dict[str, Any]] = []
     plan: BootstrapPlan | None = None
-    for attempt_index in range(2):
+    bootstrap_snapshot = source_base
+    changed: list[str] = []
+
+    def persist_record() -> None:
+        record = {
+            "source_base_commit": source_base,
+            "bootstrap_snapshot": bootstrap_snapshot,
+            "changed_paths": changed,
+            "bootstrap_request": bootstrap_attempts[0]["request"] if bootstrap_attempts else task,
+            "bootstrap_attempts": bootstrap_attempts,
+            "plan": plan.model_dump(mode="json") if plan is not None else None,
+        }
+        (paths.root / "bootstrap-plan.json").write_text(
+            json.dumps(record, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    for attempt_index in range(3):
         try:
             raw = adapter.execute(
                 task,
@@ -234,64 +257,103 @@ def bootstrap_campaign(
             raise BootstrapError(f"campaign bootstrap failed: {exc}") from exc
 
         contract_error = _bootstrap_contract_error(plan, task)
-        bootstrap_attempts.append(
-            {
-                "attempt": attempt_index + 1,
-                "request": task,
-                "plan": plan.model_dump(mode="json"),
-                "contract_error": contract_error,
-            }
+        bootstrap_snapshot = workspace.snapshot(
+            f"bananloop: bootstrap attempt {attempt_index + 1}"
         )
-        if contract_error is None:
+        changed = workspace.changed_paths(source_base, bootstrap_snapshot)
+        violations = [path for path in changed if not _bootstrap_path(path)]
+        if violations:
+            workspace.checkout(source_base)
+            raise BootstrapError(
+                "bootstrap agent modified files outside .bananloop_eval/: "
+                + ", ".join(sorted(violations))
+            )
+
+        attempt_record: dict[str, Any] = {
+            "attempt": attempt_index + 1,
+            "request": task,
+            "plan": plan.model_dump(mode="json"),
+            "snapshot": bootstrap_snapshot,
+            "changed_paths": changed,
+            "contract_error": contract_error,
+            "readiness": None,
+        }
+        bootstrap_attempts.append(attempt_record)
+
+        if contract_error is not None:
+            persist_record()
+            if attempt_index < 2:
+                task = {
+                    **task,
+                    "repair": {
+                        "reason": contract_error,
+                        "instruction": (
+                            "Correct the plan using information already present in "
+                            "the request. Do not ask the operator to repeat supplied "
+                            "goal/runtime/context."
+                        ),
+                        "previous_plan": plan.model_dump(mode="json"),
+                    },
+                }
+                continue
+            workspace.checkout(source_base)
+            raise BootstrapError(
+                "bootstrap agent repeatedly violated the input contract: "
+                + contract_error
+            )
+
+        if plan.status == "needs_input":
+            persist_record()
+            workspace.checkout(source_base)
+            return plan, None
+
+        try:
+            readiness = run_bootstrap_readiness(
+                plan=plan,
+                workspace=workspace.workspace,
+                snapshot=bootstrap_snapshot,
+                state_root=paths.root,
+                attempt=attempt_index + 1,
+            )
+            attempt_record["readiness"] = readiness
+            persist_record()
             break
-        if attempt_index == 0:
-            task = {
-                **task,
-                "repair": {
-                    "reason": contract_error,
-                    "instruction": (
-                        "Correct the plan using the already supplied authoritative "
-                        "goal. Do not ask the operator to repeat information already "
-                        "present in this request."
-                    ),
-                    "previous_plan": plan.model_dump(mode="json"),
-                },
+        except ReadinessError as exc:
+            attempt_record["readiness"] = exc.receipt or {
+                "status": "FAILED",
+                "error": str(exc),
             }
-            continue
+            persist_record()
+            if attempt_index < 2:
+                task = {
+                    **task,
+                    "repair": {
+                        "reason": "core-owned evaluator readiness gate failed",
+                        "readiness_error": str(exc),
+                        "readiness_receipt": attempt_record["readiness"],
+                        "instruction": (
+                            "Repair only the measurement adapter/package under "
+                            ".bananloop_eval so the core-owned smoke gate passes. "
+                            "Do not modify production code or weaken the measurement "
+                            "just to satisfy the gate."
+                        ),
+                        "previous_plan": plan.model_dump(mode="json"),
+                    },
+                }
+                continue
+            workspace.checkout(source_base)
+            raise BootstrapError(
+                "bootstrap evaluator failed readiness after bounded repair attempts: "
+                + str(exc)
+            ) from exc
+    else:
         workspace.checkout(source_base)
-        raise BootstrapError(
-            "bootstrap agent violated the input contract twice: " + contract_error
-        )
+        raise BootstrapError("bootstrap exhausted bounded preparation attempts")
 
     assert plan is not None
-    bootstrap_snapshot = workspace.snapshot("bananloop: bootstrap evaluator")
-    changed = workspace.changed_paths(source_base, bootstrap_snapshot)
-    violations = [path for path in changed if not _bootstrap_path(path)]
-    if violations:
-        workspace.checkout(source_base)
-        raise BootstrapError(
-            "bootstrap agent modified files outside .bananloop_eval/: "
-            + ", ".join(sorted(violations))
-        )
-
-    record = {
-        "source_base_commit": source_base,
-        "bootstrap_snapshot": bootstrap_snapshot,
-        "changed_paths": changed,
-        "bootstrap_request": bootstrap_attempts[0]["request"],
-        "bootstrap_attempts": bootstrap_attempts,
-        "plan": plan.model_dump(mode="json"),
-    }
-    (paths.root / "bootstrap-plan.json").write_text(
-        json.dumps(record, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-    if plan.status == "needs_input":
-        workspace.checkout(source_base)
-        return plan, None
 
     commands = [
+        plan.smoke_command,
         plan.evaluation_command,
         plan.validation_command,
         plan.holdout_command,
