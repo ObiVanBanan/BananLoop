@@ -39,10 +39,14 @@ class PiAdapter(AgentAdapter):
         model: str | None = None,
         extra_args: list[str] | None = None,
         command: list[str] | None = None,
+        provider: str | None = None,
+        reasoning_effort: str | None = None,
     ):
         self.model = model
         self.extra_args = extra_args or []
         self.command = command or ["pi"]
+        self.provider = provider
+        self.reasoning_effort = reasoning_effort
         self._active: dict[str, subprocess.Popen[str]] = {}
         self._lock = threading.Lock()
 
@@ -82,6 +86,8 @@ class PiAdapter(AgentAdapter):
             "resolved_command": resolved_command,
             "version": version,
             "model": self.model,
+            "provider": self.provider,
+            "reasoning_effort": self.reasoning_effort,
         }
 
     @staticmethod
@@ -94,6 +100,10 @@ class PiAdapter(AgentAdapter):
         argv = [*self._resolved_command(), "--mode", "rpc", "--no-session", "--no-approve"]
         if self.model:
             argv += ["--model", self.model]
+        if self.provider and "--provider" not in self.extra_args:
+            argv += ["--provider", self.provider]
+        if self.reasoning_effort and "--thinking" not in self.extra_args:
+            argv += ["--thinking", self.reasoning_effort]
         argv += self.extra_args
         return argv
 
@@ -111,12 +121,20 @@ class PiAdapter(AgentAdapter):
                 ".bananloop_eval/. Never modify production code, tests, reference assets, or user configuration. "
                 "Prefer an existing trustworthy evaluator; otherwise create a thin evaluator adapter. Freeze cases "
                 "and randomness where possible, avoid per-evaluation LLM planning, and use paired case-level "
-                "measurements for stochastic outputs. Do not invent missing references or credentials. If essential "
-                "inputs are missing, set status to needs_input and list exactly what the operator must provide. "
+                "measurements for stochastic outputs. The core runs three A/A smoke measurements on one snapshot, "
+                "requires stable case/input and protocol identity, and compares empirical noise with min_improvement; "
+                "emit a stable protocol_sha256 in every evaluation result. "
+                "Also include signal_sanity. Configure it only from defensible repository-backed positive and negative "
+                "case IDs or controls, using evidence_kind known_examples, controlled_degradation, metamorphic, or "
+                "invariants, and the primary metric. Never invent labels or derive labels from the evaluator's own "
+                "scores. If evidence is absent, mark status unavailable, leave evidence_kind/metric null and case lists "
+                "empty, and state the reason; this must not claim scorer validity. The core independently checks "
+                "The core checks directed separation in every A/A smoke run. Do not invent missing references or "
+                "credentials; if essential inputs are missing, set status to needs_input and list exactly what the operator must provide. "
                 "Your final assistant message MUST be exactly one JSON object with keys: status, summary, "
                 "project_context, needs_input, evaluation_command, smoke_command, validation_command, holdout_command, "
                 "primary_metric, guardrails, non_regression, mandatory_checks, editable_scope, protected_paths, "
-                "agent_visible_metrics, agent_visible_diagnostics, paired_comparison, evaluator_timeout_seconds. "
+                "agent_visible_metrics, agent_visible_diagnostics, paired_comparison, signal_sanity, evaluator_timeout_seconds. "
                 "primary_metric must contain name, direction, target, min_improvement. paired_comparison must "
                 "contain enabled, case_count, repetitions, metric, direction, min_wins, worst_case_tolerance. "
                 "Do not use markdown fences or prose outside the JSON object."
@@ -233,7 +251,10 @@ class PiAdapter(AgentAdapter):
                 '"protected_paths":[".bananloop_eval/**"],"agent_visible_metrics":["quality"],'
                 '"agent_visible_diagnostics":[],"paired_comparison":{"enabled":false,"case_count":1,'
                 '"repetitions":1,"metric":"quality","direction":"maximize","min_wins":1,'
-                '"worst_case_tolerance":0.0},"evaluator_timeout_seconds":900}'
+                '"worst_case_tolerance":0.0},"signal_sanity":{"status":"unavailable",'
+                '"evidence_kind":null,"metric":null,"positive_case_ids":[],"negative_case_ids":[],'
+                '"reason":"No defensible repository-backed positive/negative examples available."},'
+                '"evaluator_timeout_seconds":900}'
             )
         elif role == "propose":
             schema = (

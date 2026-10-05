@@ -27,6 +27,7 @@ The coding agent proposes and edits. The evaluator and deterministic policy deci
 - action IDs that prevent completed agent/evaluator calls from being repeated on resume;
 - budgets for experiments, attempts, agent calls, evaluator calls and wall time;
 - `start` autopilot bootstrap plus expert `init`, `run`, `status`, `resume`, `stop`, `report` CLI;
+- a repo-local campaign registry for multiple goals, idempotent goal retries, and campaign selection;
 - Markdown/JSON reports built only from durable records;
 - explicit champion patch export with a manifest and operator reports;
 - deterministic fixture demonstrating accept -> reject -> accept;
@@ -342,6 +343,7 @@ Promotion is idempotent at the store level: a completed experiment has one durab
 ## State and reports
 
 ```bash
+bananloop campaigns list --repo .
 bananloop status --repo . --json
 bananloop report --repo .
 bananloop report --repo . --json --output campaign.json
@@ -350,7 +352,16 @@ bananloop resume --repo .
 bananloop export --repo . --output ../champion-export
 ```
 
-Use `--state-dir PATH` on all commands to keep campaign state in an explicit directory (useful for CI/tests).
+Use `--campaign-id ID` with run/resume/status/stop/report/export to select an
+indexed campaign. Without it, commands use the active campaign shown by
+`campaigns list`. Repeating the same canonical goal resumes its indexed
+campaign; use `--request-id ID` on `goal`/`start` to make retries explicit, or
+use a new request ID to intentionally start another run for the same goal.
+
+Use `--state-dir PATH` on all commands to keep campaign state in an explicit
+single-campaign directory (useful for CI/tests). Existing state at the old
+`~/.bananloop/projects/<repo-hash>/campaign.sqlite3` path stays in place and is
+listed as `legacy`.
 
 `stop` sends a durable cancellation request to the running supervisor. Managed
 local processes are polled for cancellation and the campaign deadline. The
@@ -400,14 +411,34 @@ Codex proposer/implementer <----+---- hidden evaluator assets
 BananLoop DEV -> VALIDATION -> FINAL HOLDOUT -> accept/reject
 ```
 
-Codex lifecycle hooks are not the evaluation authority in this MVP. A Stop hook
-can steer a conversation, but putting the scientific decision there would weaken
-the existing evaluator isolation and durable replay boundary. See
+Codex's bundled Stop hook is only a lifecycle bridge: it reads the session's
+durable BananLoop campaign state and can request one continuation if a campaign
+is still RUNNING without a supervisor lock. The hook never evaluates candidates
+or launches workers; BananLoop core remains the measurement authority. Review and
+trust it in Codex's `/hooks` browser before relying on it. See
 `docs/codex-plugin.md`.
 
 Model selection also stays simple: when BananLoop does not receive `--model`,
 the Codex adapter leaves model selection to the user's Codex configuration.
 Advanced `start`/expert `init` flags remain available for explicit overrides.
+
+For a repeatable campaign with different models per active role, save a TOML
+profile and pass `--agent-profiles agents.toml` to `start` or `init`:
+
+```toml
+[default]
+kind = "codex"
+model = "your-default-model-id"
+reasoning_effort = "high"
+
+[roles.implement]
+model = "your-coding-model-id"
+reasoning_effort = "xhigh"
+```
+
+Supported role tables are `bootstrap`, `propose`, `implement`, and `analyze`.
+Settings are frozen into the campaign; credentials remain in the normal CLI
+environment. Do not put secrets in this file.
 
 ## Scope boundaries
 

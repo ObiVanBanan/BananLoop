@@ -11,10 +11,12 @@ import pytest
 
 from bananloop.agents.base import AgentAdapter
 from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, EvaluationResult, GuardrailSpec, Hypothesis, MetricSpec, RuntimePaths
-from bananloop.engine import ControlledInterruption, Engine, EngineError, UnknownActionOutcome
-from bananloop.report import build_report
+from bananloop.engine import ControlledInterruption, Engine, EngineError, UnknownActionOutcome, _hash_payload
+from bananloop.evaluator_binding import EvaluatorBinding, canonical_hash, make_binding, runtime_descriptor
+from bananloop.integrity import sha256_evaluation_asset
+from bananloop.report import build_report, render_markdown
 from bananloop.store import CampaignStore
-from bananloop.workspace import WorkspaceManager
+from bananloop.workspace import WorkspaceError, WorkspaceManager
 
 
 def git(argv: list[str], cwd: Path) -> str:
@@ -106,7 +108,7 @@ def make_staged_engine(
         evaluation_assets=[
             EvaluationAsset(
                 path=name,
-                sha256=hashlib.sha256((repo / name).read_bytes()).hexdigest(),
+                sha256=sha256_evaluation_asset(repo / name),
             )
             for name in ("evaluator.py", "validation.py", "holdout.py")
         ],
@@ -304,6 +306,41 @@ def test_failed_action_requires_explicit_retry(tmp_path: Path):
         store.close()
 
 
+def test_agent_cleanup_failure_does_not_discard_completed_response(tmp_path: Path, monkeypatch, caplog):
+    store, engine, _, _ = make_engine(tmp_path)
+
+    class CompletedAgent(AgentAdapter):
+        def probe(self):
+            return {"available": True}
+
+        def execute(self, task, workspace, timeout):
+            return {"ok": True}
+
+    try:
+        engine.agent = CompletedAgent()
+        engine.workspace.ensure(engine.spec.base_commit)
+        cleanup = engine.workspace.cleanup_agent_workspace
+        cleanup_calls = 0
+
+        def fail_cleanup_after_prepare():
+            nonlocal cleanup_calls
+            cleanup_calls += 1
+            if cleanup_calls == 1:
+                cleanup()
+                return
+            raise WorkspaceError("sandbox-owned cache")
+
+        monkeypatch.setattr(engine.workspace, "cleanup_agent_workspace", fail_cleanup_after_prepare)
+        with caplog.at_level("WARNING", logger="bananloop.engine"):
+            result = engine._invoke_agent(
+                {"role": "propose"}, timeout=1, apply_changes=False
+            )
+        assert result == {"ok": True}
+        assert "temporary agent workspace cleanup failed" in caplog.text
+    finally:
+        store.close()
+
+
 def test_orphaned_running_action_requires_explicit_retry(tmp_path: Path):
     store, engine, _, _ = make_engine(tmp_path)
     request = {"role": "propose", "experiment_id": 99}
@@ -412,7 +449,7 @@ def test_verify_pauses_for_frozen_evaluator_drift(tmp_path: Path):
     try:
         engine.workspace.ensure(engine.spec.base_commit)
         evaluator_path = engine.workspace.workspace / "evaluator.py"
-        expected_hash = hashlib.sha256(evaluator_path.read_bytes()).hexdigest()
+        expected_hash = sha256_evaluation_asset(evaluator_path)
         engine.spec.evaluation_assets = [
             EvaluationAsset(path="evaluator.py", sha256=expected_hash)
         ]
@@ -562,7 +599,7 @@ def _freeze_fixture_evaluator(engine: Engine) -> None:
     engine.spec.evaluation_assets = [
         EvaluationAsset(
             path="evaluator.py",
-            sha256=hashlib.sha256(evaluator.read_bytes()).hexdigest(),
+            sha256=sha256_evaluation_asset(evaluator),
         )
     ]
 
@@ -704,6 +741,24 @@ def test_staged_validation_gates_promotion_and_final_holdout_runs_once(tmp_path:
         assert report["evaluation_protocol"]["holdout"]["evaluated"] is True
         assert report["evaluation_protocol"]["holdout"]["value"] == 3.0
         assert report["evaluation_protocol"]["holdout"]["target_met"] is True
+        assert report["evaluator_binding"]["binding_id"] == store.evaluator_binding()["binding_id"]
+        receipt_tiers = {row["receipt"]["tier"] for row in store.evaluation_receipts()}
+        assert receipt_tiers == {"dev", "validation", "holdout"}
+        assert len(store.evaluation_receipts()) == len(store.evaluations())
+        for row in store.evaluation_receipts():
+            action_id = row["action_id"]
+            sidecar = (
+                store.path.parent
+                / "artifacts"
+                / hashlib.sha256(action_id.encode()).hexdigest()[:24]
+                / "evaluation-receipt.json"
+            )
+            assert json.loads(sidecar.read_text(encoding="utf-8"))["receipt_hash"] == row["receipt_hash"]
+        assert report["evaluation_receipts"]
+        markdown = render_markdown(report)
+        binding_line = next(line for line in markdown.splitlines() if line.startswith("- Binding:"))
+        assert binding_line.endswith("`")
+        assert any("receipt=`" in line and "binding=`" in line and line.endswith("`") for line in markdown.splitlines())
     finally:
         store.close()
 
@@ -1093,6 +1148,194 @@ def test_implementation_blocker_is_rejected_without_fake_candidate(tmp_path: Pat
         engine._stage_record(attempt_id, experiment_id)
         assert store.experiment(experiment_id)["status"] == "IMPLEMENTATION_BLOCKED"
         assert store.campaign()["experiment_count"] == 0
+    finally:
+        store.close()
+
+
+def test_evaluator_binding_is_stable_and_tampering_is_rejected(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        runtime = runtime_descriptor({"dev": engine.spec.evaluation_command})
+        first = make_binding(engine.spec, runtime)
+        second = make_binding(engine.spec, runtime)
+        assert first == second
+        assert first.binding_id == second.binding_id
+        payload = first.model_dump(mode="json")
+        payload["runtime_fingerprint"] = "0" * 64
+        with pytest.raises(Exception):
+            EvaluatorBinding.model_validate(payload)
+        assert engine.spec.approved_hash() == store.campaign()["spec_hash"]
+    finally:
+        store.close()
+
+
+def test_completed_evaluation_replay_neither_reruns_nor_rewrites_receipt(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        row = store.evaluation_receipt("baseline:evaluate")
+        assert row is not None
+        action = store.action("baseline:evaluate")
+        request = json.loads(action["request_json"])
+        sidecar = (
+            store.path.parent
+            / "artifacts"
+            / hashlib.sha256(b"baseline:evaluate").hexdigest()[:24]
+            / "evaluation-receipt.json"
+        )
+        original = sidecar.read_bytes()
+        sidecar.unlink()
+        replay = engine._action(
+            action_id="baseline:evaluate",
+            experiment_id=None,
+            stage="BASELINE",
+            kind="evaluator",
+            request=request,
+            invoke=lambda: (_ for _ in ()).throw(AssertionError("must replay")),
+        )
+        assert replay["metrics"]["quality"]["value"] == 0
+        assert not sidecar.exists()  # Missing recovery sidecar is not rewritten during replay.
+        # DB remains authoritative and the receipt survives a missing sidecar.
+        assert store.evaluation_receipt("baseline:evaluate")["receipt_hash"] == row["receipt_hash"]
+        sidecar.write_bytes(original)
+    finally:
+        store.close()
+
+
+def test_tampered_completed_receipt_sidecar_is_rejected(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        action_id = "baseline:evaluate"
+        request = json.loads(store.action(action_id)["request_json"])
+        sidecar = (
+            store.path.parent / "artifacts"
+            / hashlib.sha256(action_id.encode()).hexdigest()[:24]
+            / "evaluation-receipt.json"
+        )
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        payload["tier"] = "holdout"
+        sidecar.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(Exception, match="sidecar"):
+            engine._action(
+                action_id=action_id, experiment_id=None, stage="BASELINE",
+                kind="evaluator", request=request,
+                invoke=lambda: (_ for _ in ()).throw(AssertionError("must replay")),
+            )
+    finally:
+        store.close()
+
+
+def test_runtime_binding_mismatch_pauses_before_new_evaluation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine._ensure_evaluator_binding()
+        prior_calls = store.campaign()["evaluator_calls"]
+        monkeypatch.setattr(
+            "bananloop.engine.runtime_descriptor",
+            lambda commands: {"python_version": "0.0-tampered"},
+        )
+        result = engine.run()
+        assert result["status"] == "PAUSED_INFRA"
+        assert store.campaign()["evaluator_calls"] == prior_calls
+        assert store.action("baseline:evaluate") is None
+    finally:
+        store.close()
+
+
+def test_frozen_asset_changed_by_evaluator_fails_action_before_measurement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    store, engine, _, _ = make_staged_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        original_evaluate = engine.evaluator.evaluate
+
+        def mutate_after_run(workspace, timeout):
+            result = original_evaluate(workspace, timeout)
+            (workspace / "validation.py").write_text("# changed during evaluation\n")
+            return result
+
+        monkeypatch.setattr(engine.evaluator, "evaluate", mutate_after_run)
+        with pytest.raises(EngineError, match="baseline failed"):
+            engine._baseline()
+        assert store.action("baseline:evaluate")["status"] == "FAILED"
+        assert store.campaign()["status"] == "PAUSED_INFRA"
+        assert store.campaign()["baseline_json"] is None
+        assert store.evaluation_receipt("baseline:evaluate") is None
+    finally:
+        store.close()
+
+
+def test_conflicting_receipt_for_action_fails_atomic_completion(tmp_path: Path):
+    store, _, _, _ = make_engine(tmp_path)
+    try:
+        store.start_action("conflict:evaluate", None, "BASELINE", "evaluator", "a" * 64, {"snapshot": "abc"})
+        with store.conn:
+            store.conn.execute(
+                "INSERT INTO evaluation_receipts(action_id,receipt_hash,receipt_json,created_at) VALUES(?,?,?,?)",
+                ("conflict:evaluate", "b" * 64, '{"receipt_hash":"' + "b" * 64 + '"}', "2026-01-01T00:00:00+00:00"),
+            )
+        with pytest.raises(Exception, match="conflicting evaluation receipt"):
+            store.finish_action(
+                "conflict:evaluate",
+                {"metrics": {}, "_evaluation_receipt": {"receipt_hash": "c" * 64}},
+            )
+        assert store.action("conflict:evaluate")["status"] == "RUNNING"
+        assert store.evaluation_receipt("conflict:evaluate")["receipt_hash"] == "b" * 64
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("field", ["case_input_manifest_hash", "artifact_manifest_hash"])
+def test_completed_receipt_recomputes_case_and_artifact_manifest_hashes(tmp_path: Path, field: str):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        row = store.evaluation_receipt("baseline:evaluate")
+        payload = dict(row["receipt"])
+        payload[field] = "0" * 64
+        body = dict(payload)
+        body.pop("receipt_hash")
+        payload["receipt_hash"] = canonical_hash(body)
+        store.conn.execute(
+            "UPDATE evaluation_receipts SET receipt_hash=?,receipt_json=? WHERE action_id=?",
+            (payload["receipt_hash"], json.dumps(payload, sort_keys=True), "baseline:evaluate"),
+        )
+        store.conn.commit()
+        with pytest.raises(Exception, match="integrity failure"):
+            engine._verify_completed_receipt("baseline:evaluate")
+        report_row = next(
+            row for row in build_report(store)["evaluation_receipts"]
+            if row["action_id"] == "baseline:evaluate"
+        )
+        assert report_row["status"] == "INVALID"
+    finally:
+        store.close()
+
+
+def test_legacy_completed_action_replays_without_binding_or_hash_change(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        request = {"snapshot": engine.spec.base_commit, "tier": "dev", "command": engine.spec.evaluation_command}
+        request_hash = _hash_payload(request)
+        store.start_action("baseline:evaluate", None, "BASELINE", "evaluator", request_hash, request)
+        store.finish_action("baseline:evaluate", {
+            "status": "ok", "metrics": {"quality": 0}, "checks": {"tests": True},
+        })
+        before = store.action("baseline:evaluate")["request_hash"]
+        replay = engine._action(
+            action_id="baseline:evaluate", experiment_id=None, stage="BASELINE",
+            kind="evaluator", request=request,
+            invoke=lambda: (_ for _ in ()).throw(AssertionError("legacy action must replay")),
+        )
+        assert replay["metrics"]["quality"] == 0
+        assert store.action("baseline:evaluate")["request_hash"] == before == request_hash
+        report = build_report(store)
+        legacy = next(row for row in report["evaluation_receipts"] if row["action_id"] == "baseline:evaluate")
+        assert legacy["status"] == "LEGACY_UNRECEIPTED"
+        assert legacy["receipt_hash"] is None
     finally:
         store.close()
 

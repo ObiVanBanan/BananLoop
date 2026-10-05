@@ -1,6 +1,15 @@
 from bananloop.cli import _agent_config, parser
 
 
+def test_goal_uses_profile_default_backend(tmp_path):
+    profiles = tmp_path / "agents.toml"
+    profiles.write_text('[default]\nkind="pi"\nmodel="local/model"\n', encoding="utf-8")
+    args = parser().parse_args(["goal", "Improve quality", "--agent-profiles", str(profiles)])
+    config = _agent_config(args)
+    assert config.kind == "pi"
+    assert config.model == "local/model"
+
+
 def test_pi_cli_builds_agent_config():
     args = parser().parse_args([
         "init",
@@ -21,9 +30,9 @@ def test_pi_cli_builds_agent_config():
 
     assert config.kind == "pi"
     assert config.model == "nemotron-3-nano:30b"
+    assert config.provider == "ollama-cloud"
+    assert config.reasoning_effort == "off"
     assert config.extra_args == [
-        "--provider", "ollama-cloud",
-        "--thinking", "off",
         "--exclude-tools", "web_search",
     ]
 
@@ -100,7 +109,8 @@ def test_start_cli_requires_only_repo_goal_for_default_codex_flow():
     ])
 
     assert args.command == "start"
-    assert args.agent == "codex"
+    assert args.agent is None
+    assert _agent_config(args).kind == "codex"
     assert args.goal == "improve measured quality"
     assert args.max_experiments == 4
     assert args.deadline_seconds == 14400
@@ -128,7 +138,8 @@ def test_goal_cli_is_minimal_chat_first_surface():
     assert args.command == "goal"
     assert args.goal.startswith("improve generated image quality")
     assert args.repo == "."
-    assert args.agent == "codex"
+    assert args.agent is None
+    assert _agent_config(args).kind == "codex"
     assert args.model is None
     assert args.max_experiments == 4
     assert args.max_evaluator_calls == 16

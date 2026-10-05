@@ -8,6 +8,7 @@
   },
   "repository": "https://github.com/ObiVanBanan/BananLoop",
   "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "BananLoop",
     "shortDescription": "Turn a repo and goal into an independently evaluated improvement loop.",

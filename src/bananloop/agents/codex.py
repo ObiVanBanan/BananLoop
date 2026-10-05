@@ -78,6 +78,19 @@ BOOTSTRAP_SCHEMA = {
             "required": ["enabled", "case_count", "repetitions", "metric", "direction", "min_wins", "worst_case_tolerance"],
             "additionalProperties": False
         },
+        "signal_sanity": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["configured", "unavailable"]},
+                "evidence_kind": {"type": ["string", "null"], "enum": ["known_examples", "controlled_degradation", "metamorphic", "invariants", None]},
+                "metric": {"type": ["string", "null"]},
+                "positive_case_ids": {"type": "array", "items": {"type": "string"}},
+                "negative_case_ids": {"type": "array", "items": {"type": "string"}},
+                "reason": {"type": ["string", "null"]}
+            },
+            "required": ["status", "evidence_kind", "metric", "positive_case_ids", "negative_case_ids", "reason"],
+            "additionalProperties": False
+        },
         "evaluator_timeout_seconds": {"type": "integer", "minimum": 1}
     },
     "required": [
@@ -85,7 +98,7 @@ BOOTSTRAP_SCHEMA = {
         "evaluation_command", "smoke_command", "validation_command", "holdout_command",
         "primary_metric", "guardrails", "non_regression", "mandatory_checks",
         "editable_scope", "protected_paths", "agent_visible_metrics",
-        "agent_visible_diagnostics", "paired_comparison", "evaluator_timeout_seconds"
+        "agent_visible_diagnostics", "paired_comparison", "signal_sanity", "evaluator_timeout_seconds"
     ],
     "additionalProperties": False
 }
@@ -168,9 +181,11 @@ IMPLEMENT_SCHEMA = {
 
 
 class CodexAdapter(AgentAdapter):
-    def __init__(self, model: str | None = None, extra_args: list[str] | None = None):
+    def __init__(self, model: str | None = None, extra_args: list[str] | None = None,
+                 reasoning_effort: str | None = None):
         self.model = model
         self.extra_args = extra_args or []
+        self.reasoning_effort = reasoning_effort
 
     def _resolved_command(self) -> list[str]:
         path = shutil.which("codex")
@@ -193,7 +208,9 @@ class CodexAdapter(AgentAdapter):
             version = run_process([*command, "--version"], cwd=Path.cwd(), timeout=10).stdout.strip()
         except ProcessError:
             version = "unknown"
-        return {"available": True, "kind": "codex", "command": command, "version": version}
+        return {"available": True, "kind": "codex", "command": command, "version": version,
+                "model": self.model,
+                "reasoning_effort": self.reasoning_effort}
 
     def execute(self, task: dict[str, Any], workspace: Path, timeout: int) -> dict[str, Any]:
         role = task.get("role")
@@ -220,9 +237,22 @@ class CodexAdapter(AgentAdapter):
                 "executables directly for required packages and versions. Only request a runtime if no discovered "
                 "candidate can satisfy the project requirement. Return a cheap smoke_command whenever possible; "
                 "it should exercise the real evaluator contract on a small real subset without changing semantics. "
-                "Do not claim readiness based on your own smoke result: BananLoop core will execute the command twice, "
-                "validate required metrics/checks/case identities, and measure A/A noise before READY. If the core "
-                "returns a repair.readiness_error, diagnose and repair only the measurement package, then return an "
+                "Do not claim readiness based on your own smoke result: BananLoop core will execute the command "
+                "three times on the same snapshot, validate required metrics/checks/case and protocol identities, "
+                "and compare the empirical A/A noise bound with min_improvement before READY. The evaluation "
+                "result must include a stable protocol_sha256 identifying its measurement protocol. "
+                "The primary metric must directly measure the supplied goal outcome with explicit goal-specific "
+                "behavioral probes; test-suite pass/fail is a secondary regression check, not a substitute for "
+                "measuring the goal. Every probe must import and execute code from the candidate workspace being "
+                "evaluated, never an installed host checkout; for a Python src layout, set PYTHONPATH to that "
+                "workspace's src directory. "
+                "Also provide signal_sanity. Configure it only when the repository/evaluator exposes defensible, "
+                "explicitly identified positive and negative examples or controls. Use evidence_kind known_examples, "
+                "controlled_degradation, metamorphic, or invariants; list their exact case_ids and set metric to the "
+                "primary metric. Never invent labels or infer gold labels from model output. If no such evidence exists, "
+                "set status=unavailable, leave evidence_kind/metric/case lists null or empty, and explain why. The core "
+                "will verify separation independently on every A/A run. If the core returns a "
+                "repair.readiness_error, diagnose and repair only the measurement package, then return an "
                 "updated plan. Avoid a full expensive benchmark when a smaller smoke path is possible. "
                 "The evaluator must compare the same frozen inputs/settings for baseline and candidates, emit the "
                 "BananLoop JSON evaluation contract, use stable case IDs/input fingerprints, and avoid per-evaluation "
@@ -231,7 +261,9 @@ class CodexAdapter(AgentAdapter):
                 "essential input is absent, return status=needs_input with a short exact list of what the operator must "
                 "provide. Keep evaluator/scoring files separate from editable production scope. project_context must "
                 "summarize architecture, execution entrypoints, output path, and plausible improvement levers so later "
-                "proposers can act without rediscovering the project. Return only the requested structured result.\n\n"
+                "proposers can act without rediscovering the project. If repair.validation_errors is present, "
+                "correct the prior plan to satisfy those schema requirements without asking the operator. "
+                "Return only the requested structured result.\n\n"
             )
         elif role == "propose":
             instruction = (
@@ -256,8 +288,17 @@ class CodexAdapter(AgentAdapter):
                 "Implement exactly the approved hypothesis in the current repository. "
                 "Modify only the allowed editable scope. Do not modify evaluator/protected artifacts. "
                 "Do not decide whether the result is better; BananLoop will evaluate it independently. "
+                "The supervisor runs configured evaluator and validation commands independently. Do not mark "
+                "the implementation blocked only because optional local tooling for those checks is unavailable; "
+                "complete the change and report the local verification limit in verification_notes. Use blockers "
+                "only when you cannot implement the approved change or a real constraint prevents it. "
                 "Return the requested structured result after editing.\n\n"
             )
+        instruction += (
+            "Before returning the structured response, remove only transient cache artifacts you created "
+            "in this disposable workspace (for example .pytest_cache, __pycache__, and *.pyc). Do not "
+            "remove or alter tracked project files. This lets the supervisor safely dispose of the copy.\n\n"
+        )
         prompt = instruction + json.dumps(task, ensure_ascii=False, indent=2)
         with tempfile.TemporaryDirectory(prefix="bananloop-codex-") as td:
             schema_path = Path(td) / "schema.json"
@@ -266,7 +307,12 @@ class CodexAdapter(AgentAdapter):
             argv = [*self._resolved_command(), "exec", "--skip-git-repo-check", "--output-schema", str(schema_path), "-o", str(result_path)]
             if self.model:
                 argv += ["-m", self.model]
+            if self.reasoning_effort:
+                argv += ["-c", f"model_reasoning_effort={self.reasoning_effort}"]
             argv += self.extra_args
+            # Keep generated campaign context off the Windows command line.
+            # It can exceed CreateProcess' command-line limit after DEV history
+            # grows; Codex's `-` prompt sentinel reads the same text from stdin.
             argv.append("-")
             try:
                 run_process(

@@ -112,12 +112,63 @@ class AgentConfig(BaseModel):
     command: list[str] = Field(default_factory=list)
     model: str | None = None
     extra_args: list[str] = Field(default_factory=list)
+    reasoning_effort: Literal["off", "minimal", "low", "medium", "high", "xhigh"] | None = None
+    provider: str | None = None
+    roles: dict[str, "AgentRoleOverride"] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def command_required(self) -> "AgentConfig":
         if self.kind == "command" and not self.command:
             raise ValueError("command agent requires command argv")
+        flags = set(self.extra_args)
+        if self.kind == "codex":
+            if self.model is not None and (
+                "-m" in flags or "--model" in flags
+                or any(arg.startswith(("-m=", "--model=")) for arg in flags)
+            ):
+                raise ValueError("Codex model must be configured in one place; remove model overrides from extra_args")
+            if (self.model is not None or self.reasoning_effort is not None) and (
+                "--profile" in flags or any(arg.startswith("--profile=") for arg in flags)
+            ):
+                raise ValueError("Codex model/reasoning must not be shadowed by --profile in extra_args")
+            if (self.model is not None or self.reasoning_effort is not None) and any(
+                arg == "-c" and index + 1 < len(self.extra_args)
+                and self.extra_args[index + 1].split("=", 1)[0] in {"model", "model_reasoning_effort"}
+                for index, arg in enumerate(self.extra_args)
+            ):
+                raise ValueError("Codex model/reasoning must be configured in one place; remove conflicting -c overrides")
+            if self.reasoning_effort is not None and any(
+                arg == "-c" and index + 1 < len(self.extra_args)
+                and self.extra_args[index + 1].startswith("model_reasoning_effort=")
+                for index, arg in enumerate(self.extra_args)
+            ):
+                raise ValueError("Codex reasoning effort must be configured in one place; remove its -c override")
+        if self.kind == "pi":
+            if self.model is not None and ("--model" in flags or any(arg.startswith("--model=") for arg in flags)):
+                raise ValueError("Pi model must be configured in one place; remove model overrides from extra_args")
+            if self.provider is not None and ("--provider" in flags or any(arg.startswith("--provider=") for arg in flags)):
+                raise ValueError("Pi provider must be configured in one place; remove provider overrides from extra_args")
+            if self.reasoning_effort is not None and ("--thinking" in flags or any(arg.startswith("--thinking=") for arg in flags)):
+                raise ValueError("Pi thinking level must be configured in one place; remove its override from extra_args")
         return self
+
+    def for_role(self, role: str) -> "AgentConfig":
+        override = self.roles.get(role)
+        if override is None:
+            return self.model_copy(update={"roles": {}})
+        values = override.model_dump(exclude_unset=True, exclude_none=True)
+        merged = self.model_dump(exclude={"roles"})
+        merged.update(values)
+        return AgentConfig.model_validate(merged)
+
+
+class AgentRoleOverride(BaseModel):
+    kind: Literal["codex", "command", "pi"] | None = None
+    model: str | None = None
+    reasoning_effort: Literal["off", "minimal", "low", "medium", "high", "xhigh"] | None = None
+    provider: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class CampaignSpec(BaseModel):
@@ -137,6 +188,10 @@ class CampaignSpec(BaseModel):
     agent_visible_metrics: list[str] = Field(default_factory=list)
     agent_visible_diagnostics: list[str] = Field(default_factory=list)
     paired_comparison: PairedComparison | None = None
+    # Optional readiness metadata. None is omitted from approved_hash to keep
+    # all campaigns created before signal sanity byte-for-byte compatible.
+    signal_sanity_status: Literal["DIAGNOSTIC_ONLY", "UNAVAILABLE"] | None = None
+    signal_sanity_receipt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     primary_metric: MetricSpec
     guardrails: list[GuardrailSpec] = Field(default_factory=list)
     non_regression: list[NonRegressionSpec] = Field(default_factory=list)
@@ -166,6 +221,8 @@ class CampaignSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_staged_evaluation_budget(self) -> "CampaignSpec":
+        if (self.signal_sanity_status is None) != (self.signal_sanity_receipt_sha256 is None):
+            raise ValueError("signal sanity status and receipt digest must be set together")
         if self.validation_timeout_seconds is not None and not self.validation_command:
             raise ValueError("validation_timeout_seconds requires validation_command")
         if self.holdout_timeout_seconds is not None and not self.holdout_command:
@@ -185,6 +242,10 @@ class CampaignSpec(BaseModel):
         data = self.model_dump(mode="json")
         if self.paired_comparison is None:
             data.pop("paired_comparison", None)
+        if self.signal_sanity_status is None:
+            data.pop("signal_sanity_status", None)
+        if self.signal_sanity_receipt_sha256 is None:
+            data.pop("signal_sanity_receipt_sha256", None)
         for key in ("max_evaluation_units", "evaluation_units_per_call"):
             if data["budget"][key] is None:
                 data["budget"].pop(key)
@@ -211,6 +272,13 @@ class CampaignSpec(BaseModel):
             data.pop("agent_visible_diagnostics", None)
         if not self.non_regression:
             data.pop("non_regression", None)
+        # Keep approved hashes stable for campaign specs created before agent profiles.
+        agent_data = data["agent"]
+        for key in ("reasoning_effort", "provider"):
+            if agent_data.get(key) is None:
+                agent_data.pop(key, None)
+        if not agent_data.get("roles"):
+            agent_data.pop("roles", None)
         if not self.forbidden_diff_patterns:
             data.pop("forbidden_diff_patterns", None)
         payload = json.dumps(data, sort_keys=True, separators=(",", ":"))

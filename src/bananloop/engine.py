@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -23,6 +24,10 @@ from .contracts import (
 )
 from .evaluators import CommandEvaluator, EvaluatorError
 from .integrity import evaluation_fingerprint, verify_evaluation_assets
+from .evaluator_binding import (
+    EvaluationReceipt, EvaluatorBinding, canonical_hash, make_binding,
+    make_receipt, runtime_descriptor, validate_receipt_linkage,
+)
 from .leakage import scan_forbidden_diff_patterns
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
 from .process import ProcessCancelled, check_process_control, process_control
@@ -36,6 +41,8 @@ from .research import (
 )
 from .store import CampaignStore
 from .workspace import WorkspaceError, WorkspaceManager
+
+logger = logging.getLogger(__name__)
 
 
 class ControlledInterruption(RuntimeError):
@@ -52,6 +59,10 @@ class UnknownActionOutcome(EngineError):
 
 class CampaignHalted(Exception):
     """A budget gate has durably stopped the campaign; unwind the active stage."""
+
+
+class BindingRuntimeMismatch(EngineError):
+    pass
 
 
 def _hash_payload(payload: dict[str, Any]) -> str:
@@ -80,6 +91,7 @@ class Engine:
         self._retry_failed_actions = False
         self._agent_timeout_seconds: int | None = None
         self.spec = store.spec()
+        self._evaluator_binding: EvaluatorBinding | None = None
         self.evaluator = CommandEvaluator(self.spec.evaluation_command)
         self.validation_evaluator = (
             CommandEvaluator(self.spec.validation_command)
@@ -91,13 +103,7 @@ class Engine:
             if self.spec.holdout_command
             else None
         )
-        self.agent: AgentAdapter
-        if self.spec.agent.kind == "codex":
-            self.agent = CodexAdapter(self.spec.agent.model, self.spec.agent.extra_args)
-        elif self.spec.agent.kind == "pi":
-            self.agent = PiAdapter(self.spec.agent.model, self.spec.agent.extra_args)
-        else:
-            self.agent = CommandAgentAdapter(self.spec.agent.command)
+        self.agent: AgentAdapter = self._make_agent_adapter(self.spec.agent)
 
     def _progress(self, message: str) -> None:
         if self._progress_callback:
@@ -147,12 +153,32 @@ class Engine:
         hidden = self._agent_hidden_paths()
         agent_workspace = self.workspace.prepare_agent_workspace(hidden)
         try:
-            result = self.agent.execute(task, agent_workspace, timeout=timeout)
+            role = str(task.get("role", "propose"))
+            adapter = (
+                self._make_agent_adapter(self.spec.agent.for_role(role))
+                if role in self.spec.agent.roles
+                else self.agent
+            )
+            result = adapter.execute(task, agent_workspace, timeout=timeout)
             if apply_changes:
                 self.workspace.apply_agent_changes(agent_workspace, hidden)
             return result
         finally:
-            self.workspace.cleanup_agent_workspace()
+            try:
+                self.workspace.cleanup_agent_workspace()
+            except WorkspaceError as exc:
+                # Codex may create sandbox-owned cache directories inside its
+                # disposable checkout. Keep a completed agent response usable;
+                # candidate materialization and evaluator gates still run next.
+                logger.warning("temporary agent workspace cleanup failed: %s", exc)
+
+    @staticmethod
+    def _make_agent_adapter(config):
+        if config.kind == "codex":
+            return CodexAdapter(config.model, config.extra_args, config.reasoning_effort)
+        if config.kind == "pi":
+            return PiAdapter(config.model, config.extra_args, config.command, config.provider, config.reasoning_effort)
+        return CommandAgentAdapter(config.command)
 
     def _checkpoint(self, stage: str) -> None:
         if os.getenv("BANANLOOP_TEST_STOP_AFTER_STAGE") == stage:
@@ -300,7 +326,11 @@ class Engine:
                     root = self.store.path.parent / "artifacts" / hashlib.sha256(action_id.encode()).hexdigest()[:24]
                     retained = EvaluationResult.model_validate(response)
                     retain_artifacts(retained, root, experiment_id, request["snapshot"])
+                if kind != "agent":
+                    self._verify_completed_receipt(action_id)
                 return response
+            if kind != "agent":
+                self._ensure_evaluator_binding()
             if existing["status"] == "CANCELLED":
                 if self._budget_or_stop(kind):
                     raise CampaignHalted()
@@ -331,6 +361,8 @@ class Engine:
                     f"action {action_id} has unsupported prior status {existing['status']}"
                 )
         else:
+            if kind != "agent":
+                self._ensure_evaluator_binding()
             if self._budget_or_stop(kind):
                 raise CampaignHalted()
             self.store.start_action(action_id, experiment_id, stage, kind, request_hash, request)
@@ -379,7 +411,28 @@ class Engine:
                 if ceiling is not None and (result.resource_units is None or result.resource_units > ceiling):
                     raise EvaluatorError("missing resource_units or reported work exceeds reserved limit")
                 retain_artifacts(result, output_dir, experiment_id, request["snapshot"])
+                violations = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
+                if violations:
+                    raise EvaluatorError(
+                        "frozen evaluation assets changed during measurement: " + ", ".join(violations)
+                    )
+                receipt = make_receipt(
+                    action_id=action_id,
+                    tier=request.get("tier", "dev"),
+                    snapshot=request["snapshot"],
+                    candidate_proof=request.get("candidate_proof"),
+                    binding=self._ensure_evaluator_binding(),
+                    result=result,
+                )
+                sidecar = output_dir / "evaluation-receipt.json"
+                tmp_sidecar = output_dir / ".evaluation-receipt.json.tmp"
+                tmp_sidecar.write_text(
+                    json.dumps(receipt.model_dump(mode="json"), sort_keys=True, separators=(",", ":")),
+                    encoding="utf-8",
+                )
+                tmp_sidecar.replace(sidecar)
                 response = result.model_dump(mode="json")
+                response["_evaluation_receipt"] = receipt.model_dump(mode="json")
         except ProcessCancelled as exc:
             self.store.cancel_action(action_id, exc.reason)
             raise
@@ -393,6 +446,80 @@ class Engine:
         self.store.finish_action(action_id, response)
         self._progress(f"{action_id}: completed")
         return response
+
+    def _ensure_evaluator_binding(self, *, verify_runtime: bool = True) -> EvaluatorBinding:
+        commands = {"dev": self.spec.evaluation_command}
+        if self.spec.validation_command:
+            commands["validation"] = self.spec.validation_command
+        if self.spec.holdout_command:
+            commands["holdout"] = self.spec.holdout_command
+        current = make_binding(self.spec, runtime_descriptor(commands))
+        row = self.store.evaluator_binding()
+        if row is None:
+            self.store.save_evaluator_binding(
+                current.binding_id,
+                canonical_hash(current.model_dump(mode="json")),
+                json.dumps(current.model_dump(mode="json"), sort_keys=True),
+            )
+            self._evaluator_binding = current
+            self._write_binding_sidecar(current)
+            return current
+        stored = EvaluatorBinding.model_validate_json(row["binding_json"])
+        if row["binding_hash"] != canonical_hash(stored.model_dump(mode="json")):
+            raise BindingRuntimeMismatch("persisted evaluator binding hash is invalid")
+        if stored.approved_spec_hash != self.spec.approved_hash() or stored.binding_id != current.binding_id and verify_runtime:
+            raise BindingRuntimeMismatch("immutable evaluator binding does not match campaign specification/runtime")
+        if verify_runtime and stored.runtime_fingerprint != current.runtime_fingerprint:
+            raise BindingRuntimeMismatch("bounded evaluator runtime differs from immutable campaign binding")
+        sidecar = self.store.path.parent / "artifacts" / "evaluator-binding.json"
+        if sidecar.exists():
+            try:
+                sidecar_binding = EvaluatorBinding.model_validate_json(sidecar.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise BindingRuntimeMismatch("evaluator binding sidecar is invalid") from exc
+            if sidecar_binding != stored:
+                raise BindingRuntimeMismatch("evaluator binding sidecar differs from immutable database binding")
+        else:
+            self._write_binding_sidecar(stored)
+        self._evaluator_binding = stored
+        return stored
+
+    def _write_binding_sidecar(self, binding: EvaluatorBinding) -> None:
+        path = self.store.path.parent / "artifacts" / "evaluator-binding.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(".evaluator-binding.json.tmp")
+        temp.write_text(
+            json.dumps(binding.model_dump(mode="json"), sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        temp.replace(path)
+
+    def _verify_completed_receipt(self, action_id: str) -> None:
+        stored = self.store.evaluation_receipt(action_id)
+        if stored is None:  # Historical completed actions intentionally remain unreceipted.
+            return
+        action = self.store.action(action_id)
+        binding_row = self.store.evaluator_binding()
+        if binding_row is None or action is None:
+            raise EvaluatorError(f"evaluation receipt has no binding or action for {action_id}")
+        try:
+            receipt = validate_receipt_linkage(
+                stored["receipt"],
+                stored_receipt_hash=stored["receipt_hash"],
+                action=action,
+                binding_data=json.loads(binding_row["binding_json"]),
+                stored_binding_hash=binding_row["binding_hash"],
+            )
+        except Exception as exc:
+            raise EvaluatorError(f"evaluation receipt integrity failure for {action_id}: {exc}") from exc
+        sidecar = self.store.path.parent / "artifacts" / hashlib.sha256(action_id.encode()).hexdigest()[:24] / "evaluation-receipt.json"
+        if sidecar.exists():
+            try:
+                sidecar_receipt = EvaluationReceipt.model_validate_json(sidecar.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise EvaluatorError(f"evaluation receipt sidecar is invalid for {action_id}") from exc
+            if sidecar_receipt.receipt_hash != receipt.receipt_hash or sidecar_receipt != receipt:
+                raise EvaluatorError(f"evaluation receipt sidecar mismatch for {action_id}")
 
     def _evaluation_request(
         self,
@@ -1486,6 +1613,10 @@ class Engine:
             )
         except CampaignHalted:
             return self.store.campaign()
+        except BindingRuntimeMismatch as exc:
+            self.store.event("EVALUATOR_BINDING_MISMATCH", {"error": str(exc)[:500]})
+            self.store.conn.commit()
+            return self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
         except ProcessCancelled as exc:
             return self._stop(StopReason(exc.reason))
 
@@ -1512,10 +1643,23 @@ class Engine:
             return self._stop(StopReason(campaign["stop_reason"]))
         if resume and campaign["status"] in {CampaignStatus.PAUSED_INFRA.value, CampaignStatus.PAUSED_NEEDS_INPUT.value}:
             self.store.update_campaign(status=CampaignStatus.RUNNING.value, stop_reason=None)
-        probe = self.agent.probe()
-        if not probe.get("available"):
-            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
-            raise EngineError(f"agent unavailable: {probe}")
+        launch_roles = {}
+        for role in ("propose", "implement", "analyze"):
+            config = self.spec.agent.for_role(role)
+            probe = self._make_agent_adapter(config).probe()
+            if not probe.get("available"):
+                self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+                raise EngineError(f"agent unavailable for {role}: {probe}")
+            launch_roles[role] = {
+                "kind": config.kind,
+                "model": config.model or "external-cli-default",
+                "provider": config.provider,
+                "reasoning_effort": config.reasoning_effort,
+                "cli_version": probe.get("version", "unknown"),
+            }
+        self.store.event("AGENT_LAUNCH_PROFILE", {"roles": launch_roles})
+        self.store.conn.commit()
+        self._ensure_evaluator_binding(verify_runtime=False)
         self.workspace.ensure(self.spec.base_commit)
         self._baseline()
         if self._post_iteration_stop():

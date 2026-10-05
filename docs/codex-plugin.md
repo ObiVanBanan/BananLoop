@@ -21,11 +21,11 @@ is not an independent trust boundary. If the same Codex turn can inspect the
 grader, change the grader, choose the candidate and declare success, BananLoop
 loses its main advantage.
 
-Codex lifecycle hooks can continue a turn at Stop and can run commands, so a
-future hook-driven mode is technically possible. It is not the default MVP
-because direct editing in the user's checkout would weaken the current hidden
-evaluator workspace and replay model unless the hook delegates every verdict to
-the core anyway.
+Codex lifecycle hooks can continue a turn at Stop and can run commands. The
+plugin now bundles an optional thin continuation hook, but not a hook-driven
+optimization loop: direct editing in the user's checkout would weaken the
+current hidden evaluator workspace and replay model unless every verdict still
+belongs to the core.
 
 The current split is therefore:
 
@@ -64,6 +64,15 @@ bananloop doctor --json
 bananloop goal "Improve measured quality without regressions"
 ```
 
+Campaigns are indexed per repository. Repeating the same normalized goal
+selects its existing campaign; the same key resumes a paused campaign and
+returns a terminal result without rerunning it. Pass `--request-id ID` to make
+retry identity explicit or to create a new intentional run for the same goal.
+Use `bananloop campaigns list --repo .` to inspect IDs and the active campaign,
+then pass `--campaign-id ID` to run/resume/status/stop/report/export. Existing
+single-campaign state remains available as `legacy`; explicit `--state-dir`
+continues to select a standalone state directory.
+
 Preparation-only:
 
 ```bash
@@ -81,31 +90,45 @@ configuration. This keeps normal Codex profiles and user-level provider settings
 authoritative instead of creating a second configuration hierarchy in
 BananLoop.
 
-Pi and command adapters remain explicit advanced backends for now. Role-specific
-model routing is deliberately not part of this UX patch; adding it should be a
-core contract change with durable role configuration rather than hidden skill
-prompting.
+Pi and command adapters remain explicit advanced backends. For a campaign that
+needs repeatable role-specific settings, pass `--agent-profiles agents.toml` to
+`goal`, `start`, or expert `init`. The TOML has `[default]` plus optional
+`[roles.bootstrap]`, `[roles.propose]`, `[roles.implement]`, and `[roles.analyze]`
+tables. BananLoop freezes these settings in the campaign contract and records a
+non-secret launch receipt. Omit the file to preserve existing Codex CLI defaults.
+Credentials must remain in the provider's normal environment-based store.
 
-## Hook direction
+## Stop hook bridge
 
-A later experimental mode may use a trusted synchronous Codex Stop hook only as
-a continuation trigger:
+The plugin bundles a synchronous Stop hook as a small continuation bridge:
 
 ```text
 Codex wants to stop
       |
       v
-Stop hook -> BananLoop core evaluates candidate
+Stop hook -> read repo/session binding + durable campaign status
       |
-      +-- accepted/terminal -> allow stop
+      +-- terminal / paused / busy / unknown -> allow stop
       |
-      +-- rejected/continue -> core returns bounded continuation reason
+      +-- RUNNING with no supervisor lock -> request one bounded continuation
 ```
 
-That mode is acceptable only if the evaluator still lives outside the worker's
-editable/visible workspace, the hook cannot mutate the frozen contract, and all
-verdicts/budgets remain durable in BananLoop state. Until those invariants are
-implemented and dogfooded, the plugin is intentionally skill-only.
+The hook reads campaign SQLite state and writes only a hashed session-to-campaign
+binding in the registry. It never starts an agent, evaluator, or campaign and
+never decides candidate quality. It requires the skill's explicit
+`BananLoop campaign: <id>` marker before binding a Codex session to its first
+campaign. Session IDs are hashed in the project registry. Ambiguous or
+unavailable state fails open. A single `stop_hook_active` continuation gate,
+the RUNNING status, and a free campaign lock prevent repeated or concurrent
+resume prompts; the continuation message tells Codex to inspect durable receipts
+and not retry an ambiguous RUNNING action.
+
+Codex skips untrusted plugin hooks until the user reviews and trusts the current
+definition in `/hooks`. Hooks may also be disabled or unsupported in a given
+host/orchestration mode; the skill and direct `bananloop resume` command remain
+available. The manifest supplies a Windows `commandWindows` override, but local
+fixture tests do not substitute for a trust-approved desktop E2E run. See the
+[Codex hook contract](https://developers.openai.com/codex/hooks).
 
 ## Portable plugin layout
 

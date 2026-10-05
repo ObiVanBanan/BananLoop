@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .agents import AgentAdapter, AgentError, CodexAdapter, CommandAgentAdapter, PiAdapter
 from .contracts import (
@@ -18,7 +18,7 @@ from .contracts import (
     PairedComparison,
     RuntimePaths,
 )
-from .integrity import discover_evaluation_assets, sha256_file
+from .integrity import discover_evaluation_assets, sha256_evaluation_asset
 from .readiness import ReadinessError, run_bootstrap_readiness
 from .store import CampaignStore, StoreError
 from .wizard import discover_project
@@ -39,6 +39,47 @@ class BootstrapPairedPlan(BaseModel):
     direction: Literal["maximize", "minimize"] = "maximize"
     min_wins: int = Field(default=1, ge=1)
     worst_case_tolerance: float = Field(default=0.0, ge=0)
+
+
+class BootstrapSignalSanity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["configured", "unavailable"]
+    evidence_kind: Literal[
+        "known_examples", "controlled_degradation", "metamorphic", "invariants"
+    ] | None = None
+    metric: str | None = None
+    positive_case_ids: list[str] = Field(default_factory=list, max_length=100)
+    negative_case_ids: list[str] = Field(default_factory=list, max_length=100)
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_signal_evidence(self) -> "BootstrapSignalSanity":
+        if self.status == "configured":
+            if self.evidence_kind is None or not self.metric:
+                raise ValueError("configured signal_sanity requires evidence_kind and metric")
+            if not self.positive_case_ids or not self.negative_case_ids:
+                raise ValueError("configured signal_sanity requires positive and negative case IDs")
+            all_ids = [*self.positive_case_ids, *self.negative_case_ids]
+            if any(not case_id.strip() for case_id in all_ids):
+                raise ValueError("signal_sanity case IDs must be nonempty")
+            if (
+                len(self.positive_case_ids) != len(set(self.positive_case_ids))
+                or len(self.negative_case_ids) != len(set(self.negative_case_ids))
+            ):
+                raise ValueError("signal_sanity case IDs must be unique within each group")
+            if set(self.positive_case_ids) & set(self.negative_case_ids):
+                raise ValueError("signal_sanity positive and negative case IDs must be disjoint")
+            if self.reason:
+                raise ValueError("configured signal_sanity cannot include an unavailable reason")
+        else:
+            if not self.reason or not self.reason.strip():
+                raise ValueError("unavailable signal_sanity requires an explicit reason")
+            if self.evidence_kind is not None or self.metric is not None:
+                raise ValueError("unavailable signal_sanity cannot claim evidence or a metric")
+            if self.positive_case_ids or self.negative_case_ids:
+                raise ValueError("unavailable signal_sanity cannot claim labeled case IDs")
+        return self
 
 
 class BootstrapPlan(BaseModel):
@@ -63,6 +104,12 @@ class BootstrapPlan(BaseModel):
     agent_visible_metrics: list[str] = Field(default_factory=list)
     agent_visible_diagnostics: list[str] = Field(default_factory=list)
     paired_comparison: BootstrapPairedPlan = Field(default_factory=BootstrapPairedPlan)
+    signal_sanity: BootstrapSignalSanity = Field(
+        default_factory=lambda: BootstrapSignalSanity(
+            status="unavailable",
+            reason="Bootstrap supplied no repository-backed positive/negative examples.",
+        )
+    )
     evaluator_timeout_seconds: int = Field(default=900, ge=1)
 
     @model_validator(mode="after")
@@ -81,9 +128,9 @@ class BootstrapPlan(BaseModel):
 
 def _agent(config: AgentConfig) -> AgentAdapter:
     if config.kind == "codex":
-        return CodexAdapter(config.model, config.extra_args)
+        return CodexAdapter(config.model, config.extra_args, config.reasoning_effort)
     if config.kind == "pi":
-        return PiAdapter(config.model, config.extra_args)
+        return PiAdapter(config.model, config.extra_args, config.command, config.provider, config.reasoning_effort)
     return CommandAgentAdapter(config.command)
 
 
@@ -115,6 +162,14 @@ def _bootstrap_task(
             "source_checkout_must_remain_unchanged": True,
             "reuse_existing_evaluator_when_trustworthy": True,
             "generated_evaluator_location": ".bananloop_eval/",
+            "primary_metric_measures_goal_outcome": True,
+            "include_goal_specific_behavioral_probes": True,
+            "tests_are_secondary_regression_checks": True,
+            "candidate_evaluation_uses_candidate_snapshot": True,
+            "do_not_import_or_execute_host_checkout": True,
+            "test_temp_files_use_os_tempdir": True,
+            "do_not_redirect_test_temp_to_artifact_dir": True,
+            "keep_windows_temp_paths_short": True,
             "deterministic_or_paired_measurement": True,
             "freeze_inputs_and_randomness_when_possible": True,
             "no_per_evaluation_llm_planning": True,
@@ -123,6 +178,13 @@ def _bootstrap_task(
             "provide_cheap_smoke_command_when_possible": True,
             "same_inputs_required_across_smoke_repeats": True,
             "aa_noise_must_be_below_min_improvement": True,
+            "signal_sanity": {
+                "seek_explicit_repository_backed_positive_negative_case_ids": True,
+                "evidence_kinds": ["known_examples", "controlled_degradation", "metamorphic", "invariants"],
+                "never_invent_labels": True,
+                "mark_unavailable_with_reason_when_no_defensible_evidence": True,
+                "configured_metric_must_be_primary_metric": True,
+            },
             "emit_bananloop_evaluation_contract": True,
             "do_not_invent_missing_reference_data": True,
             "do_not_modify_production_code_during_bootstrap": True,
@@ -190,7 +252,7 @@ def _freeze_assets(workspace: Path, commands: list[list[str]]) -> list:
                 continue
             relative = path.relative_to(workspace).as_posix()
             from .contracts import EvaluationAsset
-            assets[relative] = EvaluationAsset(path=relative, sha256=sha256_file(path))
+            assets[relative] = EvaluationAsset(path=relative, sha256=sha256_evaluation_asset(path))
     return [assets[key] for key in sorted(assets)]
 
 
@@ -221,12 +283,13 @@ def bootstrap_campaign(
     workspace.ensure(source_base)
     workspace.checkout(source_base)
 
-    adapter = _agent(agent_config)
+    bootstrap_agent_config = agent_config.for_role("bootstrap")
+    adapter = _agent(bootstrap_agent_config)
     probe = adapter.probe()
     if not probe.get("available"):
         raise BootstrapError(f"bootstrap agent unavailable: {probe}")
 
-    task = _bootstrap_task(repo, goal, source_base, agent_config)
+    task = _bootstrap_task(repo, goal, source_base, bootstrap_agent_config)
     bootstrap_attempts: list[dict[str, Any]] = []
     plan: BootstrapPlan | None = None
     bootstrap_snapshot = source_base
@@ -239,6 +302,14 @@ def bootstrap_campaign(
             "changed_paths": changed,
             "bootstrap_request": bootstrap_attempts[0]["request"] if bootstrap_attempts else task,
             "bootstrap_attempts": bootstrap_attempts,
+            "agent_launch_profile": {
+                "role": "bootstrap",
+                "kind": bootstrap_agent_config.kind,
+                "model": bootstrap_agent_config.model or "external-cli-default",
+                "provider": bootstrap_agent_config.provider,
+                "reasoning_effort": bootstrap_agent_config.reasoning_effort,
+                "cli_version": probe.get("version", "unknown"),
+            },
             "plan": plan.model_dump(mode="json") if plan is not None else None,
         }
         (paths.root / "bootstrap-plan.json").write_text(
@@ -256,8 +327,52 @@ def bootstrap_campaign(
             raw = adapter.normalize_result(task, raw)
             plan = BootstrapPlan.model_validate(raw)
         except (AgentError, ValueError) as exc:
+            failure = {
+                "category": "agent_call_failed" if isinstance(exc, AgentError) else "invalid_response",
+                "error_type": type(exc).__name__,
+            }
+            validation_errors: list[dict[str, str]] = []
+            if isinstance(exc, ValidationError):
+                known_fields = set(BootstrapPlan.model_fields)
+                for issue in exc.errors(include_input=False, include_context=False)[:20]:
+                    location = issue.get("loc", ())
+                    field = location[0] if location and isinstance(location[0], str) else "response"
+                    validation_errors.append({
+                        "field": field if field in known_fields else "response",
+                        "type": str(issue.get("type", "invalid"))[:80],
+                    })
+                validation_errors = list(
+                    {(item["field"], item["type"]): item for item in validation_errors}.values()
+                )
+                failure["validation_errors"] = validation_errors
+            bootstrap_attempts.append({
+                "attempt": attempt_index + 1,
+                "request": task,
+                "snapshot": bootstrap_snapshot,
+                "changed_paths": [],
+                "failure": failure,
+            })
+            persist_record()
             workspace.checkout(source_base)
-            raise BootstrapError(f"campaign bootstrap failed: {exc}") from exc
+            if isinstance(exc, ValidationError) and attempt_index < 2:
+                task = {
+                    **task,
+                    "repair": {
+                        "reason": "The prior structured bootstrap plan failed schema validation.",
+                        "validation_errors": validation_errors,
+                        "instruction": (
+                            "Return a complete plan conforming to the requested schema; "
+                            "do not ask the operator to repeat supplied information."
+                        ),
+                    },
+                }
+                continue
+            public_reason = (
+                "agent call failed"
+                if isinstance(exc, AgentError)
+                else "invalid structured response"
+            )
+            raise BootstrapError(f"campaign bootstrap failed: {public_reason}") from exc
 
         contract_error = _bootstrap_contract_error(plan, task)
         bootstrap_snapshot = workspace.snapshot(
@@ -354,6 +469,7 @@ def bootstrap_campaign(
         raise BootstrapError("bootstrap exhausted bounded preparation attempts")
 
     assert plan is not None
+    signal_receipt = readiness.get("signal_sanity", {})
 
     commands = [
         plan.smoke_command,
@@ -400,6 +516,8 @@ def bootstrap_campaign(
         ),
         agent_visible_diagnostics=plan.agent_visible_diagnostics,
         paired_comparison=paired,
+        signal_sanity_status=signal_receipt.get("status"),
+        signal_sanity_receipt_sha256=signal_receipt.get("receipt_sha256"),
         primary_metric=plan.primary_metric,
         guardrails=plan.guardrails,
         non_regression=plan.non_regression,

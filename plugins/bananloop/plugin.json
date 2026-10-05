@@ -5,6 +5,7 @@
   "description": "Turn a repository and a human goal into an independently evaluated improvement campaign.",
   "extensions": {
     "com.openai": {
+      "hooks": "./hooks/hooks.json",
       "interface": {
         "displayName": "BananLoop",
         "shortDescription": "Turn a repo and goal into an independently evaluated improvement loop.",

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from typing import Any
 
 from .contracts import CampaignSpec, EvaluationResult
+from .evaluator_binding import EvaluationReceipt, validate_receipt_linkage
 from .policy import metric_value, target_met
 from .research import attempt_bucket
 from .store import CampaignStore
@@ -106,9 +108,70 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             )
     else:
         final_assessment = "DEV_ONLY"
+    # An unavailable signal check is an explicit lack of scorer-validity
+    # evidence. It keeps even a target-reaching holdout at DEV_ONLY. None is
+    # reserved for historical campaigns and retains their original semantics.
+    if spec.signal_sanity_status == "UNAVAILABLE":
+        final_assessment = "DEV_ONLY"
 
     resource_summary = store.resource_summary()
     research_state = store.research_state()
+    binding_row = store.evaluator_binding()
+    receipt_by_action = {}
+    for item in store.evaluation_receipts():
+        receipt_by_action[item["action_id"]] = (item, item["receipt"])
+    receipts = []
+    for action in store.actions():
+        if action["kind"] not in {"evaluator", "final_evaluator"}:
+            continue
+        row = receipt_by_action.get(action["id"])
+        if row:
+            item, receipt = row
+            status = "ORPHANED"
+            binding_id = receipt.get("binding_id")
+            binding_hash = receipt.get("binding_hash")
+            if action["status"] == "COMPLETED":
+                try:
+                    if binding_row is None:
+                        raise ValueError("missing evaluator binding")
+                    validated = validate_receipt_linkage(
+                        receipt,
+                        stored_receipt_hash=item["receipt_hash"],
+                        action=action,
+                        binding_data=json.loads(binding_row["binding_json"]),
+                        stored_binding_hash=binding_row["binding_hash"],
+                    )
+                    sidecar = (
+                        store.path.parent / "artifacts"
+                        / hashlib.sha256(action["id"].encode()).hexdigest()[:24]
+                        / "evaluation-receipt.json"
+                    )
+                    if sidecar.exists():
+                        if EvaluationReceipt.model_validate_json(sidecar.read_text(encoding="utf-8")) != validated:
+                            raise ValueError("receipt sidecar differs from SQLite")
+                    status = "RECORDED"
+                except Exception:
+                    status = "INVALID"
+            receipts.append({
+                "action_id": action["id"],
+                "status": status,
+                "receipt_hash": item["receipt_hash"],
+                "tier": receipt.get("tier"),
+                "candidate_snapshot": receipt.get("candidate_snapshot"),
+                "binding_id": binding_id,
+                "binding_hash": binding_hash,
+            })
+        elif action["status"] == "COMPLETED":
+            request = json.loads(action["request_json"] or "{}")
+            receipts.append({
+                "action_id": action["id"],
+                "status": "LEGACY_UNRECEIPTED",
+                "receipt_hash": None,
+                "tier": request.get("tier", "dev"),
+                "candidate_snapshot": request.get("snapshot"),
+                "binding_id": None,
+                "binding_hash": None,
+            })
     return {
         "campaign_outcome": campaign["status"],
         "stop_reason": campaign["stop_reason"],
@@ -147,6 +210,15 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             },
         },
         "paired_comparison": spec.paired_comparison.model_dump(mode="json") if spec.paired_comparison else None,
+        "signal_sanity": {
+            "status": spec.signal_sanity_status,
+            "receipt_sha256": spec.signal_sanity_receipt_sha256,
+            "evidence_level": (
+                "diagnostic_only_unverified_labels" if spec.signal_sanity_status == "DIAGNOSTIC_ONLY"
+                else "unavailable" if spec.signal_sanity_status == "UNAVAILABLE"
+                else None
+            ),
+        },
         "measurements": [
             {"experiment_id": row["experiment_id"], "candidate_snapshot": row["candidate_snapshot"],
              "tier": row["tier"], "result": json.loads(row["result_json"])}
@@ -154,6 +226,11 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
         ],
         "experiments": experiments,
         "attempt_accounting": attempt_accounting,
+        "evaluator_binding": (
+            {"binding_id": binding_row["binding_id"], "binding_hash": binding_row["binding_hash"]}
+            if binding_row else None
+        ),
+        "evaluation_receipts": receipts,
         "research_state": research_state,
         "resources": {
             "agent_calls": campaign["agent_calls"],
@@ -206,6 +283,14 @@ def render_markdown(report: dict[str, Any]) -> str:
         "## Experiments",
         "",
     ]
+    signal = report.get("signal_sanity", {})
+    lines += [
+        "",
+        "## Evaluator signal sanity",
+        "",
+        f"- Status: `{signal.get('status') or 'legacy/unspecified'}`; evidence level: `{signal.get('evidence_level') or 'legacy/unspecified'}`",
+        f"- Readiness receipt SHA-256: `{signal.get('receipt_sha256') or '-'}`",
+    ]
     if not report["experiments"]:
         lines.append("No experiments recorded.")
     for exp in report["experiments"]:
@@ -218,6 +303,17 @@ def render_markdown(report: dict[str, Any]) -> str:
                 f"  - Candidate proof: tree=`{proof['tree']}`; diff=`{proof['diff_sha256']}`; "
                 f"paths=`{json.dumps(proof['changed_paths'])}`"
             )
+    binding = report.get("evaluator_binding")
+    lines += ["", "## Evaluator provenance", ""]
+    if binding:
+        lines.append(f"- Binding: `{binding['binding_id']}`; hash=`{binding['binding_hash']}`")
+    else:
+        lines.append("- Binding: not recorded")
+    for receipt in report.get("evaluation_receipts", []):
+        lines.append(
+            f"- {receipt['action_id']} ({receipt['tier']}): {receipt['status']}; "
+            f"receipt=`{receipt['receipt_hash'] or '-'}`; binding=`{receipt['binding_id'] or '-'}`"
+        )
     accounting = report.get("attempt_accounting")
     if accounting:
         lines += [

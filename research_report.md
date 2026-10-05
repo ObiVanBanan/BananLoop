@@ -95,6 +95,21 @@ tests/test_bootstrap.py:113–158 использует command fixture, не ж�
 - Автономная подготовка корректного evaluator для произвольного нового repo не подтверждена текущими fixture tests. В этом исследовании не запускались платные модели, GPU, внешние сервисы или длительная кампания.
 - Публикация плагина и интеграция с OpenSpec не исследовались как отдельные продукты; OpenSpec в запросе рассматривается как аналог привычного UX.
 
+## Обновление AS IS: execution profiles (2026-10-05)
+
+- До M5 `AgentConfig` содержал один kind/command/model/extra_args; `Engine` передавал один adapter в propose, implement и analyze. Отдельного reviewer call site нет. Bootstrap создаёт adapter отдельно из того же config. Источники: `contracts.py::AgentConfig`, `engine.py::Engine.__init__/_invoke_agent/run`, `bootstrap.py::_agent/bootstrap_campaign`.
+- `CodexAdapter` добавляет `-m` только при явной модели; Pi передаёт `--model`, provider и thinking; отсутствующий model оставляет выбор внешней CLI. Probe проверяет executable/version и не подтверждает entitlement выбранной модели. Источники: `agents/codex.py::probe/execute`, `agents/pi.py::probe/_argv`, `engine.py::run`.
+- CampaignSpec canonical hash включает agent config. Добавление полей требует исключить пустые значения из хеша для исторической совместимости. Agent calls не имеют общего launch receipt; SQLite events позволяют сохранить новый non-secret receipt без схемной миграции.
+- Официальный Codex Config contract описывает named profiles и overrides для model/reasoning: [Config basics](https://learn.chatgpt.com/docs/config-file/config-basic). Локально Codex CLI 0.158.0 и `codex exec --help` подтвердили `--profile`, `-m`, `-c`; model calls не выполнялись.
+
+## Обновление AS IS: Codex lifecycle bridge (2026-10-05)
+
+- Plugin root manifest и compatibility manifest содержали skill metadata, но не hook registration/files. Hook workflow отсутствовал; SKILL называл его будущим и запрещал переносить verdict из core. Источники: `plugins/bananloop/plugin.json`, `.codex-plugin/plugin.json`, `skills/bananloop-goal/SKILL.md`, `docs/codex-plugin.md`.
+- Codex hook command получает JSON `stdin` с `session_id`, `cwd`, `hook_event_name`; Stop добавляет `stop_hook_active` и `last_assistant_message`. Stop ожидает JSON на stdout, `decision=block` просит Codex продолжить, а `stop_hook_active` доступен для остановки повторов. Официальный источник: [Hooks](https://developers.openai.com/codex/hooks).
+- Plugin hooks загружаются из root manifest или default `hooks/hooks.json`; `commandWindows` — поддерживаемый Windows override. Non-managed plugin hook требует отдельного trust review и пропускается до подтверждения. Официальные источники: [Hooks](https://developers.openai.com/codex/hooks), [Plugin packaging](https://developers.openai.com/plugins/build/plugins). Это контракт документации, не trust-approved E2E на текущем Desktop.
+- Registry привязывает repo к одному active campaign и содержит campaign paths/goal hash; таблицы session/thread binding нет. Campaign DB хранит status/stop_requested/stage/actions; durable RUNNING action нельзя повторить безопасно без explicit retry policy. `cmd_stop` при свободном lock вызывает Engine для reconciliation, поэтому lifecycle dispatcher не должен переиспользовать `cmd_stop` или Engine. Источники: `registry.py::SCHEMA/resolve`, `store.py::campaign`, `engine.py::_run`, `cli.py::cmd_stop`.
+- Safe hook path: read-only SQLite state + nonblocking campaign lock check; no evaluator/model/agent launch; request at most one continuation for a session explicitly bound by a response marker. Fail open on absent/untrusted hook, timeout, invalid event, ambiguous/missing registry, lock contention, PAUSED/terminal status. Concurrent unbound sessions require explicit campaign ID marker. Research only; no desktop trust action or campaign execution occurred.
+
 ## Заключение
 
 В текущем BananLoop есть простой CLI entrypoint и независимое исполняемое ядро оценки/состояния. Подготовка измерителя содержит LLM-driven шаги, часть требований к которым пока контролируется инструкцией, а не отдельным readiness gate. Codex-интеграция отсутствует. Эти факты являются входом для предлагаемого [архитектурного решения](design/adr.md).
@@ -111,3 +126,27 @@ tests/test_bootstrap.py:113–158 использует command fixture, не ж�
 - `research.py:build_research_state` считает DEV streak для завершённых строк с evaluation_json. `report.py:build_report` показывает общие resources counters, но отдельного attempt_accounting нет.
 - Existing tests проверяют no-op/blocker на стадии EXECUTE, phantom transfer/snapshot и readiness. Полная проверка итогового статуса no-op, plateau после смешанных попыток и отчётных bucket counts требует отдельного покрытия.
 - Локальная незакоммиченная правка `agents/codex.py` состоит из трёх комментариев к stdin transport. Внешние кампании, runtime probes к платным моделям и GPU не запускались в этом обновлении.
+
+## Обновление AS IS: адресация нескольких кампаний (2026-10-05)
+
+### Архитектура и поток команд
+
+- `RuntimePaths.for_repo()` в `src/bananloop/contracts.py` разрешает абсолютный путь репозитория, вычисляет SHA-256 и берёт первые 16 hex-символов для `~/.bananloop/projects/<digest>`. Один фиксированный root содержит `campaign.sqlite3`, `workspace`, `artifacts` и `reports`; optional `--state-dir` полностью заменяет root.
+- `CampaignStore.initialize()` в `src/bananloop/store.py` и схема `campaigns` ограничивают БД строкой `id=1`; остальные campaign rows/actions/evaluations лежат в этой же БД без отдельного campaign key.
+- `cmd_goal`/`cmd_start` в `src/bananloop/cli.py` вызывают `bootstrap_campaign()`; bootstrap отказывает при существующем `campaign.sqlite3`. Идентичная или новая цель автоматически не ищется в state.
+- `cmd_run()` блокирует `paths.root/campaign.lock`, затем `_open()` загружает один CampaignSpec и запускает Engine. `resume` передаёт флаги явного повторения orphaned RUNNING/FAILED actions. Переключения по campaign ID нет.
+- `cmd_status()`/`cmd_report()` читают ту же единственную DB без campaign lock. `cmd_export()` держит lock. `cmd_stop()` сначала записывает stop request и затем пытается взять lock, передавая остановку живому supervisor, если lock занят.
+- `CampaignLock` в `src/bananloop/lock.py` использует nonblocking OS file locks (`msvcrt`/`fcntl`); область lock — один state directory. `cmd_doctor()` сообщает вычисленный один путь и флаг `campaign_exists`.
+
+### Хранение и проверенные шаблоны
+
+- SQLite схема и additive migrations находятся в `CampaignStore.__init__()`/`_migrate_schema()`. Multi-row mutations используют `with self.conn:`; отдельный regression test сохраняет старые evaluator rows при tier migration.
+- `CampaignSpec.approved_hash()` в `src/bananloop/contracts.py` хеширует canonical compact JSON; `source_repo`, `goal` и большинство campaign settings входят в identity. Для обратной совместимости часть необязательных значений пропускается.
+- Idempotency/replay реализованы на action ID и request hash внутри одной кампании. Соответствующие проверки находятся в `tests/test_engine.py` и `tests/test_completion.py`; они не покрывают выбор между разными целями.
+- Внешний индекс кампаний, goal fingerprint lookup и active-campaign binding в текущем коде не найдены. Несколько кампаний возможны только вручную через разные `--state-dir`.
+
+### Неизвестности
+
+- В тестах не найден контракт для переименования или переноса state directories.
+- Не найдено поведение для точного повторного goal после завершённой кампании или для двух одновременных start на одну цель.
+- Исследование было read-only; live campaign и полный тестовый suite в рамках этого M4 AS IS прохода не запускались.

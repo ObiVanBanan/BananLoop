@@ -71,6 +71,19 @@ CREATE TABLE IF NOT EXISTS actions (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS evaluator_bindings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  binding_id TEXT NOT NULL UNIQUE,
+  binding_hash TEXT NOT NULL,
+  binding_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS evaluation_receipts (
+  action_id TEXT PRIMARY KEY,
+  receipt_hash TEXT NOT NULL,
+  receipt_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS reservations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   action_id TEXT NOT NULL,
@@ -382,13 +395,63 @@ class CampaignStore:
 
     def finish_action(self, action_id: str, response: dict[str, Any]) -> None:
         now = utc_now()
-        self.conn.execute(
-            "UPDATE actions SET status='COMPLETED',response_json=?,updated_at=? WHERE id=?",
-            (json.dumps(response, sort_keys=True), now, action_id),
-        )
-        self._settle_reservation(action_id, "CONSUMED", now)
-        self.event("ACTION_COMPLETED", {"action_id": action_id})
-        self.conn.commit()
+        receipt = response.pop("_evaluation_receipt", None)
+        with self.conn:
+            self.conn.execute(
+                "UPDATE actions SET status='COMPLETED',response_json=?,updated_at=? WHERE id=?",
+                (json.dumps(response, sort_keys=True), now, action_id),
+            )
+            if receipt is not None:
+                prior = self.conn.execute(
+                    "SELECT receipt_hash,receipt_json FROM evaluation_receipts WHERE action_id=?",
+                    (action_id,),
+                ).fetchone()
+                encoded_receipt = json.dumps(receipt, sort_keys=True)
+                if prior and (prior["receipt_hash"] != receipt["receipt_hash"] or prior["receipt_json"] != encoded_receipt):
+                    raise StoreError(f"conflicting evaluation receipt for action {action_id}")
+                if not prior:
+                    self.conn.execute(
+                        "INSERT INTO evaluation_receipts(action_id,receipt_hash,receipt_json,created_at) VALUES(?,?,?,?)",
+                        (action_id, receipt["receipt_hash"], encoded_receipt, now),
+                    )
+            self._settle_reservation(action_id, "CONSUMED", now)
+            self.event("ACTION_COMPLETED", {"action_id": action_id})
+
+    def evaluator_binding(self) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM evaluator_bindings WHERE id=1").fetchone()
+        return dict(row) if row else None
+
+    def actions(self) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.conn.execute("SELECT * FROM actions ORDER BY created_at,id")]
+
+    def save_evaluator_binding(self, binding_id: str, binding_hash: str, binding_json: str) -> None:
+        existing = self.evaluator_binding()
+        if existing:
+            if existing["binding_id"] != binding_id or existing["binding_hash"] != binding_hash:
+                raise StoreError("immutable evaluator binding mismatch")
+            return
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO evaluator_bindings(id,binding_id,binding_hash,binding_json,created_at) VALUES(1,?,?,?,?)",
+                (binding_id, binding_hash, binding_json, utc_now()),
+            )
+
+    def evaluation_receipt(self, action_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM evaluation_receipts WHERE action_id=?", (action_id,)).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["receipt"] = json.loads(result.pop("receipt_json"))
+        return result
+
+    def evaluation_receipts(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT * FROM evaluation_receipts ORDER BY action_id")
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["receipt"] = json.loads(item.pop("receipt_json"))
+            result.append(item)
+        return result
 
     def fail_action(self, action_id: str, error: str) -> None:
         now = utc_now()

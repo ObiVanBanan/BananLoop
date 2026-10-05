@@ -121,7 +121,7 @@ Codex требует trust review точного определения non-mana
 
 Сейчас есть один AgentConfig на кампанию. В первом MVP допускается сохранить его, добавив понятный профиль; расширение ролей может быть простым отображением, без отдельного routing engine.
 
-CLI worker не наследует автоматически модель открытого чата: текущий адаптер запускает отдельный codex exec. Разрешённую effective configuration нужно явно определить и сохранить в launch receipt. Native subagent execution, если будет добавлен позже, может использовать Codex custom agent TOML с model/model_reasoning_effort. Текущий CLI 0.158.0 использует отдельные name.config.toml для --profile; старый пример [profiles.name] не применять.
+CLI worker не наследует автоматически модель открытого чата: текущий адаптер запускает отдельный codex exec. Точный model ID и reasoning задаются BananLoop role profiles и фиксируются в launch receipt; когда они не заданы, выбор остаётся внешней конфигурации Codex и отмечается как unresolved. Mutable named Codex profiles исключены из frozen campaign contract. Native subagent execution, если будет добавлен позже, может использовать Codex custom agent TOML с model/model_reasoning_effort.
 
 Profile не меняет утверждённую model/rubric evaluator посреди кампании. Недоступная модель возвращает понятный capability error; silent fallback не допускается. Не обещать hard dollar cap для opaque CLI; поддерживаемые calls/time/work budgets сохраняются.
 
@@ -206,3 +206,120 @@ MVP boundary: один skill, локальный bridge, усиленная ав
 2. Выбор первых реальных repo+goal acceptance cases и доступных references: необходим для подтверждения автономного setup и качества.
 3. Для native execution: доступный session/subagent API, сохранение контекста и sandbox boundaries. Это blocker только для последующего native режима.
 4. Дистрибуция runtime и локального MCP: выбрать способ установки после проверки target-host возможностей. Не обещать, что web-install автоматически доставит локальные скрипты.
+
+## M4 Addendum: registry нескольких кампаний на repository
+
+### Status
+
+**Accepted for implementation**, 2026-10-05. Этот addendum уточняет campaign-registry boundary; исходные plugin/core decisions выше остаются без изменений.
+
+### Context
+
+`RuntimePaths.for_repo()` сейчас отображает один canonical repository path в один state root. В этом root находится одна `campaign.sqlite3`, чья schema ограничивает `campaigns.id` значением 1. `goal/start` отказывают при повторном использовании root, а остальные CLI-команды выбирают кампанию через `--state-dir`. Engine уже имеет campaign-local file lock и durable action/request replay.
+
+### Decision
+
+Ввести маленький repo-level SQLite registry в `~/.bananloop/projects/<repo-hash>/campaign-registry.sqlite3`. Каждая новая кампания получает deterministic, path-safe `campaign_id` и отдельный state directory `campaigns/<campaign_id>`; существующая кампания БД и workspace не перемещаются.
+
+Идентичность повторного start задаётся `request_key`: если пользователь передал `--request-id`, ключ выводится из него; иначе — из нормализованного goal текста. Тот же ключ возвращает существующий campaign и делает его active. Другой goal или request ID создаёт отдельный state directory. Повтор start на терминальной кампании возвращает её сохранённый terminal result; он не сбрасывает историю и не создаёт повторный эксперимент. Для намеренного повторного эксперимента пользователь задаёт новый request ID.
+
+Registry хранит только индекс и active binding. Campaign DB остаётся источником истины для CampaignSpec, статуса, receipts, бюджета и восстановления. Registry lock сериализует lookup/insert/active update; campaign lock остаётся single-writer guard для bootstrap/run/resume/export. Unique `request_key` запрещает две записи на одинаковый запрос.
+
+Старый `campaign.sqlite3` в project root регистрируется lazy как специальная `legacy` запись, без копирования или изменения. `campaign list` показывает legacy и новые campaigns. При отсутствии `--campaign-id` чтение/операции выбирают active campaign; если registry ещё не содержит записей, старые команды сохраняют прежний default legacy path. `--state-dir` продолжает означать прямую single-campaign адресацию и не участвует в repo registry. `--campaign-id` однозначно выбирает managed или legacy entry.
+
+`goal/start` для managed repo выбирают/резервируют запись до bootstrap. Резервированная запись без `campaign.sqlite3` остаётся recoverable: повторный вызов с тем же request key продолжает bootstrap из того же state directory. Конкурирующий владелец обнаруживается через campaign lock; второй процесс не запускает второй bootstrap/engine.
+
+### Alternatives
+
+#### Один отдельный `--state-dir` на каждую цель
+
+- Pros: уже поддерживается; нет новой схемы или миграции.
+- Cons: пользователь сам именует и находит кампании; нет idempotency по goal и active binding.
+- Decision: сохранить для expert/custom mode, но не считать обычным `goal` UX.
+
+#### Переносить старый state в первый campaign subdirectory
+
+- Pros: единая новая layout.
+- Cons: меняет путь существующей SQLite DB/workspace и усложняет crash-safe migration.
+- Decision: отклонено; legacy root остаётся на месте и получает lazy registry entry.
+
+#### Registry хранит campaign outcome как authoritative
+
+- Pros: быстрый list без открытия campaign DB.
+- Cons: дублирует durable engine state и создаёт рассинхронизацию при crash.
+- Decision: registry хранит только lookup/active metadata; статус выводится из campaign DB.
+
+### Contracts
+
+#### API / CLI
+
+- `goal/start`: optional `--request-id`; по умолчанию адресуют goal fingerprint, повторяют existing campaign и делают её active.
+- `campaigns list --repo <path>`: возвращает campaign_id, goal summary/fingerprint, managed/legacy origin, status и active marker.
+- `run/resume/status/stop/report/export`: optional `--campaign-id`; без него используют active registry binding, сохраняя legacy default при пустом registry. Custom `--state-dir` остаётся явным одиночным override.
+- `doctor --json`: сообщает registry path, active campaign id и число доступных campaigns, не считывая evaluator payloads.
+
+#### Data
+
+- Registry SQLite tables: campaign index keyed by `campaign_id`, unique `request_key`, goal fingerprint, relative state path, creation/update metadata; singleton project metadata stores active campaign ID.
+- IDs и relative path segments генерируются только из SHA-256 hex; пользовательский `request_id` никогда не включается в filesystem path.
+- Legacy entry resolves to the existing project root. No campaign data migration or CampaignSpec schema migration is needed.
+- Registry mutations use SQLite transactions and a project registry lock. Campaign state uses existing CampaignStore and campaign lock.
+
+#### Errors
+
+- Повторный `request_id` с другим goal завершается явной ошибкой, не меняя существующую запись.
+- Повреждённый registry не пересоздаётся поверх файла автоматически; CLI сообщает путь и предлагает сохранить backup.
+- Невалидный/неизвестный campaign ID, path outside managed project root, занятый campaign lock и explicit `--state-dir` + `--campaign-id` возвращают понятную ошибку.
+- Start/resolve crash после registry insert оставляет резервированную запись для retry, а не потерянный каталог или новую campaign ID.
+
+### Security
+
+Request ID — непрозрачный пользовательский ключ, валидируется и хешируется до хранения/использования; его значение не вставляется в путь или shell args. Registry relative paths проверяются на безопасный managed child и не следуют по symlink/reparse boundary вне project root. SQLite/lock locations принадлежат текущему пользователю так же, как существующий local state. Legacy path распознаётся только по точному default root. External/hostile local users остаются за пределами локальной модели доверия.
+
+### Testing Strategy
+
+- Unit tests: canonical repo identity, goal fingerprint normalization, request-ID conflict, path-safe IDs, active selection/list order.
+- Migration: старый default `campaign.sqlite3` доступен через `legacy` и все старые DB rows/receipts сохраняются байт-в-байт.
+- Integration: одинаковый goal идемпотентно возвращает один campaign ID; разные goals получают разные state dirs; terminal retry не запускает engine; `--campaign-id` выбирает неактивную запись; `--state-dir` сохраняет прежнее поведение.
+- Crash/replay: остановка после registry insert, во время bootstrap и после campaign DB creation возобновляется по тому же request key без дубля.
+- Concurrency: два start одного key создают один registry row и один owner; два разных goal создают разные записи; один campaign не имеет двух writers; active-binding update атомарен.
+- CLI contract: campaigns list, doctor, status/resume/report/export для managed и legacy campaigns; неизвестные ID, конфликт ID/request, corrupt registry, lock contention и mixed selector errors.
+
+### Consequences
+
+Новый `goal` UX больше не требует от пользователя именовать state directories, но добавляет отдельные SQLite registry/lock files и явный campaign selector для нескольких результатов. Изменение полностью additive относительно старых state roots и экспертного `--state-dir`. Registry содержит индекс, а не вторую копию campaign state. Existing campaign-local lock/recovery semantics остаются неизменными.
+
+### Open Questions
+
+None blocking for M4. Пользователь задаёт новый `--request-id`, чтобы намеренно начать повтор той же текстовой цели.
+## M5 Addendum: frozen execution profiles by active role
+
+### Decision
+
+Support an optional user-authored TOML file selected by `--agent-profiles`. It contains a `[default]` table and optional `[roles.bootstrap]`, `[roles.propose]`, `[roles.implement]`, `[roles.analyze]` tables. Role settings overlay defaults; explicit CLI flags overlay file defaults, and a role-specific setting is most specific. Profiles are parsed once into `CampaignSpec`, so resume uses the approved frozen configuration and does not reread a changed profile file. With no file, current CLI inheritance remains unchanged.
+
+Only settings with explicit typed meaning are accepted: backend kind, exact model ID, provider, and reasoning effort. Arbitrary argv/commands and Codex named profiles are excluded from the TOML contract: a named Codex profile is mutable user configuration and cannot be frozen by CampaignSpec. Unknown keys/roles fail before bootstrap. No reviewer role is exposed until the engine has a reviewer action. No silent model fallback is allowed: an explicit model remains in every invocation. Provider credentials must continue to come from the existing runtime environment; TOML rejects arbitrary keys such as `api_key`.
+
+Codex roles use its `-m` and `-c model_reasoning_effort=...` switches. Pi roles use its model/provider/thinking switches. Profile preflight proves executable/version availability only; it cannot prove model entitlement without a paid model call. The durable `AGENT_LAUNCH_PROFILE` event records configured role/model/provider/reasoning and CLI version, but never raw argv or secrets. `external-cli-default` denotes an intentionally unresolved external default.
+
+### Compatibility and security
+
+New optional profile fields are omitted from `CampaignSpec.approved_hash()` when unset, retaining historical hashes. Existing campaign specs remain valid. TOML is a user-controlled typed configuration file; it cannot select arbitrary commands or carry argv secrets. Existing `--agent-cmd`/extra args retain their prior trust boundary. Credentials remain in environment-based provider stores.
+
+### Consequences
+
+`bananloop start --agent-profiles agents.toml --repo . --goal ...` replaces repeated per-run model flags while preserving one measurable campaign configuration. Effective role configuration is auditable and repeatable. Runtime availability of a named model remains determined by the external CLI at invocation time and produces its native error; BananLoop does not claim to validate account access in advance.
+
+## M6 Addendum: Codex Stop lifecycle bridge
+
+### Decision
+
+Bundle one stable plugin Stop hook that calls the installed `bananloop codex-hook` dispatcher on Windows and other supported hosts. The dispatcher consumes Codex's JSON event, identifies the repository from `cwd`, and resolves a campaign using a hashed Codex `session_id` binding. A first binding is established only from an exact `BananLoop campaign: <id>` marker in the last assistant message and only after the campaign is known, durably `RUNNING`, and not stop-requested. A bound session cannot be retargeted by a conflicting marker. `legacy` is the only accepted legacy identifier; managed IDs are constrained to the registry format.
+
+The hook reads campaign state without opening the engine, probing agents, evaluating, or starting/resuming a campaign. It requests at most one bounded continuation when the campaign is still RUNNING and its campaign lock is free. It tells Codex to inspect durable status/receipts and avoid retrying an ambiguous RUNNING action. `stop_hook_active`, unknown/unbound sessions, terminal/paused/stopped campaigns, lock contention, malformed input, timeout, missing state, and hook errors fail open. Session identifiers are SHA-256 hashed in the registry. The hook never changes the active campaign pointer.
+
+The plugin needs explicit hook trust review in Codex before this behavior is active. If hooks are disabled, untrusted, unavailable, or unsupported, the skill uses the ordinary CLI flow (`bananloop resume`); the Python engine remains authoritative. The contract is validated locally on Windows CLI and by dispatcher/wiring tests, while desktop trust approval is a user-controlled activation boundary and is not claimed as an automated E2E result.
+
+### Consequences
+
+The session binding table is additive to the existing repo registry and contains only a hashed session identifier, campaign ID, and timestamp. The dispatcher has a short SQLite timeout and quiet fail-open behavior. A missing hook can reduce continuation convenience but cannot invalidate or auto-retry campaign work. No Codex model selection is delegated to the hook; model settings remain frozen in the campaign execution profile.

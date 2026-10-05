@@ -61,11 +61,25 @@ def process_group_options() -> dict[str, Any]:
 def terminate_process_tree(proc: subprocess.Popen) -> None:
     """Terminate only the process group created for this invocation."""
     if os.name == "nt":
-        if proc.poll() is None:
+        # Windows sandbox/job boundaries can deny taskkill even for a child we
+        # started. CTRL_BREAK reaches the CREATE_NEW_PROCESS_GROUP members first
+        # and lets wrappers such as cmd.exe and their descendants exit together.
+        try:
+            os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
+        except (OSError, ValueError):
+            pass
+        try:
+            proc.communicate(timeout=2)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        try:
             subprocess.run(
                 ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                 capture_output=True, timeout=5, check=False,
             )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     else:
         # The leader may have exited while a child still holds an output pipe.
         try:
@@ -74,7 +88,12 @@ def terminate_process_tree(proc: subprocess.Popen) -> None:
             pass
     if proc.poll() is None:
         proc.kill()
-    proc.wait(timeout=5)
+    try:
+        proc.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=5)
 
 
 def run_process(

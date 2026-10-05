@@ -11,6 +11,7 @@ from bananloop.integrity import (
     EvaluationIntegrityError,
     discover_evaluation_assets,
     evaluation_fingerprint,
+    sha256_evaluation_asset,
     verify_evaluation_assets,
 )
 
@@ -29,7 +30,7 @@ def test_discover_evaluation_assets_hashes_command_files_and_explicit_assets(tmp
     )
 
     assert [asset.path for asset in assets] == ["evaluator.py", "scorer.json"]
-    assert assets[0].sha256 == hashlib.sha256(evaluator.read_bytes()).hexdigest()
+    assert assets[0].sha256 == sha256_evaluation_asset(evaluator)
     assert evaluation_fingerprint(assets)
 
 
@@ -38,13 +39,23 @@ def test_verify_evaluation_assets_detects_drift(tmp_path: Path):
     path.write_text("one\n", encoding="utf-8")
     asset = EvaluationAsset(
         path="evaluator.py",
-        sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        sha256=sha256_evaluation_asset(path),
     )
 
     assert verify_evaluation_assets(tmp_path, [asset]) == []
 
     path.write_text("two\n", encoding="utf-8")
     assert verify_evaluation_assets(tmp_path, [asset]) == ["hash_mismatch:evaluator.py"]
+
+
+def test_evaluation_asset_hash_is_stable_across_crlf_checkout(tmp_path: Path):
+    path = tmp_path / "evaluator.py"
+    path.write_bytes(b"print('one')\r\nprint('two')\r\n")
+    asset = EvaluationAsset(path="evaluator.py", sha256=sha256_evaluation_asset(path))
+
+    path.write_bytes(b"print('one')\nprint('two')\n")
+
+    assert verify_evaluation_assets(tmp_path, [asset]) == []
 
 
 def test_empty_evaluation_assets_preserve_legacy_spec_hash():
@@ -68,7 +79,8 @@ def test_empty_evaluation_assets_preserve_legacy_spec_hash():
         "editable_scope": ["**"],
         "protected_paths": [],
         "budget": BudgetSpec().model_dump(mode="json", exclude={"max_evaluation_units", "evaluation_units_per_call"}),
-        "agent": AgentConfig().model_dump(mode="json"),
+        # Historical campaign specs predate the optional profile fields.
+        "agent": {"kind": "codex", "command": [], "model": None, "extra_args": []},
     }
     expected = hashlib.sha256(
         json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()
