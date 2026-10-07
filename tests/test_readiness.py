@@ -655,3 +655,30 @@ def test_readiness_normalizes_leading_environment_assignment(tmp_path: Path):
 
     assert receipt["status"] == "PASSED"
     assert receipt["runs"][0]["metrics"]["quality"]["value"] == 1.0
+
+
+def test_readiness_caps_smoke_timeout_without_changing_full_timeout(tmp_path: Path):
+    script = tmp_path / "eval.py"
+    protocol_hash = hashlib.sha256(b"timeout-cap").hexdigest()
+    script.write_text(
+        "import json\n"
+        f"print(json.dumps({{'status':'ok','metrics':{{'quality':0.5}},"
+        f"'checks':{{}},'protocol_sha256':'{protocol_hash}'}}))\n",
+        encoding="utf-8",
+    )
+    init_repo(tmp_path)
+    slow_plan = plan([sys.executable, str(script)]).model_copy(
+        update={"evaluator_timeout_seconds": 900}
+    )
+
+    receipt = run_bootstrap_readiness(
+        plan=slow_plan,
+        workspace=tmp_path,
+        snapshot=snapshot(tmp_path),
+        state_root=tmp_path / "state",
+        attempt=1,
+    )
+
+    assert receipt["timeout_seconds"] == 90
+    assert receipt["smoke_timeout_cap_seconds"] == 90
+    assert receipt["full_evaluator_timeout_seconds"] == 900
