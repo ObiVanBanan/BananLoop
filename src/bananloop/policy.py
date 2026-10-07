@@ -3,7 +3,14 @@ from __future__ import annotations
 import math
 import statistics
 
-from .contracts import CampaignSpec, Decision, Direction, EvaluationResult, GuardrailSpec
+from .contracts import (
+    CampaignSpec,
+    Decision,
+    Direction,
+    EvaluationProtocol,
+    EvaluationResult,
+    GuardrailSpec,
+)
 
 
 class InvalidEvaluation(ValueError):
@@ -19,6 +26,30 @@ def metric_value(result: EvaluationResult, name: str) -> float:
     if not math.isfinite(value):
         raise InvalidEvaluation(f"metric {name} is not finite")
     return value
+
+
+def validate_evaluation_protocol(
+    protocol: EvaluationProtocol | None,
+    result: EvaluationResult,
+) -> None:
+    if protocol is None:
+        return
+    expected = {
+        (item.case_id, item.repetition, item.input_sha256)
+        for item in protocol.inputs
+    }
+    observed = {
+        (item.case_id, item.repetition, item.input_sha256)
+        for item in result.cases
+    }
+    if expected != observed:
+        missing = len(expected - observed)
+        unexpected = len(observed - expected)
+        raise InvalidEvaluation(
+            "evaluation protocol manifest mismatch: "
+            f"expected={len(expected)}, observed={len(observed)}, "
+            f"missing={missing}, unexpected={unexpected}"
+        )
 
 
 def validate_evaluation(spec: CampaignSpec, result: EvaluationResult) -> None:
