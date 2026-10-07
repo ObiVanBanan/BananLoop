@@ -5,6 +5,8 @@
 BananLoop uses a hybrid integration:
 
 - Codex plugin/skill owns the chat-facing entry point.
+- The skill scouts the repository and narrates observable campaign events in the
+  current Codex chat.
 - BananLoop core owns the scientific loop and durable state.
 - The bootstrap agent may construct a project-specific evaluator adapter.
 - The core smoke-checks, freezes and hashes that evaluator before optimization.
@@ -30,10 +32,12 @@ belongs to the core.
 The current split is therefore:
 
 ```text
-user goal
+  user goal
    |
    v
-Codex skill ----------------------------- UX only
+Codex skill ----------------------------- scout + chat UX
+   |                                         |
+   |                              doctor inventory + live CLI trace
    |
    v
 bananloop goal
@@ -63,6 +67,18 @@ From a target repository:
 bananloop doctor --json
 bananloop goal "Improve measured quality without regressions"
 ```
+
+The `bananloop-goal` skill first summarizes repository resources found by
+`doctor` (benchmark/evaluator files, CSVs, Compose/config files, and environment
+file/variable names only), then runs `goal` in the foreground so `[BananLoop]`
+progress is visible in the chat. Resource discovery never prints `.env` values.
+Generated bootstrap/evaluator code never receives `.env` values; a required
+credential must already be available through the process environment or the
+campaign pauses for that genuinely missing access.
+The skill explains experiment hypotheses, implementation summaries, aggregate
+metric changes, and core decisions from observable output; it does not infer a
+verdict from worker claims. A genuine missing credential, asset, external
+service, or semantic choice can still pause for user input.
 
 Campaigns are indexed per repository. Repeating the same normalized goal
 selects its existing campaign; the same key resumes a paused campaign and

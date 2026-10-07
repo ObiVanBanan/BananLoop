@@ -219,6 +219,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         "detected_agents": discovery["agents"],
         "detected_test_commands": discovery["test_commands"],
         "detected_python_runtimes": discovery["python_runtimes"],
+        "detected_resources": discovery["resources"],
     }
     if registry is not None:
         entries = registry.list()
@@ -270,6 +271,25 @@ def cmd_campaigns_list(args: argparse.Namespace) -> int:
 
 def cmd_start(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
+    discovery = discover_project(repo)
+    print("[BananLoop] Inspecting repository", flush=True)
+    resource_labels = {
+        "readme_files": "README files",
+        "benchmark_files": "benchmarks/evaluators",
+        "csv_files": "CSV data",
+        "compose_files": "Compose files",
+        "config_files": "config files",
+        "env_files": "environment files (values hidden)",
+        "env_keys": "environment variable names (values hidden)",
+    }
+    for key, label in resource_labels.items():
+        paths = discovery["resources"][key]
+        if paths:
+            shown = ", ".join(paths[:8])
+            suffix = f" (+{len(paths) - 8} more)" if len(paths) > 8 else ""
+            print(f"[BananLoop] Found {label}: {shown}{suffix}", flush=True)
+    if not any(discovery["resources"].values()):
+        print("[BananLoop] No benchmark/data/config resources discovered by filename", flush=True)
     if not args.allow_dirty:
         assert_clean_source(repo)
     if args.state_dir:

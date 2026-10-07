@@ -621,6 +621,11 @@ class Engine:
     def _baseline(self) -> None:
         campaign = self.store.campaign()
         if campaign["baseline_json"]:
+            baseline = EvaluationResult.model_validate_json(campaign["baseline_json"])
+            primary = baseline.metrics[self.spec.primary_metric.name].value
+            self._progress(
+                f"baseline {self.spec.primary_metric.name}: {primary:.6g} (reused)"
+            )
             return
         self.store.update_campaign(status=CampaignStatus.RUNNING.value, stage="BASELINE")
         self.workspace.ensure(self.spec.base_commit)
@@ -711,6 +716,15 @@ class Engine:
         )
         self.store.event("BASELINE_RECORDED", {"snapshot": snapshot})
         self.store.conn.commit()
+        primary = result.metrics[self.spec.primary_metric.name].value
+        self._progress(f"baseline {self.spec.primary_metric.name}: {primary:.6g}")
+        visible_metrics = [
+            f"{name}={value.value:.6g}"
+            for name, value in result.metrics.items()
+            if name != self.spec.primary_metric.name
+        ]
+        if visible_metrics:
+            self._progress("baseline metrics: " + ", ".join(visible_metrics[:8]))
         self._refresh_research_state()
         self._checkpoint("BASELINE")
 
@@ -920,6 +934,12 @@ class Engine:
             failure_category=None,
             lesson=None,
         )
+        self._progress(
+            f"experiment {self.store.experiment(experiment_id)['ordinal']} hypothesis: "
+            f"{hypothesis.hypothesis}"
+        )
+        if hypothesis.files_or_area:
+            self._progress("target area: " + ", ".join(hypothesis.files_or_area[:8]))
         self.store.set_stage(attempt_id, "EXECUTE")
         self._checkpoint("EXECUTE")
 
@@ -1014,6 +1034,18 @@ class Engine:
                 failure_category=None,
                 lesson=None,
             )
+            self._progress(
+                f"implementation: {implementation.summary}; changed "
+                f"{len(observed_changes)} file(s): " + ", ".join(observed_changes[:8])
+            )
+            if implementation.verification_notes:
+                test_counts = re.findall(
+                    r"\b\d+\s+(?:passed|failed|skipped|errors?)\b",
+                    implementation.verification_notes,
+                    flags=re.IGNORECASE,
+                )
+                if test_counts:
+                    self._progress("worker-reported checks: " + ", ".join(test_counts[:6]))
         except (AgentError, ValidationError, UnknownActionOutcome, WorkspaceError) as exc:
             self.store.update_experiment(experiment_id, failure_category="AGENT_PROTOCOL_ERROR", lesson=str(exc)[:1000])
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
@@ -1336,6 +1368,23 @@ class Engine:
             exp["candidate_snapshot"],
             decision.model_dump(mode="json"),
         )
+        verdict = "ACCEPT" if decision.accepted else "REJECT"
+        self._progress(
+            f"{self.spec.primary_metric.name}: {decision.champion_value:.6g} "
+            f"-> {decision.primary_value:.6g} "
+            f"({decision.delta:+.6g}); {verdict}"
+        )
+        if decision.reasons:
+            self._progress("decision reasons: " + ", ".join(decision.reasons[:8]))
+        changed_metrics = []
+        for name, value in candidate.metrics.items():
+            previous = champion.metrics.get(name)
+            if previous is not None:
+                changed_metrics.append(
+                    f"{name} {previous.value:.6g} -> {value.value:.6g}"
+                )
+        if changed_metrics:
+            self._progress("metrics: " + "; ".join(changed_metrics[:8]))
         if candidate.failure_signals:
             # Failure analysis is DEV-only and optional. Never consume validation
             # or holdout evidence for adaptive research memory.
@@ -1548,6 +1597,7 @@ class Engine:
         if exp["decision_json"]:
             accepted = bool(json.loads(exp["decision_json"]).get("accepted"))
         status = "ACCEPTED" if accepted else "REJECTED"
+        self._progress(f"experiment {self.store.experiment(experiment_id)['ordinal']} result: {status}")
         bucket = attempt_bucket({**exp, "status": status, "failure_category": None if accepted else exp["failure_category"]})
         scientific = bucket == "scientific_trials"
         if not accepted:

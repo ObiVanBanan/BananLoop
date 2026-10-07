@@ -9,6 +9,8 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Any, Callable
 
+from .envfiles import env_keys_from_repo
+
 
 def _python_version(executable: str) -> str | None:
     try:
@@ -127,10 +129,58 @@ def discover_project(repo: Path) -> dict[str, Any]:
         commands.append("tox")
 
     agents = [name for name in ("codex", "pi") if shutil.which(name)]
+    ignored_dirs = {
+        ".git", ".hg", ".svn", ".venv", "venv", "node_modules", "vendor",
+        "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tmp",
+        "build", "dist", "target",
+    }
+    resources: dict[str, list[str]] = {
+        "env_files": [],
+        "csv_files": [],
+        "compose_files": [],
+        "env_keys": [],
+        "benchmark_files": [],
+        "config_files": [],
+        "readme_files": [],
+    }
+    try:
+        for current, dirs, files in os.walk(repo, followlinks=False):
+            current_path = Path(current)
+            depth = len(current_path.relative_to(repo).parts)
+            dirs[:] = sorted(
+                name for name in dirs
+                if name not in ignored_dirs and not name.startswith(".bananloop")
+            ) if depth < 4 else []
+            for filename in files:
+                path = current_path / filename
+                relative = path.relative_to(repo).as_posix()
+                lower = filename.lower()
+                if lower == ".env" or lower.startswith(".env."):
+                    category = "env_files"
+                elif lower.endswith(".csv"):
+                    category = "csv_files"
+                elif lower in {"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"}:
+                    category = "compose_files"
+                elif "readme" in lower and path.suffix.lower() in {".md", ".rst", ".txt"}:
+                    category = "readme_files"
+                elif any(token in lower for token in ("benchmark", "bench", "evaluator", "eval_", "score")):
+                    category = "benchmark_files"
+                elif path.suffix.lower() in {".yaml", ".yml", ".toml", ".ini"} or "config" in lower:
+                    category = "config_files"
+                else:
+                    continue
+                resources[category].append(relative)
+    except OSError:
+        # Discovery is advisory. An unreadable subtree must not prevent a campaign.
+        pass
+    resources["env_keys"] = env_keys_from_repo(repo)
+    for paths in resources.values():
+        paths.sort()
     return {
         "test_commands": list(dict.fromkeys(commands)),
         "agents": agents,
         "python_runtimes": discover_python_runtimes(repo),
+        "resources": resources,
     }
 
 

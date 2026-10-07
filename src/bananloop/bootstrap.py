@@ -150,10 +150,16 @@ def _bootstrap_task(
             "base_commit": base_commit,
             "detected_test_commands": discovery["test_commands"],
             "detected_python_runtimes": discovery["python_runtimes"],
+            "detected_resources": discovery["resources"],
         },
         "agent": agent_config.model_dump(mode="json"),
         "requirements": {
             "operator_input": "repo + human goal only unless essential assets/credentials are truly absent",
+            "reuse_discovered_project_resources": True,
+            "never_request_a_path_already_present_in_detected_resources": True,
+            "do_not_open_secret_env_files_or_echo_secret_values": True,
+            "use_detected_environment_variable_names_without_requesting_secret_values": True,
+            "report_resource_paths_and_availability_before_requesting_missing_inputs": True,
             "goal_is_authoritative": True,
             "do_not_request_goal_file_when_goal_is_present": True,
             "resolve_conflicting_evaluators_by_goal_semantics": True,
@@ -215,11 +221,33 @@ def _bootstrap_contract_error(
         r"пакет|зависим|модул|библиотек|верси)",
         re.IGNORECASE,
     )
+    secret_prerequisite = re.compile(
+        r"(credential|api.?key|token|secret|password|passwd|ключ|токен|секрет|парол)",
+        re.IGNORECASE,
+    )
     if any(prerequisite.search(item) for item in plan.needs_input):
         return None
     supplied_goal = bool(str(task.get("goal") or "").strip())
-    runtimes = task.get("repository", {}).get("detected_python_runtimes", [])
-    for item in [*plan.needs_input, plan.summary or ""]:
+    repository = task.get("repository", {})
+    runtimes = repository.get("detected_python_runtimes", [])
+    resources = repository.get("detected_resources", {})
+    for item in plan.needs_input:
+        if secret_prerequisite.search(item):
+            continue
+        resource_claims = (
+            ("csv_files", r"\b(csv|catalog|catalogue|dataset|data file|каталог|датасет|таблиц)\b"),
+            ("env_files", r"(\.env\b|env file|environment file|файл окружения|файл \.env)"),
+            ("benchmark_files", r"\b(benchmark|evaluator|evaluation command|бенчмарк|оценщик)\b"),
+            ("compose_files", r"\b(qdrant|docker compose|compose file|service config|конфиг сервиса)\b"),
+            ("config_files", r"\b(config|configuration|конфигурац)\b"),
+        )
+        for resource_kind, pattern in resource_claims:
+            if resources.get(resource_kind) and re.search(pattern, item, re.IGNORECASE):
+                return (
+                    f"bootstrap requested {resource_kind} input even though project "
+                    "discovery found candidate resources; inspect them and only ask "
+                    "for input if they are demonstrably inapplicable or unusable"
+                )
         if prerequisite.search(item):
             continue
         if supplied_goal and goal_need.search(item) and request_words.search(item):
@@ -229,6 +257,13 @@ def _bootstrap_contract_error(
             )
         if runtimes and re.search(r"python|интерпретатор", item, re.IGNORECASE) and request_words.search(item):
             return "bootstrap requested a Python interpreter/path despite detected working runtimes; try the supplied runtimes first"
+    if supplied_goal and goal_need.search(plan.summary or "") and request_words.search(plan.summary or ""):
+        return (
+            "bootstrap requested goal/intent input even though the top-level "
+            "goal is already present and authoritative"
+        )
+    if runtimes and re.search(r"python|интерпретатор", plan.summary or "", re.IGNORECASE) and request_words.search(plan.summary or ""):
+        return "bootstrap requested a Python interpreter/path despite detected working runtimes; try the supplied runtimes first"
     return None
 
 
@@ -407,8 +442,9 @@ def bootstrap_campaign(
                         "reason": contract_error,
                         "instruction": (
                             "Correct the plan using information already present in "
-                            "the request. Do not ask the operator to repeat supplied "
-                            "goal/runtime/context."
+                            "the request or detected repository resources. Inspect "
+                            "already discovered files before requesting their paths. "
+                            "Do not ask the operator to repeat supplied goal/runtime/context."
                         ),
                         "previous_plan": plan.model_dump(mode="json"),
                     },

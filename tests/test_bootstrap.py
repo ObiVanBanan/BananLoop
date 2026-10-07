@@ -255,6 +255,10 @@ def test_bootstrap_task_makes_cli_goal_authoritative(tmp_path: Path):
     assert task["requirements"]["do_not_request_goal_file_when_goal_is_present"] is True
     assert task["requirements"]["resolve_conflicting_evaluators_by_goal_semantics"] is True
     assert task["requirements"]["use_detected_runtimes_before_requesting_python_environment"] is True
+    assert task["requirements"]["reuse_discovered_project_resources"] is True
+    assert task["requirements"]["never_request_a_path_already_present_in_detected_resources"] is True
+    assert task["requirements"]["do_not_open_secret_env_files_or_echo_secret_values"] is True
+    assert task["requirements"]["use_detected_environment_variable_names_without_requesting_secret_values"] is True
     assert task["requirements"]["primary_metric_measures_goal_outcome"] is True
     assert task["requirements"]["include_goal_specific_behavioral_probes"] is True
     assert task["requirements"]["tests_are_secondary_regression_checks"] is True
@@ -380,6 +384,48 @@ def test_bootstrap_contract_rejects_request_to_repeat_supplied_goal(tmp_path: Pa
 
     assert error is not None
     assert "goal" in error
+
+
+@pytest.mark.parametrize(
+    "filename,message_text,resource_kind",
+    [
+        ("catalog.csv", "Provide the path to the CSV catalog.", "csv_files"),
+        (".env", "Provide the path to the .env file.", "env_files"),
+    ],
+)
+def test_bootstrap_contract_repairs_request_for_discovered_resource(
+    tmp_path: Path, filename: str, message_text: str, resource_kind: str,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / filename).write_text("", encoding="utf-8")
+    task = _bootstrap_task(repo, "Improve quality", "deadbeef", AgentConfig(kind="codex"))
+    plan = BootstrapPlan.model_validate(
+        _bootstrap_payload(status="needs_input", needs_input=[message_text], summary=message_text)
+    )
+
+    error = _bootstrap_contract_error(plan, task)
+
+    assert error is not None
+    assert resource_kind in error
+
+
+def test_bootstrap_contract_still_requests_missing_secret_even_when_env_file_exists(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".env").write_text("", encoding="utf-8")
+    (repo / "benchmark.py").write_text("", encoding="utf-8")
+    (repo / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    task = _bootstrap_task(repo, "Improve quality", "deadbeef", AgentConfig(kind="codex"))
+    plan = BootstrapPlan.model_validate(
+        _bootstrap_payload(
+            status="needs_input",
+            needs_input=["Provide the missing Qdrant API key."],
+            summary="The benchmark is ready, but a credential is absent.",
+        )
+    )
+
+    assert _bootstrap_contract_error(plan, task) is None
 
 
 @pytest.mark.parametrize(
