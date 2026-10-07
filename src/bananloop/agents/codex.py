@@ -20,6 +20,7 @@ BOOTSTRAP_SCHEMA = {
         "needs_input": {"type": "array", "items": {"type": "string"}},
         "evaluation_command": {"type": "array", "items": {"type": "string"}},
         "smoke_command": {"type": "array", "items": {"type": "string"}},
+        "protocol_manifest_command": {"type": "array", "items": {"type": "string"}},
         "validation_command": {"type": "array", "items": {"type": "string"}},
         "holdout_command": {"type": "array", "items": {"type": "string"}},
         "primary_metric": {
@@ -95,7 +96,8 @@ BOOTSTRAP_SCHEMA = {
     },
     "required": [
         "status", "summary", "project_context", "needs_input",
-        "evaluation_command", "smoke_command", "validation_command", "holdout_command",
+        "evaluation_command", "smoke_command", "protocol_manifest_command",
+        "validation_command", "holdout_command",
         "primary_metric", "guardrails", "non_regression", "mandatory_checks",
         "editable_scope", "protected_paths", "agent_visible_metrics",
         "agent_visible_diagnostics", "paired_comparison", "signal_sanity", "evaluator_timeout_seconds"
@@ -276,7 +278,14 @@ class CodexAdapter(AgentAdapter):
                 "protocol_sha256 when cases are emitted, and optional cases; metrics may be numbers or {value: number}. "
                 "Never encode shell environment assignments as the executable name; BananLoop can normalize leading "
                 "NAME=value argv tokens, but prefer a plain executable argv and read runtime values from the process environment. "
-                "Use stable case IDs/input fingerprints, and avoid per-evaluation "
+                "For any fixed or deterministically enumerable benchmark, also return "
+                "protocol_manifest_command. That command must cheaply emit only "
+                "{schema_version:1, inputs:[{case_id,repetition,input_sha256}, ...]} "
+                "for the complete DEV schedule without running retrieval, generation, "
+                "model inference, or scoring. When BANANLOOP_PROTOCOL_MANIFEST is set "
+                "during a full DEV evaluation, treat that core-owned file as the "
+                "authoritative schedule and evaluate exactly those identities; never "
+                "silently drop cases. Use stable case IDs/input fingerprints, and avoid per-evaluation "
                 "LLM planning or other avoidable nondeterminism. For stochastic generation, freeze cases and seeds and "
                 "use paired case-level measurements. Do not invent missing reference data or credentials: when an "
                 "essential input is absent, return status=needs_input with a short exact list of what the operator must "
