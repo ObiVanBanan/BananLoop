@@ -120,6 +120,9 @@ class PiAdapter(AgentAdapter):
                 "claiming that Python or a required package environment is missing. You may create or modify files only under "
                 ".bananloop_eval/. Never modify production code, tests, reference assets, or user configuration. "
                 "Prefer an existing trustworthy evaluator; otherwise create a thin evaluator adapter. Freeze cases "
+                "and expose a cheap protocol_manifest_command whenever DEV inputs are fixed or deterministically enumerable. "
+                "The manifest command must emit only schema_version and the complete case_id/repetition/input_sha256 list "
+                "without scoring. Full DEV evaluation must honor BANANLOOP_PROTOCOL_MANIFEST as the authoritative schedule. "
                 "and randomness where possible, avoid per-evaluation LLM planning, and use paired case-level "
                 "measurements for stochastic outputs. The core runs three A/A smoke measurements on one snapshot, "
                 "requires stable case/input and protocol identity, and compares empirical noise with min_improvement; "
@@ -245,6 +248,7 @@ class PiAdapter(AgentAdapter):
                 '{"status":"ready","summary":"...","project_context":"...","needs_input":[],'
                 '"evaluation_command":["python",".bananloop_eval/evaluator.py"],'
                 '"smoke_command":["python",".bananloop_eval/evaluator.py","--smoke"],'
+                '"protocol_manifest_command":[],'
                 '"validation_command":[],"holdout_command":[],'
                 '"primary_metric":{"name":"quality","direction":"maximize","target":1.0,"min_improvement":0.01},'
                 '"guardrails":[],"non_regression":[],"mandatory_checks":[],"editable_scope":["**"],'
