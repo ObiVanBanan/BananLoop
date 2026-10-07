@@ -17,7 +17,7 @@ from .integrity import EvaluationIntegrityError, discover_evaluation_assets, eva
 from .lock import CampaignLock, CampaignLockError
 from .report import build_report, render_markdown
 from .registry import CampaignRegistry, RegistryError, assert_safe_campaign_db
-from .store import CampaignStore, StoreError
+from .store import CampaignStore, StoreError, campaign_db_initialized
 from .wizard import confirm_spec, discover_project, needs_interactive_init, run_init_wizard
 from .workspace import WorkspaceError, WorkspaceManager, assert_clean_source, current_commit
 
@@ -59,7 +59,9 @@ def _selected_paths(args: argparse.Namespace, *, create: bool = True) -> Runtime
         raise RegistryError("--state-dir and --campaign-id cannot be used together")
     if state_dir:
         return _paths(repo, state_dir) if create else RuntimePaths.for_repo(repo, Path(state_dir))
-    state_root, _ = CampaignRegistry(repo).resolve(campaign_id)
+    state_root, resolved_campaign_id = CampaignRegistry(repo).resolve(campaign_id)
+    if resolved_campaign_id is not None and campaign_id is None:
+        args.campaign_id = resolved_campaign_id
     paths = RuntimePaths.for_repo(repo, state_root)
     if create:
         paths.ensure()
@@ -222,11 +224,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         registry = CampaignRegistry(repo)
         state_root, active_campaign_id = registry.resolve()
         paths = RuntimePaths.for_repo(repo, state_root)
+    initialized = campaign_db_initialized(paths.db)
     payload = {
         "repo": str(repo),
         "base_commit": current_commit(repo) if (repo / ".git").exists() else None,
         "state": str(paths.root),
-        "campaign_exists": paths.db.exists(),
+        "campaign_exists": initialized,
+        "campaign_reserved": bool(active_campaign_id) and not initialized,
         "detected_agents": discovery["agents"],
         "detected_test_commands": discovery["test_commands"],
         "detected_python_runtimes": discovery["python_runtimes"],
@@ -236,6 +240,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         entries = registry.list()
         payload["campaign_registry"] = str(registry.path)
         payload["active_campaign_id"] = active_campaign_id
+        payload["active_campaign_status"] = (
+            "INITIALIZED" if initialized else ("RESERVED" if active_campaign_id else None)
+        )
         payload["campaign_count"] = len(entries)
     if args.json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
@@ -257,7 +264,7 @@ def cmd_campaigns_list(args: argparse.Namespace) -> int:
         state = registry._validate_state_path(entry.state_path, entry.origin)
         status = "RESERVED"
         db = state / "campaign.sqlite3"
-        if db.exists():
+        if campaign_db_initialized(db):
             store = CampaignStore(db)
             try:
                 status = store.campaign()["status"]
@@ -305,7 +312,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         assert_clean_source(repo)
     if args.state_dir:
         paths = _paths(repo, args.state_dir)
-        if paths.db.exists():
+        if campaign_db_initialized(paths.db):
             raise StoreError(
                 "campaign state already exists; use run/resume or choose a fresh --state-dir"
             )
@@ -317,7 +324,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         args.campaign_id = entry.campaign_id
 
     reused_campaign = False
-    if paths.db.exists():
+    if campaign_db_initialized(paths.db):
         reused_campaign = True
         store = CampaignStore(paths.db)
         try:
@@ -332,7 +339,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     else:
         try:
             with CampaignLock(paths.root / "campaign.lock"):
-                if paths.db.exists():
+                if campaign_db_initialized(paths.db):
                     reused_campaign = True
                     store = CampaignStore(paths.db)
                     try:
@@ -396,7 +403,11 @@ def cmd_start(args: argparse.Namespace) -> int:
 
 def _open(args: argparse.Namespace) -> tuple[RuntimePaths, CampaignStore, Engine]:
     repo = Path(args.repo).resolve()
-    paths = _selected_paths(args)
+    paths = _selected_paths(args, create=False)
+    if not campaign_db_initialized(paths.db):
+        raise StoreError(
+            "campaign is reserved but bootstrap is incomplete; rerun the same bananloop goal"
+        )
     store = CampaignStore(paths.db)
     spec = store.spec()
     workspace = WorkspaceManager(Path(spec.source_repo), paths.workspace)
@@ -446,11 +457,28 @@ def cmd_run(args: argparse.Namespace, resume: bool = False) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
-    paths = _selected_paths(args)
+    paths = _selected_paths(args, create=False)
+    if not campaign_db_initialized(paths.db):
+        payload = {
+            "status": "RESERVED",
+            "stage": "BOOTSTRAP",
+            "campaign_id": _display_campaign_id(args, paths),
+            "state": str(paths.root),
+            "initialized": False,
+            "hint": "rerun the same bananloop goal to continue bootstrap",
+        }
+        print(
+            json.dumps(payload, indent=2)
+            if args.json
+            else "\n".join(f"{k}: {v}" for k, v in payload.items())
+        )
+        return 0
     store = CampaignStore(paths.db)
     try:
         c = store.campaign()
         data = {k: c[k] for k in ("status", "stop_reason", "stage", "baseline_snapshot", "champion_snapshot", "experiment_count", "attempt_count", "agent_calls", "evaluator_calls", "non_improve_streak", "created_at", "updated_at")}
+        data["campaign_id"] = _display_campaign_id(args, paths)
+        data["initialized"] = True
         data["resources"] = store.resource_summary()
         data["evaluations"] = build_report(store)["measurements"]
         research = store.research_state()
