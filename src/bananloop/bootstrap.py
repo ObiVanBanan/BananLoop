@@ -152,6 +152,7 @@ def _bootstrap_task(
             "base_commit": base_commit,
             "detected_test_commands": discovery["test_commands"],
             "detected_python_runtimes": discovery["python_runtimes"],
+            "preferred_python_runtime": discovery.get("preferred_python_runtime"),
             "detected_resources": discovery["resources"],
         },
         "agent": agent_config.model_dump(mode="json"),
@@ -166,6 +167,14 @@ def _bootstrap_task(
             "do_not_request_goal_file_when_goal_is_present": True,
             "resolve_conflicting_evaluators_by_goal_semantics": True,
             "use_detected_runtimes_before_requesting_python_environment": True,
+            "prefer_project_local_python_runtime": True,
+            "core_injects_dotenv_into_evaluator_process_only": True,
+            "do_not_require_credentials_to_be_exported_in_bootstrap_agent_process": True,
+            "agent_sandbox_network_probe_is_advisory": True,
+            "core_readiness_is_authoritative_for_local_service_access": True,
+            "reconstruct_same_frozen_benchmark_from_repo_history_and_evaluator_cli": True,
+            "deterministic_sample_seed_is_valid_frozen_identity_when_repo_documents_it": True,
+            "verify_only_is_not_quality_measurement": True,
             "allowed_bootstrap_writes": [".bananloop_eval/**"],
             "source_checkout_must_remain_unchanged": True,
             "reuse_existing_evaluator_when_trustworthy": True,
@@ -200,6 +209,42 @@ def _bootstrap_task(
     }
 
 
+def _preferred_project_python(task: dict[str, Any]) -> str | None:
+    runtime = task.get("repository", {}).get("preferred_python_runtime")
+    if not isinstance(runtime, dict) or runtime.get("source") != "project":
+        return None
+    executable = runtime.get("executable")
+    return executable if isinstance(executable, str) and executable else None
+
+
+def _bind_python_command(command: list[str], executable: str | None) -> list[str]:
+    if not executable or not command:
+        return list(command)
+    bound = list(command)
+    index = 1 if bound and bound[0] == "env" else 0
+    assignment = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+    while index < len(bound) and assignment.match(bound[index]):
+        index += 1
+    if index >= len(bound):
+        return bound
+    name = Path(bound[index]).name.casefold()
+    if re.fullmatch(r"python(?:3(?:\.\d+)?)?(?:\.exe)?", name):
+        bound[index] = executable
+    return bound
+
+
+def _bind_plan_runtime(plan: BootstrapPlan, task: dict[str, Any]) -> BootstrapPlan:
+    executable = _preferred_project_python(task)
+    if not executable or plan.status != "ready":
+        return plan
+    return plan.model_copy(update={
+        "evaluation_command": _bind_python_command(plan.evaluation_command, executable),
+        "smoke_command": _bind_python_command(plan.smoke_command, executable),
+        "validation_command": _bind_python_command(plan.validation_command, executable),
+        "holdout_command": _bind_python_command(plan.holdout_command, executable),
+    })
+
+
 def _bootstrap_contract_error(
     plan: BootstrapPlan,
     task: dict[str, Any],
@@ -214,33 +259,64 @@ def _bootstrap_contract_error(
         r"(provide|clarify|missing|need|required|not present|not available|not supplied|not found|unavailable|укаж|предостав|уточн|отсутств|не найден|нуж|требу|не задан|не передан)",
         re.IGNORECASE,
     )
-    # A working interpreter does not establish package, credential, dataset or
-    # version readiness. Preserve genuine external prerequisites, even when a
-    # request also mentions the goal or Python.
     prerequisite = re.compile(
         r"(credential|api.?key|token|secret|reference|dataset|package|dependenc|module|library|"
         r"version|python\s*[<>=!~\d]|доступ|ключ|токен|секрет|референс|эталон|датасет|"
         r"пакет|зависим|модул|библиотек|верси)",
         re.IGNORECASE,
     )
+    package_prerequisite = re.compile(
+        r"(package|dependenc|module|library|пакет|зависим|модул|библиотек)",
+        re.IGNORECASE,
+    )
     secret_prerequisite = re.compile(
         r"(credential|api.?key|token|secret|password|passwd|ключ|токен|секрет|парол)",
         re.IGNORECASE,
     )
-    if any(prerequisite.search(item) for item in plan.needs_input):
-        return None
     supplied_goal = bool(str(task.get("goal") or "").strip())
     repository = task.get("repository", {})
     runtimes = repository.get("detected_python_runtimes", [])
+    preferred_project_python = _preferred_project_python(task)
     resources = repository.get("detected_resources", {})
+    env_keys = [str(key) for key in resources.get("env_keys", [])]
+    env_keys_upper = {key.upper() for key in env_keys}
+
+    def secret_is_already_bound(message: str) -> bool:
+        upper = message.upper()
+        if any(key in upper for key in env_keys_upper):
+            return True
+        provider_keys = {
+            "OPENAI": "OPENAI_API_KEY",
+            "DEEPSEEK": "DEEPSEEK_API_KEY",
+            "QDRANT": "QDRANT_API_KEY",
+        }
+        return any(
+            provider in upper and key in env_keys_upper
+            for provider, key in provider_keys.items()
+        )
+
     for item in plan.needs_input:
         if secret_prerequisite.search(item):
+            if secret_is_already_bound(item):
+                return (
+                    "bootstrap requested a credential already declared in the discovered "
+                    ".env environment; BananLoop core injects dotenv values only into the "
+                    "trusted evaluator process, so do not require the bootstrap agent process "
+                    "to export or inspect that secret"
+                )
             continue
+        if preferred_project_python and package_prerequisite.search(item):
+            return (
+                "bootstrap requested package/dependency installation even though a project-local "
+                f"Python runtime is available at {preferred_project_python}; probe that interpreter "
+                "directly before concluding the dependency is missing"
+            )
         resource_claims = (
             ("csv_files", r"\b(csv|catalog|catalogue|dataset|data file|каталог|датасет|таблиц)\b"),
             ("env_files", r"(\.env\b|env file|environment file|файл окружения|файл \.env)"),
             ("benchmark_files", r"\b(benchmark|evaluator|evaluation command|бенчмарк|оценщик)\b"),
-            ("compose_files", r"\b(qdrant|docker compose|compose file|service config|конфиг сервиса)\b"),
+            ("history_files", r"\b(frozen|sample|seed|case list|cases|history|journal|эксперимент|истори|выборк|сид|кейс)\b"),
+            ("compose_files", r"\b(qdrant|docker compose|compose file|service config|service unavailable|network|localhost|127\.0\.0\.1|конфиг сервиса|сервис|сеть)\b"),
             ("config_files", r"\b(config|configuration|конфигурац)\b"),
         )
         for resource_kind, pattern in resource_claims:
@@ -277,6 +353,7 @@ def _bootstrap_path(path: str) -> bool:
 _RUNTIME_RESOURCE_KINDS = (
     "csv_files",
     "benchmark_files",
+    "history_files",
     "config_files",
     "compose_files",
 )
@@ -403,6 +480,7 @@ def bootstrap_campaign(
             )
             raw = adapter.normalize_result(task, raw)
             plan = BootstrapPlan.model_validate(raw)
+            plan = _bind_plan_runtime(plan, task)
         except (AgentError, ValueError) as exc:
             failure = {
                 "category": "agent_call_failed" if isinstance(exc, AgentError) else "invalid_response",

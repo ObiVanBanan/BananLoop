@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from bananloop.bootstrap import BootstrapError, BootstrapPlan, BootstrapSignalSanity, _bootstrap_contract_error, _bootstrap_path, _bootstrap_task, bootstrap_campaign
+from bananloop.bootstrap import BootstrapError, BootstrapPlan, BootstrapSignalSanity, _bind_plan_runtime, _bootstrap_contract_error, _bootstrap_path, _bootstrap_task, bootstrap_campaign
 from bananloop.contracts import AgentConfig, RuntimePaths
 from bananloop.store import CampaignStore
 from bananloop.wizard import _parse_py_launcher_paths, discover_project
@@ -676,3 +676,101 @@ def test_materialize_runtime_resources_binds_ignored_csv_but_not_env(tmp_path: P
     assert bound == ["data/catalog.csv"]
     assert (managed / "data" / "catalog.csv").is_file()
     assert not (managed / ".env").exists()
+
+def test_ready_plan_binds_generic_python_to_project_runtime(tmp_path: Path):
+    task = {
+        "repository": {
+            "preferred_python_runtime": {
+                "executable": "/project/.venv/bin/python",
+                "version": "3.12.9",
+                "source": "project",
+            }
+        }
+    }
+    payload = _bootstrap_payload(
+        status="ready", needs_input=[], summary="fixture"
+    )
+    payload["evaluation_command"] = ["python", "scripts/eval.py", "--sample", "100", "--seed", "53"]
+    payload["smoke_command"] = ["env", "SMOKE=1", "/usr/bin/python3", "scripts/eval.py", "--sample", "5", "--seed", "53"]
+    plan = BootstrapPlan.model_validate(payload)
+
+    bound = _bind_plan_runtime(plan, task)
+
+    assert bound.evaluation_command[0] == "/project/.venv/bin/python"
+    assert bound.evaluation_command[-4:] == ["--sample", "100", "--seed", "53"]
+    assert bound.smoke_command[:3] == ["env", "SMOKE=1", "/project/.venv/bin/python"]
+
+
+def test_bootstrap_contract_uses_discovered_dotenv_key_instead_of_reasking_secret(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".env").write_text(
+        "OPENAI_API_KEY=secret\nDEEPSEEK_API_KEY=secret\nQDRANT_URL=http://127.0.0.1:6333\n",
+        encoding="utf-8",
+    )
+    task = _bootstrap_task(repo, "Improve quality", "deadbeef", AgentConfig(kind="codex"))
+    plan = BootstrapPlan.model_validate(
+        _bootstrap_payload(
+            status="needs_input",
+            needs_input=["Export OPENAI_API_KEY so the evaluator can run."],
+            summary="Credential is not exported in the bootstrap process.",
+        )
+    )
+
+    error = _bootstrap_contract_error(plan, task)
+
+    assert error is not None
+    assert "trusted evaluator process" in error
+
+
+def test_bootstrap_contract_rejects_system_python_dependency_false_negative(tmp_path: Path):
+    task = {
+        "goal": "Improve quality",
+        "repository": {
+            "detected_python_runtimes": [
+                {"executable": "/project/.venv/bin/python", "version": "3.12.9", "source": "project"},
+                {"executable": "/usr/bin/python3", "version": "3.12.9", "source": "host"},
+            ],
+            "preferred_python_runtime": {
+                "executable": "/project/.venv/bin/python",
+                "version": "3.12.9",
+                "source": "project",
+            },
+            "detected_resources": {},
+        },
+    }
+    plan = BootstrapPlan.model_validate(
+        _bootstrap_payload(
+            status="needs_input",
+            needs_input=["Install missing package qdrant-client."],
+            summary="System Python cannot import qdrant_client.",
+        )
+    )
+
+    error = _bootstrap_contract_error(plan, task)
+
+    assert error is not None
+    assert "/project/.venv/bin/python" in error
+
+
+def test_bootstrap_contract_reuses_history_for_frozen_sample_instead_of_case_file(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "EXPERIMENT_HISTORY.md").write_text(
+        "E06 frozen-100 sample 100 seed 53", encoding="utf-8"
+    )
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "eval_benchmark.py").write_text("", encoding="utf-8")
+    task = _bootstrap_task(repo, "Rerun the same frozen 100-case benchmark", "deadbeef", AgentConfig(kind="codex"))
+    plan = BootstrapPlan.model_validate(
+        _bootstrap_payload(
+            status="needs_input",
+            needs_input=["Provide the frozen 100-case sample file."],
+            summary="The exact cases are unknown.",
+        )
+    )
+
+    error = _bootstrap_contract_error(plan, task)
+
+    assert error is not None
+    assert "history_files" in error

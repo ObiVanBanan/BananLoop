@@ -58,19 +58,17 @@ def _parse_py_launcher_paths(output: str) -> list[str]:
 
 
 def discover_python_runtimes(repo: Path) -> list[dict[str, str]]:
-    candidates: list[str] = []
+    candidates: list[tuple[str, str]] = []
 
-    def add(value: str | Path | None) -> None:
+    def add(value: str | Path | None, source: str) -> None:
         if not value:
             return
         path = str(value)
-        if path not in candidates:
-            candidates.append(path)
+        if not any(existing == path for existing, _ in candidates):
+            candidates.append((path, source))
 
-    add(sys.executable)
-    for name in ("python", "python3"):
-        add(shutil.which(name))
-
+    # Project-local environments come first: a host/system Python proving that
+    # imports fail says nothing about the target project's installed runtime.
     for relative in (
         ".venv/Scripts/python.exe",
         "venv/Scripts/python.exe",
@@ -79,7 +77,11 @@ def discover_python_runtimes(repo: Path) -> list[dict[str, str]]:
     ):
         path = repo / relative
         if path.is_file():
-            add(path.resolve())
+            add(path.resolve(), "project")
+
+    add(sys.executable, "host")
+    for name in ("python", "python3"):
+        add(shutil.which(name), "host")
 
     if os.name == "nt":
         py = shutil.which("py")
@@ -96,7 +98,7 @@ def discover_python_runtimes(repo: Path) -> list[dict[str, str]]:
                 )
                 if result.returncode == 0:
                     for path in _parse_py_launcher_paths(result.stdout):
-                        add(path)
+                        add(path, "host")
             except (OSError, subprocess.SubprocessError):
                 pass
 
@@ -105,15 +107,19 @@ def discover_python_runtimes(repo: Path) -> list[dict[str, str]]:
         try:
             for path in sorted(root.glob("Python3*/python.exe")):
                 if path.is_file():
-                    add(path)
+                    add(path, "host")
         except OSError:
             pass
 
     runtimes: list[dict[str, str]] = []
-    for executable in candidates:
+    for executable, source in candidates:
         version = _python_version(executable)
         if version:
-            runtimes.append({"executable": executable, "version": version})
+            runtimes.append({
+                "executable": executable,
+                "version": version,
+                "source": source,
+            })
     return runtimes
 
 
@@ -140,6 +146,7 @@ def discover_project(repo: Path) -> dict[str, Any]:
         "compose_files": [],
         "env_keys": [],
         "benchmark_files": [],
+        "history_files": [],
         "config_files": [],
         "readme_files": [],
     }
@@ -165,6 +172,11 @@ def discover_project(repo: Path) -> dict[str, Any]:
                     category = "readme_files"
                 elif any(token in lower for token in ("benchmark", "bench", "evaluator", "eval_", "score")):
                     category = "benchmark_files"
+                elif (
+                    path.suffix.lower() in {".md", ".json", ".jsonl", ".txt", ".yaml", ".yml"}
+                    and any(token in lower for token in ("experiment", "history", "journal", "decision", "campaign"))
+                ):
+                    category = "history_files"
                 elif path.suffix.lower() in {".yaml", ".yml", ".toml", ".ini"} or "config" in lower:
                     category = "config_files"
                 else:
@@ -176,10 +188,16 @@ def discover_project(repo: Path) -> dict[str, Any]:
     resources["env_keys"] = env_keys_from_repo(repo)
     for paths in resources.values():
         paths.sort()
+    runtimes = discover_python_runtimes(repo)
+    preferred = next(
+        (runtime for runtime in runtimes if runtime.get("source") == "project"),
+        runtimes[0] if runtimes else None,
+    )
     return {
         "test_commands": list(dict.fromkeys(commands)),
         "agents": agents,
-        "python_runtimes": discover_python_runtimes(repo),
+        "python_runtimes": runtimes,
+        "preferred_python_runtime": preferred,
         "resources": resources,
     }
 
