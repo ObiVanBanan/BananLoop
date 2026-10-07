@@ -22,6 +22,7 @@ from .contracts import (
     ImplementResult,
     StopReason,
 )
+from .envfiles import project_environment
 from .evaluators import CommandEvaluator, EvaluatorError
 from .integrity import evaluation_fingerprint, verify_evaluation_assets
 from .evaluator_binding import (
@@ -92,14 +93,17 @@ class Engine:
         self._agent_timeout_seconds: int | None = None
         self.spec = store.spec()
         self._evaluator_binding: EvaluatorBinding | None = None
-        self.evaluator = CommandEvaluator(self.spec.evaluation_command)
+        trusted_env = project_environment(Path(self.spec.source_repo))
+        self.evaluator = CommandEvaluator(
+            self.spec.evaluation_command, base_env=trusted_env
+        )
         self.validation_evaluator = (
-            CommandEvaluator(self.spec.validation_command)
+            CommandEvaluator(self.spec.validation_command, base_env=trusted_env)
             if self.spec.validation_command
             else None
         )
         self.holdout_evaluator = (
-            CommandEvaluator(self.spec.holdout_command)
+            CommandEvaluator(self.spec.holdout_command, base_env=trusted_env)
             if self.spec.holdout_command
             else None
         )
@@ -636,6 +640,7 @@ class Engine:
             self.store.conn.commit()
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(error)
+        self._progress("baseline: starting full evaluator")
         request = self._evaluation_request(self.spec.base_commit)
         try:
             raw = self._action(

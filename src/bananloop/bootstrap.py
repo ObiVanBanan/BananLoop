@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Literal
 
@@ -12,6 +13,7 @@ from .contracts import (
     AgentConfig,
     BudgetSpec,
     CampaignSpec,
+    EvaluationAsset,
     GuardrailSpec,
     MetricSpec,
     NonRegressionSpec,
@@ -272,6 +274,41 @@ def _bootstrap_path(path: str) -> bool:
     return normalized == ".bananloop_eval" or normalized.startswith(".bananloop_eval/")
 
 
+_RUNTIME_RESOURCE_KINDS = (
+    "csv_files",
+    "benchmark_files",
+    "config_files",
+    "compose_files",
+)
+
+
+def _materialize_runtime_resources(
+    source_repo: Path,
+    managed_workspace: Path,
+    discovery: dict[str, Any],
+) -> list[str]:
+    """Copy discovered non-secret gitignored resources into the trusted evaluator workspace."""
+    bound: list[str] = []
+    resources = discovery.get("resources", {})
+    for kind in _RUNTIME_RESOURCE_KINDS:
+        for relative in resources.get(kind, []):
+            normalized = str(relative).replace("\\", "/").lstrip("/")
+            if not normalized or normalized.startswith("../"):
+                continue
+            source = (source_repo / normalized).resolve()
+            try:
+                source.relative_to(source_repo.resolve())
+            except ValueError:
+                continue
+            target = managed_workspace / normalized
+            if target.exists() or not source.is_file():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            bound.append(normalized)
+    return sorted(set(bound))
+
+
 def _freeze_assets(workspace: Path, commands: list[list[str]]) -> list:
     assets = {}
     for command in commands:
@@ -317,6 +354,10 @@ def bootstrap_campaign(
     workspace = WorkspaceManager(repo, paths.workspace)
     workspace.ensure(source_base)
     workspace.checkout(source_base)
+    discovery = discover_project(repo)
+    runtime_bindings = _materialize_runtime_resources(
+        repo, workspace.workspace, discovery
+    )
 
     bootstrap_agent_config = agent_config.for_role("bootstrap")
     adapter = _agent(bootstrap_agent_config)
@@ -325,6 +366,7 @@ def bootstrap_campaign(
         raise BootstrapError(f"bootstrap agent unavailable: {probe}")
 
     task = _bootstrap_task(repo, goal, source_base, bootstrap_agent_config)
+    task["repository"]["bound_runtime_resources"] = runtime_bindings
     bootstrap_attempts: list[dict[str, Any]] = []
     plan: BootstrapPlan | None = None
     bootstrap_snapshot = source_base
@@ -468,6 +510,8 @@ def bootstrap_campaign(
                 snapshot=bootstrap_snapshot,
                 state_root=paths.root,
                 attempt=attempt_index + 1,
+                source_repo=repo,
+                runtime_resources=runtime_bindings,
             )
             attempt_record["readiness"] = readiness
             persist_record()
@@ -514,6 +558,15 @@ def bootstrap_campaign(
         plan.holdout_command,
     ]
     assets = _freeze_assets(workspace.workspace, commands)
+    asset_map = {asset.path: asset for asset in assets}
+    for relative in runtime_bindings:
+        path = workspace.workspace / relative
+        if path.is_file():
+            asset_map[relative] = EvaluationAsset(
+                path=relative,
+                sha256=sha256_evaluation_asset(path),
+            )
+    assets = [asset_map[key] for key in sorted(asset_map)]
     frozen_paths = [asset.path for asset in assets]
     protected = list(
         dict.fromkeys(
@@ -546,7 +599,9 @@ def bootstrap_campaign(
         validation_command=plan.validation_command,
         holdout_command=plan.holdout_command,
         evaluation_assets=assets,
-        agent_hidden_paths=[".bananloop_eval/**"],
+        agent_hidden_paths=list(
+            dict.fromkeys([".bananloop_eval/**", *runtime_bindings])
+        ),
         agent_visible_metrics=(
             plan.agent_visible_metrics or [plan.primary_metric.name]
         ),

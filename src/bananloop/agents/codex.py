@@ -239,6 +239,9 @@ class CodexAdapter(AgentAdapter):
                 "it should exercise the real evaluator contract on a small real subset without changing semantics. "
                 "Do not claim readiness based on your own smoke result: BananLoop core will execute the command "
                 "three times on the same snapshot, validate required metrics/checks/case and protocol identities, "
+                "When BANANLOOP_EVALUATION_TIER=bootstrap_smoke, evaluate only the requested smoke subset; "
+                "full-dataset size/count invariants must not make the smoke run invalid. Keep those invariants "
+                "for normal dev/validation/holdout evaluation. "
                 "and compare the empirical A/A noise bound with min_improvement before READY. The evaluation "
                 "result must include a stable protocol_sha256 identifying its measurement protocol. "
                 "The primary metric must directly measure the supplied goal outcome with explicit goal-specific "
@@ -255,7 +258,11 @@ class CodexAdapter(AgentAdapter):
                 "repair.readiness_error, diagnose and repair only the measurement package, then return an "
                 "updated plan. Avoid a full expensive benchmark when a smaller smoke path is possible. "
                 "The evaluator must compare the same frozen inputs/settings for baseline and candidates, emit the "
-                "BananLoop JSON evaluation contract, use stable case IDs/input fingerprints, and avoid per-evaluation "
+                "BananLoop JSON evaluation contract as one top-level object with status, metrics, checks, "
+                "protocol_sha256 when cases are emitted, and optional cases; metrics may be numbers or {value: number}. "
+                "Never encode shell environment assignments as the executable name; BananLoop can normalize leading "
+                "NAME=value argv tokens, but prefer a plain executable argv and read runtime values from the process environment. "
+                "Use stable case IDs/input fingerprints, and avoid per-evaluation "
                 "LLM planning or other avoidable nondeterminism. For stochastic generation, freeze cases and seeds and "
                 "use paired case-level measurements. Do not invent missing reference data or credentials: when an "
                 "essential input is absent, return status=needs_input with a short exact list of what the operator must "
@@ -304,7 +311,18 @@ class CodexAdapter(AgentAdapter):
             schema_path = Path(td) / "schema.json"
             result_path = Path(td) / "result.json"
             schema_path.write_text(json.dumps(schema), encoding="utf-8")
-            argv = [*self._resolved_command(), "exec", "--skip-git-repo-check", "--output-schema", str(schema_path), "-o", str(result_path)]
+            sandbox = "workspace-write" if role in {"bootstrap", "implement"} else "read-only"
+            argv = [
+                *self._resolved_command(),
+                "exec",
+                "--sandbox",
+                sandbox,
+                "--skip-git-repo-check",
+                "--output-schema",
+                str(schema_path),
+                "-o",
+                str(result_path),
+            ]
             if self.model:
                 argv += ["-m", self.model]
             if self.reasoning_effort:

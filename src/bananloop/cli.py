@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shlex
 import sys
@@ -64,6 +65,16 @@ def _selected_paths(args: argparse.Namespace, *, create: bool = True) -> Runtime
         paths.ensure()
     assert_safe_campaign_db(paths.db)
     return paths
+
+
+def _display_campaign_id(args: argparse.Namespace, paths: RuntimePaths) -> str | None:
+    campaign_id = getattr(args, "campaign_id", None)
+    if campaign_id:
+        return campaign_id
+    if getattr(args, "state_dir", None):
+        digest = hashlib.sha256(str(paths.root).encode("utf-8")).hexdigest()[:32]
+        return "state-" + digest
+    return None
 
 
 def _agent_config(args: argparse.Namespace) -> AgentConfig:
@@ -316,7 +327,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             store.close()
         plan = None
         if not args.prepare_only and campaign["status"] in {"GOAL_MET", "STOPPED"}:
-            print(json.dumps({"status": campaign["status"], "state": str(paths.root), "campaign_id": getattr(args, "campaign_id", None)}, indent=2))
+            print(json.dumps({"status": campaign["status"], "state": str(paths.root), "campaign_id": _display_campaign_id(args, paths)}, indent=2))
             return 0
     else:
         try:
@@ -331,7 +342,7 @@ def cmd_start(args: argparse.Namespace) -> int:
                         store.close()
                     plan = None
                     if not args.prepare_only and campaign["status"] in {"GOAL_MET", "STOPPED"}:
-                        print(json.dumps({"status": campaign["status"], "state": str(paths.root), "campaign_id": getattr(args, "campaign_id", None)}, indent=2))
+                        print(json.dumps({"status": campaign["status"], "state": str(paths.root), "campaign_id": _display_campaign_id(args, paths)}, indent=2))
                         return 0
                 else:
                     plan, spec = bootstrap_campaign(
@@ -356,6 +367,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             "summary": plan.summary,
             "needs_input": plan.needs_input,
             "bootstrap_plan": str(paths.root / "bootstrap-plan.json"),
+            "campaign_id": _display_campaign_id(args, paths),
         }, indent=2, ensure_ascii=False))
         return 3
 
@@ -374,7 +386,7 @@ def cmd_start(args: argparse.Namespace) -> int:
             "readiness": readiness,
         },
         "state": str(paths.root),
-        "campaign_id": getattr(args, "campaign_id", None),
+        "campaign_id": _display_campaign_id(args, paths),
         "spec": spec.approved_hash(),
     }, indent=2, ensure_ascii=False))
     if args.prepare_only:
@@ -405,7 +417,16 @@ def cmd_run(args: argparse.Namespace, resume: bool = False) -> int:
                     retry_failed_actions=bool(getattr(args, "retry_failed_action", False)),
                     agent_timeout_seconds=getattr(args, "agent_timeout_seconds", None),
                 )
-                print(json.dumps({k: campaign[k] for k in ("status", "stop_reason", "stage", "experiment_count", "attempt_count", "agent_calls", "evaluator_calls", "champion_snapshot")}, indent=2))
+                payload = {
+                    k: campaign[k]
+                    for k in (
+                        "status", "stop_reason", "stage", "experiment_count",
+                        "attempt_count", "agent_calls", "evaluator_calls",
+                        "champion_snapshot",
+                    )
+                }
+                payload["campaign_id"] = _display_campaign_id(args, paths)
+                print(json.dumps(payload, indent=2))
                 return 0 if campaign["status"] != "PAUSED_INFRA" else 2
             except ControlledInterruption as exc:
                 print(str(exc), file=sys.stderr)

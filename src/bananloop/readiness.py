@@ -11,6 +11,7 @@ from typing import Any
 
 from .contracts import EvaluationResult
 from .evaluators import CommandEvaluator, EvaluatorError
+from .envfiles import project_environment
 from .integrity import discover_evaluation_assets, sha256_evaluation_asset
 from .process import ProcessError, run_process
 
@@ -230,6 +231,8 @@ def run_bootstrap_readiness(
     state_root: Path,
     attempt: int,
     repeats: int = 3,
+    source_repo: Path | None = None,
+    runtime_resources: list[str] | None = None,
 ) -> dict[str, Any]:
     """Execute a core-owned evaluator smoke gate before a bootstrap plan can be READY."""
 
@@ -250,6 +253,9 @@ def run_bootstrap_readiness(
         "runs": [],
     }
     results: list[EvaluationResult] = []
+    trusted_source = (source_repo or workspace).resolve()
+    trusted_env = project_environment(trusted_source)
+    runtime_resources = list(runtime_resources or [])
 
     for repetition in range(repeats):
         run_dir = (
@@ -262,7 +268,7 @@ def run_bootstrap_readiness(
         smoke_workspace = run_dir / "workspace"
         run_dir.mkdir(parents=True, exist_ok=True)
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        evaluator = CommandEvaluator(command)
+        evaluator = CommandEvaluator(command, base_env=trusted_env)
         evaluator.context = {
             "BANANLOOP_ARTIFACT_DIR": str(artifact_dir.resolve()),
             "BANANLOOP_EVALUATION_ID": (
@@ -281,6 +287,16 @@ def run_bootstrap_readiness(
             run_process(["git", "checkout", "--detach", snapshot], cwd=smoke_workspace, timeout=30)
             run_process(["git", "config", "user.email", "bananloop@localhost"], cwd=smoke_workspace, timeout=10)
             run_process(["git", "config", "user.name", "BananLoop Readiness"], cwd=smoke_workspace, timeout=10)
+
+            # Re-bind non-secret runtime files discovered in the source checkout.
+            # Secret dotenv files are never materialized into agent/evaluator workspaces;
+            # their values enter only the trusted evaluator process environment.
+            for relative in runtime_resources:
+                source = trusted_source / relative
+                target = smoke_workspace / relative
+                if source.is_file() and not target.exists():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, target)
 
             # The clone supplies only committed files. Preserve evaluator assets
             # referenced by the command even when the source checkout ignored them,
