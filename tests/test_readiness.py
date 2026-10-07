@@ -729,3 +729,38 @@ def test_readiness_defers_guardrail_and_non_regression_metrics_to_full_evaluatio
         "other_rerank_recall": None,
         "other_top1": None,
     }
+
+
+def test_protocol_manifest_enumerates_fixed_inputs_without_scoring(tmp_path: Path):
+    script = tmp_path / "manifest.py"
+    identities = [
+        {
+            "case_id": "a",
+            "repetition": 0,
+            "input_sha256": hashlib.sha256(b"a").hexdigest(),
+        },
+        {
+            "case_id": "b",
+            "repetition": 0,
+            "input_sha256": hashlib.sha256(b"b").hexdigest(),
+        },
+    ]
+    script.write_text(
+        "import json\n"
+        f"print(json.dumps({{'schema_version':1,'inputs':{identities!r}}}))\n",
+        encoding="utf-8",
+    )
+    init_repo(tmp_path)
+
+    protocol, receipt = readiness.run_protocol_manifest(
+        command=[sys.executable, str(script)],
+        workspace=tmp_path,
+        snapshot=snapshot(tmp_path),
+        source_repo=tmp_path,
+    )
+
+    assert protocol.case_count() == 2
+    assert len(protocol.inputs) == 2
+    assert receipt["status"] == "PASSED"
+    assert receipt["measurement_count"] == 2
+    assert receipt["manifest_sha256"] == protocol.manifest_sha256()
