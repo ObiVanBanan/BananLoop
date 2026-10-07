@@ -682,3 +682,52 @@ def test_readiness_caps_smoke_timeout_without_changing_full_timeout(tmp_path: Pa
     assert receipt["timeout_seconds"] == 90
     assert receipt["smoke_timeout_cap_seconds"] == 90
     assert receipt["full_evaluator_timeout_seconds"] == 900
+
+
+def test_readiness_defers_guardrail_and_non_regression_metrics_to_full_evaluation(tmp_path: Path):
+    script = tmp_path / "eval.py"
+    protocol_hash = hashlib.sha256(b"e07-smoke-protocol").hexdigest()
+    script.write_text(
+        "import json\n"
+        f"print(json.dumps({{'status':'ok','metrics':{{'quality':0.5}},"
+        f"'checks':{{}},'protocol_sha256':'{protocol_hash}'}}))\n",
+        encoding="utf-8",
+    )
+    init_repo(tmp_path)
+
+    smoke_plan = plan([sys.executable, str(script)]).model_copy(
+        update={
+            "guardrails": [
+                {"metric": "other_initial_recall", "operator": ">=", "bound": 0.0},
+                {"metric": "other_rerank_recall", "operator": ">=", "bound": 0.0},
+            ],
+            "non_regression": [
+                {
+                    "metric": "other_top1",
+                    "direction": "maximize",
+                    "tolerance": 0.0,
+                }
+            ],
+        }
+    )
+
+    receipt = run_bootstrap_readiness(
+        plan=smoke_plan,
+        workspace=tmp_path,
+        snapshot=snapshot(tmp_path),
+        state_root=tmp_path / "state",
+        attempt=1,
+    )
+
+    assert receipt["status"] == "PASSED"
+    assert receipt["guardrail_metrics_mode"] == "deferred_to_full_evaluation"
+    assert receipt["guardrail_metrics"] == [
+        "other_initial_recall",
+        "other_rerank_recall",
+    ]
+    assert receipt["non_regression_metrics"] == ["other_top1"]
+    assert receipt["runs"][0]["deferred_scientific_metrics"] == {
+        "other_initial_recall": None,
+        "other_rerank_recall": None,
+        "other_top1": None,
+    }

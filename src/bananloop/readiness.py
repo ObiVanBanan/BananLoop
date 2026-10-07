@@ -151,17 +151,30 @@ def _validate_result(plan: Any, result: EvaluationResult) -> dict[str, Any]:
     if result.status != "ok":
         raise ReadinessError(f"smoke evaluator returned status={result.status}")
 
-    required_metrics = {
-        plan.primary_metric.name,
-        *(guard.metric for guard in plan.guardrails),
-        *(guard.metric for guard in plan.non_regression),
-    }
+    # Readiness proves that the evaluator can execute the measurement protocol,
+    # not that a tiny smoke subset can already satisfy every scientific contract.
+    # The primary metric is the minimum aggregate signal required here. Guardrail
+    # and non-regression metrics are enforced on full DEV/VALIDATION/HOLDOUT
+    # results by policy.validate_evaluation()/decide().
+    required_metrics = {plan.primary_metric.name}
     missing_metrics = sorted(required_metrics - set(result.metrics))
     if missing_metrics:
         raise ReadinessError(
             "smoke result is missing required metric(s): "
             + ", ".join(missing_metrics)
         )
+    deferred_metrics = sorted({
+        *(guard.metric for guard in plan.guardrails),
+        *(guard.metric for guard in plan.non_regression),
+    })
+    observed_deferred_metrics = {
+        name: (
+            result.metrics[name].model_dump(mode="json")
+            if name in result.metrics
+            else None
+        )
+        for name in deferred_metrics
+    }
 
     # Scientific mandatory checks belong to the full DEV/VALIDATION/HOLDOUT
     # evaluation contract. A readiness smoke may intentionally run only a small
@@ -207,6 +220,7 @@ def _validate_result(plan: Any, result: EvaluationResult) -> dict[str, Any]:
             for key, value in result.checks.items()
         },
         "deferred_mandatory_checks": deferred_checks,
+        "deferred_scientific_metrics": observed_deferred_metrics,
         "protocol_sha256": result.protocol_sha256,
         "case_count": len(result.cases),
         "case_inputs": [
@@ -256,6 +270,11 @@ def run_bootstrap_readiness(
         "runs": [],
         "mandatory_checks_mode": "deferred_to_full_evaluation",
         "mandatory_checks": list(plan.mandatory_checks),
+        "guardrail_metrics_mode": "deferred_to_full_evaluation",
+        "guardrail_metrics": sorted({guard.metric for guard in plan.guardrails}),
+        "non_regression_metrics": sorted({
+            guard.metric for guard in plan.non_regression
+        }),
     }
     results: list[EvaluationResult] = []
     trusted_source = (source_repo or workspace).resolve()
