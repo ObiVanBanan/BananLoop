@@ -167,3 +167,17 @@ def test_doctor_cli_has_json_mode():
     assert args.command == "doctor"
     assert args.repo == "."
     assert args.json is True
+
+def test_explicit_state_dir_has_stable_display_campaign_id(tmp_path):
+    from argparse import Namespace
+    from bananloop.cli import _display_campaign_id
+    from bananloop.contracts import RuntimePaths
+
+    paths = RuntimePaths.for_repo(tmp_path, tmp_path / "state")
+    args = Namespace(state_dir=str(tmp_path / "state"), campaign_id=None)
+
+    first = _display_campaign_id(args, paths)
+    second = _display_campaign_id(args, paths)
+
+    assert first == second
+    assert first.startswith("state-")

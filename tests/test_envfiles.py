@@ -19,3 +19,16 @@ def test_env_inventory_exposes_variable_names_but_never_values(tmp_path):
 
 def test_missing_env_file_has_no_variable_inventory(tmp_path):
     assert env_keys_from_repo(tmp_path) == []
+
+def test_project_environment_loads_dotenv_without_overriding_process_env(tmp_path):
+    from bananloop.envfiles import project_environment
+
+    (tmp_path / ".env").write_text(
+        "FROM_FILE=secret-value\nOVERRIDE=file-value\n",
+        encoding="utf-8",
+    )
+
+    env = project_environment(tmp_path, base={"OVERRIDE": "process-value"})
+
+    assert env["FROM_FILE"] == "secret-value"
+    assert env["OVERRIDE"] == "process-value"

@@ -559,3 +559,64 @@ def test_readonly_external_symlink_is_not_chmodded_during_cleanup(
 
     assert sentinel.read_text(encoding="utf-8") == "preserve"
     assert stat.S_IMODE(sentinel.stat().st_mode) == original_mode
+
+def test_readiness_uses_trusted_project_env_and_runtime_resource(tmp_path: Path):
+    source = tmp_path / "source"
+    workspace = tmp_path / "workspace"
+    source.mkdir()
+    workspace.mkdir()
+    (source / ".env").write_text(
+        "FIXTURE_SECRET=available\n", encoding="utf-8"
+    )
+    (source / "data").mkdir()
+    (source / "data" / "catalog.csv").write_text(
+        "id,name\n1,x\n", encoding="utf-8"
+    )
+    script = workspace / "eval.py"
+    protocol_hash = hashlib.sha256(b"runtime-binding").hexdigest()
+    script.write_text(
+        "import json,os\n"
+        "from pathlib import Path\n"
+        "ok=os.environ.get('FIXTURE_SECRET')=='available' and Path('data/catalog.csv').is_file()\n"
+        f"print(json.dumps({{'status':'ok','metrics':{{'quality':1.0 if ok else 0.0}},'checks':{{'tests':ok}},'protocol_sha256':'{protocol_hash}'}}))\n",
+        encoding="utf-8",
+    )
+    init_repo(workspace)
+
+    receipt = run_bootstrap_readiness(
+        plan=plan([sys.executable, "eval.py"]),
+        workspace=workspace,
+        snapshot=snapshot(workspace),
+        state_root=tmp_path / "state",
+        attempt=1,
+        source_repo=source,
+        runtime_resources=["data/catalog.csv"],
+    )
+
+    assert receipt["status"] == "PASSED"
+    assert all(
+        run["metrics"]["quality"]["value"] == 1.0
+        for run in receipt["runs"]
+    )
+
+
+def test_readiness_normalizes_leading_environment_assignment(tmp_path: Path):
+    script = tmp_path / "eval_env.py"
+    protocol_hash = hashlib.sha256(b"env-command").hexdigest()
+    script.write_text(
+        "import json,os\n"
+        f"print(json.dumps({{'status':'ok','metrics':{{'quality':1.0 if os.environ.get('BANANA_FLAG')=='yes' else 0.0}},'checks':{{'tests':True}},'protocol_sha256':'{protocol_hash}'}}))\n",
+        encoding="utf-8",
+    )
+    init_repo(tmp_path)
+
+    receipt = run_bootstrap_readiness(
+        plan=plan(["BANANA_FLAG=yes", sys.executable, "eval_env.py"]),
+        workspace=tmp_path,
+        snapshot=snapshot(tmp_path),
+        state_root=tmp_path / "state",
+        attempt=1,
+    )
+
+    assert receipt["status"] == "PASSED"
+    assert receipt["runs"][0]["metrics"]["quality"]["value"] == 1.0

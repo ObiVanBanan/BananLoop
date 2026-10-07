@@ -646,3 +646,32 @@ def test_noisy_readiness_diagnostics_reach_bounded_repair_and_exhaust_without_ca
     assert first["calibration"]["noise_gate_passed"] is False
     assert "readiness_receipt" in record["bootstrap_attempts"][1]["request"]["repair"]
     assert not paths.db.exists()
+
+def test_materialize_runtime_resources_binds_ignored_csv_but_not_env(tmp_path: Path):
+    import bananloop.bootstrap as bootstrap_module
+
+    source = tmp_path / "source"
+    managed = tmp_path / "managed"
+    (source / "data").mkdir(parents=True)
+    managed.mkdir()
+    (source / "data" / "catalog.csv").write_text(
+        "id,name\n1,x\n", encoding="utf-8"
+    )
+    (source / ".env").write_text("API_KEY=do-not-copy\n", encoding="utf-8")
+    discovery = {
+        "resources": {
+            "csv_files": ["data/catalog.csv"],
+            "benchmark_files": [],
+            "config_files": [],
+            "compose_files": [],
+            "env_files": [".env"],
+        }
+    }
+
+    bound = bootstrap_module._materialize_runtime_resources(
+        source, managed, discovery
+    )
+
+    assert bound == ["data/catalog.csv"]
+    assert (managed / "data" / "catalog.csv").is_file()
+    assert not (managed / ".env").exists()

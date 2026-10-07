@@ -85,3 +85,46 @@ def test_implement_prompt_does_not_block_on_supervisor_owned_tests(tmp_path: Pat
     )
 
     assert "supervisor runs configured evaluator and validation commands independently" in captured["input_text"]
+
+def test_codex_uses_role_scoped_sandbox(tmp_path: Path, monkeypatch):
+    adapter = CodexAdapter()
+    monkeypatch.setattr(adapter, "_resolved_command", lambda: ["codex"])
+    seen = []
+
+    class Result:
+        stdout = ""
+        stderr = ""
+        returncode = 0
+
+    def fake_run_process(argv, *, cwd, timeout, check=True, input_text=None, **kwargs):
+        seen.append(list(argv))
+        if '"role": "implement"' in (input_text or ""):
+            payload = {
+                "summary": "ok",
+                "changed_paths": [],
+                "verification_notes": "",
+                "blockers": [],
+            }
+        else:
+            payload = {
+                "hypothesis": "x",
+                "rationale": "x",
+                "expected_effect": "x",
+                "files_or_area": [],
+                "falsification_condition": "x",
+                "mechanism_key": "x",
+                "relation": "new",
+                "prior_experiment_refs": [],
+                "novelty_rationale": "x",
+            }
+        Path(argv[argv.index("-o") + 1]).write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+        return Result()
+
+    monkeypatch.setattr("bananloop.agents.codex.run_process", fake_run_process)
+    adapter.execute({"role": "implement"}, tmp_path, timeout=30)
+    adapter.execute({"role": "propose"}, tmp_path, timeout=30)
+
+    assert seen[0][seen[0].index("--sandbox") + 1] == "workspace-write"
+    assert seen[1][seen[1].index("--sandbox") + 1] == "read-only"
