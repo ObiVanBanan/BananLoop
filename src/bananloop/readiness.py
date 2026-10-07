@@ -9,11 +9,99 @@ import statistics
 from pathlib import Path
 from typing import Any
 
-from .contracts import EvaluationResult
+from pydantic import ValidationError
+
+from .contracts import EvaluationProtocol, EvaluationResult
 from .evaluators import CommandEvaluator, EvaluatorError
+from .evaluators.command import _split_command_environment
 from .envfiles import project_environment
 from .integrity import discover_evaluation_assets, sha256_evaluation_asset
-from .process import ProcessError, run_process
+from .process import ProcessError, parse_json_output, run_process
+
+
+def run_protocol_manifest(
+    *,
+    command: list[str],
+    workspace: Path,
+    snapshot: str,
+    source_repo: Path,
+    timeout: int = 30,
+) -> tuple[EvaluationProtocol, dict[str, Any]]:
+    """Enumerate exact evaluator inputs without running the expensive scorer."""
+
+    if not command:
+        raise ReadinessError(
+            "fixed evaluation protocol requires protocol_manifest_command"
+        )
+    command_env, argv = _split_command_environment(command)
+    trusted_env = project_environment(source_repo.resolve())
+    context = {
+        "BANANLOOP_EVALUATION_TIER": "bootstrap_manifest",
+        "BANANLOOP_MANIFEST_ONLY": "1",
+        "BANANLOOP_SNAPSHOT": snapshot,
+        "BANANLOOP_WORKSPACE": str(workspace.resolve()),
+    }
+    before_head = run_process(
+        ["git", "rev-parse", "HEAD"], cwd=workspace, timeout=10
+    ).stdout.strip()
+    before_dirty = run_process(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=workspace,
+        timeout=10,
+    ).stdout.strip()
+    try:
+        result = run_process(
+            argv,
+            cwd=workspace,
+            timeout=min(int(timeout), 30),
+            check=True,
+            env={**trusted_env, **command_env, **context},
+        )
+        protocol = EvaluationProtocol.model_validate(
+            parse_json_output(result.stdout)
+        )
+    except (ProcessError, ValidationError) as exc:
+        raise ReadinessError(
+            "evaluation protocol manifest failed: " + str(exc),
+            {
+                "status": "FAILED",
+                "stage": "PROTOCOL_MANIFEST",
+                "error": str(exc),
+            },
+        ) from exc
+
+    after_head = run_process(
+        ["git", "rev-parse", "HEAD"], cwd=workspace, timeout=10
+    ).stdout.strip()
+    after_dirty = run_process(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=workspace,
+        timeout=10,
+    ).stdout.strip()
+    if before_head != snapshot or after_head != snapshot:
+        raise ReadinessError(
+            "protocol manifest command changed or observed the wrong evaluator snapshot",
+            {"status": "FAILED", "stage": "PROTOCOL_MANIFEST"},
+        )
+    if after_dirty != before_dirty:
+        raise ReadinessError(
+            "protocol manifest command dirtied the managed workspace",
+            {"status": "FAILED", "stage": "PROTOCOL_MANIFEST"},
+        )
+
+    groups = protocol.repetition_sets()
+    repetition_sets = sorted(
+        {tuple(sorted(values)) for values in groups.values()}
+    )
+    receipt = {
+        "status": "PASSED",
+        "stage": "PROTOCOL_MANIFEST",
+        "manifest_sha256": protocol.manifest_sha256(),
+        "case_count": protocol.case_count(),
+        "measurement_count": len(protocol.inputs),
+        "repetition_sets": [list(values) for values in repetition_sets],
+    }
+    return protocol, receipt
 
 
 class ReadinessError(RuntimeError):
