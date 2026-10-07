@@ -30,7 +30,13 @@ from .evaluator_binding import (
     make_receipt, runtime_descriptor, validate_receipt_linkage,
 )
 from .leakage import scan_forbidden_diff_patterns
-from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
+from .policy import (
+    InvalidEvaluation,
+    decide,
+    target_met,
+    validate_evaluation,
+    validate_evaluation_protocol,
+)
 from .process import ProcessCancelled, check_process_control, process_control
 from .research import (
     attempt_bucket,
@@ -387,6 +393,9 @@ class Engine:
                 "BANANLOOP_EVALUATION_TIER": request.get("tier", "dev"),
                 "BANANLOOP_WORKSPACE": str(self.workspace.workspace.resolve()),
             }
+            context.update(
+                self._protocol_environment(request.get("tier", "dev"))
+            )
             if candidate_proof:
                 context["BANANLOOP_PARENT_SNAPSHOT"] = str(
                     candidate_proof["parent_snapshot"]
@@ -525,6 +534,33 @@ class Engine:
             if sidecar_receipt.receipt_hash != receipt.receipt_hash or sidecar_receipt != receipt:
                 raise EvaluatorError(f"evaluation receipt sidecar mismatch for {action_id}")
 
+    def _protocol_environment(self, tier: str) -> dict[str, str]:
+        protocol = self.spec.evaluation_protocols.get(tier)
+        if protocol is None:
+            return {}
+        root = self.store.path.parent / "protocol-manifests"
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / f"{tier}.json"
+        payload = protocol.model_dump_json()
+        if not path.exists() or path.read_text(encoding="utf-8") != payload:
+            temp = path.with_name(f".{tier}.json.tmp")
+            temp.write_text(payload, encoding="utf-8")
+            temp.replace(path)
+        return {
+            "BANANLOOP_PROTOCOL_MANIFEST": str(path.resolve()),
+            "BANANLOOP_PROTOCOL_MANIFEST_SHA256": protocol.manifest_sha256(),
+        }
+
+    def _validate_tier_protocol(
+        self,
+        tier: str,
+        result: EvaluationResult,
+    ) -> None:
+        validate_evaluation_protocol(
+            self.spec.evaluation_protocols.get(tier),
+            result,
+        )
+
     def _evaluation_request(
         self,
         snapshot: str,
@@ -539,6 +575,9 @@ class Engine:
             "command": command or self.spec.evaluation_command,
             "evaluation_fingerprint": evaluation_fingerprint(self.spec.evaluation_assets),
         }
+        protocol = self.spec.evaluation_protocols.get(tier)
+        if protocol is not None:
+            request["protocol_manifest_sha256"] = protocol.manifest_sha256()
         if candidate_proof is not None:
             request["candidate_proof"] = candidate_proof
         return request
