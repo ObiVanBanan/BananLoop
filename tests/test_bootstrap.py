@@ -774,3 +774,35 @@ def test_bootstrap_contract_reuses_history_for_frozen_sample_instead_of_case_fil
 
     assert error is not None
     assert "history_files" in error
+
+
+def test_bootstrap_allows_leftover_uninitialized_sqlite_file(tmp_path: Path):
+    repo, _ = make_repo(tmp_path)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "reserved-state")
+    paths.ensure()
+
+    stale = CampaignStore(paths.db)
+    stale.close()
+
+    plan, spec = bootstrap_campaign(
+        repo=repo,
+        goal="improve fixture quality",
+        paths=paths,
+        agent_config=AgentConfig(
+            kind="command",
+            command=[sys.executable, "bootstrap_agent.py"],
+        ),
+        max_experiments=1,
+        max_attempts=1,
+        max_agent_calls=2,
+        max_evaluator_calls=2,
+        deadline_seconds=120,
+    )
+
+    assert plan.status == "ready"
+    assert spec is not None
+    store = CampaignStore(paths.db)
+    try:
+        assert store.campaign()["status"] == "READY"
+    finally:
+        store.close()
