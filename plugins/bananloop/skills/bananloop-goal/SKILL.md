@@ -28,7 +28,11 @@ experiment loop or decide whether a candidate is better.
 4. Start the normal campaign in the foreground from that repository with
    `bananloop goal "<goal>"`. Do not substitute `--prepare-only`, `init`, a
    manually assembled `start` command, or a second custom loop unless the user
-   explicitly asks for preparation or advanced controls. Let the user see the
+   explicitly asks for preparation or advanced controls. If the user explicitly
+   asks for a fresh/new campaign rather than resuming prior state, generate one
+   opaque local request ID (for example a UUID) and pass it with `--request-id`;
+   do not make the user delete state or invent a different goal. Otherwise omit
+   `--request-id` so the same goal resumes normally. Let the user see the
    command's live `[BananLoop]` output as it arrives; keep giving concise
    operational updates during long calls instead of waiting silently for the
    final JSON.
