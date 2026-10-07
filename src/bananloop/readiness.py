@@ -241,12 +241,17 @@ def run_bootstrap_readiness(
     if not command:
         raise ReadinessError("bootstrap plan has no smoke/evaluation command")
 
-    timeout = min(int(plan.evaluator_timeout_seconds), 300)
+    # Readiness must stay cheap. The full DEV evaluator may legitimately need a
+    # long timeout, but bootstrap smoke must never silently become a full
+    # benchmark repeated several times.
+    timeout = min(int(plan.evaluator_timeout_seconds), 90)
     receipt: dict[str, Any] = {
         "status": "RUNNING",
         "snapshot": snapshot,
         "command": command,
         "timeout_seconds": timeout,
+        "full_evaluator_timeout_seconds": int(plan.evaluator_timeout_seconds),
+        "smoke_timeout_cap_seconds": 90,
         "repeat_count": repeats,
         "runs": [],
         "mandatory_checks_mode": "deferred_to_full_evaluation",
