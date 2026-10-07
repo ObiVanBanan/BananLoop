@@ -171,6 +171,47 @@ class AgentRoleOverride(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class EvaluationInputIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    case_id: str = Field(min_length=1, max_length=200)
+    repetition: int = Field(default=0, ge=0)
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class EvaluationProtocol(BaseModel):
+    """Immutable evaluator input identity manifest for one evaluation tier."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: int = Field(default=1, ge=1)
+    inputs: list[EvaluationInputIdentity] = Field(min_length=1, max_length=10000)
+
+    @model_validator(mode="after")
+    def unique_schedule(self) -> "EvaluationProtocol":
+        keys = [(item.case_id, item.repetition) for item in self.inputs]
+        if len(keys) != len(set(keys)):
+            raise ValueError("evaluation protocol contains duplicate case/repetition identities")
+        return self
+
+    def manifest_sha256(self) -> str:
+        raw = json.dumps(
+            self.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    def case_count(self) -> int:
+        return len({item.case_id for item in self.inputs})
+
+    def repetition_sets(self) -> dict[str, set[int]]:
+        grouped: dict[str, set[int]] = {}
+        for item in self.inputs:
+            grouped.setdefault(item.case_id, set()).add(item.repetition)
+        return grouped
+
+
 class CampaignSpec(BaseModel):
     schema_version: int = 1
     goal: str
@@ -188,6 +229,7 @@ class CampaignSpec(BaseModel):
     agent_visible_metrics: list[str] = Field(default_factory=list)
     agent_visible_diagnostics: list[str] = Field(default_factory=list)
     paired_comparison: PairedComparison | None = None
+    evaluation_protocols: dict[str, EvaluationProtocol] = Field(default_factory=dict)
     # Optional readiness metadata. None is omitted from approved_hash to keep
     # all campaigns created before signal sanity byte-for-byte compatible.
     signal_sanity_status: Literal["DIAGNOSTIC_ONLY", "UNAVAILABLE"] | None = None
@@ -201,6 +243,18 @@ class CampaignSpec(BaseModel):
     forbidden_diff_patterns: list[str] = Field(default_factory=list)
     budget: BudgetSpec = Field(default_factory=BudgetSpec)
     agent: AgentConfig = Field(default_factory=AgentConfig)
+
+    @field_validator("evaluation_protocols")
+    @classmethod
+    def valid_protocol_tiers(
+        cls, value: dict[str, EvaluationProtocol]
+    ) -> dict[str, EvaluationProtocol]:
+        invalid = sorted(set(value) - {"dev", "validation", "holdout"})
+        if invalid:
+            raise ValueError(
+                "unsupported evaluation protocol tier(s): " + ", ".join(invalid)
+            )
+        return value
 
     @field_validator("forbidden_diff_patterns")
     @classmethod
@@ -242,6 +296,8 @@ class CampaignSpec(BaseModel):
         data = self.model_dump(mode="json")
         if self.paired_comparison is None:
             data.pop("paired_comparison", None)
+        if not self.evaluation_protocols:
+            data.pop("evaluation_protocols", None)
         if self.signal_sanity_status is None:
             data.pop("signal_sanity_status", None)
         if self.signal_sanity_receipt_sha256 is None:
