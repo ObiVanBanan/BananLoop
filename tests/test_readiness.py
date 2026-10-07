@@ -695,21 +695,19 @@ def test_readiness_defers_guardrail_and_non_regression_metrics_to_full_evaluatio
     )
     init_repo(tmp_path)
 
-    smoke_plan = plan([sys.executable, str(script)]).model_copy(
-        update={
-            "guardrails": [
-                {"metric": "other_initial_recall", "operator": ">=", "bound": 0.0},
-                {"metric": "other_rerank_recall", "operator": ">=", "bound": 0.0},
-            ],
-            "non_regression": [
-                {
-                    "metric": "other_top1",
-                    "direction": "maximize",
-                    "tolerance": 0.0,
-                }
-            ],
+    payload = plan([sys.executable, str(script)]).model_dump(mode="json")
+    payload["guardrails"] = [
+        {"metric": "other_initial_recall", "operator": ">=", "bound": 0.0},
+        {"metric": "other_rerank_recall", "operator": ">=", "bound": 0.0},
+    ]
+    payload["non_regression"] = [
+        {
+            "metric": "other_top1",
+            "direction": "maximize",
+            "tolerance": 0.0,
         }
-    )
+    ]
+    smoke_plan = BootstrapPlan.model_validate(payload)
 
     receipt = run_bootstrap_readiness(
         plan=smoke_plan,
