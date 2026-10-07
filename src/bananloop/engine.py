@@ -592,6 +592,7 @@ class Engine:
         return EvaluationResult.model_validate_json(row["result_json"])
 
     def _holdout_assessment(self, result: EvaluationResult) -> dict[str, Any]:
+        self._validate_tier_protocol("holdout", result)
         validate_evaluation(self.spec, result)
         return {
             "snapshot": self.store.campaign()["champion_snapshot"],
@@ -643,6 +644,7 @@ class Engine:
             ).model_dump(mode="json"),
         )
         result = EvaluationResult.model_validate(raw)
+        self._validate_tier_protocol("holdout", result)
         validate_evaluation(self.spec, result)
         self.store.record_evaluation(
             None,
@@ -694,6 +696,7 @@ class Engine:
                 ).model_dump(mode="json"),
             )
             result = EvaluationResult.model_validate(raw)
+            self._validate_tier_protocol("dev", result)
             validate_evaluation(self.spec, result)
         except (EvaluatorError, InvalidEvaluation, ValidationError, UnknownActionOutcome) as exc:
             self.store.event("BASELINE_FAILED", {"error": str(exc)})
@@ -730,6 +733,7 @@ class Engine:
                     ).model_dump(mode="json"),
                 )
                 validation_result = EvaluationResult.model_validate(validation_raw)
+                self._validate_tier_protocol("validation", validation_result)
                 validate_evaluation(self.spec, validation_result)
             except (
                 EvaluatorError,
@@ -1261,6 +1265,7 @@ class Engine:
                 ),
             )
             result = EvaluationResult.model_validate(raw)
+            self._validate_tier_protocol("dev", result)
             validate_evaluation(self.spec, result)
         except (EvaluatorError, InvalidEvaluation, ValidationError, EngineError) as exc:
             self.store.update_experiment(experiment_id, failure_category="INVALID_EVALUATION", lesson=str(exc)[:1000])
@@ -1277,11 +1282,17 @@ class Engine:
         self._checkpoint("DECIDE")
 
     def _checked_candidate_evaluation(
-        self, evaluator: CommandEvaluator, timeout: int, reference: EvaluationResult,
+        self,
+        evaluator: CommandEvaluator,
+        timeout: int,
+        reference: EvaluationResult,
+        *,
+        tier: str = "dev",
     ) -> dict[str, Any]:
         # Validate before completing the action receipt, so a known invalid
         # measurement can use the explicit FAILED-action retry path.
         result = evaluator.evaluate(self.workspace.workspace, timeout=timeout)
+        self._validate_tier_protocol(tier, result)
         decision = decide(self.spec, reference, result)
         if "PAIRED_INPUT_MISMATCH" in decision.reasons:
             raise InvalidEvaluation("PAIRED_INPUT_MISMATCH")
@@ -1559,9 +1570,11 @@ class Engine:
                     self.validation_evaluator,
                     self.spec.validation_timeout_seconds or self.spec.evaluator_timeout_seconds,
                     self._validation_reference(),
+                    tier="validation",
                 ),
             )
             result = EvaluationResult.model_validate(raw)
+            self._validate_tier_protocol("validation", result)
             validate_evaluation(self.spec, result)
             reference = self._validation_reference()
             validation_decision = decide(self.spec, reference, result)
