@@ -806,3 +806,92 @@ def test_bootstrap_allows_leftover_uninitialized_sqlite_file(tmp_path: Path):
         assert store.campaign()["status"] == "READY"
     finally:
         store.close()
+
+
+def test_bootstrap_freezes_protocol_manifest_before_campaign_init(
+    tmp_path: Path, monkeypatch
+):
+    import bananloop.bootstrap as bootstrap_module
+
+    repo, _ = make_repo(tmp_path)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "protocol-state")
+    input_a = __import__("hashlib").sha256(b"case-a").hexdigest()
+    input_b = __import__("hashlib").sha256(b"case-b").hexdigest()
+
+    class FixedProtocolAgent:
+        def probe(self):
+            return {"available": True, "kind": "fixture", "version": "1"}
+
+        def normalize_result(self, task, result):
+            return result
+
+        def execute(self, task, workspace, timeout):
+            evaluator = workspace / ".bananloop_eval" / "evaluator.py"
+            evaluator.parent.mkdir(parents=True, exist_ok=True)
+            evaluator.write_text(
+                "import json,sys\n"
+                f"inputs=[{{'case_id':'a','repetition':0,'input_sha256':'{input_a}'}},"
+                f"{{'case_id':'b','repetition':0,'input_sha256':'{input_b}'}}]\n"
+                "if '--manifest' in sys.argv:\n"
+                " print(json.dumps({'schema_version':1,'inputs':inputs}))\n"
+                "else:\n"
+                f" print(json.dumps({{'status':'ok','metrics':{{'quality':0.5}},"
+                f"'checks':{{}},'protocol_sha256':'{PROTOCOL_SHA256}',"
+                "'cases':[dict(item,metrics={'quality':0.5}) for item in inputs]}))\n",
+                encoding="utf-8",
+            )
+            payload = _bootstrap_payload(
+                status="ready",
+                needs_input=[],
+                summary="fixed protocol fixture",
+            )
+            payload["smoke_command"] = [
+                sys.executable,
+                ".bananloop_eval/evaluator.py",
+                "--smoke",
+            ]
+            payload["protocol_manifest_command"] = [
+                sys.executable,
+                ".bananloop_eval/evaluator.py",
+                "--manifest",
+            ]
+            payload["paired_comparison"] = {
+                "enabled": True,
+                "case_count": 2,
+                "repetitions": 1,
+                "metric": "quality",
+                "direction": "maximize",
+                "min_wins": 1,
+                "worst_case_tolerance": 0.0,
+            }
+            return payload
+
+    monkeypatch.setattr(
+        bootstrap_module,
+        "_agent",
+        lambda _config: FixedProtocolAgent(),
+    )
+
+    plan, spec = bootstrap_campaign(
+        repo=repo,
+        goal="improve fixed benchmark",
+        paths=paths,
+        agent_config=AgentConfig(kind="codex"),
+        max_experiments=1,
+        max_attempts=1,
+        max_agent_calls=2,
+        max_evaluator_calls=2,
+        deadline_seconds=120,
+    )
+
+    assert plan.protocol_manifest_command
+    assert spec is not None
+    protocol = spec.evaluation_protocols["dev"]
+    assert protocol.case_count() == 2
+    assert len(protocol.inputs) == 2
+    record = json.loads(
+        (paths.root / "bootstrap-plan.json").read_text(encoding="utf-8")
+    )
+    manifest_receipt = record["bootstrap_attempts"][-1]["protocol_manifest"]
+    assert manifest_receipt["status"] == "PASSED"
+    assert manifest_receipt["case_count"] == 2
