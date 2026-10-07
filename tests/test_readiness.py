@@ -161,23 +161,51 @@ def test_readiness_rejects_missing_required_metric(tmp_path: Path):
         )
 
 
-def test_readiness_rejects_failed_mandatory_check(tmp_path: Path):
+def test_readiness_defers_failed_scientific_mandatory_check_to_full_evaluation(tmp_path: Path):
     script = tmp_path / "eval.py"
+    protocol_hash = hashlib.sha256(b"smoke-protocol").hexdigest()
     script.write_text(
         "import json\n"
-        "print(json.dumps({'status':'ok','metrics':{'quality':0.5},'checks':{'tests':False}}))\n",
+        f"print(json.dumps({{'status':'ok','metrics':{{'quality':0.5}},"
+        f"'checks':{{'tests':False}},'protocol_sha256':'{protocol_hash}'}}))\n",
         encoding="utf-8",
     )
     init_repo(tmp_path)
 
-    with pytest.raises(ReadinessError, match="failed mandatory check"):
-        run_bootstrap_readiness(
-            plan=plan([sys.executable, str(script)]),
-            workspace=tmp_path,
-            snapshot=snapshot(tmp_path),
-            state_root=tmp_path / "state",
-            attempt=1,
-        )
+    receipt = run_bootstrap_readiness(
+        plan=plan([sys.executable, str(script)]),
+        workspace=tmp_path,
+        snapshot=snapshot(tmp_path),
+        state_root=tmp_path / "state",
+        attempt=1,
+    )
+
+    assert receipt["status"] == "PASSED"
+    assert receipt["mandatory_checks_mode"] == "deferred_to_full_evaluation"
+    assert receipt["runs"][0]["deferred_mandatory_checks"]["tests"]["passed"] is False
+
+
+def test_readiness_allows_missing_full_dataset_mandatory_check(tmp_path: Path):
+    script = tmp_path / "eval.py"
+    protocol_hash = hashlib.sha256(b"subset-protocol").hexdigest()
+    script.write_text(
+        "import json\n"
+        f"print(json.dumps({{'status':'ok','metrics':{{'quality':0.5}},"
+        f"'checks':{{}},'protocol_sha256':'{protocol_hash}'}}))\n",
+        encoding="utf-8",
+    )
+    init_repo(tmp_path)
+
+    receipt = run_bootstrap_readiness(
+        plan=plan([sys.executable, str(script)]),
+        workspace=tmp_path,
+        snapshot=snapshot(tmp_path),
+        state_root=tmp_path / "state",
+        attempt=1,
+    )
+
+    assert receipt["status"] == "PASSED"
+    assert receipt["runs"][0]["deferred_mandatory_checks"]["tests"] is None
 
 
 def test_readiness_rejects_unstable_input_identity(tmp_path: Path):
