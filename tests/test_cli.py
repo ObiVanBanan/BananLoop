@@ -181,3 +181,33 @@ def test_explicit_state_dir_has_stable_display_campaign_id(tmp_path):
 
     assert first == second
     assert first.startswith("state-")
+
+
+def test_status_of_reserved_campaign_does_not_create_campaign_db(tmp_path, capsys):
+    from argparse import Namespace
+    from bananloop.cli import cmd_status
+    from bananloop.registry import CampaignRegistry
+    from bananloop.contracts import RuntimePaths
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    registry = CampaignRegistry(repo)
+    entry, state_root, _ = registry.reserve(
+        "improve fixture", "reserved-status-test"
+    )
+    paths = RuntimePaths.for_repo(repo, state_root)
+    assert not paths.db.exists()
+
+    args = Namespace(
+        repo=str(repo),
+        state_dir=None,
+        campaign_id=entry.campaign_id,
+        json=True,
+    )
+    assert cmd_status(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "RESERVED"
+    assert payload["campaign_id"] == entry.campaign_id
+    assert payload["initialized"] is False
+    assert not paths.db.exists()
