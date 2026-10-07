@@ -124,6 +124,30 @@ class StoreError(RuntimeError):
     pass
 
 
+def campaign_db_initialized(path: Path) -> bool:
+    """Inspect campaign state without creating or migrating the SQLite file."""
+    if not path.exists():
+        return False
+    try:
+        uri = path.resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=5)
+        try:
+            table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='campaigns'"
+            ).fetchone()
+            if table is None:
+                return False
+            return conn.execute(
+                "SELECT 1 FROM campaigns WHERE id=1"
+            ).fetchone() is not None
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        raise StoreError(
+            f"campaign database is unreadable at {path}; preserve it for diagnosis"
+        ) from exc
+
+
 class CampaignStore:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
