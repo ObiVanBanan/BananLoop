@@ -609,14 +609,15 @@ def test_noisy_readiness_diagnostics_reach_bounded_repair_and_exhaust_without_ca
         "value=0.4 if n % 2 else 0.6\n"
         f"print(json.dumps({{'status':'ok','metrics':{{'quality':value}},'checks':{{}},'protocol_sha256':'{PROTOCOL_SHA256}'}}))\n"
     )
+    bootstrap_payload = _bootstrap_payload(
+        status="ready", needs_input=[], summary="noisy fixture evaluator"
+    )
     agent.write_text(
         "import json\n"
         "from pathlib import Path\n"
         "root=Path('.bananloop_eval'); root.mkdir(exist_ok=True)\n"
         f"root.joinpath('evaluator.py').write_text({evaluator_source!r})\n"
-        f"print(json.dumps({_bootstrap_payload(
-            status="ready", needs_input=[], summary="noisy fixture evaluator"
-        )!r}))\n",
+        f"print(json.dumps({bootstrap_payload!r}))\n",
         encoding="utf-8",
     )
     git(["add", "noisy_agent.py"], repo)

@@ -582,6 +582,13 @@ def test_readiness_uses_trusted_project_env_and_runtime_resource(tmp_path: Path)
         encoding="utf-8",
     )
     init_repo(workspace)
+    with (workspace / ".gitignore").open("a", encoding="utf-8") as handle:
+        handle.write("data/\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=workspace, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "ignore runtime data"],
+        cwd=workspace, check=True, capture_output=True, text=True,
+    )
 
     receipt = run_bootstrap_readiness(
         plan=plan([sys.executable, "eval.py"]),
