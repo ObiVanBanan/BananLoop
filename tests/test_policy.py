@@ -1,5 +1,23 @@
-from bananloop.contracts import CampaignSpec, Direction, EvaluationResult, GuardrailSpec, MetricSpec, NonRegressionSpec
-from bananloop.policy import decide, target_met
+import hashlib
+
+import pytest
+
+from bananloop.contracts import (
+    CampaignSpec,
+    Direction,
+    EvaluationInputIdentity,
+    EvaluationProtocol,
+    EvaluationResult,
+    GuardrailSpec,
+    MetricSpec,
+    NonRegressionSpec,
+)
+from bananloop.policy import (
+    InvalidEvaluation,
+    decide,
+    target_met,
+    validate_evaluation_protocol,
+)
 
 
 def spec() -> CampaignSpec:
@@ -61,3 +79,38 @@ def test_non_regression_accepts_equal_or_better_secondary():
     d = decide(s, result(1, regressions=1), result(2, regressions=1))
 
     assert d.accepted
+
+
+def test_exact_protocol_manifest_rejects_incomplete_result_without_paired_policy():
+    protocol = EvaluationProtocol(
+        inputs=[
+            EvaluationInputIdentity(
+                case_id="a",
+                repetition=0,
+                input_sha256=hashlib.sha256(b"a").hexdigest(),
+            ),
+            EvaluationInputIdentity(
+                case_id="b",
+                repetition=0,
+                input_sha256=hashlib.sha256(b"b").hexdigest(),
+            ),
+        ]
+    )
+    measured = EvaluationResult(
+        metrics={"quality": 1.0},
+        cases=[
+            {
+                "case_id": "a",
+                "repetition": 0,
+                "input_sha256": hashlib.sha256(b"a").hexdigest(),
+                "metrics": {"quality": 1.0},
+            }
+        ],
+        protocol_sha256=hashlib.sha256(b"protocol").hexdigest(),
+    )
+
+    with pytest.raises(
+        InvalidEvaluation,
+        match=r"expected=2, observed=1, missing=1",
+    ):
+        validate_evaluation_protocol(protocol, measured)
