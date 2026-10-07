@@ -660,18 +660,23 @@ def bootstrap_campaign(
             persist_record()
             break
         except ReadinessError as exc:
-            attempt_record["readiness"] = exc.receipt or {
+            failure_receipt = exc.receipt or {
                 "status": "FAILED",
                 "error": str(exc),
             }
+            if failure_receipt.get("stage") == "PROTOCOL_MANIFEST":
+                attempt_record["protocol_manifest"] = failure_receipt
+            else:
+                attempt_record["readiness"] = failure_receipt
             persist_record()
             if attempt_index < 2:
                 task = {
                     **task,
                     "repair": {
-                        "reason": "core-owned evaluator readiness gate failed",
+                        "reason": "core-owned evaluator preparation gate failed",
                         "readiness_error": str(exc),
                         "readiness_receipt": attempt_record["readiness"],
+                        "protocol_manifest_receipt": attempt_record["protocol_manifest"],
                         "instruction": (
                             "Repair only the measurement adapter/package under "
                             ".bananloop_eval so the core-owned smoke gate passes. "
