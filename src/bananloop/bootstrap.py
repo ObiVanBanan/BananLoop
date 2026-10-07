@@ -485,6 +485,7 @@ def bootstrap_campaign(
         )
 
     for attempt_index in range(3):
+        evaluation_protocol = None
         try:
             raw = adapter.execute(
                 task,
