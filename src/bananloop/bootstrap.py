@@ -22,7 +22,7 @@ from .contracts import (
 )
 from .integrity import discover_evaluation_assets, sha256_evaluation_asset
 from .readiness import ReadinessError, run_bootstrap_readiness
-from .store import CampaignStore, StoreError
+from .store import CampaignStore, StoreError, campaign_db_initialized
 from .wizard import discover_project
 from .workspace import WorkspaceManager, current_commit
 
@@ -421,7 +421,7 @@ def bootstrap_campaign(
 ) -> tuple[BootstrapPlan, CampaignSpec | None]:
     """Turn repo + goal into an approved CampaignSpec without touching source checkout."""
 
-    if paths.db.exists():
+    if campaign_db_initialized(paths.db):
         raise StoreError(
             "campaign state already exists; use run/resume or choose a fresh --state-dir"
         )
@@ -610,8 +610,11 @@ def bootstrap_campaign(
                         "instruction": (
                             "Repair only the measurement adapter/package under "
                             ".bananloop_eval so the core-owned smoke gate passes. "
-                            "Do not modify production code or weaken the measurement "
-                            "just to satisfy the gate."
+                            "If readiness timed out, make smoke_command a cheap deterministic "
+                            "subset/probe rather than rerunning the full evaluation. Preserve "
+                            "the full evaluation command and its scientific checks unchanged. "
+                            "Do not modify production code or weaken the measurement just to "
+                            "satisfy the gate."
                         ),
                         "previous_plan": plan.model_dump(mode="json"),
                     },
