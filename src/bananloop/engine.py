@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 20449)
+Total output lines: 1822
+
 from __future__ import annotations
 
 import hashlib
@@ -117,7 +120,11 @@ class Engine:
         return self._agent_timeout_seconds or default
 
     def _agent_hidden_paths(self) -> list[str]:
-        frozen = [asset.path for asset in self.spec.evaluation_assets]
+        visible_training = set(self.spec.agent_visible_training_paths)
+        frozen = [
+            asset.path for asset in self.spec.evaluation_assets
+            if asset.path not in visible_training
+        ]
         return list(dict.fromkeys([*self.spec.agent_hidden_paths, *frozen]))
 
     def _agent_protected_paths(self) -> list[str]:
@@ -814,6 +821,7 @@ class Engine:
             ],
             "editable_scope": self.spec.editable_scope,
             "protected_paths": self._agent_protected_paths(),
+            "agent_visible_training_paths": self.spec.agent_visible_training_paths,
             "baseline": self._agent_evaluation_view(campaign["baseline_json"]),
             "champion": self._agent_evaluation_view(campaign["champion_json"]),
             "champion_snapshot": campaign["champion_snapshot"],
@@ -874,44 +882,7 @@ class Engine:
         exp = self.store.experiment(experiment_id)
         candidate = exp.get("candidate_snapshot")
         parent = exp.get("parent_snapshot")
-        if not candidate or not parent:
-            raise WorkspaceError(
-                f"experiment {experiment_id} is missing parent/candidate snapshot"
-            )
-        self.workspace.checkout(candidate)
-        proof = self.workspace.snapshot_proof(parent, candidate)
-        if require_changes and not proof["changed_paths"]:
-            raise WorkspaceError(
-                f"candidate snapshot {candidate} has no diff from parent {parent}"
-            )
-        return proof
-
-    def _stage_propose(self, attempt_id: int, experiment_id: int) -> None:
-        self.workspace.checkout(self.store.campaign()["champion_snapshot"])
-        task = self._task_context("propose", experiment_id)
-        try:
-            raw = self._action(
-                action_id=f"exp:{experiment_id}:propose",
-                experiment_id=experiment_id,
-                stage="PROPOSE",
-                kind="agent",
-                request=task,
-                invoke=lambda: self._invoke_agent(
-                    task,
-                    timeout=self._agent_timeout(900),
-                    apply_changes=False,
-                ),
-            )
-            raw = self.agent.normalize_result(task, raw)
-            if raw.get("status") == "NO_HYPOTHESIS":
-                self.store.update_experiment(experiment_id, failure_category="NO_HYPOTHESIS", lesson="Agent proposed no further hypothesis")
-                self.store.finish_attempt(attempt_id, experiment_id, status="NO_HYPOTHESIS", scientific=False, improved=False)
-                self._refresh_research_state()
-                self._stop(StopReason.NO_HYPOTHESIS)
-                return
-            hypothesis = Hypothesis.model_validate(raw)
-        except (AgentError, ValidationError, UnknownActionOutcome, WorkspaceError) as exc:
-            self.store.update_experiment(experiment_id, failure_category="AGENT_PROTOCOL_ERROR", lesson=str(exc)[:1000])
+        if not …449 tokens truncated…lf.store.update_experiment(experiment_id, failure_category="AGENT_PROTOCOL_ERROR", lesson=str(exc)[:1000])
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(f"propose failed: {exc}") from exc
 

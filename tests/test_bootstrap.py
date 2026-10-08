@@ -8,13 +8,33 @@ from types import SimpleNamespace
 
 import pytest
 
-from bananloop.bootstrap import BootstrapError, BootstrapPlan, BootstrapSignalSanity, _bind_plan_runtime, _bootstrap_contract_error, _bootstrap_path, _bootstrap_task, bootstrap_campaign
+from bananloop.bootstrap import BootstrapError, BootstrapPlan, BootstrapSignalSanity, _bind_plan_runtime, _bootstrap_contract_error, _bootstrap_path, _bootstrap_task, _validate_agent_visible_training_paths, bootstrap_campaign
 from bananloop.contracts import AgentConfig, RuntimePaths
 from bananloop.store import CampaignStore
 from bananloop.wizard import _parse_py_launcher_paths, discover_project
 
 
 PROTOCOL_SHA256 = "a" * 64
+
+
+def test_agent_visible_training_paths_are_limited_to_discovered_training_resources():
+    assert _validate_agent_visible_training_paths(
+        ["data/train.csv"],
+        ["data/train.csv", "data/eval.csv"],
+    ) == ["data/train.csv"]
+
+    for path in (
+        "data/eval.csv",
+        "data/test.csv",
+        "data/train_eval.csv",
+        "../train.csv",
+        "outside/train.csv",
+    ):
+        with pytest.raises(BootstrapError, match="discovered training resources"):
+            _validate_agent_visible_training_paths(
+                [path],
+                ["data/train.csv", "data/eval.csv"],
+            )
 
 
 def test_signal_sanity_contract_rejects_fabricated_or_incomplete_labels():
@@ -746,20 +766,26 @@ def test_noisy_readiness_diagnostics_reach_bounded_repair_and_exhaust_without_ca
     assert "readiness_receipt" in record["bootstrap_attempts"][1]["request"]["repair"]
     assert not paths.db.exists()
 
-def test_materialize_runtime_resources_binds_ignored_csv_but_not_env(tmp_path: Path):
+def test_materialize_runtime_resources_binds_tracked_and_ignored_csv_but_not_env(tmp_path: Path):
     import bananloop.bootstrap as bootstrap_module
 
     source = tmp_path / "source"
     managed = tmp_path / "managed"
     (source / "data").mkdir(parents=True)
-    managed.mkdir()
+    (managed / "data").mkdir(parents=True)
     (source / "data" / "catalog.csv").write_text(
         "id,name\n1,x\n", encoding="utf-8"
+    )
+    (managed / "data" / "catalog.csv").write_text(
+        "id,name\n1,x\n", encoding="utf-8"
+    )
+    (source / "data" / "extra.csv").write_text(
+        "id,name\n2,y\n", encoding="utf-8"
     )
     (source / ".env").write_text("API_KEY=do-not-copy\n", encoding="utf-8")
     discovery = {
         "resources": {
-            "csv_files": ["data/catalog.csv"],
+            "csv_files": ["data/catalog.csv", "data/extra.csv"],
             "benchmark_files": [],
             "config_files": [],
             "compose_files": [],
@@ -771,8 +797,9 @@ def test_materialize_runtime_resources_binds_ignored_csv_but_not_env(tmp_path: P
         source, managed, discovery
     )
 
-    assert bound == ["data/catalog.csv"]
+    assert bound == ["data/catalog.csv", "data/extra.csv"]
     assert (managed / "data" / "catalog.csv").is_file()
+    assert (managed / "data" / "extra.csv").is_file()
     assert not (managed / ".env").exists()
 
 def test_ready_plan_binds_generic_python_to_project_runtime(tmp_path: Path):

@@ -155,7 +155,11 @@ def test_readiness_freezes_full_manifest_while_smoke_scores_a_subset(tmp_path: P
         update={
             "evaluation_command": [sys.executable, "eval.py"],
             "smoke_command": [sys.executable, "eval.py"],
-            "protocol_manifest_commands": {"dev": [sys.executable, "manifest.py"]},
+            "protocol_manifest_commands": {
+                "dev": [sys.executable, "manifest.py"],
+                "validation": [],
+                "holdout": [],
+            },
         }
     )
 

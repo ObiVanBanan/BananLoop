@@ -306,6 +306,8 @@ def run_bootstrap_readiness(
     for tier, manifest_command in sorted(
         getattr(plan, "protocol_manifest_commands", {}).items()
     ):
+        if not manifest_command:
+            continue
         manifest_dir = state_root / "bootstrap-readiness" / f"attempt-{attempt}" / f"manifest-{tier}"
         manifest_dir.mkdir(parents=True, exist_ok=True)
         manifest_workspace = manifest_dir / "workspace"

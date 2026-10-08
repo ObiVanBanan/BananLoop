@@ -97,6 +97,7 @@ class BootstrapPlan(BaseModel):
     evaluation_command: list[str] = Field(default_factory=list)
     smoke_command: list[str] = Field(default_factory=list)
     protocol_manifest_commands: dict[Literal["dev", "validation", "holdout"], list[str]] = Field(default_factory=dict)
+    agent_visible_training_paths: list[str] = Field(default_factory=list)
     validation_command: list[str] = Field(default_factory=list)
     holdout_command: list[str] = Field(default_factory=list)
     primary_metric: MetricSpec
@@ -284,6 +285,36 @@ def _bind_plan_runtime(plan: BootstrapPlan, task: dict[str, Any]) -> BootstrapPl
     })
 
 
+def _validate_agent_visible_training_paths(
+    paths: list[str],
+    runtime_resources: list[str],
+) -> list[str]:
+    """Allow workers to read explicitly selected training resources, never test splits."""
+    runtime_set = set(runtime_resources)
+    training_name = re.compile(r"(?i)(?:^|[/_.-])(?:train|training|trainset)(?:$|[/_.-])")
+    protected_name = re.compile(
+        r"(?i)(?:^|[/_.-])(?:eval|evaluation|test|validation|holdout|gold|reference)(?:$|[/_.-])"
+    )
+    validated: list[str] = []
+    for value in paths:
+        normalized = value.replace("\\", "/")
+        if (
+            not normalized
+            or normalized.startswith("/")
+            or any(part in {"", ".", ".."} for part in normalized.split("/"))
+            or normalized not in runtime_set
+            or not training_name.search(normalized)
+            or protected_name.search(normalized)
+        ):
+            raise BootstrapError(
+                "agent_visible_training_paths must name discovered training resources "
+                "and must not name evaluation, test, validation, holdout, GOLD, or reference files"
+            )
+        if normalized not in validated:
+            validated.append(normalized)
+    return validated
+
+
 def _bootstrap_contract_error(
     plan: BootstrapPlan,
     task: dict[str, Any],
@@ -405,11 +436,12 @@ def _materialize_runtime_resources(
                 source.relative_to(source_repo.resolve())
             except ValueError:
                 continue
-            target = managed_workspace / normalized
-            if target.exists() or not source.is_file():
+            if not source.is_file():
                 continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
+            target = managed_workspace / normalized
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
             bound.append(normalized)
     return sorted(set(bound))
 
@@ -658,6 +690,10 @@ def bootstrap_campaign(
         raise BootstrapError("bootstrap exhausted bounded preparation attempts")
 
     assert plan is not None
+    visible_training_paths = _validate_agent_visible_training_paths(
+        plan.agent_visible_training_paths,
+        runtime_bindings,
+    )
     signal_receipt = readiness.get("signal_sanity", {})
 
     commands = [
@@ -710,8 +746,12 @@ def bootstrap_campaign(
         holdout_command=plan.holdout_command,
         evaluation_assets=assets,
         agent_hidden_paths=list(
-            dict.fromkeys([".bananloop_eval/**", *runtime_bindings])
+            dict.fromkeys([
+                ".bananloop_eval/**",
+                *(path for path in runtime_bindings if path not in visible_training_paths),
+            ])
         ),
+        agent_visible_training_paths=visible_training_paths,
         agent_visible_metrics=(
             plan.agent_visible_metrics or [plan.primary_metric.name]
         ),

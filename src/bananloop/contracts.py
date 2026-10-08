@@ -210,6 +210,7 @@ class CampaignSpec(BaseModel):
     holdout_timeout_seconds: int | None = Field(default=None, ge=1)
     evaluation_assets: list[EvaluationAsset] = Field(default_factory=list)
     agent_hidden_paths: list[str] = Field(default_factory=list)
+    agent_visible_training_paths: list[str] = Field(default_factory=list)
     agent_visible_metrics: list[str] = Field(default_factory=list)
     agent_visible_diagnostics: list[str] = Field(default_factory=list)
     paired_comparison: PairedComparison | None = None
@@ -243,6 +244,29 @@ class CampaignSpec(BaseModel):
     def evaluator_nonempty(cls, value: list[str]) -> list[str]:
         if not value:
             raise ValueError("evaluation_command cannot be empty")
+        return value
+
+    @field_validator("agent_visible_training_paths")
+    @classmethod
+    def training_paths_are_unambiguous(cls, value: list[str]) -> list[str]:
+        training_name = re.compile(r"(?i)(?:^|[/_.-])(?:train|training|trainset)(?:$|[/_.-])")
+        protected_name = re.compile(
+            r"(?i)(?:^|[/_.-])(?:eval|evaluation|test|validation|holdout|gold|reference)(?:$|[/_.-])"
+        )
+        for path in value:
+            normalized = path.replace("\\", "/")
+            if (
+                not normalized
+                or normalized.startswith("/")
+                or any(part in {"", ".", ".."} for part in normalized.split("/"))
+                or not training_name.search(normalized)
+                or protected_name.search(normalized)
+            ):
+                raise ValueError(
+                    "agent_visible_training_paths may only contain clearly named training files"
+                )
+        if len(value) != len(set(value)):
+            raise ValueError("agent_visible_training_paths must be unique")
         return value
 
     @model_validator(mode="after")
@@ -294,6 +318,8 @@ class CampaignSpec(BaseModel):
             data.pop("evaluation_assets", None)
         if not self.agent_hidden_paths:
             data.pop("agent_hidden_paths", None)
+        if not self.agent_visible_training_paths:
+            data.pop("agent_visible_training_paths", None)
         if not self.agent_visible_metrics:
             data.pop("agent_visible_metrics", None)
         if not self.agent_visible_diagnostics:

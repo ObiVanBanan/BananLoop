@@ -128,6 +128,8 @@ class PiAdapter(AgentAdapter):
                 "the full protocol_sha256 and case_id/repetition/input_sha256 list without scoring. The full evaluator "
                 "must read BANANLOOP_PROTOCOL_MANIFEST and emit exactly those identities; smoke may score a subset. "
                 "Keep DEV, VALIDATION, and HOLDOUT manifests separate. Fixed inputs alone do not justify paired statistical acceptance. "
+                "If implementation should learn from discovered training resources, list only those paths in "
+                "agent_visible_training_paths; never include evaluation, test, validation, holdout, GOLD, or reference resources. "
                 "Also include signal_sanity. Configure it only from defensible repository-backed positive and negative "
                 "case IDs or controls, using evidence_kind known_examples, controlled_degradation, metamorphic, or "
                 "invariants, and the primary metric. Never invent labels or derive labels from the evaluator's own "
@@ -136,7 +138,7 @@ class PiAdapter(AgentAdapter):
                 "The core checks directed separation in every A/A smoke run. Do not invent missing references or "
                 "credentials; if essential inputs are missing, set status to needs_input and list exactly what the operator must provide. "
                 "Your final assistant message MUST be exactly one JSON object with keys: status, summary, "
-                "project_context, needs_input, evaluation_command, smoke_command, protocol_manifest_commands, validation_command, holdout_command, "
+                "project_context, needs_input, evaluation_command, smoke_command, protocol_manifest_commands, agent_visible_training_paths, validation_command, holdout_command, "
                 "primary_metric, guardrails, non_regression, mandatory_checks, editable_scope, protected_paths, "
                 "agent_visible_metrics, agent_visible_diagnostics, paired_comparison, signal_sanity, evaluator_timeout_seconds. "
                 "primary_metric must contain name, direction, target, min_improvement. paired_comparison must "
@@ -250,6 +252,7 @@ class PiAdapter(AgentAdapter):
                 '"evaluation_command":["python",".bananloop_eval/evaluator.py"],'
                 '"smoke_command":["python",".bananloop_eval/evaluator.py","--smoke"],'
                 '"protocol_manifest_commands":{"dev":[],"validation":[],"holdout":[]},'
+                '"agent_visible_training_paths":[], '
                 '"validation_command":[],"holdout_command":[],'
                 '"primary_metric":{"name":"quality","direction":"maximize","target":1.0,"min_improvement":0.01},'
                 '"guardrails":[],"non_regression":[],"mandatory_checks":[],"editable_scope":["**"],'

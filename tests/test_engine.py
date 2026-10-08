@@ -90,6 +90,36 @@ def make_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str]:
     return store, engine, repo, base
 
 
+def test_agent_sees_declared_training_assets_but_keeps_evaluation_assets_hidden(tmp_path: Path):
+    store, engine, repo, _ = make_engine(tmp_path)
+    data = repo / "data"
+    data.mkdir()
+    (data / "train.csv").write_text("feature,label\n0,0\n", encoding="utf-8")
+    (data / "eval.csv").write_text("feature,label\n1,1\n", encoding="utf-8")
+    git(["add", "data"], repo)
+    git(["commit", "-m", "add split data"], repo)
+    engine.spec.base_commit = git(["rev-parse", "HEAD"], repo)
+    engine.spec.evaluation_assets = [
+        EvaluationAsset(path="data/train.csv", sha256="a" * 64),
+        EvaluationAsset(path="data/eval.csv", sha256="b" * 64),
+    ]
+    engine.spec.agent_visible_training_paths = ["data/train.csv"]
+    engine.spec.agent_hidden_paths = [".bananloop_eval/**", "data/eval.csv"]
+    engine.spec.protected_paths = ["data/train.csv", "data/eval.csv"]
+    engine.workspace.ensure(engine.spec.base_commit)
+
+    hidden = engine._agent_hidden_paths()
+    agent_workspace = engine.workspace.prepare_agent_workspace(hidden)
+
+    assert "data/train.csv" not in hidden
+    assert "data/eval.csv" in hidden
+    assert "data/train.csv" in engine._agent_protected_paths()
+    assert (agent_workspace / "data" / "train.csv").is_file()
+    assert not (agent_workspace / "data" / "eval.csv").exists()
+    engine.workspace.cleanup_agent_workspace()
+    store.close()
+
+
 def make_staged_engine(
     tmp_path: Path,
     *,

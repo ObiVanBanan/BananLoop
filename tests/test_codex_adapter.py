@@ -8,6 +8,8 @@ from bananloop.agents.codex import BOOTSTRAP_SCHEMA, CodexAdapter
 
 def test_bootstrap_protocol_manifest_schema_is_strict_and_total():
     properties = BOOTSTRAP_SCHEMA["properties"]
+    assert properties["agent_visible_training_paths"]["type"] == "array"
+    assert "agent_visible_training_paths" in BOOTSTRAP_SCHEMA["required"]
     manifest_schema = properties["protocol_manifest_commands"]
     assert manifest_schema["required"] == ["dev", "validation", "holdout"]
     assert manifest_schema["additionalProperties"] is False

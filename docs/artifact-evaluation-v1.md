@@ -119,6 +119,13 @@ enter proposer/implementer inputs. Explicitly approved numeric DEV diagnostics
 continue to work. Existing DEV analyzer signals/examples and generalized capsules
 remain intact. VALIDATION and HOLDOUT payloads have no path into research state.
 
+Bootstrap may explicitly expose a discovered resource whose path clearly
+identifies it as training data through `agent_visible_training_paths`. Core
+rejects paths that are not discovered training resources or whose names identify
+evaluation, test, validation, holdout, GOLD, or reference data. These files remain
+protected and hash-checked; the implementation worker can read them but cannot
+change them. Evaluation resources remain hidden.
+
 The operator report/status includes all tiers, per-case measurements, file hashes,
 aggregates, decisions/predicates and resource totals. Do not expose these reports
 or the state directory to an adaptive agent. This change preserves the existing
