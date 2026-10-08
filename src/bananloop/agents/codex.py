@@ -70,7 +70,15 @@ BOOTSTRAP_SCHEMA = {
                 "additionalProperties": False
             }
         },
-        "mandatory_checks": {"type": "array", "items": {"type": "string"}},
+        "mandatory_checks": {
+            "type": "array",
+            "description": (
+                "Names of boolean check keys emitted by the evaluator's checks object. "
+                "Do not put prose requirements, commands, metrics, or protocol instructions here. "
+                "Use an empty array when no applicable evaluator check key is known."
+            ),
+            "items": {"type": "string"},
+        },
         "editable_scope": {"type": "array", "items": {"type": "string"}},
         "protected_paths": {"type": "array", "items": {"type": "string"}},
         "agent_visible_metrics": {"type": "array", "items": {"type": "string"}},
@@ -288,7 +296,11 @@ class CodexAdapter(AgentAdapter):
                 "For each configured tier whose inputs can be enumerated cheaply, create a protocol manifest command "
                 "that emits protocol_sha256 and the full case_id/repetition/input_sha256 list without scoring. The full "
                 "evaluator must read BANANLOOP_PROTOCOL_MANIFEST and emit exactly those identities; readiness may score "
-                "only a subset. Keep separate manifests for DEV, VALIDATION, and HOLDOUT. Do not enable paired statistical "
+                "only a subset. For bootstrap_smoke, return a nonempty subset of exact manifest case identities and keep "
+                "protocol_sha256 equal to the manifest protocol hash. Choose a subset that preserves the primary metric's "
+                "semantics (for example, a balanced-accuracy subset must contain every required label); if no valid small "
+                "subset can be formed, score all manifest cases. Never invent, rename, or re-hash case identities. Keep "
+                "separate manifests for DEV, VALIDATION, and HOLDOUT. Do not enable paired statistical "
                 "acceptance just because inputs are fixed. "
                 "If discovery found training resources that implementation should use, list only those paths in "
                 "agent_visible_training_paths. Core permits only discovered paths clearly named as training data; "

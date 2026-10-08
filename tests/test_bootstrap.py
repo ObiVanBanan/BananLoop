@@ -357,6 +357,13 @@ def test_bootstrap_task_makes_cli_goal_authoritative(tmp_path: Path):
     assert task["requirements"]["primary_metric_measures_goal_outcome"] is True
     assert task["requirements"]["include_goal_specific_behavioral_probes"] is True
     assert task["requirements"]["tests_are_secondary_regression_checks"] is True
+    assert task["requirements"]["mandatory_checks_are_evaluator_check_keys_only"] is True
+    assert task["requirements"]["mandatory_checks_must_not_contain_prose_commands_or_metrics"] is True
+    assert task["requirements"]["use_empty_mandatory_checks_when_no_applicable_check_key_is_known"] is True
+    assert task["requirements"]["bootstrap_smoke_must_return_nonempty_manifest_member_case_identities"] is True
+    assert task["requirements"]["bootstrap_smoke_protocol_sha256_must_match_manifest"] is True
+    assert task["requirements"]["bootstrap_smoke_subset_must_preserve_primary_metric_semantics"] is True
+    assert task["requirements"]["use_full_manifest_when_no_valid_semantic_smoke_subset_exists"] is True
     assert task["requirements"]["candidate_evaluation_uses_candidate_snapshot"] is True
     assert task["requirements"]["do_not_import_or_execute_host_checkout"] is True
     assert task["requirements"]["test_temp_files_use_os_tempdir"] is True
