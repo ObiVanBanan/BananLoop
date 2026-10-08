@@ -3,7 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from bananloop.agents.codex import CodexAdapter
+from bananloop.agents.codex import BOOTSTRAP_SCHEMA, CodexAdapter
+
+
+def test_bootstrap_protocol_manifest_schema_is_strict_and_total():
+    properties = BOOTSTRAP_SCHEMA["properties"]
+    manifest_schema = properties["protocol_manifest_commands"]
+    assert manifest_schema["required"] == ["dev", "validation", "holdout"]
+    assert manifest_schema["additionalProperties"] is False
 
 
 def test_codex_exec_sends_large_task_via_stdin_not_argv(tmp_path: Path, monkeypatch):
@@ -51,6 +58,7 @@ def test_codex_exec_sends_large_task_via_stdin_not_argv(tmp_path: Path, monkeypa
     assert out["mechanism_key"] == "fixture"
     assert captured["argv"][-1] == "-"
     assert captured["argv"][:2] == ["codex", "exec"]
+    assert "--ephemeral" in captured["argv"]
     assert captured["argv"][captured["argv"].index("-m") + 1] == "gpt-test"
     assert captured["argv"][captured["argv"].index("-c") + 1] == "model_reasoning_effort=high"
     assert "x" * 1000 not in " ".join(captured["argv"])
@@ -128,3 +136,4 @@ def test_codex_uses_role_scoped_sandbox(tmp_path: Path, monkeypatch):
 
     assert seen[0][seen[0].index("--sandbox") + 1] == "workspace-write"
     assert seen[1][seen[1].index("--sandbox") + 1] == "read-only"
+    assert all("--ephemeral" in argv for argv in seen)

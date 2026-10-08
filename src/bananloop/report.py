@@ -5,7 +5,7 @@ import hashlib
 from typing import Any
 
 from .contracts import CampaignSpec, EvaluationResult
-from .evaluator_binding import EvaluationReceipt, validate_receipt_linkage
+from .evaluator_binding import EvaluationReceipt, canonical_hash, validate_receipt_linkage
 from .policy import metric_value, target_met
 from .research import attempt_bucket
 from .store import CampaignStore
@@ -68,6 +68,15 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
     )
     baseline_value = metric_value(baseline, spec.primary_metric.name) if baseline else None
     final_value = metric_value(champion, spec.primary_metric.name) if champion else None
+    protocol_manifests = {
+        tier: {
+            "protocol_sha256": manifest.protocol_sha256,
+            "manifest_sha256": canonical_hash(manifest.model_dump(mode="json")),
+            "case_count": len(manifest.cases),
+            "path": str(store.path.parent / "protocol-manifests" / f"{tier}.json"),
+        }
+        for tier, manifest in spec.protocol_manifests.items()
+    }
     validation_baseline = None
     validation_champion = None
     final_holdout = None
@@ -104,7 +113,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             final_assessment = "PENDING"
         else:
             final_assessment = (
-                "ACCEPTED" if target_met(spec, final_holdout) else "REJECTED"
+                "ACCEPTED" if target_met(spec, final_holdout, tier="holdout") else "REJECTED"
             )
     else:
         final_assessment = "DEV_ONLY"
@@ -186,6 +195,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
         "guardrails": [g.model_dump(mode="json") for g in spec.guardrails],
         "non_regression": [g.model_dump(mode="json") for g in spec.non_regression],
         "evaluation_protocol": {
+            "frozen_manifests": protocol_manifests,
             "dev": {
                 "configured": True,
                 "baseline": baseline_value,
@@ -206,7 +216,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 "evaluated": final_holdout is not None,
                 "snapshot": campaign["champion_snapshot"] if final_holdout else None,
                 "value": holdout_value,
-                "target_met": target_met(spec, final_holdout) if final_holdout else None,
+                "target_met": target_met(spec, final_holdout, tier="holdout") if final_holdout else None,
             },
         },
         "paired_comparison": spec.paired_comparison.model_dump(mode="json") if spec.paired_comparison else None,
@@ -376,4 +386,3 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
     ]
     return "\n".join(lines)
-

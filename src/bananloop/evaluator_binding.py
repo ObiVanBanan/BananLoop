@@ -160,11 +160,6 @@ def make_binding(spec: CampaignSpec, runtime: dict[str, Any]) -> EvaluatorBindin
         "paired_comparison": spec.paired_comparison.model_dump(mode="json") if spec.paired_comparison else None,
         "mandatory_checks": spec.mandatory_checks,
     }
-    if spec.evaluation_protocols:
-        policy["evaluation_protocols"] = {
-            tier: protocol.manifest_sha256()
-            for tier, protocol in sorted(spec.evaluation_protocols.items())
-        }
     body = {
         "schema_version": 1,
         "approved_spec_hash": approved,

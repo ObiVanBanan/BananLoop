@@ -30,13 +30,7 @@ from .evaluator_binding import (
     make_receipt, runtime_descriptor, validate_receipt_linkage,
 )
 from .leakage import scan_forbidden_diff_patterns
-from .policy import (
-    InvalidEvaluation,
-    decide,
-    target_met,
-    validate_evaluation,
-    validate_evaluation_protocol,
-)
+from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
 from .process import ProcessCancelled, check_process_control, process_control
 from .research import (
     attempt_bucket,
@@ -393,9 +387,7 @@ class Engine:
                 "BANANLOOP_EVALUATION_TIER": request.get("tier", "dev"),
                 "BANANLOOP_WORKSPACE": str(self.workspace.workspace.resolve()),
             }
-            context.update(
-                self._protocol_environment(request.get("tier", "dev"))
-            )
+            context.update(self._protocol_manifest_context(request.get("tier", "dev")))
             if candidate_proof:
                 context["BANANLOOP_PARENT_SNAPSHOT"] = str(
                     candidate_proof["parent_snapshot"]
@@ -418,6 +410,8 @@ class Engine:
                 check_process_control()
                 response = invoke()
                 check_process_control()
+                if kind != "agent":
+                    self._protocol_manifest_context(request.get("tier", "dev"))
             if kind != "agent":
                 result = EvaluationResult.model_validate(response)
                 ceiling = self.spec.budget.evaluation_units_per_call
@@ -534,33 +528,6 @@ class Engine:
             if sidecar_receipt.receipt_hash != receipt.receipt_hash or sidecar_receipt != receipt:
                 raise EvaluatorError(f"evaluation receipt sidecar mismatch for {action_id}")
 
-    def _protocol_environment(self, tier: str) -> dict[str, str]:
-        protocol = self.spec.evaluation_protocols.get(tier)
-        if protocol is None:
-            return {}
-        root = self.store.path.parent / "protocol-manifests"
-        root.mkdir(parents=True, exist_ok=True)
-        path = root / f"{tier}.json"
-        payload = protocol.model_dump_json()
-        if not path.exists() or path.read_text(encoding="utf-8") != payload:
-            temp = path.with_name(f".{tier}.json.tmp")
-            temp.write_text(payload, encoding="utf-8")
-            temp.replace(path)
-        return {
-            "BANANLOOP_PROTOCOL_MANIFEST": str(path.resolve()),
-            "BANANLOOP_PROTOCOL_MANIFEST_SHA256": protocol.manifest_sha256(),
-        }
-
-    def _validate_tier_protocol(
-        self,
-        tier: str,
-        result: EvaluationResult,
-    ) -> None:
-        validate_evaluation_protocol(
-            self.spec.evaluation_protocols.get(tier),
-            result,
-        )
-
     def _evaluation_request(
         self,
         snapshot: str,
@@ -575,12 +542,44 @@ class Engine:
             "command": command or self.spec.evaluation_command,
             "evaluation_fingerprint": evaluation_fingerprint(self.spec.evaluation_assets),
         }
-        protocol = self.spec.evaluation_protocols.get(tier)
-        if protocol is not None:
-            request["protocol_manifest_sha256"] = protocol.manifest_sha256()
+        manifest = self.spec.protocol_manifests.get(tier)
+        if manifest is not None:
+            serialized = json.dumps(
+                manifest.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            request["protocol_manifest_sha256"] = hashlib.sha256(serialized).hexdigest()
         if candidate_proof is not None:
             request["candidate_proof"] = candidate_proof
         return request
+
+    def _protocol_manifest_context(self, tier: str) -> dict[str, str]:
+        manifest = self.spec.protocol_manifests.get(tier)
+        if manifest is None:
+            return {}
+        root = Path(self.store.path).parent / "protocol-manifests"
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / f"{tier}.json"
+        serialized = json.dumps(
+            manifest.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if path.is_symlink():
+            raise EvaluatorError("frozen protocol manifest cannot be a symlink")
+        if path.exists():
+            if path.read_text(encoding="utf-8") != serialized:
+                raise EvaluatorError("frozen protocol manifest changed after campaign initialization")
+        else:
+            temporary = path.with_suffix(".json.tmp")
+            temporary.write_text(serialized, encoding="utf-8")
+            temporary.replace(path)
+        digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        return {
+            "BANANLOOP_PROTOCOL_MANIFEST": str(path.resolve()),
+            "BANANLOOP_PROTOCOL_MANIFEST_SHA256": digest,
+        }
 
     def _validation_reference(self) -> EvaluationResult:
         snapshot = self.store.campaign()["champion_snapshot"]
@@ -592,11 +591,10 @@ class Engine:
         return EvaluationResult.model_validate_json(row["result_json"])
 
     def _holdout_assessment(self, result: EvaluationResult) -> dict[str, Any]:
-        self._validate_tier_protocol("holdout", result)
-        validate_evaluation(self.spec, result)
+        validate_evaluation(self.spec, result, tier="holdout")
         return {
             "snapshot": self.store.campaign()["champion_snapshot"],
-            "target_met": target_met(self.spec, result),
+            "target_met": target_met(self.spec, result, tier="holdout"),
             "result": result.model_dump(mode="json"),
         }
 
@@ -644,7 +642,6 @@ class Engine:
             ).model_dump(mode="json"),
         )
         result = EvaluationResult.model_validate(raw)
-        self._validate_tier_protocol("holdout", result)
         validate_evaluation(self.spec, result)
         self.store.record_evaluation(
             None,
@@ -696,7 +693,6 @@ class Engine:
                 ).model_dump(mode="json"),
             )
             result = EvaluationResult.model_validate(raw)
-            self._validate_tier_protocol("dev", result)
             validate_evaluation(self.spec, result)
         except (EvaluatorError, InvalidEvaluation, ValidationError, UnknownActionOutcome) as exc:
             self.store.event("BASELINE_FAILED", {"error": str(exc)})
@@ -733,8 +729,7 @@ class Engine:
                     ).model_dump(mode="json"),
                 )
                 validation_result = EvaluationResult.model_validate(validation_raw)
-                self._validate_tier_protocol("validation", validation_result)
-                validate_evaluation(self.spec, validation_result)
+                validate_evaluation(self.spec, validation_result, tier="validation")
             except (
                 EvaluatorError,
                 InvalidEvaluation,
@@ -1265,7 +1260,6 @@ class Engine:
                 ),
             )
             result = EvaluationResult.model_validate(raw)
-            self._validate_tier_protocol("dev", result)
             validate_evaluation(self.spec, result)
         except (EvaluatorError, InvalidEvaluation, ValidationError, EngineError) as exc:
             self.store.update_experiment(experiment_id, failure_category="INVALID_EVALUATION", lesson=str(exc)[:1000])
@@ -1292,8 +1286,7 @@ class Engine:
         # Validate before completing the action receipt, so a known invalid
         # measurement can use the explicit FAILED-action retry path.
         result = evaluator.evaluate(self.workspace.workspace, timeout=timeout)
-        self._validate_tier_protocol(tier, result)
-        decision = decide(self.spec, reference, result)
+        decision = decide(self.spec, reference, result, tier=tier)
         if "PAIRED_INPUT_MISMATCH" in decision.reasons:
             raise InvalidEvaluation("PAIRED_INPUT_MISMATCH")
         return result.model_dump(mode="json")
@@ -1574,10 +1567,9 @@ class Engine:
                 ),
             )
             result = EvaluationResult.model_validate(raw)
-            self._validate_tier_protocol("validation", result)
-            validate_evaluation(self.spec, result)
+            validate_evaluation(self.spec, result, tier="validation")
             reference = self._validation_reference()
-            validation_decision = decide(self.spec, reference, result)
+            validation_decision = decide(self.spec, reference, result, tier="validation")
             if "PAIRED_INPUT_MISMATCH" in validation_decision.reasons:
                 raise InvalidEvaluation("PAIRED_INPUT_MISMATCH")
         except (EvaluatorError, InvalidEvaluation, ValidationError, EngineError) as exc:
@@ -1690,7 +1682,11 @@ class Engine:
         champion = EvaluationResult.model_validate_json(campaign["champion_json"])
         goal_met = target_met(self.spec, champion)
         if goal_met and self.validation_evaluator is not None:
-            goal_met = target_met(self.spec, self._validation_reference())
+            goal_met = target_met(
+                self.spec,
+                self._validation_reference(),
+                tier="validation",
+            )
         if goal_met:
             self._stop(StopReason.GOAL_MET, CampaignStatus.GOAL_MET)
             return True

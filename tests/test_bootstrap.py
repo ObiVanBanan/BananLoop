@@ -129,6 +129,17 @@ def test_bootstrap_plan_rejects_ambiguous_needs_input():
         raise AssertionError("needs_input without actionable input must fail")
 
 
+def test_bootstrap_plan_accepts_empty_manifest_command_tiers():
+    payload = _bootstrap_payload(status="ready", needs_input=[], summary="ready fixture")
+    payload["protocol_manifest_commands"] = {
+        "dev": [], "validation": [], "holdout": []
+    }
+    plan = BootstrapPlan.model_validate(payload)
+    assert plan.protocol_manifest_commands == {
+        "dev": [], "validation": [], "holdout": []
+    }
+
+
 def test_bootstrap_path_is_restricted_to_private_evaluator_area():
     assert _bootstrap_path(".bananloop_eval/evaluator.py")
     assert _bootstrap_path(".bananloop_eval/config/cases.json")
@@ -184,6 +195,70 @@ def test_repo_goal_bootstrap_creates_campaign_without_touching_source(tmp_path: 
     assert record["bootstrap_attempts"][-1]["readiness"]["signal_sanity"]["reason"]
     assert record["bootstrap_request"]["goal"] == "improve fixture quality"
     assert record["bootstrap_request"]["repository"]["detected_python_runtimes"]
+
+
+def test_bootstrap_persists_core_frozen_protocol_manifest(tmp_path: Path):
+    repo = tmp_path / "project"
+    repo.mkdir()
+    (repo / "value.txt").write_text("0\n", encoding="utf-8")
+    (repo / "bootstrap_agent.py").write_text(
+        "import json,sys\n"
+        "from pathlib import Path\n"
+        "root=Path('.bananloop_eval'); root.mkdir(exist_ok=True)\n"
+        "(root/'manifest.py').write_text(\"import json\\n"
+        f"print(json.dumps({{'protocol_sha256':'{'a' * 64}','cases':["
+        f"{{'case_id':'case-a','repetition':0,'input_sha256':'{'b' * 64}'}},"
+        f"{{'case_id':'case-b','repetition':0,'input_sha256':'{'c' * 64}'}}]}}))\\n\")\n"
+        "(root/'evaluator.py').write_text(\"import json,os\\n"
+        "m=json.load(open(os.environ['BANANLOOP_PROTOCOL_MANIFEST']))\\n"
+        "cases=[dict(c,metrics={'quality':0.5}) for c in m['cases']]\\n"
+        "print(json.dumps({'status':'ok','metrics':{'quality':0.5},'checks':{},"
+        "'protocol_sha256':m['protocol_sha256'],'cases':cases}))\\n\")\n"
+        "print(json.dumps({"
+        "'status':'ready','summary':'fixed protocol fixture','project_context':'value.txt is production',"
+        "'needs_input':[],'evaluation_command':[sys.executable,'.bananloop_eval/evaluator.py'],"
+        "'smoke_command':[sys.executable,'.bananloop_eval/evaluator.py'],"
+        "'protocol_manifest_commands':{'dev':[sys.executable,'.bananloop_eval/manifest.py']},"
+        "'validation_command':[],'holdout_command':[],"
+        "'primary_metric':{'name':'quality','direction':'maximize','target':1.0,'min_improvement':0.1},"
+        "'guardrails':[],'non_regression':[],'mandatory_checks':[],'editable_scope':['value.txt'],"
+        "'protected_paths':['.bananloop_eval/**'],'agent_visible_metrics':['quality'],"
+        "'agent_visible_diagnostics':[],'paired_comparison':{'enabled':False,'case_count':1,"
+        "'repetitions':1,'metric':'quality','direction':'maximize','min_wins':1,'worst_case_tolerance':0.0},"
+        "'evaluator_timeout_seconds':60}))\n",
+        encoding="utf-8",
+    )
+    git(["init"], repo)
+    git(["config", "user.email", "test@example.com"], repo)
+    git(["config", "user.name", "Test"], repo)
+    git(["add", "."], repo)
+    git(["commit", "-m", "baseline"], repo)
+    source_base = git(["rev-parse", "HEAD"], repo)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "state")
+
+    _, spec = bootstrap_campaign(
+        repo=repo,
+        goal="improve quality on fixed inputs",
+        paths=paths,
+        agent_config=AgentConfig(kind="command", command=[sys.executable, "bootstrap_agent.py"]),
+        max_experiments=1,
+        max_attempts=1,
+        max_agent_calls=2,
+        max_evaluator_calls=3,
+        deadline_seconds=600,
+    )
+
+    assert spec is not None
+    assert len(spec.protocol_manifests["dev"].cases) == 2
+    assert "protocol_manifests" in json.loads(spec.model_dump_json())
+    assert git(["rev-parse", "HEAD"], repo) == source_base
+    store = CampaignStore(paths.db)
+    try:
+        persisted = store.spec()
+        assert persisted.protocol_manifests["dev"] == spec.protocol_manifests["dev"]
+        assert persisted.approved_hash() == spec.approved_hash()
+    finally:
+        store.close()
 
 
 def test_bootstrap_agent_failure_persists_sanitized_attempt_receipt(tmp_path, monkeypatch):
@@ -267,7 +342,30 @@ def test_bootstrap_task_makes_cli_goal_authoritative(tmp_path: Path):
     assert task["requirements"]["test_temp_files_use_os_tempdir"] is True
     assert task["requirements"]["do_not_redirect_test_temp_to_artifact_dir"] is True
     assert task["requirements"]["keep_windows_temp_paths_short"] is True
+    assert task["requirements"]["fixed_input_identity_is_independent_of_paired_acceptance"] is True
+    assert task["requirements"]["do_not_enable_paired_comparison_solely_for_a_fixed_input_manifest"] is True
+    assert task["requirements"]["require_a_scientific_reason_for_paired_comparison"] is True
+    assert task["requirements"]["freeze_case_identities_before_full_scoring"] is True
+    assert task["requirements"]["protocol_manifest_command_must_enumerate_without_scoring"] is True
+    assert task["requirements"]["full_evaluator_must_read_and_honor_bananloop_protocol_manifest"] is True
+    assert task["requirements"]["protocol_manifests_are_separate_per_configured_tier"] is True
     assert task["repository"]["detected_python_runtimes"]
+
+
+def test_fixed_input_manifest_does_not_imply_paired_acceptance(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    task = _bootstrap_task(
+        repo,
+        "Improve quality on the same fixed evaluation inputs",
+        "deadbeef",
+        AgentConfig(kind="codex"),
+    )
+
+    requirements = task["requirements"]
+    assert requirements["fixed_input_identity_is_independent_of_paired_acceptance"] is True
+    assert requirements["do_not_enable_paired_comparison_solely_for_a_fixed_input_manifest"] is True
+    assert requirements["require_a_scientific_reason_for_paired_comparison"] is True
 
 
 
@@ -723,7 +821,7 @@ def test_bootstrap_contract_uses_discovered_dotenv_key_instead_of_reasking_secre
     assert "trusted evaluator process" in error
 
 
-def test_bootstrap_contract_rejects_system_python_dependency_false_negative(tmp_path: Path):
+def test_bootstrap_contract_allows_confirmed_missing_package_with_project_runtime(tmp_path: Path):
     task = {
         "goal": "Improve quality",
         "repository": {
@@ -749,8 +847,7 @@ def test_bootstrap_contract_rejects_system_python_dependency_false_negative(tmp_
 
     error = _bootstrap_contract_error(plan, task)
 
-    assert error is not None
-    assert "/project/.venv/bin/python" in error
+    assert error is None
 
 
 def test_bootstrap_contract_reuses_history_for_frozen_sample_instead_of_case_file(tmp_path: Path):
@@ -806,92 +903,3 @@ def test_bootstrap_allows_leftover_uninitialized_sqlite_file(tmp_path: Path):
         assert store.campaign()["status"] == "READY"
     finally:
         store.close()
-
-
-def test_bootstrap_freezes_protocol_manifest_before_campaign_init(
-    tmp_path: Path, monkeypatch
-):
-    import bananloop.bootstrap as bootstrap_module
-
-    repo, _ = make_repo(tmp_path)
-    paths = RuntimePaths.for_repo(repo, tmp_path / "protocol-state")
-    input_a = __import__("hashlib").sha256(b"case-a").hexdigest()
-    input_b = __import__("hashlib").sha256(b"case-b").hexdigest()
-
-    class FixedProtocolAgent:
-        def probe(self):
-            return {"available": True, "kind": "fixture", "version": "1"}
-
-        def normalize_result(self, task, result):
-            return result
-
-        def execute(self, task, workspace, timeout):
-            evaluator = workspace / ".bananloop_eval" / "evaluator.py"
-            evaluator.parent.mkdir(parents=True, exist_ok=True)
-            evaluator.write_text(
-                "import json,sys\n"
-                f"inputs=[{{'case_id':'a','repetition':0,'input_sha256':'{input_a}'}},"
-                f"{{'case_id':'b','repetition':0,'input_sha256':'{input_b}'}}]\n"
-                "if '--manifest' in sys.argv:\n"
-                " print(json.dumps({'schema_version':1,'inputs':inputs}))\n"
-                "else:\n"
-                f" print(json.dumps({{'status':'ok','metrics':{{'quality':0.5}},"
-                f"'checks':{{}},'protocol_sha256':'{PROTOCOL_SHA256}',"
-                "'cases':[dict(item,metrics={'quality':0.5}) for item in inputs]}))\n",
-                encoding="utf-8",
-            )
-            payload = _bootstrap_payload(
-                status="ready",
-                needs_input=[],
-                summary="fixed protocol fixture",
-            )
-            payload["smoke_command"] = [
-                sys.executable,
-                ".bananloop_eval/evaluator.py",
-                "--smoke",
-            ]
-            payload["protocol_manifest_command"] = [
-                sys.executable,
-                ".bananloop_eval/evaluator.py",
-                "--manifest",
-            ]
-            payload["paired_comparison"] = {
-                "enabled": True,
-                "case_count": 2,
-                "repetitions": 1,
-                "metric": "quality",
-                "direction": "maximize",
-                "min_wins": 1,
-                "worst_case_tolerance": 0.0,
-            }
-            return payload
-
-    monkeypatch.setattr(
-        bootstrap_module,
-        "_agent",
-        lambda _config: FixedProtocolAgent(),
-    )
-
-    plan, spec = bootstrap_campaign(
-        repo=repo,
-        goal="improve fixed benchmark",
-        paths=paths,
-        agent_config=AgentConfig(kind="codex"),
-        max_experiments=1,
-        max_attempts=1,
-        max_agent_calls=2,
-        max_evaluator_calls=2,
-        deadline_seconds=120,
-    )
-
-    assert plan.protocol_manifest_command
-    assert spec is not None
-    protocol = spec.evaluation_protocols["dev"]
-    assert protocol.case_count() == 2
-    assert len(protocol.inputs) == 2
-    record = json.loads(
-        (paths.root / "bootstrap-plan.json").read_text(encoding="utf-8")
-    )
-    manifest_receipt = record["bootstrap_attempts"][-1]["protocol_manifest"]
-    assert manifest_receipt["status"] == "PASSED"
-    assert manifest_receipt["case_count"] == 2

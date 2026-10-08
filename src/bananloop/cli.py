@@ -391,7 +391,6 @@ def cmd_start(args: argparse.Namespace) -> int:
             "attempts": len(bootstrap_record["bootstrap_attempts"]),
             "snapshot": last_attempt.get("snapshot"),
             "readiness": readiness,
-            "protocol_manifest": last_attempt.get("protocol_manifest"),
         },
         "state": str(paths.root),
         "campaign_id": _display_campaign_id(args, paths),

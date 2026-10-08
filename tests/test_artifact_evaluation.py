@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from bananloop.contracts import EvaluationResult, PairedComparison, BudgetSpec
+from bananloop.contracts import EvaluationResult, PairedComparison, BudgetSpec, ProtocolCase, ProtocolManifest
 from bananloop.engine import ControlledInterruption, Engine
 from bananloop.policy import decide
 from bananloop.report import build_report, render_markdown
@@ -168,6 +168,86 @@ def test_pairing_fail_closed(tmp_path,change):
         assert not decision.accepted
     except ValueError:
         assert change in {'missing','duplicate','nan'}
+    store.close()
+
+
+@pytest.mark.parametrize("change", ["protocol", "case", "input", "missing_cases"])
+def test_fixed_input_identity_is_enforced_without_paired_acceptance(tmp_path, change):
+    from bananloop.policy import InvalidEvaluation
+
+    store, engine = setup(tmp_path)
+    engine.spec.paired_comparison = None
+    engine.workspace.ensure(engine.spec.base_commit)
+    engine._baseline()
+    champion = EvaluationResult.model_validate_json(store.campaign()["baseline_json"])
+    payload = champion.model_dump(mode="json")
+    payload["metrics"]["quality"]["value"] += 1
+    if change == "protocol":
+        payload["protocol_sha256"] = "f" * 64
+    elif change == "case":
+        payload["cases"][0]["case_id"] = "different-case"
+    elif change == "input":
+        payload["cases"][0]["input_sha256"] = "f" * 64
+    else:
+        payload["cases"] = []
+        payload["protocol_sha256"] = None
+    candidate = EvaluationResult.model_validate(payload)
+
+    with pytest.raises(InvalidEvaluation, match="FIXED_INPUT_MISMATCH"):
+        decide(engine.spec, champion, candidate)
+    store.close()
+
+
+def test_core_protocol_manifests_are_tier_specific_frozen_and_private(tmp_path):
+    from bananloop.evaluators.command import EvaluatorError
+    from bananloop.policy import validate_evaluation
+
+    store, engine = setup(tmp_path)
+    engine.workspace.ensure(engine.spec.base_commit)
+    engine._baseline()
+    baseline = EvaluationResult.model_validate_json(store.campaign()["baseline_json"])
+    dev_manifest = ProtocolManifest(
+        protocol_sha256=baseline.protocol_sha256,
+        cases=[
+            ProtocolCase(
+                case_id=case.case_id,
+                repetition=case.repetition,
+                input_sha256=case.input_sha256,
+            )
+            for case in baseline.cases
+        ],
+    )
+    holdout_manifest = ProtocolManifest(
+        protocol_sha256="f" * 64,
+        cases=[ProtocolCase(case_id="heldout-case", input_sha256="e" * 64)],
+    )
+    engine.spec.paired_comparison = None
+    prior_spec_hash = engine.spec.approved_hash()
+    engine.spec.protocol_manifests = {
+        "dev": dev_manifest,
+        "holdout": holdout_manifest,
+    }
+    assert engine.spec.approved_hash() != prior_spec_hash
+
+    validate_evaluation(engine.spec, baseline)
+    mutated = baseline.model_copy(deep=True)
+    mutated.cases[0].input_sha256 = "d" * 64
+    with pytest.raises(ValueError, match="does not match the frozen protocol manifest"):
+        validate_evaluation(engine.spec, mutated)
+    dev_env = engine._protocol_manifest_context("dev")
+    holdout_env = engine._protocol_manifest_context("holdout")
+    assert dev_env["BANANLOOP_PROTOCOL_MANIFEST"] != holdout_env["BANANLOOP_PROTOCOL_MANIFEST"]
+    task_json = json.dumps(engine._task_context("implement", 99))
+    assert "BANANLOOP_PROTOCOL_MANIFEST" not in task_json
+    assert baseline.cases[0].case_id not in task_json
+    assert baseline.cases[0].input_sha256 not in task_json
+    assert engine._evaluation_request("snapshot", tier="dev")["protocol_manifest_sha256"] == dev_env[
+        "BANANLOOP_PROTOCOL_MANIFEST_SHA256"
+    ]
+
+    Path(dev_env["BANANLOOP_PROTOCOL_MANIFEST"]).write_text("tampered", encoding="utf-8")
+    with pytest.raises(EvaluatorError, match="changed after campaign initialization"):
+        engine._protocol_manifest_context("dev")
     store.close()
 
 

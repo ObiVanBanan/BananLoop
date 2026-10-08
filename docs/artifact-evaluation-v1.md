@@ -41,6 +41,22 @@ Core checks unique case/repetition keys, complete configured sets, finite values
 matching protocol/input identities and the deterministic paired policy. It has no
 domain imports or domain dispatch. Set identity mismatch rejects a candidate.
 
+For fixed-input campaigns, bootstrap may provide a cheap `protocol_manifest_commands`
+entry for each configured tier. Each command emits a `protocol_sha256` and the full
+case identity list (`case_id`, `repetition`, `input_sha256`) without scoring. Core
+validates and stores each tier manifest in the approved campaign spec, then passes
+the private manifest file path and digest to that tier's evaluator as
+`BANANLOOP_PROTOCOL_MANIFEST` and `BANANLOOP_PROTOCOL_MANIFEST_SHA256`. Readiness
+may score a subset, but every returned smoke identity must belong to the manifest;
+full DEV, VALIDATION, and HOLDOUT results must match their tier manifest exactly.
+The manifest contains identities only, not labels or expected outputs. The
+implementation worker receives neither the manifest nor per-case identity rows.
+
+Fixed protocol identity is independent of `paired_comparison`. Core enforces the
+frozen case set and input fingerprints even when paired statistical acceptance is
+disabled. Paired acceptance is an optional policy for matched case-level outcome
+comparisons; merely fixing inputs does not enable it.
+
 `--paired-policy policy.json` selects optional paired acceptance. A policy uses
 `case_count`, `repetitions`, `metric`, `direction`, `min_wins`,
 `worst_case_tolerance`, optional per-measurement `guardrails` and

@@ -12,6 +12,7 @@ import pytest
 
 from bananloop.bootstrap import BootstrapPairedPlan, BootstrapPlan
 from bananloop import readiness
+from bananloop.contracts import ProtocolCase, ProtocolManifest
 from bananloop.readiness import ReadinessError, run_bootstrap_readiness
 
 
@@ -127,6 +128,51 @@ def test_readiness_runs_three_times_and_records_stable_inputs(tmp_path: Path):
         "paired_noise_gate_passed": True,
     }
     assert receipt["runs"][0]["case_count"] == 1
+
+
+def test_readiness_freezes_full_manifest_while_smoke_scores_a_subset(tmp_path: Path):
+    protocol_hash = hashlib.sha256(b"full-protocol").hexdigest()
+    first_hash = hashlib.sha256(b"first-input").hexdigest()
+    second_hash = hashlib.sha256(b"second-input").hexdigest()
+    (tmp_path / "manifest.py").write_text(
+        "import json\n"
+        f"print(json.dumps({{'protocol_sha256':'{protocol_hash}','cases':["
+        f"{{'case_id':'one','repetition':0,'input_sha256':'{first_hash}'}},"
+        f"{{'case_id':'two','repetition':0,'input_sha256':'{second_hash}'}}]}}))\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "eval.py").write_text(
+        "import json,os\n"
+        "manifest=json.load(open(os.environ['BANANLOOP_PROTOCOL_MANIFEST']))\n"
+        "case=manifest['cases'][0]\n"
+        "case['metrics']={'quality':0.5}\n"
+        "print(json.dumps({'status':'ok','metrics':{'quality':0.5},'checks':{'tests':True},"
+        "'protocol_sha256':manifest['protocol_sha256'],'cases':[case]}))\n",
+        encoding="utf-8",
+    )
+    init_repo(tmp_path)
+    configured = plan([sys.executable, "eval.py"]).model_copy(
+        update={
+            "evaluation_command": [sys.executable, "eval.py"],
+            "smoke_command": [sys.executable, "eval.py"],
+            "protocol_manifest_commands": {"dev": [sys.executable, "manifest.py"]},
+        }
+    )
+
+    receipt = run_bootstrap_readiness(
+        plan=configured,
+        workspace=tmp_path,
+        snapshot=snapshot(tmp_path),
+        state_root=tmp_path / "state",
+        attempt=1,
+    )
+
+    manifest = ProtocolManifest.model_validate(receipt["protocol_manifests"]["dev"])
+    assert len(manifest.cases) == 2
+    assert receipt["protocol_manifest_sha256"]["dev"] == hashlib.sha256(
+        json.dumps(manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert len(receipt["runs"][0]["case_inputs"]) == 1
 
 
 @pytest.mark.parametrize("repeats", [1, 6])
@@ -729,38 +775,3 @@ def test_readiness_defers_guardrail_and_non_regression_metrics_to_full_evaluatio
         "other_rerank_recall": None,
         "other_top1": None,
     }
-
-
-def test_protocol_manifest_enumerates_fixed_inputs_without_scoring(tmp_path: Path):
-    script = tmp_path / "manifest.py"
-    identities = [
-        {
-            "case_id": "a",
-            "repetition": 0,
-            "input_sha256": hashlib.sha256(b"a").hexdigest(),
-        },
-        {
-            "case_id": "b",
-            "repetition": 0,
-            "input_sha256": hashlib.sha256(b"b").hexdigest(),
-        },
-    ]
-    script.write_text(
-        "import json\n"
-        f"print(json.dumps({{'schema_version':1,'inputs':{identities!r}}}))\n",
-        encoding="utf-8",
-    )
-    init_repo(tmp_path)
-
-    protocol, receipt = readiness.run_protocol_manifest(
-        command=[sys.executable, str(script)],
-        workspace=tmp_path,
-        snapshot=snapshot(tmp_path),
-        source_repo=tmp_path,
-    )
-
-    assert protocol.case_count() == 2
-    assert len(protocol.inputs) == 2
-    assert receipt["status"] == "PASSED"
-    assert receipt["measurement_count"] == 2
-    assert receipt["manifest_sha256"] == protocol.manifest_sha256()
