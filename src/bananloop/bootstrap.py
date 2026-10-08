@@ -18,6 +18,7 @@ from .contracts import (
     MetricSpec,
     NonRegressionSpec,
     PairedComparison,
+    ProtocolManifest,
     RuntimePaths,
 )
 from .integrity import discover_evaluation_assets, sha256_evaluation_asset
@@ -95,6 +96,7 @@ class BootstrapPlan(BaseModel):
     needs_input: list[str] = Field(default_factory=list)
     evaluation_command: list[str] = Field(default_factory=list)
     smoke_command: list[str] = Field(default_factory=list)
+    protocol_manifest_commands: dict[Literal["dev", "validation", "holdout"], list[str]] = Field(default_factory=dict)
     validation_command: list[str] = Field(default_factory=list)
     holdout_command: list[str] = Field(default_factory=list)
     primary_metric: MetricSpec
@@ -123,6 +125,30 @@ class BootstrapPlan(BaseModel):
                 raise ValueError("ready bootstrap plan requires evaluation_command")
             if not self.project_context.strip():
                 raise ValueError("ready bootstrap plan requires project_context")
+            eval_commands = {
+                "dev": self.evaluation_command,
+                "validation": self.validation_command,
+                "holdout": self.holdout_command,
+            }
+            configured_manifests = {
+                tier: command
+                for tier, command in self.protocol_manifest_commands.items()
+                if command
+            }
+            unknown = sorted(set(configured_manifests) - set(eval_commands))
+            if unknown:
+                raise ValueError("protocol manifest command has unknown tier(s): " + ", ".join(unknown))
+            invalid = sorted(
+                tier for tier in configured_manifests
+                if not eval_commands[tier]
+            )
+            if invalid:
+                raise ValueError("protocol manifest commands require configured evaluator tiers: " + ", ".join(invalid))
+            if configured_manifests and any(
+                eval_commands[tier] and tier not in configured_manifests
+                for tier in eval_commands
+            ):
+                raise ValueError("every configured evaluator tier requires a protocol manifest command")
         elif not self.needs_input:
             raise ValueError("needs_input bootstrap plan must explain what input is missing")
         return self
@@ -188,9 +214,18 @@ def _bootstrap_task(
             "do_not_redirect_test_temp_to_artifact_dir": True,
             "keep_windows_temp_paths_short": True,
             "deterministic_or_paired_measurement": True,
+            "fixed_input_identity_is_independent_of_paired_acceptance": True,
+            "do_not_enable_paired_comparison_solely_for_a_fixed_input_manifest": True,
+            "require_a_scientific_reason_for_paired_comparison": True,
             "freeze_inputs_and_randomness_when_possible": True,
             "no_per_evaluation_llm_planning": True,
             "smoke_test_evaluator_before_ready": True,
+            "freeze_case_identities_before_full_scoring": True,
+            "provide_protocol_manifest_command_for_fixed_input_tiers": True,
+            "protocol_manifest_command_must_enumerate_without_scoring": True,
+            "full_evaluator_must_read_and_honor_bananloop_protocol_manifest": True,
+            "protocol_manifests_are_separate_per_configured_tier": True,
+            "no_protocol_manifest_or_case_identity_is_visible_to_implementation_workers": True,
             "core_owns_smoke_verdict": True,
             "provide_cheap_smoke_command_when_possible": True,
             "same_inputs_required_across_smoke_repeats": True,
@@ -240,6 +275,10 @@ def _bind_plan_runtime(plan: BootstrapPlan, task: dict[str, Any]) -> BootstrapPl
     return plan.model_copy(update={
         "evaluation_command": _bind_python_command(plan.evaluation_command, executable),
         "smoke_command": _bind_python_command(plan.smoke_command, executable),
+        "protocol_manifest_commands": {
+            tier: _bind_python_command(command, executable)
+            for tier, command in plan.protocol_manifest_commands.items()
+        },
         "validation_command": _bind_python_command(plan.validation_command, executable),
         "holdout_command": _bind_python_command(plan.holdout_command, executable),
     })
@@ -265,10 +304,6 @@ def _bootstrap_contract_error(
         r"пакет|зависим|модул|библиотек|верси)",
         re.IGNORECASE,
     )
-    package_prerequisite = re.compile(
-        r"(package|dependenc|module|library|пакет|зависим|модул|библиотек)",
-        re.IGNORECASE,
-    )
     secret_prerequisite = re.compile(
         r"(credential|api.?key|token|secret|password|passwd|ключ|токен|секрет|парол)",
         re.IGNORECASE,
@@ -276,7 +311,6 @@ def _bootstrap_contract_error(
     supplied_goal = bool(str(task.get("goal") or "").strip())
     repository = task.get("repository", {})
     runtimes = repository.get("detected_python_runtimes", [])
-    preferred_project_python = _preferred_project_python(task)
     resources = repository.get("detected_resources", {})
     env_keys = [str(key) for key in resources.get("env_keys", [])]
     env_keys_upper = {key.upper() for key in env_keys}
@@ -305,12 +339,6 @@ def _bootstrap_contract_error(
                     "to export or inspect that secret"
                 )
             continue
-        if preferred_project_python and package_prerequisite.search(item):
-            return (
-                "bootstrap requested package/dependency installation even though a project-local "
-                f"Python runtime is available at {preferred_project_python}; probe that interpreter "
-                "directly before concluding the dependency is missing"
-            )
         resource_claims = (
             ("csv_files", r"\b(csv|catalog|catalogue|dataset|data file|каталог|датасет|таблиц)\b"),
             ("env_files", r"(\.env\b|env file|environment file|файл окружения|файл \.env)"),
@@ -635,6 +663,7 @@ def bootstrap_campaign(
     commands = [
         plan.smoke_command,
         plan.evaluation_command,
+        *plan.protocol_manifest_commands.values(),
         plan.validation_command,
         plan.holdout_command,
     ]
@@ -688,6 +717,10 @@ def bootstrap_campaign(
         ),
         agent_visible_diagnostics=plan.agent_visible_diagnostics,
         paired_comparison=paired,
+        protocol_manifests={
+            tier: ProtocolManifest.model_validate(manifest)
+            for tier, manifest in (readiness.get("protocol_manifests") or {}).items()
+        },
         signal_sanity_status=signal_receipt.get("status"),
         signal_sanity_receipt_sha256=signal_receipt.get("receipt_sha256"),
         primary_metric=plan.primary_metric,

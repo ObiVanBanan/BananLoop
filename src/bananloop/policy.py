@@ -21,7 +21,24 @@ def metric_value(result: EvaluationResult, name: str) -> float:
     return value
 
 
-def validate_evaluation(spec: CampaignSpec, result: EvaluationResult) -> None:
+def validate_evaluation(
+    spec: CampaignSpec,
+    result: EvaluationResult,
+    *,
+    tier: str = "dev",
+) -> None:
+    manifest = spec.protocol_manifests.get(tier)
+    if manifest is not None:
+        expected = {
+            (case.case_id, case.repetition): case.input_sha256
+            for case in manifest.cases
+        }
+        observed = {
+            (case.case_id, case.repetition): case.input_sha256
+            for case in result.cases
+        }
+        if result.protocol_sha256 != manifest.protocol_sha256 or observed != expected:
+            raise InvalidEvaluation(f"{tier.upper()} evaluation does not match the frozen protocol manifest")
     if spec.paired_comparison:
         paired = spec.paired_comparison
         groups = {}
@@ -51,6 +68,21 @@ def validate_evaluation(spec: CampaignSpec, result: EvaluationResult) -> None:
             raise InvalidEvaluation(f"missing mandatory check: {check}")
 
 
+def _fixed_inputs_aligned(champion: EvaluationResult, candidate: EvaluationResult) -> bool:
+    """Whether two case-bearing evaluations measured the same frozen inputs."""
+    if bool(champion.cases) != bool(candidate.cases):
+        return False
+    if not champion.cases:
+        return True
+    left = {(case.case_id, case.repetition): case for case in champion.cases}
+    right = {(case.case_id, case.repetition): case for case in candidate.cases}
+    return (
+        champion.protocol_sha256 == candidate.protocol_sha256
+        and left.keys() == right.keys()
+        and all(left[key].input_sha256 == right[key].input_sha256 for key in left)
+    )
+
+
 def _compare(value: float, guard: GuardrailSpec) -> bool:
     return {
         "<=": value <= guard.bound,
@@ -61,9 +93,20 @@ def _compare(value: float, guard: GuardrailSpec) -> bool:
     }[guard.operator]
 
 
-def decide(spec: CampaignSpec, champion: EvaluationResult, candidate: EvaluationResult) -> Decision:
-    validate_evaluation(spec, champion)
-    validate_evaluation(spec, candidate)
+def decide(
+    spec: CampaignSpec,
+    champion: EvaluationResult,
+    candidate: EvaluationResult,
+    *,
+    tier: str = "dev",
+) -> Decision:
+    validate_evaluation(spec, champion, tier=tier)
+    validate_evaluation(spec, candidate, tier=tier)
+    inputs_aligned = _fixed_inputs_aligned(champion, candidate)
+    if not inputs_aligned and spec.paired_comparison is None:
+        # Fixed protocol identity is an integrity condition even when the user
+        # did not opt into paired statistical acceptance.
+        raise InvalidEvaluation("FIXED_INPUT_MISMATCH")
     current = metric_value(champion, spec.primary_metric.name)
     proposed = metric_value(candidate, spec.primary_metric.name)
     if spec.primary_metric.direction == Direction.MAXIMIZE:
@@ -102,9 +145,7 @@ def decide(spec: CampaignSpec, champion: EvaluationResult, candidate: Evaluation
         paired = spec.paired_comparison
         left = {(c.case_id, c.repetition): c for c in champion.cases}
         right = {(c.case_id, c.repetition): c for c in candidate.cases}
-        aligned = (champion.protocol_sha256 == candidate.protocol_sha256
-                   and left.keys() == right.keys()
-                   and all(left[k].input_sha256 == right[k].input_sha256 for k in left))
+        aligned = inputs_aligned
         predicates["paired:aligned"] = aligned
         if not aligned:
             reasons.append("PAIRED_INPUT_MISMATCH")
@@ -139,8 +180,8 @@ def decide(spec: CampaignSpec, champion: EvaluationResult, candidate: Evaluation
     )
 
 
-def target_met(spec: CampaignSpec, result: EvaluationResult) -> bool:
-    validate_evaluation(spec, result)
+def target_met(spec: CampaignSpec, result: EvaluationResult, *, tier: str = "dev") -> bool:
+    validate_evaluation(spec, result, tier=tier)
     value = metric_value(result, spec.primary_metric.name)
     metric_ok = value >= spec.primary_metric.target if spec.primary_metric.direction == Direction.MAXIMIZE else value <= spec.primary_metric.target
     if not metric_ok:

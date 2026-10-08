@@ -9,11 +9,13 @@ import statistics
 from pathlib import Path
 from typing import Any
 
-from .contracts import EvaluationResult
+from pydantic import ValidationError
+
+from .contracts import EvaluationResult, ProtocolManifest
 from .evaluators import CommandEvaluator, EvaluatorError
 from .envfiles import project_environment
 from .integrity import discover_evaluation_assets, sha256_evaluation_asset
-from .process import ProcessError, run_process
+from .process import ProcessError, parse_json_output, run_process
 
 
 class ReadinessError(RuntimeError):
@@ -147,9 +149,27 @@ def _signal_sanity(plan: Any, results: list[EvaluationResult]) -> dict[str, Any]
     return evidence
 
 
-def _validate_result(plan: Any, result: EvaluationResult) -> dict[str, Any]:
+def _validate_result(
+    plan: Any,
+    result: EvaluationResult,
+    protocol_manifest: ProtocolManifest | None = None,
+) -> dict[str, Any]:
     if result.status != "ok":
         raise ReadinessError(f"smoke evaluator returned status={result.status}")
+    if protocol_manifest is not None:
+        frozen = {
+            (case.case_id, case.repetition): case.input_sha256
+            for case in protocol_manifest.cases
+        }
+        if result.protocol_sha256 != protocol_manifest.protocol_sha256:
+            raise ReadinessError("smoke evaluator protocol does not match frozen protocol manifest")
+        if not result.cases:
+            raise ReadinessError("smoke evaluator emitted no case identity from its frozen protocol manifest")
+        if any(
+            frozen.get((case.case_id, case.repetition)) != case.input_sha256
+            for case in result.cases
+        ):
+            raise ReadinessError("smoke evaluator emitted case identity outside frozen protocol manifest")
 
     # Readiness proves that the evaluator can execute the measurement protocol,
     # not that a tiny smoke subset can already satisfy every scientific contract.
@@ -281,6 +301,75 @@ def run_bootstrap_readiness(
     trusted_env = project_environment(trusted_source)
     runtime_resources = list(runtime_resources or [])
 
+    protocol_manifests: dict[str, ProtocolManifest] = {}
+    protocol_manifest_paths: dict[str, Path] = {}
+    for tier, manifest_command in sorted(
+        getattr(plan, "protocol_manifest_commands", {}).items()
+    ):
+        manifest_dir = state_root / "bootstrap-readiness" / f"attempt-{attempt}" / f"manifest-{tier}"
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+        manifest_workspace = manifest_dir / "workspace"
+        manifest_artifacts = manifest_dir / "artifacts"
+        manifest_artifacts.mkdir(parents=True, exist_ok=True)
+        runner = CommandEvaluator(list(manifest_command), base_env=trusted_env)
+        runner.context = {
+            "BANANLOOP_ARTIFACT_DIR": str(manifest_artifacts.resolve()),
+            "BANANLOOP_EVALUATION_ID": f"bootstrap:attempt:{attempt}:manifest:{tier}",
+            "BANANLOOP_SNAPSHOT": snapshot,
+            "BANANLOOP_EVALUATION_TIER": tier,
+            "BANANLOOP_WORKSPACE": str(manifest_workspace.resolve()),
+        }
+        try:
+            run_process(
+                ["git", "clone", "--no-hardlinks", "--no-checkout", str(workspace), str(manifest_workspace)],
+                cwd=manifest_dir,
+                timeout=120,
+            )
+            run_process(["git", "checkout", "--detach", snapshot], cwd=manifest_workspace, timeout=30)
+            run_process(["git", "config", "user.email", "bananloop@localhost"], cwd=manifest_workspace, timeout=10)
+            run_process(["git", "config", "user.name", "BananLoop Protocol Manifest"], cwd=manifest_workspace, timeout=10)
+            for relative in runtime_resources:
+                source = trusted_source / relative
+                target = manifest_workspace / relative
+                if source.is_file() and not target.exists():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, target)
+            for asset in discover_evaluation_assets(workspace, manifest_command):
+                source = workspace / asset.path
+                target = manifest_workspace / asset.path
+                if not target.is_file() or sha256_evaluation_asset(target) != asset.sha256:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, target)
+            result = run_process(
+                runner.argv,
+                cwd=manifest_workspace,
+                timeout=timeout,
+                check=True,
+                env={**trusted_env, **runner.command_env, **runner.context},
+            )
+            manifest = ProtocolManifest.model_validate(parse_json_output(result.stdout))
+            head = run_process(["git", "rev-parse", "HEAD"], cwd=manifest_workspace, timeout=10).stdout.strip()
+            dirty = run_process(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                cwd=manifest_workspace,
+                timeout=10,
+            ).stdout.strip()
+            if head != snapshot or dirty:
+                raise ReadinessError("protocol manifest command changed the evaluator workspace")
+        except (ProcessError, ValidationError, ReadinessError) as exc:
+            raise ReadinessError(f"{tier} protocol manifest generation failed: {exc}") from exc
+        finally:
+            if manifest_workspace.exists():
+                _remove_smoke_workspace(manifest_workspace)
+        manifest_path = state_root / "bootstrap-readiness" / f"attempt-{attempt}" / f"protocol-manifest-{tier}.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_json = json.dumps(manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+        temp_manifest = manifest_path.with_suffix(".json.tmp")
+        temp_manifest.write_text(manifest_json, encoding="utf-8")
+        temp_manifest.replace(manifest_path)
+        protocol_manifests[tier] = manifest
+        protocol_manifest_paths[tier] = manifest_path
+
     for repetition in range(repeats):
         run_dir = (
             state_root
@@ -302,6 +391,9 @@ def run_bootstrap_readiness(
             "BANANLOOP_EVALUATION_TIER": "bootstrap_smoke",
             "BANANLOOP_WORKSPACE": str(smoke_workspace.resolve()),
         }
+        dev_manifest = protocol_manifests.get("dev")
+        if dev_manifest is not None:
+            evaluator.context["BANANLOOP_PROTOCOL_MANIFEST"] = str(protocol_manifest_paths["dev"].resolve())
         try:
             run_process(
                 ["git", "clone", "--no-hardlinks", "--no-checkout", str(workspace), str(smoke_workspace)],
@@ -339,7 +431,15 @@ def run_bootstrap_readiness(
                     f"expected {snapshot}, found {head}"
                 )
             result = evaluator.evaluate(smoke_workspace, timeout=timeout)
-            summary = _validate_result(plan, result)
+            if dev_manifest is not None:
+                manifest_json = json.dumps(
+                    dev_manifest.model_dump(mode="json"),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if protocol_manifest_paths["dev"].read_text(encoding="utf-8") != manifest_json:
+                    raise ReadinessError("smoke evaluator changed the frozen protocol manifest")
+            summary = _validate_result(plan, result, dev_manifest)
             head = run_process(["git", "rev-parse", "HEAD"], cwd=smoke_workspace, timeout=10).stdout.strip()
             if head != snapshot:
                 raise ReadinessError(
@@ -465,4 +565,15 @@ def run_bootstrap_readiness(
         raise ReadinessError(str(exc), receipt) from exc
 
     receipt["status"] = "PASSED"
+    if protocol_manifests:
+        receipt["protocol_manifests"] = {
+            tier: manifest.model_dump(mode="json")
+            for tier, manifest in protocol_manifests.items()
+        }
+        receipt["protocol_manifest_sha256"] = {
+            tier: hashlib.sha256(
+                json.dumps(manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            for tier, manifest in protocol_manifests.items()
+        }
     return receipt

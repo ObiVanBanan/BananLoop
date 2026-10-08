@@ -107,6 +107,31 @@ class EvaluationAsset(BaseModel):
     sha256: str
 
 
+class ProtocolCase(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    case_id: str = Field(min_length=1, max_length=200)
+    repetition: int = Field(default=0, ge=0)
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ProtocolManifest(BaseModel):
+    """Core-frozen case identities for one evaluation tier."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: int = Field(default=1, ge=1)
+    protocol_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    cases: tuple[ProtocolCase, ...] = Field(min_length=1, max_length=10000)
+
+    @model_validator(mode="after")
+    def unique_cases(self):
+        keys = [(case.case_id, case.repetition) for case in self.cases]
+        if len(keys) != len(set(keys)):
+            raise ValueError("protocol manifest contains duplicate case/repetition identities")
+        return self
+
+
 class AgentConfig(BaseModel):
     kind: Literal["codex", "command", "pi"] = "codex"
     command: list[str] = Field(default_factory=list)
@@ -188,6 +213,7 @@ class CampaignSpec(BaseModel):
     agent_visible_metrics: list[str] = Field(default_factory=list)
     agent_visible_diagnostics: list[str] = Field(default_factory=list)
     paired_comparison: PairedComparison | None = None
+    protocol_manifests: dict[Literal["dev", "validation", "holdout"], ProtocolManifest] = Field(default_factory=dict)
     # Optional readiness metadata. None is omitted from approved_hash to keep
     # all campaigns created before signal sanity byte-for-byte compatible.
     signal_sanity_status: Literal["DIAGNOSTIC_ONLY", "UNAVAILABLE"] | None = None
@@ -242,6 +268,8 @@ class CampaignSpec(BaseModel):
         data = self.model_dump(mode="json")
         if self.paired_comparison is None:
             data.pop("paired_comparison", None)
+        if not self.protocol_manifests:
+            data.pop("protocol_manifests", None)
         if self.signal_sanity_status is None:
             data.pop("signal_sanity_status", None)
         if self.signal_sanity_receipt_sha256 is None:

@@ -20,6 +20,16 @@ BOOTSTRAP_SCHEMA = {
         "needs_input": {"type": "array", "items": {"type": "string"}},
         "evaluation_command": {"type": "array", "items": {"type": "string"}},
         "smoke_command": {"type": "array", "items": {"type": "string"}},
+        "protocol_manifest_commands": {
+            "type": "object",
+            "properties": {
+                "dev": {"type": "array", "items": {"type": "string"}},
+                "validation": {"type": "array", "items": {"type": "string"}},
+                "holdout": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["dev", "validation", "holdout"],
+            "additionalProperties": False,
+        },
         "validation_command": {"type": "array", "items": {"type": "string"}},
         "holdout_command": {"type": "array", "items": {"type": "string"}},
         "primary_metric": {
@@ -95,7 +105,7 @@ BOOTSTRAP_SCHEMA = {
     },
     "required": [
         "status", "summary", "project_context", "needs_input",
-        "evaluation_command", "smoke_command", "validation_command", "holdout_command",
+        "evaluation_command", "smoke_command", "protocol_manifest_commands", "validation_command", "holdout_command",
         "primary_metric", "guardrails", "non_regression", "mandatory_checks",
         "editable_scope", "protected_paths", "agent_visible_metrics",
         "agent_visible_diagnostics", "paired_comparison", "signal_sanity", "evaluator_timeout_seconds"
@@ -274,6 +284,11 @@ class CodexAdapter(AgentAdapter):
                 "The evaluator must compare the same frozen inputs/settings for baseline and candidates, emit the "
                 "BananLoop JSON evaluation contract as one top-level object with status, metrics, checks, "
                 "protocol_sha256 when cases are emitted, and optional cases; metrics may be numbers or {value: number}. "
+                "For each configured tier whose inputs can be enumerated cheaply, create a protocol manifest command "
+                "that emits protocol_sha256 and the full case_id/repetition/input_sha256 list without scoring. The full "
+                "evaluator must read BANANLOOP_PROTOCOL_MANIFEST and emit exactly those identities; readiness may score "
+                "only a subset. Keep separate manifests for DEV, VALIDATION, and HOLDOUT. Do not enable paired statistical "
+                "acceptance just because inputs are fixed. "
                 "Never encode shell environment assignments as the executable name; BananLoop can normalize leading "
                 "NAME=value argv tokens, but prefer a plain executable argv and read runtime values from the process environment. "
                 "Use stable case IDs/input fingerprints, and avoid per-evaluation "
@@ -329,6 +344,7 @@ class CodexAdapter(AgentAdapter):
             argv = [
                 *self._resolved_command(),
                 "exec",
+                "--ephemeral",
                 "--sandbox",
                 sandbox,
                 "--skip-git-repo-check",

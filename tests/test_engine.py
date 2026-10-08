@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -984,7 +985,7 @@ def test_dev_failure_analyzer_sees_public_teacher_answer_but_proposer_does_not(t
         proposer_task = engine._task_context("propose", 999)
         rendered_proposer = json.dumps(proposer_task, ensure_ascii=False)
         assert "VT.217.N.05" not in rendered_proposer
-        assert "123456" not in rendered_proposer
+        assert re.search(r"(?<!\w)123456(?!\w)", rendered_proposer) is None
         assert "known_positive_ids" not in rendered_proposer
         assert "Reconcile conflicting hard-field provenance" in rendered_proposer
     finally:

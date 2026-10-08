@@ -387,6 +387,7 @@ class Engine:
                 "BANANLOOP_EVALUATION_TIER": request.get("tier", "dev"),
                 "BANANLOOP_WORKSPACE": str(self.workspace.workspace.resolve()),
             }
+            context.update(self._protocol_manifest_context(request.get("tier", "dev")))
             if candidate_proof:
                 context["BANANLOOP_PARENT_SNAPSHOT"] = str(
                     candidate_proof["parent_snapshot"]
@@ -409,6 +410,8 @@ class Engine:
                 check_process_control()
                 response = invoke()
                 check_process_control()
+                if kind != "agent":
+                    self._protocol_manifest_context(request.get("tier", "dev"))
             if kind != "agent":
                 result = EvaluationResult.model_validate(response)
                 ceiling = self.spec.budget.evaluation_units_per_call
@@ -539,9 +542,44 @@ class Engine:
             "command": command or self.spec.evaluation_command,
             "evaluation_fingerprint": evaluation_fingerprint(self.spec.evaluation_assets),
         }
+        manifest = self.spec.protocol_manifests.get(tier)
+        if manifest is not None:
+            serialized = json.dumps(
+                manifest.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            request["protocol_manifest_sha256"] = hashlib.sha256(serialized).hexdigest()
         if candidate_proof is not None:
             request["candidate_proof"] = candidate_proof
         return request
+
+    def _protocol_manifest_context(self, tier: str) -> dict[str, str]:
+        manifest = self.spec.protocol_manifests.get(tier)
+        if manifest is None:
+            return {}
+        root = Path(self.store.path).parent / "protocol-manifests"
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / f"{tier}.json"
+        serialized = json.dumps(
+            manifest.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if path.is_symlink():
+            raise EvaluatorError("frozen protocol manifest cannot be a symlink")
+        if path.exists():
+            if path.read_text(encoding="utf-8") != serialized:
+                raise EvaluatorError("frozen protocol manifest changed after campaign initialization")
+        else:
+            temporary = path.with_suffix(".json.tmp")
+            temporary.write_text(serialized, encoding="utf-8")
+            temporary.replace(path)
+        digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        return {
+            "BANANLOOP_PROTOCOL_MANIFEST": str(path.resolve()),
+            "BANANLOOP_PROTOCOL_MANIFEST_SHA256": digest,
+        }
 
     def _validation_reference(self) -> EvaluationResult:
         snapshot = self.store.campaign()["champion_snapshot"]
@@ -553,10 +591,10 @@ class Engine:
         return EvaluationResult.model_validate_json(row["result_json"])
 
     def _holdout_assessment(self, result: EvaluationResult) -> dict[str, Any]:
-        validate_evaluation(self.spec, result)
+        validate_evaluation(self.spec, result, tier="holdout")
         return {
             "snapshot": self.store.campaign()["champion_snapshot"],
-            "target_met": target_met(self.spec, result),
+            "target_met": target_met(self.spec, result, tier="holdout"),
             "result": result.model_dump(mode="json"),
         }
 
@@ -691,7 +729,7 @@ class Engine:
                     ).model_dump(mode="json"),
                 )
                 validation_result = EvaluationResult.model_validate(validation_raw)
-                validate_evaluation(self.spec, validation_result)
+                validate_evaluation(self.spec, validation_result, tier="validation")
             except (
                 EvaluatorError,
                 InvalidEvaluation,
@@ -1238,12 +1276,17 @@ class Engine:
         self._checkpoint("DECIDE")
 
     def _checked_candidate_evaluation(
-        self, evaluator: CommandEvaluator, timeout: int, reference: EvaluationResult,
+        self,
+        evaluator: CommandEvaluator,
+        timeout: int,
+        reference: EvaluationResult,
+        *,
+        tier: str = "dev",
     ) -> dict[str, Any]:
         # Validate before completing the action receipt, so a known invalid
         # measurement can use the explicit FAILED-action retry path.
         result = evaluator.evaluate(self.workspace.workspace, timeout=timeout)
-        decision = decide(self.spec, reference, result)
+        decision = decide(self.spec, reference, result, tier=tier)
         if "PAIRED_INPUT_MISMATCH" in decision.reasons:
             raise InvalidEvaluation("PAIRED_INPUT_MISMATCH")
         return result.model_dump(mode="json")
@@ -1520,12 +1563,13 @@ class Engine:
                     self.validation_evaluator,
                     self.spec.validation_timeout_seconds or self.spec.evaluator_timeout_seconds,
                     self._validation_reference(),
+                    tier="validation",
                 ),
             )
             result = EvaluationResult.model_validate(raw)
-            validate_evaluation(self.spec, result)
+            validate_evaluation(self.spec, result, tier="validation")
             reference = self._validation_reference()
-            validation_decision = decide(self.spec, reference, result)
+            validation_decision = decide(self.spec, reference, result, tier="validation")
             if "PAIRED_INPUT_MISMATCH" in validation_decision.reasons:
                 raise InvalidEvaluation("PAIRED_INPUT_MISMATCH")
         except (EvaluatorError, InvalidEvaluation, ValidationError, EngineError) as exc:
@@ -1638,7 +1682,11 @@ class Engine:
         champion = EvaluationResult.model_validate_json(campaign["champion_json"])
         goal_met = target_met(self.spec, champion)
         if goal_met and self.validation_evaluator is not None:
-            goal_met = target_met(self.spec, self._validation_reference())
+            goal_met = target_met(
+                self.spec,
+                self._validation_reference(),
+                tier="validation",
+            )
         if goal_met:
             self._stop(StopReason.GOAL_MET, CampaignStatus.GOAL_MET)
             return True
