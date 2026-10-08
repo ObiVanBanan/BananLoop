@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 20449)
-Total output lines: 1822
-
 from __future__ import annotations
 
 import hashlib
