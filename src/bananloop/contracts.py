@@ -349,6 +349,10 @@ class Hypothesis(BaseModel):
     relation: Literal["new", "refine", "retry", "supersede"] = "new"
     prior_experiment_refs: list[int] = Field(default_factory=list)
     novelty_rationale: str = ""
+    # The causal failure being addressed is distinct from the proposed fix's
+    # mechanism_key. Older durable hypotheses remain valid without these fields.
+    target_failure_signal: str = ""
+    failure_mechanism: str = ""
 
 
 class ImplementResult(BaseModel):
@@ -511,6 +515,28 @@ class MechanismEvidence(BaseModel):
     last_relation: str | None = None
 
 
+class DevFailureSummary(BaseModel):
+    signal_key: str
+    source: Literal["metric", "diagnostic", "capsule"]
+    baseline_value: float | None = None
+    current_value: float | None = None
+    last_candidate_value: float | None = None
+    best_candidate_value: float | None = None
+    best_experiment_ordinal: int | None = None
+    changed_experiment_ordinals: list[int] = Field(default_factory=list)
+    occurrences: int = 0
+    likely_mechanism: str = ""
+
+
+class DevExperimentEvidence(BaseModel):
+    ordinal: int
+    mechanism_key: str
+    dev_outcome: str
+    primary_delta: float | None = None
+    failure_signal_deltas: dict[str, float] = Field(default_factory=dict)
+    rejection_reasons: list[str] = Field(default_factory=list)
+
+
 class ResearchState(BaseModel):
     schema_version: int = 1
     planning_mode: Literal["exploit", "explore", "reframe"] = "exploit"
@@ -519,6 +545,8 @@ class ResearchState(BaseModel):
     mechanisms: list[MechanismEvidence] = Field(default_factory=list)
     recent_lessons: list[str] = Field(default_factory=list)
     recent_failure_capsules: list[FailureCapsule] = Field(default_factory=list, max_length=16)
+    failure_signals: list[DevFailureSummary] = Field(default_factory=list, max_length=8)
+    experiment_evidence: list[DevExperimentEvidence] = Field(default_factory=list, max_length=8)
     remaining_budget: dict[str, int] = Field(default_factory=dict)
 
 

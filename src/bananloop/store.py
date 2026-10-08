@@ -300,7 +300,10 @@ class CampaignStore:
         self.conn.execute(f"UPDATE experiments SET {sql} WHERE id=?", tuple(fields.values()) + (experiment_id,))
         self.conn.commit()
 
-    def finish_attempt(self, attempt_id: int, experiment_id: int, *, status: str, scientific: bool, improved: bool) -> None:
+    def finish_attempt(
+        self, attempt_id: int, experiment_id: int, *, status: str,
+        scientific: bool, improved: bool, dev_progress: bool = False,
+    ) -> None:
         attempt = self.attempt(attempt_id)
         if attempt["experiment_id"] != experiment_id:
             raise StoreError("attempt/experiment mismatch")
@@ -313,7 +316,7 @@ class CampaignStore:
         self.conn.execute("UPDATE experiments SET status=?,updated_at=? WHERE id=?", (status, now, experiment_id))
         if scientific:
             self.conn.execute("UPDATE campaigns SET experiment_count=experiment_count+1 WHERE id=1")
-            if improved:
+            if improved or dev_progress:
                 self.conn.execute("UPDATE campaigns SET non_improve_streak=0 WHERE id=1")
             else:
                 self.conn.execute("UPDATE campaigns SET non_improve_streak=non_improve_streak+1 WHERE id=1")

@@ -134,6 +134,8 @@ HYPOTHESIS_SCHEMA = {
         "relation": {"type": "string", "enum": ["new", "refine", "retry", "supersede"]},
         "prior_experiment_refs": {"type": "array", "items": {"type": "integer"}},
         "novelty_rationale": {"type": "string"},
+        "target_failure_signal": {"type": "string"},
+        "failure_mechanism": {"type": "string"},
     },
     "required": [
         "hypothesis",
@@ -145,6 +147,8 @@ HYPOTHESIS_SCHEMA = {
         "relation",
         "prior_experiment_refs",
         "novelty_rationale",
+        "target_failure_signal",
+        "failure_mechanism",
     ],
     "additionalProperties": False,
 }
@@ -320,7 +324,12 @@ class CodexAdapter(AgentAdapter):
         elif role == "propose":
             instruction = (
                 "Propose exactly one bounded, falsifiable hypothesis for this measurable campaign. "
-                "Use the supplied research_state and planning_mode. Avoid repeating a mechanism unless "
+                "Use the supplied research_state, its aggregate failure_signals and experiment_evidence, "
+                "and planning_mode. If failure_signals exist, target one supplied signal_key and explain "
+                "the causal failure_mechanism; use empty strings for both fields otherwise. "
+                "When experiment_evidence exists, cite a prior ordinal and explain in novelty_rationale "
+                "what its measured result changes. Distinguish a partial DEV gain from a failed mechanism. "
+                "Avoid repeating a mechanism unless "
                 "you explicitly mark the hypothesis as refine, retry, or supersede and reference the prior "
                 "experiment ordinal. Do not modify files. Return only the requested structured result.\n\n"
             )

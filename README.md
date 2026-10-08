@@ -161,6 +161,18 @@ Each proposer task receives:
 - a deterministic planning mode: `exploit`, `explore`, or `reframe`;
 - recent causal lessons generated from DEV outcomes.
 
+The planner also receives a bounded `failure_signals` summary built from
+agent-visible DEV failure counters, allowlisted numeric diagnostics, and
+sanitized failure capsules. `experiment_evidence` records how each previous
+mechanism changed those signals and the visible primary metric. A proposer must
+name a supplied `target_failure_signal`, explain its `failure_mechanism`, and
+cite prior DEV experiment evidence when it exists. Raw case examples and
+validation/holdout measurements remain outside this context.
+
+A rejected candidate with a positive DEV primary delta is recorded as partial
+progress. It does not become the champion, but it resets the no-progress
+plateau streak so the remaining experiment budget can test a refinement.
+
 Hypotheses carry genealogy fields: `relation`, `prior_experiment_refs`, and `novelty_rationale`. Reusing the same `mechanism_key` without declaring a refinement/retry/supersession is rejected before implementation and does not consume a scientific experiment.
 
 Evaluators may expose numeric aggregate DEV diagnostics for planning. Diagnostics are hidden by default and must be explicitly allowlisted:

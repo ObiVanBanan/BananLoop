@@ -282,3 +282,60 @@ def test_failure_capsules_enter_history_and_research_state_without_raw_dev_signa
     state = build_research_state(s, campaign(), [row])
     assert state.recent_failure_capsules[0].affected_fields == ["dn"]
     assert "raw case-specific evidence" not in state.model_dump_json()
+
+
+def test_dogfood_partial_gain_preserves_dev_failure_mechanism_evidence():
+    s = spec(agent_visible_metrics=[
+        "quality", "retrieval_miss_count", "rerank_selection_count",
+    ])
+    baseline = json.dumps({"metrics": {
+        "quality": 0.30, "retrieval_miss_count": 37,
+        "rerank_selection_count": 32, "private_failure_count": 99,
+    }})
+    rows = []
+    for ordinal, quality, selection in ((1, 0.30, 32), (2, 0.30, 32), (3, 0.33, 29)):
+        rows.append({
+            "ordinal": ordinal,
+            "status": "REJECTED",
+            "failure_category": "PRIMARY_NOT_IMPROVED",
+            "hypothesis_json": json.dumps({"mechanism_key": f"candidate-{ordinal}"}),
+            "evaluation_json": json.dumps({
+                "metrics": {
+                    "quality": quality, "retrieval_miss_count": 37,
+                    "rerank_selection_count": selection, "private_failure_count": 99,
+                },
+                "failure_signals": [{"symptom": "private case identity"}],
+            }),
+            "dev_decision_json": json.dumps({
+                "accepted": False,
+                "primary_value": quality,
+                "champion_value": 0.30,
+                "delta": quality - 0.30,
+                "predicates": {"minimum_improvement": False},
+                "reasons": ["PRIMARY_NOT_IMPROVED"],
+            }),
+            "decision_json": json.dumps({"validation": {"secret": "hidden tier"}}),
+        })
+
+    state = build_research_state(s, campaign(
+        experiment_count=3, non_improve_streak=3,
+        baseline_json=baseline, champion_json=baseline,
+    ), rows)
+    assert state.failure_counts == {"DEV_NO_EFFECT": 2, "DEV_PARTIAL_IMPROVEMENT": 1}
+    assert state.dev_non_improve_streak == 0
+    assert state.planning_mode == "exploit"
+    assert [item.signal_key for item in state.failure_signals[:2]] == [
+        "metric:retrieval_miss_count", "metric:rerank_selection_count",
+    ]
+    selection = state.failure_signals[1]
+    assert selection.best_candidate_value == 29
+    assert selection.best_experiment_ordinal == 3
+    assert selection.changed_experiment_ordinals == [3]
+    assert state.experiment_evidence[2].primary_delta > 0
+    assert state.experiment_evidence[2].failure_signal_deltas == {
+        "metric:rerank_selection_count": -3,
+    }
+    rendered = state.model_dump_json()
+    assert "private_failure_count" not in rendered
+    assert "private case identity" not in rendered
+    assert "hidden tier" not in rendered

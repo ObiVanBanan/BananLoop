@@ -821,6 +821,70 @@ def test_agent_history_and_research_state_use_only_dev_evidence(tmp_path: Path):
         store.close()
 
 
+def test_partial_dev_gain_does_not_trigger_plateau_or_promote(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        store.update_campaign(non_improve_streak=2)
+        champion = store.campaign()["champion_json"]
+        experiment_id, attempt_id = store.create_attempt(store.campaign()["champion_snapshot"])
+        candidate = EvaluationResult(
+            metrics={"quality": 0.1, "regressions": 1}, checks={"tests": True},
+        )
+        store.update_experiment(
+            experiment_id,
+            hypothesis_json=Hypothesis(
+                hypothesis="small useful change", rationale="DEV signal",
+                expected_effect="quality up", files_or_area=["value.txt"],
+                falsification_condition="no gain", mechanism_key="partial-gain",
+            ).model_dump_json(),
+            evaluation_json=candidate.model_dump_json(),
+            dev_decision_json=json.dumps({
+                "accepted": False, "primary_value": 0.1,
+                "champion_value": 0.0, "delta": 0.1,
+                "predicates": {"minimum_improvement": False},
+                "reasons": ["PRIMARY_NOT_IMPROVED", "GUARDRAIL_FAILED:regressions"],
+            }),
+            decision_json=json.dumps({
+                "accepted": False, "primary_value": 0.1,
+                "champion_value": 0.0, "delta": 0.1,
+                "predicates": {"minimum_improvement": False},
+                "reasons": ["PRIMARY_NOT_IMPROVED", "GUARDRAIL_FAILED:regressions"],
+            }),
+        )
+        engine._stage_record(attempt_id, experiment_id)
+        assert store.experiment(experiment_id)["status"] == "REJECTED"
+        assert store.campaign()["champion_json"] == champion
+        assert store.campaign()["non_improve_streak"] == 0
+        assert engine._post_iteration_stop() is False
+    finally:
+        store.close()
+
+
+def test_planner_requires_causal_link_and_prior_dev_reference():
+    task = {"research_state": {
+        "failure_signals": [{"signal_key": "metric:retrieval_miss_count"}],
+        "experiment_evidence": [{"ordinal": 1, "dev_outcome": "DEV_NO_EFFECT"}],
+    }}
+    hypothesis = Hypothesis(
+        hypothesis="change candidate generation", rationale="fewer misses",
+        expected_effect="higher recall", files_or_area=["src/retrieval.py"],
+        falsification_condition="miss count unchanged", mechanism_key="candidate-generator",
+    )
+    assert Engine._hypothesis_grounding_error(hypothesis, task) == (
+        "hypothesis must target one supplied DEV failure signal"
+    )
+    hypothesis.target_failure_signal = "metric:retrieval_miss_count"
+    hypothesis.failure_mechanism = "Relevant candidates are absent before reranking"
+    assert Engine._hypothesis_grounding_error(hypothesis, task) == (
+        "hypothesis must cite a prior DEV experiment ordinal"
+    )
+    hypothesis.prior_experiment_refs = [1]
+    hypothesis.novelty_rationale = "Prior wider candidate pool did not change recall"
+    assert Engine._hypothesis_grounding_error(hypothesis, task) is None
+
+
 
 def test_anti_gaming_guard_rejects_candidate_before_evaluator(tmp_path: Path):
     store, engine, _, _ = make_engine(tmp_path)

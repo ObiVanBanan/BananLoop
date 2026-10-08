@@ -38,6 +38,7 @@ from .research import (
     agent_evaluation_view,
     build_history,
     build_research_state,
+    classify_dev_outcome,
     redundancy_reason,
 )
 from .store import CampaignStore
@@ -833,6 +834,13 @@ class Engine:
                     "If reusing a mechanism_key, set relation to refine/retry/supersede "
                     "and cite a matching prior experiment ordinal."
                 ),
+                "causal_link": (
+                    "When research_state.failure_signals is nonempty, choose one "
+                    "signal_key as target_failure_signal and explain its causal "
+                    "failure_mechanism. When experiment_evidence exists, cite at "
+                    "least one prior ordinal in prior_experiment_refs and explain "
+                    "in novelty_rationale how its result changes this proposal."
+                ),
             },
             "experiment_id": experiment_id,
         }
@@ -844,6 +852,20 @@ class Engine:
     ) -> str | None:
         if not hypothesis.files_or_area:
             return "hypothesis has no concrete files_or_area grounding"
+        signals = (task.get("research_state") or {}).get("failure_signals") or []
+        if signals:
+            allowed = {item.get("signal_key") for item in signals}
+            if hypothesis.target_failure_signal not in allowed:
+                return "hypothesis must target one supplied DEV failure signal"
+            if not hypothesis.failure_mechanism.strip():
+                return "hypothesis must explain the causal failure mechanism"
+            evidence = (task.get("research_state") or {}).get("experiment_evidence") or []
+            if evidence:
+                prior_ordinals = {item.get("ordinal") for item in evidence}
+                if not prior_ordinals.intersection(hypothesis.prior_experiment_refs):
+                    return "hypothesis must cite a prior DEV experiment ordinal"
+                if not hypothesis.novelty_rationale.strip():
+                    return "hypothesis must explain how prior DEV evidence changes the proposal"
         supplied = {
             "research_state": bool(task.get("research_state")),
             "planning_mode": bool((task.get("research_state") or {}).get("planning_mode")),
@@ -1677,6 +1699,11 @@ class Engine:
             status=status,
             scientific=scientific,
             improved=accepted,
+            dev_progress=(
+                scientific
+                and classify_dev_outcome(self.spec, {**exp, "status": status})
+                in {"DEV_IMPROVEMENT", "DEV_PARTIAL_IMPROVEMENT"}
+            ),
         )
         self._refresh_research_state()
 

@@ -2,10 +2,20 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections import Counter
 from typing import Any
 
-from .contracts import CampaignSpec, FailureCapsule, Hypothesis, MechanismEvidence, ResearchState
+from .contracts import (
+    CampaignSpec, DevExperimentEvidence, DevFailureSummary, FailureCapsule,
+    Hypothesis, MechanismEvidence, ResearchState,
+)
+
+
+_FAILURE_NAME = re.compile(
+    r"miss|fail|error|wrong|drop|reject|timeout|no_result|unmatched|violation|selection",
+    re.IGNORECASE,
+)
 
 
 def attempt_bucket(row: dict[str, Any]) -> str:
@@ -200,6 +210,11 @@ def classify_dev_outcome(
     if row.get("evaluation_json") and decision is not None:
         if decision.get("accepted"):
             return "DEV_IMPROVEMENT"
+        # A promotion threshold or guard can reject a candidate that still
+        # yielded a useful DEV improvement. Keep that signal for planning.
+        delta = decision.get("delta")
+        if isinstance(delta, (int, float)) and math.isfinite(delta) and delta > 0:
+            return "DEV_PARTIAL_IMPROVEMENT"
         reasons = decision.get("reasons") or []
         if "PRIMARY_NOT_IMPROVED" in reasons:
             return "DEV_NO_EFFECT"
@@ -225,6 +240,7 @@ def classify_dev_outcome(
 def _lesson_for(outcome: str, mechanism: str) -> str:
     messages = {
         "DEV_IMPROVEMENT": "DEV evidence showed a measurable improvement signal.",
+        "DEV_PARTIAL_IMPROVEMENT": "DEV primary quality improved, but promotion thresholds or guards were not met.",
         "DEV_NO_EFFECT": "DEV evidence did not meet the required minimum improvement.",
         "DEV_GUARD_REJECT": "DEV evidence violated an approved guardrail or mandatory check.",
         "DEV_REJECTED": "DEV evidence rejected the candidate without a visible causal category.",
@@ -249,6 +265,122 @@ def _failure_capsules_from_row(row: dict[str, Any]) -> list[FailureCapsule]:
         ]
     except (json.JSONDecodeError, TypeError, ValueError):
         return []
+
+
+def _visible_numbers(spec: CampaignSpec, payload_json: str | None) -> dict[str, float]:
+    """Read only aggregate DEV fields already authorized for agent context."""
+    view = agent_evaluation_view(spec, payload_json) or {}
+    numbers: dict[str, float] = {}
+    for name, item in (view.get("metrics") or {}).items():
+        value = item.get("value") if isinstance(item, dict) else item
+        if isinstance(value, (int, float)) and math.isfinite(value):
+            numbers[f"metric:{name}"] = float(value)
+    for name, value in (view.get("diagnostics") or {}).items():
+        if isinstance(value, (int, float)) and math.isfinite(value):
+            numbers[f"diagnostic:{name}"] = float(value)
+    return numbers
+
+
+def summarize_dev_failures(
+    spec: CampaignSpec,
+    campaign: dict[str, Any],
+    experiments: list[dict[str, Any]],
+) -> tuple[list[DevFailureSummary], list[DevExperimentEvidence]]:
+    """Prioritize allowed aggregate failures and preserve each trial's effect.
+
+    No case rows, raw failure examples, validation, or holdout measurements
+    enter this summary. Accepted DEV evaluations advance the reference used
+    for later experiment deltas.
+    """
+    baseline = _visible_numbers(spec, campaign.get("baseline_json"))
+    champion = _visible_numbers(spec, campaign.get("champion_json"))
+    rows: list[tuple[dict[str, Any], dict[str, float], dict[str, float]]] = []
+    reference = baseline
+    for row in experiments:
+        if row.get("status") == "ACTIVE" or not row.get("evaluation_json"):
+            continue
+        candidate = _visible_numbers(spec, row["evaluation_json"])
+        rows.append((row, candidate, reference))
+        if row.get("status") == "ACCEPTED":
+            reference = candidate
+
+    keys = {
+        key for values in [baseline, champion, *(item[1] for item in rows)]
+        for key, value in values.items()
+        if _FAILURE_NAME.search(key) and value >= 0
+    }
+    numeric: list[DevFailureSummary] = []
+    for key in keys:
+        observed = [(int(row["ordinal"]), candidate[key]) for row, candidate, _ in rows if key in candidate]
+        values = [v for v in (baseline.get(key), champion.get(key), *(v for _, v in observed)) if v is not None]
+        if not values or max(values) == 0:
+            continue
+        best_ordinal, best_value = min(observed, key=lambda item: item[1]) if observed else (None, None)
+        reference_values = [
+            value for value in (baseline.get(key), champion.get(key)) if value is not None
+        ]
+        if best_value is not None and reference_values and best_value >= min(reference_values):
+            best_ordinal = None
+        changed = [
+            int(row["ordinal"])
+            for row, candidate, before in rows
+            if key in candidate and key in before and not math.isclose(candidate[key], before[key])
+        ]
+        numeric.append(DevFailureSummary(
+            signal_key=key,
+            source=key.split(":", 1)[0],
+            baseline_value=baseline.get(key),
+            current_value=champion.get(key),
+            last_candidate_value=observed[-1][1] if observed else None,
+            best_candidate_value=best_value,
+            best_experiment_ordinal=best_ordinal,
+            changed_experiment_ordinals=changed,
+            occurrences=len(observed),
+        ))
+
+    capsule_rows: dict[str, DevFailureSummary] = {}
+    for row in experiments:
+        if row.get("status") == "ACTIVE":
+            continue
+        for capsule in _failure_capsules_from_row(row):
+            # Free-form case identifiers cannot become planning signal keys.
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z_-]{0,79}", capsule.failure_class):
+                continue
+            key = f"capsule:{capsule.failure_class}"
+            summary = capsule_rows.setdefault(key, DevFailureSummary(
+                signal_key=key, source="capsule", likely_mechanism=capsule.likely_mechanism,
+            ))
+            summary.occurrences += 1
+            ordinal = int(row["ordinal"])
+            if ordinal not in summary.changed_experiment_ordinals:
+                summary.changed_experiment_ordinals.append(ordinal)
+
+    summaries = sorted(
+        [*numeric, *capsule_rows.values()],
+        key=lambda item: (
+            -max(item.baseline_value or 0, item.current_value or 0, item.occurrences),
+            item.signal_key,
+        ),
+    )[:8]
+    selected = {item.signal_key for item in summaries}
+    evidence: list[DevExperimentEvidence] = []
+    for row, candidate, before in rows[-8:]:
+        hypothesis = json.loads(row.get("hypothesis_json") or "{}")
+        decision = agent_decision_view(spec, _dev_decision_from_row(row)) or {}
+        delta = decision.get("delta")
+        evidence.append(DevExperimentEvidence(
+            ordinal=int(row["ordinal"]),
+            mechanism_key=hypothesis.get("mechanism_key", "unknown"),
+            dev_outcome=classify_dev_outcome(spec, row),
+            primary_delta=float(delta) if isinstance(delta, (int, float)) and math.isfinite(delta) else None,
+            failure_signal_deltas={
+                key: candidate[key] - before[key]
+                for key in selected & candidate.keys() & before.keys()
+                if not math.isclose(candidate[key], before[key])
+            },
+            rejection_reasons=list(decision.get("reasons") or [])[:8],
+        ))
+    return summaries, evidence
 
 
 def build_history(
@@ -320,7 +452,7 @@ def build_research_state(
         if attempt_bucket(row) != "scientific_trials":
             continue
         outcome = classify_dev_outcome(spec, row)
-        if outcome == "DEV_IMPROVEMENT":
+        if outcome in {"DEV_IMPROVEMENT", "DEV_PARTIAL_IMPROVEMENT"}:
             dev_non_improve_streak = 0
         else:
             dev_non_improve_streak += 1
@@ -333,6 +465,9 @@ def build_research_state(
             spec.budget.plateau_experiments - 1 - dev_non_improve_streak,
         ),
     }
+    failure_signals, experiment_evidence = summarize_dev_failures(
+        spec, campaign, experiments,
+    )
     return ResearchState(
         planning_mode=planning_mode(
             dev_non_improve_streak,
@@ -346,6 +481,8 @@ def build_research_state(
         ],
         recent_lessons=lessons[-8:],
         recent_failure_capsules=failure_capsules[-16:],
+        failure_signals=failure_signals,
+        experiment_evidence=experiment_evidence,
         remaining_budget=remaining,
     )
 
@@ -374,4 +511,3 @@ def redundancy_reason(
         f"mechanism_key {hypothesis.mechanism_key!r} already appeared in experiments "
         f"{same_mechanism}; use relation=refine|retry|supersede and reference a prior ordinal"
     )
-
