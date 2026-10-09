@@ -657,7 +657,23 @@ def parser() -> argparse.ArgumentParser:
     goal.add_argument("--repo", default=".")
     goal.add_argument("--state-dir")
     goal.add_argument("--request-id", help="idempotency key; use a new value to intentionally repeat a goal")
+    goal.add_argument("--agent", choices=["codex", "command", "pi"])
+    goal.add_argument("--agent-cmd")
+    goal.add_argument("--model")
+    goal.add_argument("--provider")
+    goal.add_argument("--thinking", choices=["off", "minimal", "low", "medium", "high", "xhigh"])
+    goal.add_argument("--codex-arg", action="append")
+    goal.add_argument("--pi-arg", action="append")
     goal.add_argument("--agent-profiles", help="TOML profile file for default and role-specific agent settings")
+    goal.add_argument("--bootstrap-timeout-seconds", type=int, default=1200)
+    goal.add_argument("--agent-timeout-seconds", type=int)
+    goal.add_argument("--max-experiments", type=int, default=4)
+    goal.add_argument("--max-attempts", type=int, default=7)
+    goal.add_argument("--max-agent-calls", type=int, default=18)
+    goal.add_argument("--max-evaluator-calls", type=int, default=16)
+    goal.add_argument("--deadline-seconds", type=int, default=14400)
+    goal.add_argument("--plateau", type=int, default=3)
+    goal.add_argument("--allow-dirty", action="store_true")
     goal.add_argument(
         "--prepare-only",
         action="store_true",
