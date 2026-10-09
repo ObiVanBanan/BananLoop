@@ -13,7 +13,7 @@
 - `python -m compileall -q src tests` passed.
 - `pytest -q` passed on the local Python 3.14 runtime.
 - `git diff --check` passed before final review.
-- GitHub Actions Python 3.11/3.12/3.13 and Windows 3.12 matrix: pending on the updated pull request head.
+- GitHub Actions matrix passed on commit `a758f0229ced536db743ff736b9061550b05a276`: 224 passed, zero skipped on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12.
 - Deterministic ACCEPTED → REJECTED → ACCEPTED fixture, resume, export, and source-checkout invariants are covered by the existing full suite; no separate dogfood campaign was run for this change.
 
 ## Remaining M1 and later work
