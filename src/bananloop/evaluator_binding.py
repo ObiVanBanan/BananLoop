@@ -6,6 +6,7 @@ import os
 import platform
 import shutil
 import sys
+from importlib.metadata import distributions
 from pathlib import Path
 from typing import Any
 
@@ -132,9 +133,30 @@ def runtime_descriptor(commands: dict[str, list[str]]) -> dict[str, Any]:
             if candidate.is_file():
                 resolved = str(candidate.resolve())
         runner[tier] = {"configured_executable": executable, "resolved_executable": str(Path(resolved).resolve()) if resolved else None}
+    python_distributions = sorted(
+        {
+            (str(item.metadata.get("Name") or "").lower(), str(item.version))
+            for item in distributions()
+            if item.metadata.get("Name")
+        }
+    )
+    # Fingerprint only environment variables that select executable/runtime
+    # resolution. Keep their values hashed so paths remain useful evidence
+    # without copying arbitrary environment data into durable receipts.
+    runtime_env = {
+        key: hashlib.sha256(os.environ[key].encode("utf-8", errors="replace")).hexdigest()
+        for key in (
+            "PATH", "PYTHONPATH", "PYTHONHOME", "PYTHONSAFEPATH", "VIRTUAL_ENV",
+            "CONDA_PREFIX", "NODE_PATH", "NODE_ENV",
+        )
+        if key in os.environ
+    }
     return {
         "python_executable": str(Path(sys.executable).resolve()),
         "python_version": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+        "python_distributions": python_distributions,
+        "runtime_environment_sha256": canonical_hash(runtime_env),
         "os": platform.system(),
         "os_release": platform.release(),
         "architecture": platform.machine(),

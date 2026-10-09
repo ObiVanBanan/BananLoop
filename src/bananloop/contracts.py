@@ -120,6 +120,7 @@ class EvaluationEvidence(BaseModel):
     case_input_manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     runtime: dict[str, Any] = Field(default_factory=dict)
     runtime_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    metric_tolerances: dict[str, float] = Field(default_factory=dict)
     readiness_receipt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     verified_invariants: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)

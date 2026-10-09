@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import json
 import hashlib
-import platform
 import re
 from pathlib import Path
-import sys
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -22,6 +20,7 @@ from .contracts import (
     PairedComparison,
     RuntimePaths,
 )
+from .evaluator_binding import canonical_hash, runtime_descriptor
 from .integrity import discover_evaluation_assets, sha256_evaluation_asset
 from .readiness import ReadinessError, run_bootstrap_readiness
 from .store import CampaignStore, StoreError
@@ -489,17 +488,16 @@ def bootstrap_campaign(
     case_manifest_sha256 = hashlib.sha256(
         json.dumps(case_inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    runtime = {
-        "python_version": platform.python_version(),
-        "python_implementation": platform.python_implementation(),
-        "os": platform.system(),
-        "architecture": platform.machine(),
-        "evaluator_executable": (plan.smoke_command or plan.evaluation_command)[0],
-        "python_executable": sys.executable,
+    runtime = runtime_descriptor({"dev": plan.smoke_command or plan.evaluation_command})
+    runtime_fingerprint = canonical_hash(runtime)
+    metric_tolerances = {
+        plan.primary_metric.name: float(
+            readiness.get("calibration", {}).get("empirical_noise_bound", 0.0)
+        )
     }
-    runtime_fingerprint = hashlib.sha256(
-        json.dumps(runtime, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    paired_noise = readiness.get("calibration", {}).get("paired_empirical_noise_bound")
+    if plan.paired_comparison.enabled and paired_noise is not None:
+        metric_tolerances[plan.paired_comparison.metric] = float(paired_noise)
     evaluation_evidence = EvaluationEvidence(
         technical_readiness="READY",
         # Bootstrap-authored cases/labels are not independent evidence of
@@ -516,6 +514,7 @@ def bootstrap_campaign(
         case_input_manifest_sha256=case_manifest_sha256,
         runtime=runtime,
         runtime_fingerprint=runtime_fingerprint,
+        metric_tolerances=metric_tolerances,
         readiness_receipt_sha256=readiness_receipt_sha256,
         verified_invariants=[
             key for key, passed in (

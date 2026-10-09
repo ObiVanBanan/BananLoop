@@ -128,6 +128,11 @@ def test_start_cli_can_prepare_without_running():
     assert args.model == "gpt-5.6-codex"
 
 
+def test_replay_cli_requires_action_id():
+    args = parser().parse_args(["replay", "--action", "baseline:evaluate"])
+    assert args.action == "baseline:evaluate"
+
+
 
 def test_goal_cli_is_minimal_chat_first_surface():
     args = parser().parse_args([

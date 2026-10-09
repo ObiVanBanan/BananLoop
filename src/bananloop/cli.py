@@ -15,6 +15,7 @@ from .export import export_champion
 from .integrity import EvaluationIntegrityError, discover_evaluation_assets, evaluation_fingerprint
 from .lock import CampaignLock, CampaignLockError
 from .report import build_report, render_markdown
+from .replay import replay_dev_action
 from .registry import CampaignRegistry, RegistryError, assert_safe_campaign_db
 from .store import CampaignStore, StoreError
 from .wizard import confirm_spec, discover_project, needs_interactive_init, run_init_wizard
@@ -476,6 +477,33 @@ def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_replay(args: argparse.Namespace) -> int:
+    paths = _selected_paths(args, create=False)
+    try:
+        with CampaignLock(paths.root / "campaign.lock"):
+            store = CampaignStore(paths.db)
+            try:
+                spec = store.spec()
+                workspace = WorkspaceManager(Path(spec.source_repo), paths.workspace)
+                result = replay_dev_action(store, workspace, args.action)
+            finally:
+                store.close()
+    except CampaignLockError as exc:
+        result = {
+            "status": "NOT_REPRODUCIBLE_INFRA",
+            "reason": f"campaign lock is held: {exc}",
+            "source_action_id": args.action,
+        }
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 2
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "REPRODUCIBLE":
+        return 0
+    if result.get("status") == "REPLAY_MISMATCH":
+        return 1
+    return 2
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bananloop")
     sub = p.add_subparsers(dest="command", required=True)
@@ -714,6 +742,13 @@ def parser() -> argparse.ArgumentParser:
             sp.set_defaults(func=lambda a: cmd_run(a, resume=True))
         else:
             sp.set_defaults(func=lambda a: cmd_run(a, resume=False))
+
+    replay = sub.add_parser("replay", help="re-run a stored DEV evaluation in a disposable frozen workspace")
+    replay.add_argument("--repo", default=".")
+    replay.add_argument("--state-dir")
+    replay.add_argument("--campaign-id")
+    replay.add_argument("--action", required=True, help="DEV action id or bootstrap:attempt:N:smoke:N")
+    replay.set_defaults(func=cmd_replay)
 
     campaigns = sub.add_parser("campaigns", help="list repository campaigns")
     campaign_sub = campaigns.add_subparsers(dest="campaign_command", required=True)

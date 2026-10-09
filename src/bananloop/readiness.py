@@ -9,9 +9,11 @@ import statistics
 from pathlib import Path
 from typing import Any
 
+from .artifacts import retain_artifacts
 from .contracts import EvaluationResult
 from .evaluators import CommandEvaluator, EvaluatorError
 from .integrity import discover_evaluation_assets, sha256_evaluation_asset
+from .evaluator_binding import canonical_hash, runtime_descriptor
 from .process import ProcessError, run_process
 
 
@@ -241,6 +243,18 @@ def run_bootstrap_readiness(
         raise ReadinessError("bootstrap plan has no smoke/evaluation command")
 
     timeout = min(int(plan.evaluator_timeout_seconds), 300)
+    state_root = state_root.resolve()
+    assets = discover_evaluation_assets(workspace, command)
+    frozen_asset_root = state_root / "bootstrap-readiness" / f"attempt-{attempt}" / "evaluation-assets"
+    for asset in assets:
+        source = workspace / asset.path
+        if not source.is_file() or sha256_evaluation_asset(source) != asset.sha256:
+            raise ReadinessError(f"bootstrap evaluator asset changed before readiness: {asset.path}")
+        target = frozen_asset_root / asset.path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    runtime = runtime_descriptor({"dev": command})
+    runtime_fingerprint = canonical_hash(runtime)
     receipt: dict[str, Any] = {
         "status": "RUNNING",
         "snapshot": snapshot,
@@ -285,8 +299,8 @@ def run_bootstrap_readiness(
             # The clone supplies only committed files. Preserve evaluator assets
             # referenced by the command even when the source checkout ignored them,
             # without copying arbitrary ignored runtime state between repeats.
-            for asset in discover_evaluation_assets(workspace, command):
-                source = workspace / asset.path
+            for asset in assets:
+                source = frozen_asset_root / asset.path
                 target = smoke_workspace / asset.path
                 if not target.is_file() or sha256_evaluation_asset(target) != asset.sha256:
                     target.parent.mkdir(parents=True, exist_ok=True)
@@ -300,6 +314,7 @@ def run_bootstrap_readiness(
                 )
             result = evaluator.evaluate(smoke_workspace, timeout=timeout)
             summary = _validate_result(plan, result)
+            retain_artifacts(result, artifact_dir, None, snapshot)
             head = run_process(["git", "rev-parse", "HEAD"], cwd=smoke_workspace, timeout=10).stdout.strip()
             if head != snapshot:
                 raise ReadinessError(
@@ -324,6 +339,25 @@ def run_bootstrap_readiness(
             if smoke_workspace.exists():
                 _remove_smoke_workspace(smoke_workspace)
         results.append(result)
+        result_path = run_dir / "evaluation-result.json"
+        result_payload = result.model_dump(mode="json")
+        result_path.write_text(
+            json.dumps(result_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        input_manifest = [
+            {"case_id": case.case_id, "repetition": case.repetition, "input_sha256": case.input_sha256}
+            for case in result.cases
+        ]
+        summary["replay"] = {
+            "result_path": result_path.relative_to(state_root).as_posix(),
+            "result_sha256": hashlib.sha256(result_path.read_bytes()).hexdigest(),
+            "case_input_manifest_sha256": canonical_hash(input_manifest),
+            "runtime": runtime,
+            "runtime_fingerprint": runtime_fingerprint,
+            "evaluation_assets": [asset.model_dump(mode="json") for asset in assets],
+            "evaluation_assets_root": frozen_asset_root.relative_to(state_root).as_posix(),
+        }
         receipt["runs"].append(summary)
 
     first_inputs = sorted(

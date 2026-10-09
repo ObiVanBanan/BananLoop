@@ -10,8 +10,10 @@ import pytest
 
 from bananloop.bootstrap import BootstrapError, BootstrapPlan, BootstrapSignalSanity, _bootstrap_contract_error, _bootstrap_path, _bootstrap_task, bootstrap_campaign
 from bananloop.contracts import AgentConfig, RuntimePaths
+from bananloop.replay import replay_dev_action
 from bananloop.store import CampaignStore
 from bananloop.wizard import _parse_py_launcher_paths, discover_project
+from bananloop.workspace import WorkspaceManager
 
 
 PROTOCOL_SHA256 = "a" * 64
@@ -490,6 +492,22 @@ def test_bootstrap_auto_repairs_false_goal_request(tmp_path: Path):
     assert record["bootstrap_attempts"][1]["contract_error"] is None
     assert record["bootstrap_request"]["goal"] == "improve similarity to reference images"
     assert git(["rev-parse", "HEAD"], repo) == source_base
+
+    store = CampaignStore(paths.db)
+    try:
+        before = store.campaign()
+        before_actions = store.actions()
+        replay = replay_dev_action(
+            store,
+            WorkspaceManager(repo, paths.workspace),
+            "bootstrap:attempt:2:smoke:1",
+        )
+        assert replay["status"] == "REPRODUCIBLE"
+        assert replay["candidate_snapshot"] == spec.base_commit
+        assert store.campaign()["evaluator_calls"] == before["evaluator_calls"]
+        assert store.actions() == before_actions
+    finally:
+        store.close()
 
 
 
