@@ -5,6 +5,7 @@ import os
 import re
 import sqlite3
 import stat
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -17,30 +18,54 @@ class RegistryError(RuntimeError):
     pass
 
 
+_REGISTRY_LOCKS_GUARD = threading.Lock()
+_REGISTRY_THREAD_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _registry_thread_lock(path: Path) -> threading.RLock:
+    key = os.path.normcase(str(path.resolve()))
+    with _REGISTRY_LOCKS_GUARD:
+        return _REGISTRY_THREAD_LOCKS.setdefault(key, threading.RLock())
+
+
 class _RegistryLock:
     """Blocking project lock: concurrent registry lookups queue and recheck state."""
 
     def __init__(self, path: Path):
         self.path = path
         self.file: BinaryIO | None = None
+        self.thread_lock: threading.RLock | None = None
 
     def __enter__(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.file = self.path.open("a+b")
-        self.file.seek(0, os.SEEK_END)
-        if self.file.tell() == 0:
-            self.file.write(b"0")
-            self.file.flush()
-        self.file.seek(0)
         if os.name == "nt":
-            import msvcrt
+            self.thread_lock = _registry_thread_lock(self.path)
+            self.thread_lock.acquire()
 
-            msvcrt.locking(self.file.fileno(), msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.file = self.path.open("a+b")
+            self.file.seek(0, os.SEEK_END)
+            if self.file.tell() == 0:
+                self.file.write(b"0")
+                self.file.flush()
+            self.file.seek(0)
+            if os.name != "nt":
+                import fcntl
 
-            fcntl.flock(self.file.fileno(), fcntl.LOCK_EX)
-        return self
+                fcntl.flock(self.file.fileno(), fcntl.LOCK_EX)
+            else:
+                import msvcrt
+
+                msvcrt.locking(self.file.fileno(), msvcrt.LK_LOCK, 1)
+            return self
+        except BaseException:
+            if self.file is not None:
+                self.file.close()
+                self.file = None
+            if self.thread_lock is not None:
+                self.thread_lock.release()
+                self.thread_lock = None
+            raise
 
     def __exit__(self, exc_type, exc, tb):
         if self.file is None:
@@ -58,6 +83,9 @@ class _RegistryLock:
         finally:
             self.file.close()
             self.file = None
+            if self.thread_lock is not None:
+                self.thread_lock.release()
+                self.thread_lock = None
 
 
 SCHEMA = """
