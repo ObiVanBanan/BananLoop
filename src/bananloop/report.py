@@ -22,6 +22,12 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
     champion = EvaluationResult.model_validate_json(campaign["champion_json"]) if campaign["champion_json"] else None
     experiments: list[dict[str, Any]] = []
     actions_by_id = {row["id"]: row for row in store.actions()}
+    selection_by_experiment = {
+        payload.get("experiment_id"): payload
+        for event in store.events()
+        if event["event_type"] == "HYPOTHESIS_SELECTION"
+        for payload in [json.loads(event["payload_json"])]
+    }
     for row in store.experiments():
         accepted = row["status"] == "ACCEPTED"
         evaluation_action = store.action(f"exp:{row['id']}:evaluate")
@@ -39,6 +45,8 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
         hypothesis = json.loads(row["hypothesis_json"]) if row["hypothesis_json"] else None
         proof = evaluation_request.get("candidate_proof")
         decision = json.loads(row["decision_json"]) if row["decision_json"] else None
+        trace_action_ids = sorted(action["id"] for action in actions_by_id.values() if action.get("experiment_id") == row["id"])
+        selection_event = selection_by_experiment.get(row["id"], {})
         validation_decision = (decision or {}).get("validation") or {}
         if row["status"] == "REJECTED" and validation_decision:
             scientific_outcome = "DEV_ACCEPT_VALIDATION_REJECT"
@@ -65,9 +73,12 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 "predecessor_experiments": (hypothesis or {}).get("prior_experiment_refs", []),
                 "relation": (hypothesis or {}).get("relation", "new"),
                 "mechanism_key": (hypothesis or {}).get("mechanism_key"),
+                "rationale": selection_event.get("selection_rationale") or (hypothesis or {}).get("novelty_rationale"),
+                "redundancy_check": selection_event.get("redundancy_check"),
             },
             "expected_change": (hypothesis or {}).get("expected_effect"),
             "actual_changed_paths": proof.get("changed_paths", []) if proof else [],
+            "diff_signature": canonical_hash(sorted(proof.get("changed_paths", []))) if proof and proof.get("changed_paths") else None,
             "measurement": {
                 "decision": decision,
                 "metrics": (json.loads(row["evaluation_json"]).get("metrics", {}) if row["evaluation_json"] else {}),
@@ -79,7 +90,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 "validation_reasons": validation_decision.get("reasons", []),
             },
             "scientific_outcome": scientific_outcome,
-            "next_hypothesis_rationale": (row.get("failure_analysis_json") and json.loads(row["failure_analysis_json"]).get("next_test")) or None,
+            "next_hypothesis_rationale": (row.get("failure_analysis_json") and [capsule.get("suggested_regression") for capsule in json.loads(row["failure_analysis_json"]).get("capsules", []) if capsule.get("suggested_regression")]) or None,
             "observation": (
                 "; ".join(capsule.get("observation", "") for capsule in (json.loads(row["failure_analysis_json"]).get("capsules", []) if row.get("failure_analysis_json") else []) if capsule.get("observation"))
                 or row.get("failure_category")
@@ -90,6 +101,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 or [{"cause": "Cause not established; no generalized failure analysis was recorded.", "confidence": 0.0}]
             ),
             "proposed_test": [capsule.get("suggested_regression") for capsule in (json.loads(row["failure_analysis_json"]).get("capsules", []) if row.get("failure_analysis_json") else []) if capsule.get("suggested_regression")],
+            "evidence_ids": trace_action_ids,
         }
         item = {
             "id": row["id"],
@@ -107,7 +119,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 else None
             ),
             "causal_record": causal_record,
-            "trace_action_ids": sorted(action["id"] for action in actions_by_id.values() if action.get("experiment_id") == row["id"]),
+            "trace_action_ids": trace_action_ids,
         }
         experiments.append(item)
     accounting_buckets = (

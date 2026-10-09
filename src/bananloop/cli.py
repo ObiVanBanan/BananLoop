@@ -490,7 +490,7 @@ def cmd_explain(args: argparse.Namespace) -> int:
                 "ordinal": item["ordinal"],
                 "hypothesis": item["hypothesis"],
                 "causal_record": _agent_safe_causal_record(item["causal_record"]),
-                "trace_action_ids": item["trace_action_ids"],
+                "trace_action_ids": _agent_safe_action_ids(item["trace_action_ids"]),
             }
             for item in recent
         ],
@@ -546,6 +546,8 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     item = dict(item)
     item["decision"] = _agent_safe_decision(item.get("decision"))
     item["causal_record"] = _agent_safe_causal_record(item["causal_record"])
+    item["trace_action_ids"] = _agent_safe_action_ids(item["trace_action_ids"])
+    actions = [row for row in actions if row["stage"] not in {"VALIDATE", "FINAL_HOLDOUT", "BASELINE_VALIDATION"}]
     payload = {"experiment": item, "actions": actions}
     if args.json:
         print(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
@@ -586,7 +588,15 @@ def _agent_safe_causal_record(record):
     rejection = dict(safe.get("stage_rejection") or {})
     rejection["validation_reasons"] = []
     safe["stage_rejection"] = rejection
+    safe["evidence_ids"] = _agent_safe_action_ids(safe.get("evidence_ids", []))
     return safe
+
+
+def _agent_safe_action_ids(action_ids):
+    return [
+        action_id for action_id in action_ids
+        if not any(part in action_id.casefold() for part in ("validation", "holdout"))
+    ]
 
 
 def cmd_export(args: argparse.Namespace) -> int:

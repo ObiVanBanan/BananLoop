@@ -715,13 +715,35 @@ class Engine:
         self._checkpoint("BASELINE")
 
     def _history(self) -> list[dict[str, Any]]:
-        return build_history(self.spec, self.store.experiments(), limit=8)
+        experiments = self.store.experiments()
+        history = build_history(self.spec, experiments, limit=8)
+        by_ordinal = {int(row["ordinal"]): row for row in experiments}
+        for item in history:
+            row = by_ordinal.get(int(item["ordinal"]))
+            if row is None:
+                continue
+            action = self.store.action(f"exp:{row['id']}:evaluate")
+            request = json.loads(action.get("request_json") or "{}") if action else {}
+            proof = request.get("candidate_proof") or {}
+            changed_paths = sorted(set(proof.get("changed_paths", [])))
+            item["diff_signature"] = canonical_hash(changed_paths) if changed_paths else None
+            item["canonical_files_or_area"] = sorted({
+                str(path).replace("\\", "/").strip("./")
+                for path in (item.get("hypothesis") or {}).get("files_or_area", [])
+            })
+            item["evidence_ids"] = [
+                action_row["id"] for action_row in self.store.actions()
+                if action_row.get("experiment_id") == row["id"]
+                and action_row.get("stage") not in {"VALIDATE", "FINAL_HOLDOUT", "BASELINE_VALIDATION"}
+            ]
+        return history
 
     def _refresh_research_state(self) -> dict[str, Any]:
         state = build_research_state(
             self.spec,
             self.store.campaign(),
             self.store.experiments(),
+            evaluation_units_reserved=self.store.evaluation_work_reserved(),
         )
         payload = state.model_dump(mode="json")
         self.store.set_research_state(payload)
@@ -738,6 +760,11 @@ class Engine:
             # originally approved input, not a newly generated planning context.
             return request
         research_state = self._refresh_research_state()
+        if role != "propose":
+            proposal_action = self.store.action(f"exp:{experiment_id}:propose")
+            if proposal_action and proposal_action.get("request_json"):
+                proposal_request = json.loads(proposal_action["request_json"])
+                research_state = proposal_request.get("research_state", research_state)
         campaign = self.store.campaign()
         return {
             "schema_version": 1,
@@ -763,13 +790,19 @@ class Engine:
             "history": self._history(),
             "research_state": research_state,
             "planning_mode": research_state["planning_mode"],
+            "planning_rationale": research_state.get("planning_rationale"),
+            "evidence_strength": research_state.get("evidence_strength"),
+            "expected_next_test_cost": research_state.get("expected_next_test_cost", {}),
+            "reframe_available": research_state.get("reframe_available", True),
             "planning_requirements": {
                 "exploit": "build on the strongest DEV-supported mechanism without duplicating prior work",
                 "explore": "test a materially different mechanism family from recent failed attempts",
                 "reframe": "challenge the current framing and choose a new mechanism family before plateau",
+                "failure_evidence": "Operational failures are not evidence against a scientific mechanism; use only completed DEV outcomes for causal conclusions.",
+                "budget_check": "Use reframe_available and expected_next_test_cost before proposing; never claim a reframe test will run when its minimum calls/work units/deadline budget is unavailable.",
+                "causal_record": "For a failed DEV test state observation, suspected cause with confidence, proposed regression test, and durable evidence IDs. If unsupported, say the cause is not established.",
                 "genealogy": (
-                    "If reusing a mechanism_key, set relation to refine/retry/supersede "
-                    "and cite a matching prior experiment ordinal."
+                    "Use relation=new/refine/retry/supersede intentionally. For refine/retry/supersede, cite a matching prior ordinal and explain the verification change."
                 ),
             },
             "experiment_id": experiment_id,
@@ -887,6 +920,24 @@ class Engine:
         duplicate = redundancy_reason(
             hypothesis,
             [row for row in self.store.experiments() if row["id"] != experiment_id],
+        )
+        self.store.event(
+            "HYPOTHESIS_SELECTION",
+            {
+                "experiment_id": experiment_id,
+                "planning_mode": task.get("planning_mode"),
+                "planning_rationale": task.get("planning_rationale"),
+                "evidence_strength": task.get("evidence_strength"),
+                "expected_next_test_cost": task.get("expected_next_test_cost", {}),
+                "mechanism_key": hypothesis.mechanism_key,
+                "relation": hypothesis.relation,
+                "prior_experiment_refs": hypothesis.prior_experiment_refs,
+                "selection_rationale": hypothesis.novelty_rationale or (
+                    f"{hypothesis.relation} hypothesis selected under {task.get('planning_mode', 'unknown')} mode"
+                ),
+                "redundancy_check": "REJECTED" if duplicate else "DISTINCT_TEST",
+                "reason": duplicate,
+            },
         )
         if duplicate:
             self.store.update_experiment(

@@ -39,6 +39,10 @@ def test_report_attempt_buckets_are_disjoint_and_scientific_count_is_durable(tmp
         assert report["resources"]["by_stage"]["PROPOSE"]["agent_calls"] == 3
         assert report["experiments"][0]["causal_record"]["scientific_outcome"] == "DEV_ACCEPTED"
         assert report["experiments"][0]["trace_action_ids"]
+        assert report["experiments"][0]["causal_record"]["evidence_ids"] == report["experiments"][0]["trace_action_ids"]
+        assert len(report["experiments"][0]["causal_record"]["diff_signature"]) == 64
+        selection_events = [event for event in store.events() if event["event_type"] == "HYPOTHESIS_SELECTION"]
+        assert selection_events
         explain_out = StringIO()
         with redirect_stdout(explain_out):
             cmd_explain(argparse.Namespace(

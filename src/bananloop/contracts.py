@@ -477,11 +477,17 @@ class MechanismEvidence(BaseModel):
     experiment_ordinals: list[int] = Field(default_factory=list)
     dev_outcomes: dict[str, int] = Field(default_factory=dict)
     last_relation: str | None = None
+    canonical_areas: list[str] = Field(default_factory=list)
 
 
 class ResearchState(BaseModel):
     schema_version: int = 1
     planning_mode: Literal["exploit", "explore", "reframe"] = "exploit"
+    planning_rationale: str = ""
+    last_scientific_outcome: str | None = None
+    evidence_strength: str = "UNVERIFIED"
+    reframe_available: bool = True
+    expected_next_test_cost: dict[str, int] = Field(default_factory=dict)
     dev_non_improve_streak: int = Field(default=0, ge=0)
     failure_counts: dict[str, int] = Field(default_factory=dict)
     mechanisms: list[MechanismEvidence] = Field(default_factory=list)
