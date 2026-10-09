@@ -105,11 +105,11 @@ def main() -> None:
                     f"The independent baseline reports {int(mismatch_count)} returned technical-constraint violations. "
                     "The selector already computes per-candidate mismatch evidence but currently returns those candidates."
                 ),
-                "expected_effect": "Remove contradictory LD candidates while keeping positive recall and unrelated no-match behavior unchanged.",
+                "expected_effect": "Suppress article-anchored results only when none of that source's LD candidates satisfies every requested technical constraint, while preserving approximate analogues for ordinary searches.",
                 "files_or_area": ["src/rag_steel/search_engine.py", "LD candidate selector"],
                 "falsification_condition": (
                     "Any positive-recall regression, fewer than six paired technical-control wins, "
-                    "or a remaining returned candidate with a hard-constraint mismatch."
+                    "or a contradictory candidate returned for an article-anchored query with no fully matching LD candidate."
                 ),
                 "mechanism_key": "filter-hard-technical-constraint-mismatches",
                 "relation": "new",
@@ -122,21 +122,33 @@ def main() -> None:
     if role == "implement":
         path = Path("src/rag_steel/search_engine.py")
         source = path.read_text(encoding="utf-8")
-        needle = (
-            "                ld_match_reasons, ld_mismatches = self._build_ld_match_reasons(\n"
-            "                    processed,\n"
-            "                    product,\n"
-            "                    ld_field_score=ld_field_score,\n"
-            "                )\n"
+        needle = "        deduplicated: dict[str, dict[str, Any]] = {}\n"
+        replacement = (
+            "        has_hard_constraints = any(\n"
+            "            value is not None\n"
+            "            for value in (\n"
+            "                processed.dn,\n"
+            "                processed.pn_bar,\n"
+            "                processed.connection,\n"
+            "                processed.medium,\n"
+            "                processed.control,\n"
+            "            )\n"
+            "        )\n"
+            "        if (\n"
+            "            processed.possible_article_tokens\n"
+            "            and has_hard_constraints\n"
+            "            and not any(not candidate[\"mismatches\"] for candidate in ranked_candidates)\n"
+            "        ):\n"
+            "            return []\n\n"
+            + needle
         )
-        replacement = needle + "                if ld_mismatches:\n                    continue\n"
-        if source.count(needle) != 1:
+        if source.count(needle) < 1:
             emit({"summary": "Could not identify one unique LD selector insertion point.", "changed_paths": [], "verification_notes": "No source change was made.", "blockers": ["ambiguous selector source"]})
             return
-        path.write_text(source.replace(needle, replacement), encoding="utf-8")
+        path.write_text(source.replace(needle, replacement, 1), encoding="utf-8")
         emit(
             {
-                "summary": "Filtered LD candidates when their requested hard technical fields produce mismatch evidence.",
+                "summary": "Suppresses article-anchored results when no linked LD candidate meets every requested technical constraint; approximate analogue behavior remains available when a compatible candidate exists or the query is not article-anchored.",
                 "changed_paths": [str(path)],
                 "verification_notes": "The independent fixed evaluator checks positive recall, no-match behavior, and contradictory DN/PN controls.",
                 "blockers": [],
