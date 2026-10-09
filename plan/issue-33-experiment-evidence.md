@@ -19,4 +19,4 @@ This log records local evidence for the acceptance experiments. `GOAL_MET` is a 
 - E1 has independent fixture-authored validation cases but no holdout and no trust upgrade.
 - Issue #33 remains open; this log does not claim full acceptance.
 
-Current implementation validation: local full `pytest -q` passes; CI run [37893403783](https://github.com/ObiVanBanan/BananLoop/actions/runs/37893403783) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 for HEAD `0690db48065cc91479836e3b7ac73980ddb2355f`.
+Current implementation validation: local full `pytest -q` passes; CI run [37894295543](https://github.com/ObiVanBanan/BananLoop/actions/runs/37894295543) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 for HEAD `b829169e5557b84c658dec871746b12afb9f5491`.

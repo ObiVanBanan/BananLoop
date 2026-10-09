@@ -1,7 +1,7 @@
 # Issue #33 review report
 
 Date: 2026-10-09
-Review base: `0690db48065cc91479836e3b7ac73980ddb2355f` on `feat/issue-33-evidence-aware-research`; this report covers the receipt-persistence follow-up in the current diff.
+Reviewed HEAD: `b829169e5557b84c658dec871746b12afb9f5491` on `feat/issue-33-evidence-aware-research`.
 PR: [#35](https://github.com/ObiVanBanan/BananLoop/pull/35) (open draft)
 
 ## Result
@@ -13,7 +13,7 @@ The operator reference path now accepts an exact-byte SHA-256-pinned JSON manife
 ## Validation
 
 - Full local `pytest -q` passes on the current worktree; `python -m compileall -q src/bananloop` and `git diff --check` pass.
-- GitHub Actions [run 37893403783](https://github.com/ObiVanBanan/BananLoop/actions/runs/37893403783) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 at the reviewed HEAD.
+- GitHub Actions [run 37894295543](https://github.com/ObiVanBanan/BananLoop/actions/runs/37894295543) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 at the reviewed HEAD.
 - E0–E3 evidence and limits are recorded in `plan/issue-33-experiment-evidence.md`; E2 includes bounded paired DEV, separate product-group validation, replay, and exported-patch verification.
 
 ## Remaining acceptance gaps

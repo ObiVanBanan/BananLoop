@@ -1,7 +1,7 @@
 # Issue #33 security review
 
 Date: 2026-10-09
-Review base: `0690db48065cc91479836e3b7ac73980ddb2355f`; this review includes the receipt-persistence follow-up in the current diff.
+Reviewed HEAD: `b829169e5557b84c658dec871746b12afb9f5491`.
 
 ## Trust boundaries reviewed
 
@@ -17,4 +17,4 @@ No new exploitable security issue was found in the reviewed change. The operator
 
 An integration test verifies successful receipt persistence and report linkage; a tamper test confirms trust downgrade. E0–E3 campaign evidence remains unverified until an actual operator-approved manifest is used. E4 was not run because this environment has no GPU/A1111 runtime.
 
-Validation at review HEAD: full local test suite passed; CI run [37893403783](https://github.com/ObiVanBanan/BananLoop/actions/runs/37893403783) passed Ubuntu 3.11/3.12/3.13 and Windows 3.12.
+Validation at review HEAD: full local test suite passed; CI run [37894295543](https://github.com/ObiVanBanan/BananLoop/actions/runs/37894295543) passed Ubuntu 3.11/3.12/3.13 and Windows 3.12.
