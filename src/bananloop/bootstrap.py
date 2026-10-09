@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import platform
 import re
 from pathlib import Path
+import sys
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -12,6 +15,7 @@ from .contracts import (
     AgentConfig,
     BudgetSpec,
     CampaignSpec,
+    EvaluationEvidence,
     GuardrailSpec,
     MetricSpec,
     NonRegressionSpec,
@@ -470,6 +474,61 @@ def bootstrap_campaign(
 
     assert plan is not None
     signal_receipt = readiness.get("signal_sanity", {})
+    readiness_payload = dict(readiness)
+    readiness_receipt_sha256 = hashlib.sha256(
+        json.dumps(
+            readiness_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    protocol_hashes = readiness.get("protocol_sha256_values", [])
+    first_run = readiness.get("runs", [{}])[0]
+    case_inputs = sorted(
+        first_run.get("case_inputs", []),
+        key=lambda item: (item["case_id"], item["repetition"], item["input_sha256"]),
+    )
+    case_manifest_sha256 = hashlib.sha256(
+        json.dumps(case_inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    runtime = {
+        "python_version": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+        "os": platform.system(),
+        "architecture": platform.machine(),
+        "evaluator_executable": (plan.smoke_command or plan.evaluation_command)[0],
+        "python_executable": sys.executable,
+    }
+    runtime_fingerprint = hashlib.sha256(
+        json.dumps(runtime, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    evaluation_evidence = EvaluationEvidence(
+        technical_readiness="READY",
+        # Bootstrap-authored cases/labels are not independent evidence of
+        # business relevance. Keep this unverified until an operator-approved
+        # reference or an independent oracle is recorded.
+        trust_level="UNVERIFIED",
+        case_source="bootstrap_agent_configured",
+        label_source=(
+            "bootstrap_agent_configured"
+            if signal_receipt.get("status") == "DIAGNOSTIC_ONLY"
+            else None
+        ),
+        protocol_sha256=protocol_hashes[0] if protocol_hashes else None,
+        case_input_manifest_sha256=case_manifest_sha256,
+        runtime=runtime,
+        runtime_fingerprint=runtime_fingerprint,
+        readiness_receipt_sha256=readiness_receipt_sha256,
+        verified_invariants=[
+            key for key, passed in (
+                ("stable_case_inputs", readiness.get("input_identity_stable") and bool(case_inputs)),
+                ("stable_protocol_identity", readiness.get("protocol_identity_stable")),
+                ("aa_noise_below_minimum_improvement", readiness.get("calibration", {}).get("noise_gate_passed")),
+            ) if passed is True
+        ],
+        limitations=[
+            "bootstrap-authored evaluator cases and labels have no independent provenance",
+            "A/A stability and signal separation do not prove business-goal validity",
+        ],
+    )
 
     commands = [
         plan.smoke_command,
@@ -518,6 +577,7 @@ def bootstrap_campaign(
         paired_comparison=paired,
         signal_sanity_status=signal_receipt.get("status"),
         signal_sanity_receipt_sha256=signal_receipt.get("receipt_sha256"),
+        evaluation_evidence=evaluation_evidence,
         primary_metric=plan.primary_metric,
         guardrails=plan.guardrails,
         non_regression=plan.non_regression,

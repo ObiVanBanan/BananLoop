@@ -735,6 +735,10 @@ def test_staged_validation_gates_promotion_and_final_holdout_runs_once(tmp_path:
 
         report = build_report(store)
         assert report["final_assessment"] == "ACCEPTED"
+        assert report["technical_outcome"] == "GOAL_MET"
+        assert report["scientific_assessment"] == "UNKNOWN"
+        assert report["evaluator_evidence"]["trust_level"] == "UNVERIFIED"
+        assert "Scientific assessment: **UNKNOWN**" in render_markdown(report)
         assert report["evaluation_protocol"]["validation"]["configured"] is True
         assert report["evaluation_protocol"]["validation"]["baseline"] == 0.0
         assert report["evaluation_protocol"]["validation"]["champion"] == 3.0

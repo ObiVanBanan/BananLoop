@@ -114,6 +114,24 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
     if spec.signal_sanity_status == "UNAVAILABLE":
         final_assessment = "DEV_ONLY"
 
+    evidence = spec.evaluation_evidence
+    trust_level = evidence.trust_level if evidence is not None else "UNVERIFIED"
+    if trust_level == "INDEPENDENTLY_VALIDATED":
+        if final_assessment == "ACCEPTED":
+            scientific_assessment = "VALIDATED"
+        elif final_assessment == "REJECTED":
+            scientific_assessment = "REJECTED"
+        elif final_assessment == "DEV_ONLY":
+            scientific_assessment = "DEV_ONLY"
+        else:
+            scientific_assessment = "UNKNOWN"
+    elif final_assessment == "DEV_ONLY":
+        scientific_assessment = "DEV_ONLY"
+    else:
+        # A target-reaching technical outcome cannot establish business value
+        # when the evaluator's cases/labels have no independent provenance.
+        scientific_assessment = "UNKNOWN"
+
     resource_summary = store.resource_summary()
     research_state = store.research_state()
     binding_row = store.evaluator_binding()
@@ -174,8 +192,27 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             })
     return {
         "campaign_outcome": campaign["status"],
+        "technical_outcome": campaign["status"],
         "stop_reason": campaign["stop_reason"],
         "final_assessment": final_assessment,
+        "scientific_assessment": scientific_assessment,
+        "evaluator_evidence": (
+            evidence.model_dump(mode="json")
+            if evidence is not None
+            else {
+                "technical_readiness": "UNKNOWN",
+                "trust_level": "UNVERIFIED",
+                "case_source": None,
+                "label_source": None,
+                "protocol_sha256": None,
+                "case_input_manifest_sha256": None,
+                "runtime": {},
+                "runtime_fingerprint": None,
+                "readiness_receipt_sha256": None,
+                "verified_invariants": [],
+                "limitations": ["legacy campaign has no persisted evaluator evidence"],
+            }
+        ),
         "goal": spec.goal,
         "primary_metric": spec.primary_metric.name,
         "baseline": baseline_value,
@@ -249,6 +286,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Outcome: **{report['campaign_outcome']}**",
         f"- Stop reason: **{report['stop_reason'] or '-'}**",
         f"- Final assessment: **{report['final_assessment']}**",
+        f"- Scientific assessment: **{report['scientific_assessment']}**",
+        f"- Evaluator trust: **{report['evaluator_evidence']['trust_level']}**; technical readiness: **{report['evaluator_evidence']['technical_readiness']}**",
         f"- Goal: {report['goal']}",
         f"- Primary metric: `{report['primary_metric']}`",
         f"- Baseline → final: `{report['baseline']}` → `{report['final_champion']}` (delta `{report['delta']}`)",

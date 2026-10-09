@@ -476,6 +476,14 @@ def test_bootstrap_auto_repairs_false_goal_request(tmp_path: Path):
     assert spec is not None
     assert spec.signal_sanity_status == "UNAVAILABLE"
     assert len(spec.signal_sanity_receipt_sha256) == 64
+    assert spec.evaluation_evidence.technical_readiness == "READY"
+    assert spec.evaluation_evidence.trust_level == "UNVERIFIED"
+    assert spec.evaluation_evidence.label_source is None
+    assert len(spec.evaluation_evidence.case_input_manifest_sha256) == 64
+    assert len(spec.evaluation_evidence.runtime_fingerprint) == 64
+    assert spec.evaluation_evidence.readiness_receipt_sha256
+    assert "A/A stability and signal separation do not prove business-goal validity" in spec.evaluation_evidence.limitations
+    assert spec.approved_hash() == spec.model_copy(update={"evaluation_evidence": None}).approved_hash()
     record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
     assert len(record["bootstrap_attempts"]) == 2
     assert record["bootstrap_attempts"][0]["contract_error"]
@@ -563,14 +571,15 @@ def test_noisy_readiness_diagnostics_reach_bounded_repair_and_exhaust_without_ca
         "value=0.4 if n % 2 else 0.6\n"
         f"print(json.dumps({{'status':'ok','metrics':{{'quality':value}},'checks':{{}},'protocol_sha256':'{PROTOCOL_SHA256}'}}))\n"
     )
+    noisy_payload = _bootstrap_payload(
+        status="ready", needs_input=[], summary="noisy fixture evaluator"
+    )
     agent.write_text(
         "import json\n"
         "from pathlib import Path\n"
         "root=Path('.bananloop_eval'); root.mkdir(exist_ok=True)\n"
         f"root.joinpath('evaluator.py').write_text({evaluator_source!r})\n"
-        f"print(json.dumps({_bootstrap_payload(
-            status="ready", needs_input=[], summary="noisy fixture evaluator"
-        )!r}))\n",
+        f"print(json.dumps({noisy_payload!r}))\n",
         encoding="utf-8",
     )
     git(["add", "noisy_agent.py"], repo)

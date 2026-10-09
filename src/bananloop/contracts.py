@@ -107,6 +107,24 @@ class EvaluationAsset(BaseModel):
     sha256: str
 
 
+class EvaluationEvidence(BaseModel):
+    """Provenance and readiness facts used to qualify scientific conclusions."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    technical_readiness: Literal["READY", "FAILED"]
+    trust_level: Literal["UNVERIFIED", "CALIBRATED", "INDEPENDENTLY_VALIDATED"]
+    case_source: str | None = None
+    label_source: str | None = None
+    protocol_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    case_input_manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    runtime: dict[str, Any] = Field(default_factory=dict)
+    runtime_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    readiness_receipt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    verified_invariants: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
 class AgentConfig(BaseModel):
     kind: Literal["codex", "command", "pi"] = "codex"
     command: list[str] = Field(default_factory=list)
@@ -192,6 +210,7 @@ class CampaignSpec(BaseModel):
     # all campaigns created before signal sanity byte-for-byte compatible.
     signal_sanity_status: Literal["DIAGNOSTIC_ONLY", "UNAVAILABLE"] | None = None
     signal_sanity_receipt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    evaluation_evidence: EvaluationEvidence | None = None
     primary_metric: MetricSpec
     guardrails: list[GuardrailSpec] = Field(default_factory=list)
     non_regression: list[NonRegressionSpec] = Field(default_factory=list)
@@ -246,6 +265,8 @@ class CampaignSpec(BaseModel):
             data.pop("signal_sanity_status", None)
         if self.signal_sanity_receipt_sha256 is None:
             data.pop("signal_sanity_receipt_sha256", None)
+        # Evidence metadata is additive and must not alter approved/action hashes.
+        data.pop("evaluation_evidence", None)
         for key in ("max_evaluation_units", "evaluation_units_per_call"):
             if data["budget"][key] is None:
                 data["budget"].pop(key)
