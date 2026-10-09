@@ -327,6 +327,9 @@ def cmd_start(args: argparse.Namespace) -> int:
                         max_evaluator_calls=args.max_evaluator_calls,
                         deadline_seconds=args.deadline_seconds,
                         plateau_experiments=args.plateau,
+                        reference_manifest_path=Path(args.reference_manifest) if args.reference_manifest else None,
+                        reference_manifest_sha256=args.reference_manifest_sha256,
+                        reference_approved_by=args.reference_approved_by,
                     )
         except CampaignLockError as exc:
             print(f"BananLoop error: {exc}", file=sys.stderr)
@@ -656,6 +659,9 @@ def parser() -> argparse.ArgumentParser:
     )
     goal.add_argument("--repo", default=".")
     goal.add_argument("--state-dir")
+    goal.add_argument("--reference-manifest", help="operator-approved reference JSON (requires pinned SHA-256 and approver)")
+    goal.add_argument("--reference-manifest-sha256")
+    goal.add_argument("--reference-approved-by")
     goal.add_argument("--request-id", help="idempotency key; use a new value to intentionally repeat a goal")
     goal.add_argument("--agent", choices=["codex", "command", "pi"])
     goal.add_argument("--agent-cmd")
@@ -717,6 +723,9 @@ def parser() -> argparse.ArgumentParser:
     )
     start.add_argument("--repo", default=".")
     start.add_argument("--state-dir")
+    start.add_argument("--reference-manifest", help="operator-approved reference JSON (requires pinned SHA-256 and approver)")
+    start.add_argument("--reference-manifest-sha256")
+    start.add_argument("--reference-approved-by")
     start.add_argument("--request-id", help="idempotency key; use a new value to intentionally repeat a goal")
     start.add_argument("--goal", required=True)
     start.add_argument("--agent", choices=["codex", "command", "pi"])

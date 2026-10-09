@@ -15,6 +15,7 @@ from .contracts import (
     BudgetSpec,
     CampaignSpec,
     EvaluationEvidence,
+    EvaluationResult,
     GuardrailSpec,
     MetricSpec,
     NonRegressionSpec,
@@ -24,6 +25,7 @@ from .contracts import (
 from .evaluator_binding import canonical_hash, runtime_descriptor
 from .integrity import discover_evaluation_assets, sha256_evaluation_asset
 from .readiness import ReadinessError, run_bootstrap_readiness
+from .reference_evidence import parse_reference_manifest, verify_reference_results
 from .store import CampaignStore, StoreError
 from .wizard import discover_project
 from .workspace import WorkspaceManager, current_commit
@@ -273,6 +275,9 @@ def bootstrap_campaign(
     max_evaluator_calls: int = 16,
     deadline_seconds: int = 14400,
     plateau_experiments: int = 3,
+    reference_manifest_path: Path | None = None,
+    reference_manifest_sha256: str | None = None,
+    reference_approved_by: str | None = None,
 ) -> tuple[BootstrapPlan, CampaignSpec | None]:
     """Turn repo + goal into an approved CampaignSpec without touching source checkout."""
 
@@ -280,6 +285,17 @@ def bootstrap_campaign(
         raise StoreError(
             "campaign state already exists; use run/resume or choose a fresh --state-dir"
         )
+    reference_receipt = None
+    if any((reference_manifest_path, reference_manifest_sha256, reference_approved_by)):
+        if not all((reference_manifest_path, reference_manifest_sha256, reference_approved_by)):
+            raise BootstrapError("reference manifest, pinned SHA-256, and approver must be supplied together")
+        if reference_manifest_path.is_symlink():
+            raise BootstrapError("operator reference manifest must be a regular non-symlink file")
+        source = reference_manifest_path.resolve(strict=True)
+        if not source.is_file():
+            raise BootstrapError("operator reference manifest must be a regular non-symlink file")
+        raw_manifest = source.read_bytes()
+        manifest = parse_reference_manifest(raw_manifest, reference_manifest_sha256)
 
     paths.ensure()
     source_base = current_commit(repo)
@@ -488,6 +504,28 @@ def bootstrap_campaign(
     assert plan is not None
     signal_receipt = readiness.get("signal_sanity", {})
     readiness_payload = dict(readiness)
+    if reference_manifest_path is not None:
+        full_info = readiness.get("full_evaluation", {}).get("replay", {})
+        def load_result(info: dict[str, Any]) -> EvaluationResult:
+            result_path = (paths.root / str(info.get("result_path", ""))).resolve(strict=True)
+            if paths.root.resolve() not in result_path.parents:
+                raise BootstrapError("readiness result escaped campaign state")
+            payload = result_path.read_bytes()
+            if hashlib.sha256(payload).hexdigest() != info.get("result_sha256"):
+                raise BootstrapError("readiness result digest mismatch")
+            return EvaluationResult.model_validate_json(payload)
+        full_result = load_result(full_info)
+        smoke_results = [load_result(run.get("replay", {})) for run in readiness.get("runs", [])]
+        reference_receipt = verify_reference_results(
+            manifest=manifest, manifest_sha256=reference_manifest_sha256,
+            approved_by=reference_approved_by, primary_metric=plan.primary_metric,
+            full_result=full_result, smoke_results=smoke_results,
+        )
+        evidence_dir = paths.root / "reference-evidence"
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        (evidence_dir / "operator-reference.json").write_bytes(raw_manifest)
+        readiness_payload["operator_reference"] = reference_receipt
+        signal_receipt = {"status": "REFERENCE_VERIFIED", "receipt_sha256": reference_receipt["receipt_sha256"]}
     readiness_receipt_sha256 = hashlib.sha256(
         json.dumps(
             readiness_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -527,11 +565,11 @@ def bootstrap_campaign(
         # Bootstrap-authored cases/labels are not independent evidence of
         # business relevance. Keep this unverified until an operator-approved
         # reference or an independent oracle is recorded.
-        trust_level="UNVERIFIED",
-        case_source="bootstrap_agent_configured",
+        trust_level="INDEPENDENTLY_VALIDATED" if reference_receipt else "UNVERIFIED",
+        case_source=manifest.case_source if reference_receipt else "bootstrap_agent_configured",
         label_source=(
-            "bootstrap_agent_configured"
-            if signal_receipt.get("status") == "DIAGNOSTIC_ONLY"
+            manifest.label_source if reference_receipt
+            else "bootstrap_agent_configured" if signal_receipt.get("status") == "DIAGNOSTIC_ONLY"
             else None
         ),
         protocol_sha256=protocol_hashes[0] if protocol_hashes else None,
@@ -544,6 +582,10 @@ def bootstrap_campaign(
             for name, value in calibration.get("metric_relative_noise_bounds", {}).items()
         },
         readiness_receipt_sha256=readiness_receipt_sha256,
+        reference_manifest_sha256=reference_manifest_sha256 if reference_receipt else None,
+        reference_approved_by=reference_approved_by if reference_receipt else None,
+        reference_receipt_sha256=reference_receipt["receipt_sha256"] if reference_receipt else None,
+        independently_validated_tiers=["dev"] if reference_receipt else [],
         verified_invariants=[
             key for key, passed in (
                 ("stable_case_inputs", readiness.get("input_identity_stable") and bool(case_inputs)),
@@ -556,7 +598,7 @@ def bootstrap_campaign(
             ) if passed is True
         ],
         limitations=[
-            "bootstrap-authored evaluator cases and labels have no independent provenance",
+            *([] if reference_receipt else ["bootstrap-authored evaluator cases and labels have no independent provenance"]),
             "A/A stability and signal separation do not prove business-goal validity",
             *(
                 ["smoke/full evaluator equivalence is inconclusive because per-case measurements are missing"]

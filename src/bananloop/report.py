@@ -191,7 +191,11 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
     # An unavailable signal check is an explicit lack of scorer-validity
     # evidence. It keeps even a target-reaching holdout at DEV_ONLY. None is
     # reserved for historical campaigns and retains their original semantics.
-    if spec.signal_sanity_status == "UNAVAILABLE":
+    if spec.signal_sanity_status == "UNAVAILABLE" or (
+        spec.signal_sanity_status == "REFERENCE_VERIFIED"
+        and spec.holdout_command
+        and "holdout" not in (spec.evaluation_evidence.independently_validated_tiers if spec.evaluation_evidence else [])
+    ):
         final_assessment = "DEV_ONLY"
 
     if trust_level == "INDEPENDENTLY_VALIDATED":
@@ -386,8 +390,15 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             "evidence_level": (
                 "diagnostic_only_unverified_labels" if spec.signal_sanity_status == "DIAGNOSTIC_ONLY"
                 else "unavailable" if spec.signal_sanity_status == "UNAVAILABLE"
+                else "operator_reference_manifest" if spec.signal_sanity_status == "REFERENCE_VERIFIED"
                 else None
             ),
+            **({
+                "reference_manifest_sha256": spec.evaluation_evidence.reference_manifest_sha256,
+                "reference_approved_by": spec.evaluation_evidence.reference_approved_by,
+                "reference_receipt_sha256": spec.evaluation_evidence.reference_receipt_sha256,
+                "validated_tiers": spec.evaluation_evidence.independently_validated_tiers,
+            } if spec.signal_sanity_status == "REFERENCE_VERIFIED" and spec.evaluation_evidence else {}),
         },
         "measurements": [
             {"experiment_id": row["experiment_id"], "candidate_snapshot": row["candidate_snapshot"],

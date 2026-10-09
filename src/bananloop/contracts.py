@@ -123,6 +123,10 @@ class EvaluationEvidence(BaseModel):
     metric_tolerances: dict[str, float] = Field(default_factory=dict)
     metric_relative_tolerances: dict[str, float] = Field(default_factory=dict)
     readiness_receipt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    reference_manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    reference_approved_by: str | None = None
+    reference_receipt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    independently_validated_tiers: list[Literal["dev", "validation", "holdout"]] = Field(default_factory=list)
     verified_invariants: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
 
@@ -210,7 +214,7 @@ class CampaignSpec(BaseModel):
     paired_comparison: PairedComparison | None = None
     # Optional readiness metadata. None is omitted from approved_hash to keep
     # all campaigns created before signal sanity byte-for-byte compatible.
-    signal_sanity_status: Literal["DIAGNOSTIC_ONLY", "UNAVAILABLE"] | None = None
+    signal_sanity_status: Literal["DIAGNOSTIC_ONLY", "UNAVAILABLE", "REFERENCE_VERIFIED"] | None = None
     signal_sanity_receipt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     evaluation_evidence: EvaluationEvidence | None = None
     primary_metric: MetricSpec
