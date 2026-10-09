@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import shutil
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,7 @@ class ReplayReceipt(BaseModel):
     protocol_sha256: str | None = None
     runtime_fingerprint: str | None
     comparisons: dict[str, Any] = Field(default_factory=dict)
+    duration_ms: float | None = Field(default=None, ge=0)
     created_at: str
     receipt_sha256: str
 
@@ -51,6 +53,8 @@ class ReplayReceipt(BaseModel):
     def verify_identity(self):
         body = self.model_dump(mode="json")
         identity = body.pop("receipt_sha256")
+        if self.duration_ms is None:
+            body.pop("duration_ms", None)
         if identity != canonical_hash(body):
             raise ValueError("replay receipt hash mismatch")
         return self
@@ -189,7 +193,7 @@ def _assert_child(root: Path, child: Path) -> Path:
     return resolved_child
 
 
-def replay_dev_action(
+def _replay_dev_action(
     store: CampaignStore,
     workspace: WorkspaceManager,
     action_id: str,
@@ -512,6 +516,7 @@ def _persist_receipt(
         "protocol_sha256": protocol,
         "runtime_fingerprint": runtime_fp,
         "comparisons": comparisons,
+        "duration_ms": 0.0,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     receipt = ReplayReceipt(receipt_sha256=_json_hash(body), **body).model_dump(mode="json")
@@ -523,3 +528,28 @@ def _persist_receipt(
         else None
     )
     return receipt
+
+
+def replay_dev_action(
+    store: CampaignStore,
+    workspace: WorkspaceManager,
+    action_id: str,
+) -> dict[str, Any]:
+    """Run replay and durably record its separate wall-time accounting."""
+    started = time.perf_counter()
+    result = _replay_dev_action(store, workspace, action_id)
+    receipt_path = Path(result["receipt_path"])
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt.pop("receipt_sha256", None)
+    receipt["duration_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
+    validated = ReplayReceipt(receipt_sha256=_json_hash(receipt), **receipt)
+    encoded = validated.model_dump(mode="json")
+    _atomic_json(receipt_path, encoded)
+    result.update(encoded)
+    result["receipt_path"] = str(receipt_path)
+    result["result_path"] = (
+        str(receipt_path.parent / "evaluation-result.json")
+        if (receipt_path.parent / "evaluation-result.json").is_file()
+        else None
+    )
+    return result

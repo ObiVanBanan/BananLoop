@@ -1,4 +1,6 @@
-from bananloop.cli import _agent_config, parser
+import json
+
+from bananloop.cli import _agent_config, _agent_safe_decision, parser
 
 
 def test_goal_uses_profile_default_backend(tmp_path):
@@ -8,6 +10,29 @@ def test_goal_uses_profile_default_backend(tmp_path):
     config = _agent_config(args)
     assert config.kind == "pi"
     assert config.model == "local/model"
+
+
+def test_explain_and_inspect_commands_accept_deterministic_json_options():
+    explain = parser().parse_args(["explain", "--json", "--state-dir", ".state"])
+    inspect = parser().parse_args(["inspect", "--json", "--experiment", "2"])
+    assert explain.command == "explain"
+    assert explain.json is True
+    assert explain.state_dir == ".state"
+    assert inspect.command == "inspect"
+    assert inspect.experiment == 2
+
+
+def test_agent_facing_explanation_strips_validation_payloads():
+    safe = _agent_safe_decision({
+        "accepted": False,
+        "validation": {"value": "hidden-label"},
+        "predicates": {"validation": False, "minimum_improvement": True},
+        "reasons": ["VALIDATION:case=secret", "PRIMARY_NOT_IMPROVED"],
+    })
+    encoded = json.dumps(safe)
+    assert "hidden-label" not in encoded
+    assert "secret" not in encoded
+    assert safe["predicates"] == {"minimum_improvement": True}
 
 
 def test_pi_cli_builds_agent_config():

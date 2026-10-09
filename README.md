@@ -26,7 +26,7 @@ The coding agent proposes and edits. The evaluator and deterministic policy deci
 - Codex CLI adapter, Pi RPC adapter, and generic JSON-over-stdin/stdout command adapter;
 - action IDs that prevent completed agent/evaluator calls from being repeated on resume;
 - budgets for experiments, attempts, agent calls, evaluator calls and wall time;
-- `start` autopilot bootstrap plus expert `init`, `run`, `status`, `resume`, `stop`, `report` CLI;
+- `start` autopilot bootstrap plus expert `init`, `run`, `status`, `resume`, `stop`, `report`, `explain`, `inspect`, `replay` CLI;
 - a repo-local campaign registry for multiple goals, idempotent goal retries, and campaign selection;
 - Markdown/JSON reports built only from durable records;
 - explicit champion patch export with a manifest and operator reports;
@@ -347,12 +347,17 @@ bananloop campaigns list --repo .
 bananloop status --repo . --json
 bananloop report --repo .
 bananloop report --repo . --json --output campaign.json
+bananloop explain --repo .
+bananloop explain --repo . --json
+bananloop inspect --repo . --experiment 3
+bananloop inspect --repo . --experiment 3 --json
+bananloop replay --repo . --action exp:3:evaluate
 bananloop stop --repo .
 bananloop resume --repo .
 bananloop export --repo . --output ../champion-export
 ```
 
-Use `--campaign-id ID` with run/resume/status/stop/report/export to select an
+Use `--campaign-id ID` with run/resume/status/stop/report/explain/inspect/replay/export to select an
 indexed campaign. Without it, commands use the active campaign shown by
 `campaigns list`. Repeating the same canonical goal resumes its indexed
 campaign; use `--request-id ID` on `goal`/`start` to make retries explicit, or
@@ -362,6 +367,12 @@ Use `--state-dir PATH` on all commands to keep campaign state in an explicit
 single-campaign directory (useful for CI/tests). Existing state at the old
 `~/.bananloop/projects/<repo-hash>/campaign.sqlite3` path stays in place and is
 listed as `legacy`.
+
+`explain` and `inspect` derive summaries from durable records and redact
+validation payloads. `replay` is limited to DEV evaluator actions and retained
+bootstrap smoke runs; it records a separate receipt and does not consume campaign
+experiment counts. The detailed `report` JSON/Markdown is an operator artifact and
+can include validation and final holdout measurements.
 
 `stop` sends a durable cancellation request to the running supervisor. Managed
 local processes are polled for cancellation and the campaign deadline. The
