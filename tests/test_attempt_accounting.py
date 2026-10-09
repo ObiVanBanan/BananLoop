@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import argparse
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 from bananloop.report import build_report, render_markdown
+from bananloop.cli import cmd_explain, cmd_inspect
 from bananloop.research import attempt_bucket
 from test_engine import make_engine
 
@@ -32,6 +36,28 @@ def test_report_attempt_buckets_are_disjoint_and_scientific_count_is_durable(tmp
         assert accounting["counter_matches_classification"] is True
         assert accounting["scientific_trials"] == 3
         assert "## Attempt accounting" in render_markdown(report)
+        assert report["resources"]["by_stage"]["PROPOSE"]["agent_calls"] == 3
+        assert report["experiments"][0]["causal_record"]["scientific_outcome"] == "DEV_ACCEPTED"
+        assert report["experiments"][0]["trace_action_ids"]
+        explain_out = StringIO()
+        with redirect_stdout(explain_out):
+            cmd_explain(argparse.Namespace(
+                repo=str(engine.workspace.source_repo),
+                state_dir=str(store.path.parent), campaign_id=None, json=True,
+            ))
+        explanation = json.loads(explain_out.getvalue())
+        assert explanation["hypotheses"]
+        assert explanation["interpretation"] is None
+        inspect_out = StringIO()
+        with redirect_stdout(inspect_out):
+            cmd_inspect(argparse.Namespace(
+                repo=str(engine.workspace.source_repo),
+                state_dir=str(store.path.parent), campaign_id=None,
+                experiment=1, json=True,
+            ))
+        inspected = json.loads(inspect_out.getvalue())
+        assert inspected["experiment"]["ordinal"] == 1
+        assert inspected["actions"]
     finally:
         store.close()
 

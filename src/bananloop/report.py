@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import hashlib
+from collections import defaultdict
 from typing import Any
 
 from .contracts import CampaignSpec, EvaluationResult
-from .evaluator_binding import EvaluationReceipt, validate_receipt_linkage
+from .evaluator_binding import EvaluationReceipt, canonical_hash, validate_receipt_linkage
 from .policy import metric_value, target_met
+from .replay import ReplayReceipt
 from .research import attempt_bucket
 from .store import CampaignStore
 
@@ -14,9 +16,12 @@ from .store import CampaignStore
 def build_report(store: CampaignStore) -> dict[str, Any]:
     campaign = store.campaign()
     spec = CampaignSpec.model_validate_json(campaign["spec_json"])
+    evidence = spec.evaluation_evidence
+    trust_level = evidence.trust_level if evidence is not None else "UNVERIFIED"
     baseline = EvaluationResult.model_validate_json(campaign["baseline_json"]) if campaign["baseline_json"] else None
     champion = EvaluationResult.model_validate_json(campaign["champion_json"]) if campaign["champion_json"] else None
     experiments: list[dict[str, Any]] = []
+    actions_by_id = {row["id"]: row for row in store.actions()}
     for row in store.experiments():
         accepted = row["status"] == "ACCEPTED"
         evaluation_action = store.action(f"exp:{row['id']}:evaluate")
@@ -25,11 +30,72 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             if evaluation_action and evaluation_action.get("request_json")
             else {}
         )
+        propose_action = actions_by_id.get(f"exp:{row['id']}:propose")
+        propose_request = (
+            json.loads(propose_action["request_json"])
+            if propose_action and propose_action.get("request_json")
+            else {}
+        )
+        hypothesis = json.loads(row["hypothesis_json"]) if row["hypothesis_json"] else None
+        proof = evaluation_request.get("candidate_proof")
+        decision = json.loads(row["decision_json"]) if row["decision_json"] else None
+        validation_decision = (decision or {}).get("validation") or {}
+        if row["status"] == "REJECTED" and validation_decision:
+            scientific_outcome = "DEV_ACCEPT_VALIDATION_REJECT"
+        elif row["status"] == "NO_CHANGES" or row["failure_category"] == "NO_CHANGES":
+            scientific_outcome = "NO_CHANGES"
+        elif row["failure_category"] in {"INVALID_EVALUATION", "INVALID_VALIDATION", "EVALUATOR_CHANGED", "AGENT_PROTOCOL_ERROR", "CANDIDATE_NOT_MATERIALIZED", "PAIRED_INPUT_MISMATCH"}:
+            scientific_outcome = "INFRA_FAILED"
+        elif row["status"] == "CANCELLED":
+            scientific_outcome = "BLOCKED"
+        elif row["status"] == "ACCEPTED":
+            scientific_outcome = (
+                ("GOAL_MET" if trust_level == "INDEPENDENTLY_VALIDATED" else "UNVERIFIED_EVIDENCE")
+                if campaign["status"] == "GOAL_MET" and row.get("candidate_snapshot") == campaign.get("champion_snapshot")
+                else "DEV_ACCEPTED"
+            )
+        elif row["status"] == "REJECTED":
+            scientific_outcome = "SCIENTIFIC_REJECT"
+        else:
+            scientific_outcome = row["failure_category"] or row["status"]
+        causal_record = {
+            "selection_reason": {
+                "planning_mode": propose_request.get("planning_mode"),
+                "research_state": propose_request.get("research_state"),
+                "predecessor_experiments": (hypothesis or {}).get("prior_experiment_refs", []),
+                "relation": (hypothesis or {}).get("relation", "new"),
+                "mechanism_key": (hypothesis or {}).get("mechanism_key"),
+            },
+            "expected_change": (hypothesis or {}).get("expected_effect"),
+            "actual_changed_paths": proof.get("changed_paths", []) if proof else [],
+            "measurement": {
+                "decision": decision,
+                "metrics": (json.loads(row["evaluation_json"]).get("metrics", {}) if row["evaluation_json"] else {}),
+                "checks": (json.loads(row["evaluation_json"]).get("checks", {}) if row["evaluation_json"] else {}),
+            },
+            "stage_rejection": {
+                "category": row["failure_category"],
+                "reason": row["lesson"],
+                "validation_reasons": validation_decision.get("reasons", []),
+            },
+            "scientific_outcome": scientific_outcome,
+            "next_hypothesis_rationale": (row.get("failure_analysis_json") and json.loads(row["failure_analysis_json"]).get("next_test")) or None,
+            "observation": (
+                "; ".join(capsule.get("observation", "") for capsule in (json.loads(row["failure_analysis_json"]).get("capsules", []) if row.get("failure_analysis_json") else []) if capsule.get("observation"))
+                or row.get("failure_category")
+                or ("DEV measurement recorded" if row.get("evaluation_json") else "No scientific measurement recorded")
+            ),
+            "suspected_cause": (
+                [{"cause": capsule.get("likely_mechanism"), "confidence": capsule.get("confidence", 0.0)} for capsule in (json.loads(row["failure_analysis_json"]).get("capsules", []) if row.get("failure_analysis_json") else [])]
+                or [{"cause": "Cause not established; no generalized failure analysis was recorded.", "confidence": 0.0}]
+            ),
+            "proposed_test": [capsule.get("suggested_regression") for capsule in (json.loads(row["failure_analysis_json"]).get("capsules", []) if row.get("failure_analysis_json") else []) if capsule.get("suggested_regression")],
+        }
         item = {
             "id": row["id"],
             "ordinal": row["ordinal"],
             "status": row["status"],
-            "hypothesis": json.loads(row["hypothesis_json"]) if row["hypothesis_json"] else None,
+            "hypothesis": hypothesis,
             "candidate_snapshot": row["candidate_snapshot"],
             "candidate_proof": evaluation_request.get("candidate_proof"),
             "decision": json.loads(row["decision_json"]) if row["decision_json"] else None,
@@ -40,6 +106,8 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 if row.get("failure_analysis_json")
                 else None
             ),
+            "causal_record": causal_record,
+            "trace_action_ids": sorted(action["id"] for action in actions_by_id.values() if action.get("experiment_id") == row["id"]),
         }
         experiments.append(item)
     accounting_buckets = (
@@ -114,8 +182,6 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
     if spec.signal_sanity_status == "UNAVAILABLE":
         final_assessment = "DEV_ONLY"
 
-    evidence = spec.evaluation_evidence
-    trust_level = evidence.trust_level if evidence is not None else "UNVERIFIED"
     if trust_level == "INDEPENDENTLY_VALIDATED":
         if final_assessment == "ACCEPTED":
             scientific_assessment = "VALIDATED"
@@ -133,6 +199,42 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
         scientific_assessment = "UNKNOWN"
 
     resource_summary = store.resource_summary()
+    action_rows = {row["id"]: row for row in store.actions()}
+    stage_resources: dict[str, dict[str, Any]] = defaultdict(lambda: {"agent_calls": 0, "evaluator_calls": 0, "wall_time_seconds": 0.0, "unknown_outcomes": 0})
+    for reservation in store.reservations():
+        action = action_rows.get(reservation["action_id"])
+        if action is None or reservation["resource"] not in {"agent_call", "evaluator_call"}:
+            continue
+        bucket = stage_resources[action["stage"]]
+        count_key = "agent_calls" if reservation["resource"] == "agent_call" else "evaluator_calls"
+        bucket[count_key] += 1
+        bucket["wall_time_seconds"] += float(reservation.get("duration_ms") or 0.0) / 1000.0
+        if reservation["status"] == "UNKNOWN":
+            bucket["unknown_outcomes"] += 1
+    for bucket in stage_resources.values():
+        bucket["wall_time_seconds"] = round(bucket["wall_time_seconds"], 3)
+    bootstrap_path = store.path.parent / "bootstrap-plan.json"
+    bootstrap_record = json.loads(bootstrap_path.read_text(encoding="utf-8")) if bootstrap_path.is_file() else {}
+    bootstrap_attempts = bootstrap_record.get("bootstrap_attempts", [])
+    bootstrap_calls = len(bootstrap_attempts)
+    bootstrap_readiness_runs = sum(len((attempt.get("readiness") or {}).get("runs", [])) for attempt in bootstrap_attempts)
+    replay_receipts = []
+    replay_wall_time = 0.0
+    for receipt_path in sorted((store.path.parent / "replays").glob("*/replay-receipt.json")):
+        try:
+            replay = json.loads(receipt_path.read_text(encoding="utf-8"))
+            ReplayReceipt.model_validate(replay)
+            replay_receipts.append({"status": replay.get("status"), "source_action_id": replay.get("source_action_id"), "receipt_sha256": replay.get("receipt_sha256"), "duration_ms": replay.get("duration_ms")})
+            replay_wall_time += float(replay.get("duration_ms") or 0.0)
+        except (OSError, ValueError):
+            replay_receipts.append({"status": "INVALID", "receipt_sha256": None, "duration_ms": None})
+    bootstrap_receipt_hash = bootstrap_record.get("bootstrap_receipt_sha256")
+    bootstrap_receipt_body = dict(bootstrap_record)
+    bootstrap_receipt_body.pop("bootstrap_receipt_sha256", None)
+    bootstrap_receipt_valid = bool(bootstrap_receipt_hash and canonical_hash(bootstrap_receipt_body) == bootstrap_receipt_hash)
+    bootstrap_event = next((event for event in store.events() if event["event_type"] == "CAMPAIGN_BOOTSTRAPPED"), None)
+    if bootstrap_event and json.loads(bootstrap_event["payload_json"]).get("bootstrap_receipt_sha256") != bootstrap_receipt_hash:
+        bootstrap_receipt_valid = False
     research_state = store.research_state()
     binding_row = store.evaluator_binding()
     receipt_by_action = {}
@@ -190,9 +292,21 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 "binding_id": None,
                 "binding_hash": None,
             })
+    campaign_scientific_outcome = (
+        "UNVERIFIED_EVIDENCE"
+        if campaign["status"] == "GOAL_MET" and trust_level != "INDEPENDENTLY_VALIDATED"
+        else "GOAL_MET" if campaign["status"] == "GOAL_MET"
+        else "BUDGET_EXHAUSTED" if campaign.get("stop_reason") in {"BUDGET_EXHAUSTED", "ATTEMPT_LIMIT", "EVALUATOR_CALL_LIMIT", "AGENT_CALL_LIMIT"}
+        else "BLOCKED" if campaign["status"] == "PAUSED_NEEDS_INPUT" or campaign.get("stop_reason") in {"NO_HYPOTHESIS", "USER_STOPPED", "PAUSED_NEEDS_INPUT"}
+        else "INFRA_FAILED" if campaign["status"] == "PAUSED_INFRA"
+        else "SCIENTIFIC_REJECT" if campaign["status"] == "STOPPED" and campaign.get("stop_reason") in {"FINAL_HOLDOUT_REJECTED", "PLATEAU"}
+        else "NO_EXPERIMENTS" if not experiments
+        else campaign["status"]
+    )
     return {
         "campaign_outcome": campaign["status"],
         "technical_outcome": campaign["status"],
+        "scientific_outcome": campaign_scientific_outcome,
         "stop_reason": campaign["stop_reason"],
         "final_assessment": final_assessment,
         "scientific_assessment": scientific_assessment,
@@ -276,6 +390,31 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             "experiments": campaign["experiment_count"],
             "attempts": campaign["attempt_count"],
             **resource_summary,
+            "limits": {
+                "max_agent_calls": spec.budget.max_agent_calls,
+                "max_evaluator_calls": spec.budget.max_evaluator_calls,
+                "max_experiments": spec.budget.max_experiments,
+                "max_attempts": spec.budget.max_attempts,
+                "deadline_seconds": spec.budget.deadline_seconds,
+                "bootstrap_max_attempts": 3,
+                "replay_calls": "separately counted; do not consume campaign budget",
+            },
+            "by_stage": dict(sorted(stage_resources.items())),
+            "bootstrap": {
+                "receipt_sha256": bootstrap_receipt_hash,
+                "receipt_status": "RECORDED" if bootstrap_receipt_valid else "MISSING_OR_INVALID" if bootstrap_attempts else "NOT_APPLICABLE",
+                "agent_calls": bootstrap_calls,
+                "repairs": max(0, bootstrap_calls - 1),
+                "readiness_runs": bootstrap_readiness_runs,
+                "duration_seconds": round(sum(float(item.get("duration_ms") or 0.0) for item in bootstrap_attempts) / 1000.0, 3),
+                "readiness_duration_seconds": round(sum(float(item.get("readiness_duration_ms") or 0.0) for item in bootstrap_attempts) / 1000.0, 3),
+                "unknown_duration_calls": sum(1 for item in bootstrap_attempts if item.get("duration_ms") is None),
+            },
+            "replay": {
+                "calls": len(replay_receipts),
+                "wall_time_seconds": round(replay_wall_time / 1000.0, 3),
+                "receipts": replay_receipts,
+            },
         },
     }
 
@@ -288,6 +427,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Stop reason: **{report['stop_reason'] or '-'}**",
         f"- Final assessment: **{report['final_assessment']}**",
         f"- Scientific assessment: **{report['scientific_assessment']}**",
+        f"- Scientific outcome: **{report['scientific_outcome']}**",
         f"- Evaluator trust: **{report['evaluator_evidence']['trust_level']}**; technical readiness: **{report['evaluator_evidence']['technical_readiness']}**",
         f"- Goal: {report['goal']}",
         f"- Primary metric: `{report['primary_metric']}`",
@@ -320,9 +460,32 @@ def render_markdown(report: dict[str, Any]) -> str:
             )
         ),
         "",
-        "## Experiments",
-        "",
     ]
+    lines += ["", "## Decision summary", ""]
+    accounting = report.get("attempt_accounting", {})
+    resources = report.get("resources", {})
+    lines.append(
+        f"- Attempts: {accounting.get('total_attempts', 0)} total; "
+        f"{accounting.get('scientific_trials', 0)} scientific; "
+        f"{accounting.get('infra_failures', 0)} infrastructure failures; "
+        f"bootstrap calls {resources.get('bootstrap', {}).get('agent_calls', 0)}; "
+        f"replays {resources.get('replay', {}).get('calls', 0)}."
+    )
+    for exp in report.get("experiments", [])[-5:]:
+        hypothesis = exp.get("hypothesis") or {}
+        causal = exp.get("causal_record") or {}
+        lines.append(
+            f"- #{exp['ordinal']} {causal.get('scientific_outcome', exp['status'])}: "
+            f"{hypothesis.get('hypothesis', 'no hypothesis')}; "
+            f"expected: {causal.get('expected_change') or '-'}; "
+            f"changed: {', '.join(causal.get('actual_changed_paths') or []) or '-'}; "
+            f"reason: {causal.get('stage_rejection', {}).get('reason') or '-'}; "
+            f"trace: {', '.join(exp.get('trace_action_ids') or []) or '-'}"
+        )
+    lines.append(
+        "- Not proven: "
+        + ("; ".join(report["evaluator_evidence"].get("limitations", [])) or "none recorded")
+    )
     signal = report.get("signal_sanity", {})
     lines += [
         "",
@@ -330,13 +493,21 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         f"- Status: `{signal.get('status') or 'legacy/unspecified'}`; evidence level: `{signal.get('evidence_level') or 'legacy/unspecified'}`",
         f"- Readiness receipt SHA-256: `{signal.get('receipt_sha256') or '-'}`",
+        "",
+        "## Experiments",
+        "",
     ]
     if not report["experiments"]:
         lines.append("No experiments recorded.")
     for exp in report["experiments"]:
         hypothesis = (exp["hypothesis"] or {}).get("hypothesis", "-")
         decision = exp["decision"] or {}
-        lines.append(f"- #{exp['ordinal']} **{exp['status']}** — {hypothesis}; delta={decision.get('delta', '-')}; failure={exp['failure_category'] or '-'}")
+        causal = exp.get("causal_record", {})
+        lines.append(f"- #{exp['ordinal']} **{exp['status']}** ({causal.get('scientific_outcome', 'UNKNOWN')}) — {hypothesis}; delta={decision.get('delta', '-')}; failure={exp['failure_category'] or '-'}")
+        if causal.get("expected_change"):
+            lines.append(f"  - Expected change: {causal['expected_change']}")
+        if causal.get("actual_changed_paths"):
+            lines.append(f"  - Changed paths: {', '.join(causal['actual_changed_paths'])}")
         proof = exp.get("candidate_proof")
         if proof:
             lines.append(
@@ -413,6 +584,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Action wall time: {r['wall_time_seconds']:.3f} s",
         f"- Resource reservations: {r['reservation_count']} ({r['open_reservations']} open)",
         f"- Unknown action outcomes: {r['unknown_outcomes']}",
+        f"- Bootstrap calls / repairs / readiness runs / agent time / readiness time: {r['bootstrap']['agent_calls']} / {r['bootstrap']['repairs']} / {r['bootstrap']['readiness_runs']} / {r['bootstrap']['duration_seconds']:.3f} s / {r['bootstrap']['readiness_duration_seconds']:.3f} s",
+        f"- Replay calls / time: {r['replay']['calls']} / {r['replay']['wall_time_seconds']:.3f} s",
         "",
     ]
     return "\n".join(lines)

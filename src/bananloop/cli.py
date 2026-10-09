@@ -461,6 +461,134 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_explain(args: argparse.Namespace) -> int:
+    paths = _selected_paths(args)
+    store = CampaignStore(paths.db)
+    try:
+        report = build_report(store)
+    finally:
+        store.close()
+    recent = report["experiments"][-5:]
+    payload = {
+        "goal": report["goal"],
+        "technical_outcome": report["technical_outcome"],
+        "scientific_assessment": report["scientific_assessment"],
+        "evaluator_trust": report["evaluator_evidence"]["trust_level"],
+        "baseline": report["baseline"],
+        "champion": report["final_champion"],
+        "delta": report["delta"],
+        "guardrails": report["guardrails"],
+        "protocol": {
+            "dev": report["evaluation_protocol"]["dev"],
+            "validation": {"configured": report["evaluation_protocol"]["validation"]["configured"]},
+            "holdout": {"configured": report["evaluation_protocol"]["holdout"]["configured"]},
+        },
+        "attempt_accounting": report["attempt_accounting"],
+        "resources": report["resources"],
+        "hypotheses": [
+            {
+                "ordinal": item["ordinal"],
+                "hypothesis": item["hypothesis"],
+                "causal_record": _agent_safe_causal_record(item["causal_record"]),
+                "trace_action_ids": item["trace_action_ids"],
+            }
+            for item in recent
+        ],
+        "not_proven": report["evaluator_evidence"].get("limitations", []),
+        "next_directions": (
+            report["research_state"].get("recent_lessons", [])[-3:]
+            if report.get("research_state") else []
+        ),
+        "interpretation": None,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
+        return 0
+    print(f"Goal: {payload['goal']}")
+    print(f"Outcome: {payload['technical_outcome']} / scientific assessment: {payload['scientific_assessment']}; evaluator trust: {payload['evaluator_trust']}")
+    print(f"Baseline → champion: {payload['baseline']} → {payload['champion']} (delta {payload['delta']})")
+    print(f"Attempts: {payload['attempt_accounting']['total_attempts']} total, {payload['attempt_accounting']['scientific_trials']} scientific; bootstrap {payload['resources']['bootstrap']['agent_calls']} calls, replay {payload['resources']['replay']['calls']} calls")
+    if payload["hypotheses"]:
+        print("Recent hypotheses:")
+        for item in payload["hypotheses"]:
+            hypothesis = item["hypothesis"] or {}
+            causal = item["causal_record"]
+            print(f"  #{item['ordinal']} {causal['scientific_outcome']}: {hypothesis.get('hypothesis', 'no hypothesis')}")
+            if causal.get("expected_change"):
+                print(f"    expected: {causal['expected_change']}")
+            if causal.get("actual_changed_paths"):
+                print(f"    changed: {', '.join(causal['actual_changed_paths'])}")
+            if causal.get("stage_rejection", {}).get("reason"):
+                print(f"    reason: {causal['stage_rejection']['reason']}")
+    else:
+        print("No experiments recorded; no scientific result is inferred.")
+    if payload["not_proven"]:
+        print("Not proven: " + "; ".join(payload["not_proven"]))
+    print("Interpretation: none; this explanation is derived from durable records.")
+    return 0
+
+
+def cmd_inspect(args: argparse.Namespace) -> int:
+    paths = _selected_paths(args)
+    store = CampaignStore(paths.db)
+    try:
+        report = build_report(store)
+        item = next((row for row in report["experiments"] if row["ordinal"] == args.experiment), None)
+        actions = [
+            {key: row[key] for key in ("id", "stage", "kind", "status", "created_at", "updated_at")}
+            for row in store.actions()
+            if row.get("experiment_id") == (item["id"] if item else None)
+        ]
+    finally:
+        store.close()
+    if item is None:
+        raise StoreError(f"experiment ordinal {args.experiment} was not found")
+    item = dict(item)
+    item["decision"] = _agent_safe_decision(item.get("decision"))
+    item["causal_record"] = _agent_safe_causal_record(item["causal_record"])
+    payload = {"experiment": item, "actions": actions}
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
+    else:
+        causal = item["causal_record"]
+        hypothesis = item["hypothesis"] or {}
+        print(f"Experiment #{item['ordinal']}: {item['status']} / {causal['scientific_outcome']}")
+        print(f"Hypothesis: {hypothesis.get('hypothesis', '-')}")
+        print(f"Mechanism: {hypothesis.get('mechanism_key', '-')}; relation: {hypothesis.get('relation', '-')}; planning mode: {causal['selection_reason'].get('planning_mode', '-')}")
+        print(f"Expected: {causal.get('expected_change') or '-'}")
+        print(f"Changed paths: {', '.join(causal.get('actual_changed_paths', [])) or '-'}")
+        print(f"Decision: {json.dumps(causal['measurement'].get('decision'), ensure_ascii=False, sort_keys=True)}")
+        print(f"Failure: {causal['stage_rejection'].get('category') or '-'} — {causal['stage_rejection'].get('reason') or '-'}")
+        print("Trace actions: " + (", ".join(item["trace_action_ids"]) or "none"))
+    return 0
+
+
+def _agent_safe_decision(decision):
+    if not isinstance(decision, dict):
+        return decision
+    safe = dict(decision)
+    safe.pop("validation", None)
+    predicates = dict(safe.get("predicates") or {})
+    predicates.pop("validation", None)
+    safe["predicates"] = predicates
+    safe["reasons"] = [
+        reason for reason in safe.get("reasons", [])
+        if not reason.startswith(("VALIDATION:", "INVALID_VALIDATION"))
+    ]
+    return safe
+
+
+def _agent_safe_causal_record(record):
+    safe = dict(record)
+    measurement = dict(safe.get("measurement") or {})
+    measurement["decision"] = _agent_safe_decision(measurement.get("decision"))
+    safe["measurement"] = measurement
+    rejection = dict(safe.get("stage_rejection") or {})
+    rejection["validation_reasons"] = []
+    safe["stage_rejection"] = rejection
+    return safe
+
+
 def cmd_export(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     paths = _selected_paths(args)
@@ -749,6 +877,21 @@ def parser() -> argparse.ArgumentParser:
     replay.add_argument("--campaign-id")
     replay.add_argument("--action", required=True, help="DEV action id or bootstrap:attempt:N:smoke:N")
     replay.set_defaults(func=cmd_replay)
+
+    explain = sub.add_parser("explain", help="explain the durable campaign outcome and recent hypotheses")
+    explain.add_argument("--repo", default=".")
+    explain.add_argument("--state-dir")
+    explain.add_argument("--campaign-id")
+    explain.add_argument("--json", action="store_true")
+    explain.set_defaults(func=cmd_explain)
+
+    inspect = sub.add_parser("inspect", help="inspect one durable experiment and its action trace")
+    inspect.add_argument("--repo", default=".")
+    inspect.add_argument("--state-dir")
+    inspect.add_argument("--campaign-id")
+    inspect.add_argument("--experiment", type=int, required=True, help="experiment ordinal")
+    inspect.add_argument("--json", action="store_true")
+    inspect.set_defaults(func=cmd_inspect)
 
     campaigns = sub.add_parser("campaigns", help="list repository campaigns")
     campaign_sub = campaigns.add_subparsers(dest="campaign_command", required=True)

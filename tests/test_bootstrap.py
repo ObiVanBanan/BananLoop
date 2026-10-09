@@ -10,7 +10,9 @@ import pytest
 
 from bananloop.bootstrap import BootstrapError, BootstrapPlan, BootstrapSignalSanity, _bootstrap_contract_error, _bootstrap_path, _bootstrap_task, bootstrap_campaign
 from bananloop.contracts import AgentConfig, RuntimePaths
+from bananloop.evaluator_binding import canonical_hash
 from bananloop.replay import replay_dev_action
+from bananloop.report import build_report
 from bananloop.store import CampaignStore
 from bananloop.wizard import _parse_py_launcher_paths, discover_project
 from bananloop.workspace import WorkspaceManager
@@ -488,6 +490,10 @@ def test_bootstrap_auto_repairs_false_goal_request(tmp_path: Path):
     assert spec.approved_hash() == spec.model_copy(update={"evaluation_evidence": None}).approved_hash()
     record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
     assert len(record["bootstrap_attempts"]) == 2
+    receipt_hash = record.pop("bootstrap_receipt_sha256")
+    assert canonical_hash(record) == receipt_hash
+    assert all(item["duration_ms"] >= 0 for item in record["bootstrap_attempts"])
+    assert record["bootstrap_attempts"][1]["readiness_duration_ms"] >= 0
     assert record["bootstrap_attempts"][0]["contract_error"]
     assert record["bootstrap_attempts"][1]["contract_error"] is None
     assert record["bootstrap_request"]["goal"] == "improve similarity to reference images"
@@ -495,6 +501,11 @@ def test_bootstrap_auto_repairs_false_goal_request(tmp_path: Path):
 
     store = CampaignStore(paths.db)
     try:
+        report_before = build_report(store)
+        assert report_before["resources"]["bootstrap"]["receipt_status"] == "RECORDED"
+        assert report_before["resources"]["bootstrap"]["agent_calls"] == 2
+        assert report_before["resources"]["bootstrap"]["repairs"] == 1
+        assert report_before["resources"]["bootstrap"]["readiness_runs"] == 3
         before = store.campaign()
         before_actions = store.actions()
         replay = replay_dev_action(
@@ -503,9 +514,13 @@ def test_bootstrap_auto_repairs_false_goal_request(tmp_path: Path):
             "bootstrap:attempt:2:smoke:1",
         )
         assert replay["status"] == "REPRODUCIBLE"
+        assert replay["duration_ms"] >= 0
         assert replay["candidate_snapshot"] == spec.base_commit
         assert store.campaign()["evaluator_calls"] == before["evaluator_calls"]
         assert store.actions() == before_actions
+        replay_accounting = build_report(store)["resources"]["replay"]
+        assert replay_accounting["calls"] == 1
+        assert replay_accounting["wall_time_seconds"] >= 0
     finally:
         store.close()
 

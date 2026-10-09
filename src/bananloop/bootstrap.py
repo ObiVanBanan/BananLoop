@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+import time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -315,12 +316,14 @@ def bootstrap_campaign(
             },
             "plan": plan.model_dump(mode="json") if plan is not None else None,
         }
+        record["bootstrap_receipt_sha256"] = canonical_hash(record)
         (paths.root / "bootstrap-plan.json").write_text(
             json.dumps(record, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
 
     for attempt_index in range(3):
+        call_started = time.perf_counter()
         try:
             raw = adapter.execute(
                 task,
@@ -354,6 +357,8 @@ def bootstrap_campaign(
                 "snapshot": bootstrap_snapshot,
                 "changed_paths": [],
                 "failure": failure,
+                "agent_call_count": 1,
+                "duration_ms": round((time.perf_counter() - call_started) * 1000.0, 3),
             })
             persist_record()
             workspace.checkout(source_base)
@@ -398,6 +403,8 @@ def bootstrap_campaign(
             "changed_paths": changed,
             "contract_error": contract_error,
             "readiness": None,
+            "agent_call_count": 1,
+            "duration_ms": round((time.perf_counter() - call_started) * 1000.0, 3),
         }
         bootstrap_attempts.append(attempt_record)
 
@@ -429,6 +436,7 @@ def bootstrap_campaign(
             return plan, None
 
         try:
+            readiness_started = time.perf_counter()
             readiness = run_bootstrap_readiness(
                 plan=plan,
                 workspace=workspace.workspace,
@@ -436,14 +444,20 @@ def bootstrap_campaign(
                 state_root=paths.root,
                 attempt=attempt_index + 1,
             )
+            readiness["duration_ms"] = round((time.perf_counter() - readiness_started) * 1000.0, 3)
+            attempt_record["readiness_duration_ms"] = readiness["duration_ms"]
             attempt_record["readiness"] = readiness
             persist_record()
             break
         except ReadinessError as exc:
+            readiness_elapsed = round((time.perf_counter() - readiness_started) * 1000.0, 3)
             attempt_record["readiness"] = exc.receipt or {
                 "status": "FAILED",
                 "error": str(exc),
             }
+            attempt_record["readiness_duration_ms"] = readiness_elapsed
+            if isinstance(attempt_record["readiness"], dict):
+                attempt_record["readiness"].setdefault("duration_ms", readiness_elapsed)
             persist_record()
             if attempt_index < 2:
                 task = {
@@ -604,6 +618,7 @@ def bootstrap_campaign(
                 "bootstrap_snapshot": bootstrap_snapshot,
                 "changed_paths": changed,
                 "summary": plan.summary,
+                "bootstrap_receipt_sha256": json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8")).get("bootstrap_receipt_sha256"),
             },
         )
         store.conn.commit()
