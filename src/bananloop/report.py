@@ -230,6 +230,11 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
     bootstrap_attempts = bootstrap_record.get("bootstrap_attempts", [])
     bootstrap_calls = len(bootstrap_attempts)
     bootstrap_readiness_runs = sum(len((attempt.get("readiness") or {}).get("runs", [])) for attempt in bootstrap_attempts)
+    bootstrap_full_evaluations = sum(
+        1 for attempt in bootstrap_attempts
+        if (attempt.get("readiness") or {}).get("full_evaluation")
+        or (attempt.get("readiness") or {}).get("full_evaluation_error")
+    )
     replay_receipts = []
     replay_wall_time = 0.0
     for receipt_path in sorted((store.path.parent / "replays").glob("*/replay-receipt.json")):
@@ -419,6 +424,8 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 "agent_calls": bootstrap_calls,
                 "repairs": max(0, bootstrap_calls - 1),
                 "readiness_runs": bootstrap_readiness_runs,
+                "readiness_full_evaluations": bootstrap_full_evaluations,
+                "readiness_evaluator_calls": bootstrap_readiness_runs + bootstrap_full_evaluations,
                 "duration_seconds": round(sum(float(item.get("duration_ms") or 0.0) for item in bootstrap_attempts) / 1000.0, 3),
                 "readiness_duration_seconds": round(sum(float(item.get("readiness_duration_ms") or 0.0) for item in bootstrap_attempts) / 1000.0, 3),
                 "unknown_duration_calls": sum(1 for item in bootstrap_attempts if item.get("duration_ms") is None),
@@ -597,7 +604,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Action wall time: {r['wall_time_seconds']:.3f} s",
         f"- Resource reservations: {r['reservation_count']} ({r['open_reservations']} open)",
         f"- Unknown action outcomes: {r['unknown_outcomes']}",
-        f"- Bootstrap calls / repairs / readiness runs / agent time / readiness time: {r['bootstrap']['agent_calls']} / {r['bootstrap']['repairs']} / {r['bootstrap']['readiness_runs']} / {r['bootstrap']['duration_seconds']:.3f} s / {r['bootstrap']['readiness_duration_seconds']:.3f} s",
+        f"- Bootstrap agent calls / repairs / smoke runs / full preflights / evaluator calls / agent time / readiness time: {r['bootstrap']['agent_calls']} / {r['bootstrap']['repairs']} / {r['bootstrap']['readiness_runs']} / {r['bootstrap']['readiness_full_evaluations']} / {r['bootstrap']['readiness_evaluator_calls']} / {r['bootstrap']['duration_seconds']:.3f} s / {r['bootstrap']['readiness_duration_seconds']:.3f} s",
         f"- Replay calls / time: {r['replay']['calls']} / {r['replay']['wall_time_seconds']:.3f} s",
         "",
     ]

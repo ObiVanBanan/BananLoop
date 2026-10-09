@@ -68,6 +68,155 @@ def _primary_value(plan: Any, result: EvaluationResult) -> float:
     return float(metric.value)
 
 
+def _run_readiness_command(
+    *,
+    command: list[str],
+    workspace: Path,
+    snapshot: str,
+    state_root: Path,
+    run_dir: Path,
+    run_id: str,
+    tier: str,
+    timeout: int,
+    assets: list[Any],
+    frozen_asset_root: Path,
+    plan: Any,
+) -> tuple[EvaluationResult, dict[str, Any]]:
+    artifact_dir = run_dir / "artifacts"
+    managed_workspace = run_dir / "workspace"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    evaluator = CommandEvaluator(command)
+    evaluator.context = {
+        "BANANLOOP_ARTIFACT_DIR": str(artifact_dir.resolve()),
+        "BANANLOOP_EVALUATION_ID": run_id,
+        "BANANLOOP_SNAPSHOT": snapshot,
+        "BANANLOOP_EVALUATION_TIER": tier,
+        "BANANLOOP_WORKSPACE": str(managed_workspace.resolve()),
+    }
+    try:
+        run_process(
+            ["git", "clone", "--no-hardlinks", "--no-checkout", str(workspace), str(managed_workspace)],
+            cwd=run_dir,
+            timeout=120,
+        )
+        run_process(["git", "checkout", "--detach", snapshot], cwd=managed_workspace, timeout=30)
+        run_process(["git", "config", "user.email", "bananloop@localhost"], cwd=managed_workspace, timeout=10)
+        run_process(["git", "config", "user.name", "BananLoop Readiness"], cwd=managed_workspace, timeout=10)
+
+        for asset in assets:
+            source = frozen_asset_root / asset.path
+            target = managed_workspace / asset.path
+            if not target.is_file() or sha256_evaluation_asset(target) != asset.sha256:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+
+        head = run_process(["git", "rev-parse", "HEAD"], cwd=managed_workspace, timeout=10).stdout.strip()
+        if head != snapshot:
+            raise ReadinessError(f"managed readiness workspace snapshot drifted: expected {snapshot}, found {head}")
+        result = evaluator.evaluate(managed_workspace, timeout=timeout)
+        summary = _validate_result(plan, result)
+        retain_artifacts(result, artifact_dir, None, snapshot)
+        head = run_process(["git", "rev-parse", "HEAD"], cwd=managed_workspace, timeout=10).stdout.strip()
+        if head != snapshot:
+            raise ReadinessError("readiness evaluator changed workspace snapshot in the managed checkout")
+        dirty = run_process(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=managed_workspace,
+            timeout=10,
+        ).stdout.strip()
+        if dirty:
+            raise ReadinessError(
+                "readiness evaluator dirtied the managed workspace; write artifacts "
+                "to BANANLOOP_ARTIFACT_DIR instead: " + dirty[:1000]
+            )
+    except (EvaluatorError, ProcessError, ReadinessError):
+        raise
+    finally:
+        if managed_workspace.exists():
+            _remove_smoke_workspace(managed_workspace)
+
+    result_path = run_dir / "evaluation-result.json"
+    result_path.write_text(
+        json.dumps(result.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    input_manifest = [
+        {"case_id": case.case_id, "repetition": case.repetition, "input_sha256": case.input_sha256}
+        for case in result.cases
+    ]
+    summary["replay"] = {
+        "result_path": result_path.relative_to(state_root).as_posix(),
+        "result_sha256": hashlib.sha256(result_path.read_bytes()).hexdigest(),
+        "case_input_manifest_sha256": canonical_hash(input_manifest),
+        "evaluation_assets": [asset.model_dump(mode="json") for asset in assets],
+    }
+    return result, summary
+
+
+def _compare_smoke_full(
+    smoke: EvaluationResult,
+    full: EvaluationResult,
+    *,
+    metric_noise_bounds: dict[str, float],
+    metric_relative_noise_bounds: dict[str, float],
+    case_metric_noise_bounds: dict[tuple[str, int], dict[str, float]],
+    case_metric_relative_noise_bounds: dict[tuple[str, int], dict[str, float]],
+) -> dict[str, Any]:
+    mismatches: list[str] = []
+    if not smoke.protocol_sha256 or smoke.protocol_sha256 != full.protocol_sha256:
+        mismatches.append("smoke and full evaluators have different protocol identities")
+    smoke_cases = {(case.case_id, case.repetition): case for case in smoke.cases}
+    full_cases = {(case.case_id, case.repetition): case for case in full.cases}
+    missing = sorted(set(smoke_cases) - set(full_cases))
+    if missing:
+        mismatches.append(f"full evaluator omitted {len(missing)} smoke case identities")
+
+    compared = 0
+    for key in sorted(set(smoke_cases) & set(full_cases)):
+        before = smoke_cases[key]
+        after = full_cases[key]
+        if before.input_sha256 != after.input_sha256:
+            mismatches.append(f"case {key!r} input identity differs between smoke and full")
+            continue
+        if set(before.metrics) != set(after.metrics):
+            mismatches.append(f"case {key!r} metric set differs between smoke and full")
+            continue
+        for name, before_value in before.metrics.items():
+            after_value = after.metrics[name]
+            key_noise = case_metric_noise_bounds.get(key, {}).get(
+                name, metric_noise_bounds.get(name, 0.0)
+            )
+            key_relative_noise = case_metric_relative_noise_bounds.get(key, {}).get(
+                name, metric_relative_noise_bounds.get(name, 0.0)
+            )
+            tolerance = max(
+                max(0.0, float(key_noise)),
+                max(0.0, float(key_relative_noise))
+                * max(abs(before_value), abs(after_value)),
+            )
+            if abs(before_value - after_value) > tolerance:
+                mismatches.append(f"case {key!r} metric {name!r} differs beyond A/A tolerance")
+        compared += 1
+
+    comparison_mode = "per_case" if smoke_cases else "aggregate_contract_only"
+    if set(smoke.metrics) != set(full.metrics):
+        mismatches.append("smoke and full evaluators expose different aggregate metric names")
+    else:
+        for name in smoke.metrics:
+            if smoke.metrics[name].unit != full.metrics[name].unit:
+                mismatches.append(f"aggregate metric {name!r} unit differs between smoke and full")
+    return {
+        "status": "FAILED" if mismatches else ("INCONCLUSIVE" if not smoke_cases else "PASSED"),
+        "comparison_mode": comparison_mode,
+        "smoke_case_count": len(smoke_cases),
+        "full_case_count": len(full_cases),
+        "compared_case_count": compared,
+        "protocol_sha256": smoke.protocol_sha256,
+        "mismatches": mismatches,
+    }
+
+
 def _signal_sanity(plan: Any, results: list[EvaluationResult]) -> dict[str, Any]:
     contract = plan.signal_sanity
     if contract.status == "unavailable":
@@ -238,13 +387,19 @@ def run_bootstrap_readiness(
     if not 2 <= repeats <= 5:
         raise ValueError("readiness repeats must be bounded between 2 and 5")
 
-    command = list(plan.smoke_command or plan.evaluation_command)
-    if not command:
+    smoke_command = list(plan.smoke_command or plan.evaluation_command)
+    full_command = list(plan.evaluation_command)
+    if not smoke_command or not full_command:
         raise ReadinessError("bootstrap plan has no smoke/evaluation command")
 
     timeout = min(int(plan.evaluator_timeout_seconds), 300)
     state_root = state_root.resolve()
-    assets = discover_evaluation_assets(workspace, command)
+    assets_by_path = {
+        asset.path: asset
+        for command in (smoke_command, full_command)
+        for asset in discover_evaluation_assets(workspace, command)
+    }
+    assets = [assets_by_path[key] for key in sorted(assets_by_path)]
     frozen_asset_root = state_root / "bootstrap-readiness" / f"attempt-{attempt}" / "evaluation-assets"
     for asset in assets:
         source = workspace / asset.path
@@ -253,12 +408,13 @@ def run_bootstrap_readiness(
         target = frozen_asset_root / asset.path
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
-    runtime = runtime_descriptor({"dev": command})
+    runtime = runtime_descriptor({"smoke": smoke_command, "dev": full_command})
     runtime_fingerprint = canonical_hash(runtime)
     receipt: dict[str, Any] = {
         "status": "RUNNING",
         "snapshot": snapshot,
-        "command": command,
+        "command": smoke_command,
+        "full_evaluation_command": full_command,
         "timeout_seconds": timeout,
         "repeat_count": repeats,
         "runs": [],
@@ -272,92 +428,31 @@ def run_bootstrap_readiness(
             / f"attempt-{attempt}"
             / f"run-{repetition + 1}"
         )
-        artifact_dir = run_dir / "artifacts"
-        smoke_workspace = run_dir / "workspace"
         run_dir.mkdir(parents=True, exist_ok=True)
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        evaluator = CommandEvaluator(command)
-        evaluator.context = {
-            "BANANLOOP_ARTIFACT_DIR": str(artifact_dir.resolve()),
-            "BANANLOOP_EVALUATION_ID": (
-                f"bootstrap:attempt:{attempt}:smoke:{repetition + 1}"
-            ),
-            "BANANLOOP_SNAPSHOT": snapshot,
-            "BANANLOOP_EVALUATION_TIER": "bootstrap_smoke",
-            "BANANLOOP_WORKSPACE": str(smoke_workspace.resolve()),
-        }
         try:
-            run_process(
-                ["git", "clone", "--no-hardlinks", "--no-checkout", str(workspace), str(smoke_workspace)],
-                cwd=run_dir,
-                timeout=120,
+            result, summary = _run_readiness_command(
+                command=smoke_command,
+                workspace=workspace,
+                snapshot=snapshot,
+                state_root=state_root,
+                run_dir=run_dir,
+                run_id=f"bootstrap:attempt:{attempt}:smoke:{repetition + 1}",
+                tier="bootstrap_smoke",
+                timeout=timeout,
+                assets=assets,
+                frozen_asset_root=frozen_asset_root,
+                plan=plan,
             )
-            run_process(["git", "checkout", "--detach", snapshot], cwd=smoke_workspace, timeout=30)
-            run_process(["git", "config", "user.email", "bananloop@localhost"], cwd=smoke_workspace, timeout=10)
-            run_process(["git", "config", "user.name", "BananLoop Readiness"], cwd=smoke_workspace, timeout=10)
-
-            # The clone supplies only committed files. Preserve evaluator assets
-            # referenced by the command even when the source checkout ignored them,
-            # without copying arbitrary ignored runtime state between repeats.
-            for asset in assets:
-                source = frozen_asset_root / asset.path
-                target = smoke_workspace / asset.path
-                if not target.is_file() or sha256_evaluation_asset(target) != asset.sha256:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source, target)
-
-            head = run_process(["git", "rev-parse", "HEAD"], cwd=smoke_workspace, timeout=10).stdout.strip()
-            if head != snapshot:
-                raise ReadinessError(
-                    f"smoke workspace snapshot drifted before run {repetition + 1}: "
-                    f"expected {snapshot}, found {head}"
-                )
-            result = evaluator.evaluate(smoke_workspace, timeout=timeout)
-            summary = _validate_result(plan, result)
-            retain_artifacts(result, artifact_dir, None, snapshot)
-            head = run_process(["git", "rev-parse", "HEAD"], cwd=smoke_workspace, timeout=10).stdout.strip()
-            if head != snapshot:
-                raise ReadinessError(
-                    f"smoke evaluator changed workspace snapshot during run "
-                    f"{repetition + 1}: expected {snapshot}, found {head}"
-                )
-            dirty = run_process(
-                ["git", "status", "--porcelain", "--untracked-files=all"],
-                cwd=smoke_workspace,
-                timeout=10,
-            ).stdout.strip()
-            if dirty:
-                raise ReadinessError(
-                    "smoke evaluator dirtied the managed workspace; write artifacts "
-                    "to BANANLOOP_ARTIFACT_DIR instead: " + dirty[:1000]
-                )
         except (EvaluatorError, ProcessError, ReadinessError) as exc:
             receipt["status"] = "FAILED"
             receipt["error"] = str(exc)
             raise ReadinessError(str(exc), receipt) from exc
-        finally:
-            if smoke_workspace.exists():
-                _remove_smoke_workspace(smoke_workspace)
         results.append(result)
-        result_path = run_dir / "evaluation-result.json"
-        result_payload = result.model_dump(mode="json")
-        result_path.write_text(
-            json.dumps(result_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-            encoding="utf-8",
-        )
-        input_manifest = [
-            {"case_id": case.case_id, "repetition": case.repetition, "input_sha256": case.input_sha256}
-            for case in result.cases
-        ]
-        summary["replay"] = {
-            "result_path": result_path.relative_to(state_root).as_posix(),
-            "result_sha256": hashlib.sha256(result_path.read_bytes()).hexdigest(),
-            "case_input_manifest_sha256": canonical_hash(input_manifest),
+        summary["replay"].update({
             "runtime": runtime,
             "runtime_fingerprint": runtime_fingerprint,
-            "evaluation_assets": [asset.model_dump(mode="json") for asset in assets],
             "evaluation_assets_root": frozen_asset_root.relative_to(state_root).as_posix(),
-        }
+        })
         receipt["runs"].append(summary)
 
     first_inputs = sorted(
@@ -405,6 +500,8 @@ def run_bootstrap_readiness(
         raise ReadinessError(receipt["error"], receipt)
     metric_noise_bounds: dict[str, float] = {}
     metric_relative_noise_bounds: dict[str, float] = {}
+    case_metric_noise_bounds: dict[tuple[str, int], dict[str, float]] = {}
+    case_metric_relative_noise_bounds: dict[tuple[str, int], dict[str, float]] = {}
     for name in sorted(metric_names):
         measurements = [result.metrics[name] for result in results]
         if any(
@@ -421,6 +518,34 @@ def run_bootstrap_readiness(
         metric_relative_noise_bounds[name] = (
             metric_noise_bounds[name] / abs(metric_median) if metric_median != 0 else 0.0
         )
+    case_maps = [
+        {(case.case_id, case.repetition): case for case in result.cases}
+        for result in results
+    ]
+    for key in sorted(case_maps[0]):
+        measurements = [case_map[key] for case_map in case_maps]
+        metric_names = set(measurements[0].metrics)
+        if any(set(item.metrics) != metric_names for item in measurements[1:]):
+            receipt["status"] = "FAILED"
+            receipt["error"] = f"smoke evaluator changed per-case metric names for {key!r} across A/A runs"
+            raise ReadinessError(receipt["error"], receipt)
+        case_metric_noise_bounds[key] = {}
+        case_metric_relative_noise_bounds[key] = {}
+        for name in sorted(metric_names):
+            case_values = [item.metrics[name] for item in measurements]
+            noise = max(case_values) - min(case_values)
+            center = statistics.median(case_values)
+            case_metric_noise_bounds[key][name] = noise
+            case_metric_relative_noise_bounds[key][name] = noise / abs(center) if center != 0 else 0.0
+    receipt["case_metric_noise_bounds"] = [
+        {
+            "case_id": case_id,
+            "repetition": repetition,
+            "metrics": case_metric_noise_bounds[(case_id, repetition)],
+            "relative_metrics": case_metric_relative_noise_bounds[(case_id, repetition)],
+        }
+        for case_id, repetition in sorted(case_metric_noise_bounds)
+    ]
     receipt["input_identity_stable"] = True
     receipt["primary_values"] = values
     receipt["primary_range"] = primary_range
@@ -472,6 +597,53 @@ def run_bootstrap_readiness(
                 f"range={max_case_range:g}, worst_case_tolerance={paired_tolerance:g}"
             )
             raise ReadinessError(receipt["error"], receipt)
+
+    full_run_dir = state_root / "bootstrap-readiness" / f"attempt-{attempt}" / "full-evaluation"
+    try:
+        full_result, full_summary = _run_readiness_command(
+            command=full_command,
+            workspace=workspace,
+            snapshot=snapshot,
+            state_root=state_root,
+            run_dir=full_run_dir,
+            run_id=f"bootstrap:attempt:{attempt}:full-evaluation",
+            tier="dev",
+            timeout=timeout,
+            assets=assets,
+            frozen_asset_root=frozen_asset_root,
+            plan=plan,
+        )
+    except (EvaluatorError, ProcessError, ReadinessError) as exc:
+        receipt["status"] = "FAILED"
+        receipt["full_evaluation_error"] = str(exc)
+        receipt["error"] = "full evaluator baseline failed during smoke/full equivalence check: " + str(exc)
+        raise ReadinessError(receipt["error"], receipt) from exc
+    full_summary["replay"].update({
+        "runtime": runtime,
+        "runtime_fingerprint": runtime_fingerprint,
+        "evaluation_assets_root": frozen_asset_root.relative_to(state_root).as_posix(),
+    })
+    equivalence_noise_bounds = dict(metric_noise_bounds)
+    paired_metric = plan.paired_comparison.metric if plan.paired_comparison.enabled else None
+    paired_noise_bound = receipt["calibration"].get("paired_empirical_noise_bound")
+    if paired_metric and paired_noise_bound is not None:
+        equivalence_noise_bounds[paired_metric] = max(
+            equivalence_noise_bounds.get(paired_metric, 0.0), float(paired_noise_bound)
+        )
+    equivalence = _compare_smoke_full(
+        results[0],
+        full_result,
+        metric_noise_bounds=equivalence_noise_bounds,
+        metric_relative_noise_bounds=metric_relative_noise_bounds,
+        case_metric_noise_bounds=case_metric_noise_bounds,
+        case_metric_relative_noise_bounds=case_metric_relative_noise_bounds,
+    )
+    receipt["full_evaluation"] = full_summary
+    receipt["smoke_full_equivalence"] = equivalence
+    if equivalence["status"] == "FAILED":
+        receipt["status"] = "FAILED"
+        receipt["error"] = "smoke and full evaluator are not equivalent on their shared cases"
+        raise ReadinessError(receipt["error"], receipt)
 
     try:
         receipt["signal_sanity"] = _signal_sanity(plan, results)

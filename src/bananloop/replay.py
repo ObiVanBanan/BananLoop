@@ -307,8 +307,13 @@ def _replay_dev_action(
         )
 
     try:
-        current_runtime = runtime_descriptor({"dev": command}) if source_kind == "bootstrap_smoke" else runtime_descriptor(
-            binding["tier_commands"]
+        current_runtime = (
+            runtime_descriptor({
+                "smoke": command,
+                "dev": metadata["readiness"].get("full_evaluation_command") or command,
+            })
+            if source_kind == "bootstrap_smoke"
+            else runtime_descriptor(binding["tier_commands"])
         )
     except (OSError, ValueError, KeyError) as exc:
         return _persist_receipt(

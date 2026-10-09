@@ -500,6 +500,7 @@ def test_bootstrap_auto_repairs_false_goal_request(tmp_path: Path):
     assert len(spec.signal_sanity_receipt_sha256) == 64
     assert spec.evaluation_evidence.technical_readiness == "READY"
     assert spec.evaluation_evidence.trust_level == "UNVERIFIED"
+    assert "smoke_full_per_case_equivalence" in spec.evaluation_evidence.verified_invariants
     assert spec.evaluation_evidence.label_source == "bootstrap_agent_configured"
     assert len(spec.evaluation_evidence.case_input_manifest_sha256) == 64
     assert len(spec.evaluation_evidence.runtime_fingerprint) == 64
@@ -530,6 +531,8 @@ def test_bootstrap_auto_repairs_false_goal_request(tmp_path: Path):
         assert report_before["resources"]["bootstrap"]["agent_calls"] == 2
         assert report_before["resources"]["bootstrap"]["repairs"] == 1
         assert report_before["resources"]["bootstrap"]["readiness_runs"] == 3
+        assert report_before["resources"]["bootstrap"]["readiness_full_evaluations"] == 1
+        assert report_before["resources"]["bootstrap"]["readiness_evaluator_calls"] == 4
         before = store.campaign()
         before_actions = store.actions()
         replay = replay_dev_action(

@@ -502,7 +502,10 @@ def bootstrap_campaign(
     case_manifest_sha256 = hashlib.sha256(
         json.dumps(case_inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    runtime = runtime_descriptor({"dev": plan.smoke_command or plan.evaluation_command})
+    runtime = runtime_descriptor({
+        "smoke": plan.smoke_command or plan.evaluation_command,
+        "dev": plan.evaluation_command,
+    })
     runtime_fingerprint = canonical_hash(runtime)
     calibration = readiness.get("calibration", {})
     metric_tolerances = {
@@ -545,12 +548,21 @@ def bootstrap_campaign(
             key for key, passed in (
                 ("stable_case_inputs", readiness.get("input_identity_stable") and bool(case_inputs)),
                 ("stable_protocol_identity", readiness.get("protocol_identity_stable")),
+                (
+                    "smoke_full_per_case_equivalence",
+                    readiness.get("smoke_full_equivalence", {}).get("status") == "PASSED",
+                ),
                 ("aa_noise_below_minimum_improvement", readiness.get("calibration", {}).get("noise_gate_passed")),
             ) if passed is True
         ],
         limitations=[
             "bootstrap-authored evaluator cases and labels have no independent provenance",
             "A/A stability and signal separation do not prove business-goal validity",
+            *(
+                ["smoke/full evaluator equivalence is inconclusive because per-case measurements are missing"]
+                if readiness.get("smoke_full_equivalence", {}).get("status") == "INCONCLUSIVE"
+                else []
+            ),
         ],
     )
 

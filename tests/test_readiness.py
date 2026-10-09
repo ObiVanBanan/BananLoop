@@ -12,7 +12,8 @@ import pytest
 
 from bananloop.bootstrap import BootstrapPairedPlan, BootstrapPlan
 from bananloop import readiness
-from bananloop.readiness import ReadinessError, run_bootstrap_readiness
+from bananloop.contracts import EvaluationResult
+from bananloop.readiness import ReadinessError, _compare_smoke_full, run_bootstrap_readiness
 
 
 
@@ -41,6 +42,7 @@ def snapshot(path: Path) -> str:
 def plan(
     command: list[str],
     *,
+    smoke_command: list[str] | None = None,
     paired: bool = False,
     min_improvement: float = 0.1,
     paired_tolerance: float = 0.0,
@@ -54,7 +56,7 @@ def plan(
             "project_context": "fixture context",
             "needs_input": [],
             "evaluation_command": command,
-            "smoke_command": command,
+            "smoke_command": smoke_command or command,
             "validation_command": [],
             "holdout_command": [],
             "primary_metric": {
@@ -112,6 +114,8 @@ def test_readiness_runs_three_times_and_records_stable_inputs(tmp_path: Path):
     assert receipt["repeat_count"] == 3
     assert receipt["input_identity_stable"] is True
     assert receipt["protocol_identity_stable"] is True
+    assert receipt["smoke_full_equivalence"]["status"] == "PASSED"
+    assert receipt["smoke_full_equivalence"]["comparison_mode"] == "per_case"
     assert receipt["primary_values"] == [0.5, 0.5, 0.5]
     assert receipt["primary_range"] == 0.0
     assert receipt["calibration"] == {
@@ -163,6 +167,98 @@ def test_readiness_records_aa_noise_bounds_for_every_aggregate_metric(tmp_path: 
         "latency": pytest.approx(0.5 / 1.2),
         "quality": 0.0,
     }
+    assert receipt["smoke_full_equivalence"]["status"] == "INCONCLUSIVE"
+    assert receipt["smoke_full_equivalence"]["comparison_mode"] == "aggregate_contract_only"
+
+
+def test_readiness_rejects_smoke_full_metric_drift(tmp_path: Path):
+    protocol_hash = hashlib.sha256(b"shared protocol").hexdigest()
+    input_hash = hashlib.sha256(b"shared input").hexdigest()
+    evaluator = tmp_path / "eval.py"
+    evaluator.write_text(
+        "import json,sys\n"
+        "smoke='--smoke' in sys.argv\n"
+        "value=0.4 if smoke else 0.5\n"
+        f"print(json.dumps({{'status':'ok','metrics':{{'quality':value}},'checks':{{'tests':True}},'protocol_sha256':'{protocol_hash}','cases':[{{'case_id':'one','repetition':0,'input_sha256':'{input_hash}','metrics':{{'quality':value}}}}]}}))\n",
+        encoding="utf-8",
+    )
+    init_repo(tmp_path)
+
+    with pytest.raises(ReadinessError, match="not equivalent") as exc:
+        run_bootstrap_readiness(
+            plan=plan(
+                [sys.executable, str(evaluator)],
+                smoke_command=[sys.executable, str(evaluator), "--smoke"],
+            ),
+            workspace=tmp_path,
+            snapshot=snapshot(tmp_path),
+            state_root=tmp_path / "state",
+            attempt=1,
+        )
+
+    assert exc.value.receipt["smoke_full_equivalence"]["status"] == "FAILED"
+    assert any("metric 'quality' differs" in item for item in exc.value.receipt["smoke_full_equivalence"]["mismatches"])
+
+
+def test_readiness_accepts_smoke_subset_when_shared_cases_match(tmp_path: Path):
+    protocol_hash = hashlib.sha256(b"shared subset protocol").hexdigest()
+    input_a = hashlib.sha256(b"input a").hexdigest()
+    input_b = hashlib.sha256(b"input b").hexdigest()
+    evaluator = tmp_path / "eval.py"
+    evaluator.write_text(
+        "import json,sys\n"
+        "smoke='--smoke' in sys.argv\n"
+        f"cases=[{{'case_id':'a','repetition':0,'input_sha256':'{input_a}','metrics':{{'quality':0.5}}}}]\n"
+        f"if not smoke: cases.append({{'case_id':'b','repetition':0,'input_sha256':'{input_b}','metrics':{{'quality':0.7}}}})\n"
+        "value=0.5 if smoke else 0.6\n"
+        f"print(json.dumps({{'status':'ok','metrics':{{'quality':value}},'checks':{{'tests':True}},'protocol_sha256':'{protocol_hash}','cases':cases}}))\n",
+        encoding="utf-8",
+    )
+    init_repo(tmp_path)
+
+    receipt = run_bootstrap_readiness(
+        plan=plan(
+            [sys.executable, str(evaluator)],
+            smoke_command=[sys.executable, str(evaluator), "--smoke"],
+        ),
+        workspace=tmp_path,
+        snapshot=snapshot(tmp_path),
+        state_root=tmp_path / "state",
+        attempt=1,
+    )
+
+    assert receipt["smoke_full_equivalence"]["status"] == "PASSED"
+    assert receipt["smoke_full_equivalence"]["smoke_case_count"] == 1
+    assert receipt["smoke_full_equivalence"]["full_case_count"] == 2
+    assert receipt["smoke_full_equivalence"]["compared_case_count"] == 1
+
+
+def test_smoke_full_equivalence_uses_per_case_aa_noise():
+    protocol = hashlib.sha256(b"case noise protocol").hexdigest()
+    input_hash = hashlib.sha256(b"case noise input").hexdigest()
+    smoke = EvaluationResult.model_validate({
+        "status": "ok",
+        "metrics": {"quality": 0.5},
+        "protocol_sha256": protocol,
+        "cases": [{"case_id": "noisy", "repetition": 0, "input_sha256": input_hash, "metrics": {"quality": 0.1}}],
+    })
+    full = EvaluationResult.model_validate({
+        "status": "ok",
+        "metrics": {"quality": 0.5},
+        "protocol_sha256": protocol,
+        "cases": [{"case_id": "noisy", "repetition": 0, "input_sha256": input_hash, "metrics": {"quality": 0.3}}],
+    })
+
+    comparison = _compare_smoke_full(
+        smoke,
+        full,
+        metric_noise_bounds={"quality": 0.0},
+        metric_relative_noise_bounds={"quality": 0.0},
+        case_metric_noise_bounds={("noisy", 0): {"quality": 0.2}},
+        case_metric_relative_noise_bounds={("noisy", 0): {"quality": 1.0}},
+    )
+
+    assert comparison["status"] == "PASSED"
 
 
 @pytest.mark.parametrize("repeats", [1, 6])
@@ -542,7 +638,7 @@ def test_paired_noise_uses_its_own_scale_tolerance(tmp_path: Path):
         f"count=Path({str(counter)!r})\n"
         "n=int(count.read_text())+1 if count.exists() else 1\n"
         "count.write_text(str(n))\n"
-        "case_quality=[100.0,100.2,99.9][n-1]\n"
+        "case_quality=[100.0,100.2,99.9][(n-1)%3]\n"
         f"payload={{'status':'ok','metrics':{{'quality':0.5}},'checks':{{'tests':True}},'protocol_sha256':'{'e' * 64}'}}\n"
         f"payload['cases']=[{{'case_id':'one','repetition':0,'input_sha256':'{'f' * 64}','metrics':{{'quality':case_quality}}}}]\n"
         "print(json.dumps(payload))\n",
