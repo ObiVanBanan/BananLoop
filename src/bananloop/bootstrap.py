@@ -524,6 +524,10 @@ def bootstrap_campaign(
         evidence_dir = paths.root / "reference-evidence"
         evidence_dir.mkdir(parents=True, exist_ok=True)
         (evidence_dir / "operator-reference.json").write_bytes(raw_manifest)
+        (evidence_dir / "verification-receipt.json").write_text(
+            json.dumps(reference_receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
         readiness_payload["operator_reference"] = reference_receipt
         signal_receipt = {"status": "REFERENCE_VERIFIED", "receipt_sha256": reference_receipt["receipt_sha256"]}
     readiness_receipt_sha256 = hashlib.sha256(
@@ -531,6 +535,12 @@ def bootstrap_campaign(
             readiness_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
     ).hexdigest()
+    if reference_receipt is not None:
+        evidence_dir = paths.root / "reference-evidence"
+        (evidence_dir / "readiness-receipt.json").write_text(
+            json.dumps(readiness_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
     protocol_hashes = readiness.get("protocol_sha256_values", [])
     first_run = readiness.get("runs", [{}])[0]
     case_inputs = sorted(
@@ -585,6 +595,7 @@ def bootstrap_campaign(
         reference_manifest_sha256=reference_manifest_sha256 if reference_receipt else None,
         reference_approved_by=reference_approved_by if reference_receipt else None,
         reference_receipt_sha256=reference_receipt["receipt_sha256"] if reference_receipt else None,
+        reference_receipt_path="reference-evidence/verification-receipt.json" if reference_receipt else None,
         independently_validated_tiers=["dev"] if reference_receipt else [],
         verified_invariants=[
             key for key, passed in (

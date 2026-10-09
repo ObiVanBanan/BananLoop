@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -13,8 +14,9 @@ import pytest
 
 from bananloop.agents.base import AgentError
 from bananloop.cli import cmd_stop
-from bananloop.contracts import EvaluationResult, PairedComparison
+from bananloop.contracts import EvaluationEvidence, EvaluationResult, PairedComparison
 from bananloop.engine import ControlledInterruption, Engine, EngineError
+from bananloop.evaluator_binding import canonical_hash
 from bananloop.evaluators.command import EvaluatorError
 from bananloop.policy import decide
 from bananloop.process import run_process
@@ -76,6 +78,48 @@ def test_unavailable_signal_sanity_downgrades_target_reaching_holdout_to_dev_onl
         assert "## Evaluator signal sanity" in markdown
         assert "`UNAVAILABLE`" in markdown
         assert "`" + "a" * 64 + "`" in markdown
+    finally:
+        store.close()
+
+
+def test_reference_evidence_receipt_is_durable_and_tampering_downgrades_trust(tmp_path):
+    store, engine, _, _ = make_staged_engine(tmp_path)
+    try:
+        assert engine.run()["status"] == "GOAL_MET"
+        state = store.path.parent
+        evidence_dir = state / "reference-evidence"
+        evidence_dir.mkdir()
+        manifest = b'{"approved":true}\n'
+        (evidence_dir / "operator-reference.json").write_bytes(manifest)
+        readiness = b'{"status":"PASSED"}\n'
+        (evidence_dir / "readiness-receipt.json").write_bytes(readiness)
+        receipt_body = {"schema_version": 1, "checks": {"protocol_matches": True}}
+        receipt_body["receipt_sha256"] = canonical_hash(receipt_body)
+        receipt_path = evidence_dir / "verification-receipt.json"
+        receipt_path.write_text(json.dumps(receipt_body, sort_keys=True, separators=(",", ":")))
+
+        spec = store.spec()
+        spec.signal_sanity_status = "REFERENCE_VERIFIED"
+        spec.signal_sanity_receipt_sha256 = receipt_body["receipt_sha256"]
+        spec.evaluation_evidence = EvaluationEvidence(
+            technical_readiness="READY", trust_level="INDEPENDENTLY_VALIDATED",
+            case_source="operator fixtures", label_source="operator labels",
+            reference_manifest_sha256=hashlib.sha256(manifest).hexdigest(),
+            reference_approved_by="operator",
+            reference_receipt_sha256=receipt_body["receipt_sha256"],
+            reference_receipt_path="reference-evidence/verification-receipt.json",
+            readiness_receipt_sha256=hashlib.sha256(readiness).hexdigest(),
+            independently_validated_tiers=["dev"],
+        )
+        store.update_campaign(spec_json=spec.model_dump_json(), spec_hash=spec.approved_hash())
+        report = build_report(store)
+        assert report["evaluator_evidence"]["trust_level"] == "INDEPENDENTLY_VALIDATED"
+        assert report["signal_sanity"]["reference_receipt_integrity"] is True
+
+        receipt_path.write_text("{}", encoding="utf-8")
+        report = build_report(store)
+        assert report["evaluator_evidence"]["trust_level"] == "UNVERIFIED"
+        assert report["signal_sanity"]["reference_receipt_integrity"] is False
     finally:
         store.close()
 

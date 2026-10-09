@@ -18,6 +18,30 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
     spec = CampaignSpec.model_validate_json(campaign["spec_json"])
     evidence = spec.evaluation_evidence
     trust_level = evidence.trust_level if evidence is not None else "UNVERIFIED"
+    reference_receipt_integrity = None
+    if spec.signal_sanity_status == "REFERENCE_VERIFIED" and evidence is not None:
+        try:
+            state_root = store.path.parent.resolve()
+            manifest_path = (state_root / "reference-evidence" / "operator-reference.json").resolve(strict=True)
+            receipt_path = (state_root / (evidence.reference_receipt_path or "")).resolve(strict=True)
+            readiness_path = (state_root / "reference-evidence" / "readiness-receipt.json").resolve(strict=True)
+            if any(state_root not in path.parents for path in (manifest_path, receipt_path, readiness_path)):
+                raise ValueError("reference evidence path escaped campaign state")
+            manifest_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt_identity = receipt.pop("receipt_sha256")
+            receipt_hash_valid = canonical_hash(receipt) == receipt_identity
+            readiness_digest = hashlib.sha256(readiness_path.read_bytes()).hexdigest()
+            reference_receipt_integrity = bool(
+                manifest_digest == evidence.reference_manifest_sha256
+                and receipt_identity == evidence.reference_receipt_sha256
+                and receipt_hash_valid
+                and readiness_digest == evidence.readiness_receipt_sha256
+            )
+        except (OSError, ValueError, KeyError, TypeError):
+            reference_receipt_integrity = False
+        if not reference_receipt_integrity:
+            trust_level = "UNVERIFIED"
     baseline = EvaluationResult.model_validate_json(campaign["baseline_json"]) if campaign["baseline_json"] else None
     champion = EvaluationResult.model_validate_json(campaign["champion_json"]) if campaign["champion_json"] else None
     experiments: list[dict[str, Any]] = []
@@ -332,7 +356,11 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
         "final_assessment": final_assessment,
         "scientific_assessment": scientific_assessment,
         "evaluator_evidence": (
-            evidence.model_dump(mode="json")
+            {
+                **evidence.model_dump(mode="json"),
+                "trust_level": trust_level,
+                **({"reference_receipt_integrity": reference_receipt_integrity} if reference_receipt_integrity is not None else {}),
+            }
             if evidence is not None
             else {
                 "technical_readiness": "UNKNOWN",
@@ -397,6 +425,8 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 "reference_manifest_sha256": spec.evaluation_evidence.reference_manifest_sha256,
                 "reference_approved_by": spec.evaluation_evidence.reference_approved_by,
                 "reference_receipt_sha256": spec.evaluation_evidence.reference_receipt_sha256,
+                "reference_receipt_path": spec.evaluation_evidence.reference_receipt_path,
+                "reference_receipt_integrity": reference_receipt_integrity,
                 "validated_tiers": spec.evaluation_evidence.independently_validated_tiers,
             } if spec.signal_sanity_status == "REFERENCE_VERIFIED" and spec.evaluation_evidence else {}),
         },
@@ -524,6 +554,13 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         f"- Status: `{signal.get('status') or 'legacy/unspecified'}`; evidence level: `{signal.get('evidence_level') or 'legacy/unspecified'}`",
         f"- Readiness receipt SHA-256: `{signal.get('receipt_sha256') or '-'}`",
+        *(
+            [
+                f"- Operator reference: `{signal.get('reference_manifest_sha256')}` approved by `{signal.get('reference_approved_by')}`; receipt `{signal.get('reference_receipt_path')}` integrity=`{signal.get('reference_receipt_integrity')}`; tiers=`{signal.get('validated_tiers')}`",
+            ]
+            if signal.get("reference_manifest_sha256")
+            else []
+        ),
         "",
         "## Experiments",
         "",
