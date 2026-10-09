@@ -26,7 +26,8 @@ The coding agent proposes and edits. The evaluator and deterministic policy deci
 - Codex CLI adapter, Pi RPC adapter, and generic JSON-over-stdin/stdout command adapter;
 - action IDs that prevent completed agent/evaluator calls from being repeated on resume;
 - budgets for experiments, attempts, agent calls, evaluator calls and wall time;
-- `init`, `run`, `status`, `resume`, `stop`, `report` CLI;
+- `start` autopilot bootstrap plus expert `init`, `run`, `status`, `resume`, `stop`, `report` CLI;
+- a repo-local campaign registry for multiple goals, idempotent goal retries, and campaign selection;
 - Markdown/JSON reports built only from durable records;
 - explicit champion patch export with a manifest and operator reports;
 - deterministic fixture demonstrating accept -> reject -> accept;
@@ -49,6 +50,49 @@ With `uv`:
 uv sync --extra test
 uv run pytest
 ```
+
+## Autopilot MVP: repo + goal
+
+The shortest product path is intentionally goal-shaped:
+
+```bash
+bananloop goal "Improve measured project quality without regressions"
+```
+
+Run it from the target repository. BananLoop discovers the project, prepares and
+freezes an evaluator contract, then runs the independent campaign supervisor.
+The existing explicit form remains available when the repository path or agent
+backend must be overridden:
+
+```bash
+bananloop start --repo . --goal "Improve measured project quality without regressions"
+```
+
+Before spending an agent call, inspect exactly what BananLoop can see:
+
+```bash
+bananloop doctor --json
+```
+
+`start` runs a bounded bootstrap role before the ordinary campaign engine:
+
+1. inspect the repository and detected test entrypoints;
+2. reuse an existing evaluator or create a thin adapter under `.bananloop_eval/`;
+3. freeze cases/randomness when possible and choose deterministic or paired measurement;
+4. smoke-check the evaluator before declaring the setup ready;
+5. persist a project-context summary for later proposer/implementer calls;
+6. create the immutable `CampaignSpec`;
+7. immediately run baseline and the experiment loop.
+
+Bootstrap may write only `.bananloop_eval/**` inside BananLoop's private managed workspace. Any attempted production/test/config edit during setup is rejected and rolled back. The user's source checkout stays unchanged. If essential references or credentials genuinely do not exist, bootstrap returns `PAUSED_NEEDS_INPUT` with the exact missing inputs instead of inventing them.
+
+For an inspection-only setup:
+
+```bash
+bananloop start --repo . --goal "Improve measured project quality" --prepare-only
+```
+
+Use the existing detailed `bananloop init ...` interface as expert mode when the evaluator contract is already known or externally governed.
 
 ## 2-minute fixture demo
 
@@ -299,6 +343,7 @@ Promotion is idempotent at the store level: a completed experiment has one durab
 ## State and reports
 
 ```bash
+bananloop campaigns list --repo .
 bananloop status --repo . --json
 bananloop report --repo .
 bananloop report --repo . --json --output campaign.json
@@ -307,7 +352,16 @@ bananloop resume --repo .
 bananloop export --repo . --output ../champion-export
 ```
 
-Use `--state-dir PATH` on all commands to keep campaign state in an explicit directory (useful for CI/tests).
+Use `--campaign-id ID` with run/resume/status/stop/report/export to select an
+indexed campaign. Without it, commands use the active campaign shown by
+`campaigns list`. Repeating the same canonical goal resumes its indexed
+campaign; use `--request-id ID` on `goal`/`start` to make retries explicit, or
+use a new request ID to intentionally start another run for the same goal.
+
+Use `--state-dir PATH` on all commands to keep campaign state in an explicit
+single-campaign directory (useful for CI/tests). Existing state at the old
+`~/.bananloop/projects/<repo-hash>/campaign.sqlite3` path stays in place and is
+listed as `legacy`.
 
 `stop` sends a durable cancellation request to the running supervisor. Managed
 local processes are polled for cancellation and the campaign deadline. The
@@ -326,8 +380,68 @@ rejected/pending holdout. Artifact files remain in the state directory; the
 export contains their references, so preserve the complete state for full evidence.
 Review these operator reports before sharing them or placing them in agent context.
 
+## Codex plugin: chat UX, independent core
+
+BananLoop now ships a Codex plugin bundle under `plugins/bananloop/` plus a
+repo-local marketplace entry. The plugin deliberately does **not** move
+accept/reject decisions into the Codex conversation. Its skill is the UX/router;
+the BananLoop process remains the measurement authority.
+
+From a checkout of this repository, add it as a Codex plugin marketplace and
+install the plugin using the normal Codex plugin flow. Then a Codex conversation
+can use `$bananloop-goal` with a human goal instead of reconstructing the CLI
+surface.
+
+The boundary is intentional:
+
+```text
+Codex chat / skill
+      |
+      | repo + human goal
+      v
+BananLoop bootstrap ----> project-specific evaluator adapter
+      |                         |
+      |                    smoke / repair
+      |                         |
+      +-------------------- freeze + hash
+                                |
+Codex proposer/implementer <----+---- hidden evaluator assets
+      |
+      v
+BananLoop DEV -> VALIDATION -> FINAL HOLDOUT -> accept/reject
+```
+
+Codex's bundled Stop hook is only a lifecycle bridge: it reads the session's
+durable BananLoop campaign state and can request one continuation if a campaign
+is still RUNNING without a supervisor lock. The hook never evaluates candidates
+or launches workers; BananLoop core remains the measurement authority. Review and
+trust it in Codex's `/hooks` browser before relying on it. See
+`docs/codex-plugin.md`.
+
+Model selection also stays simple: when BananLoop does not receive `--model`,
+the Codex adapter leaves model selection to the user's Codex configuration.
+Advanced `start`/expert `init` flags remain available for explicit overrides.
+
+For a repeatable campaign with different models per active role, save a TOML
+profile and pass `--agent-profiles agents.toml` to `start` or `init`:
+
+```toml
+[default]
+kind = "codex"
+model = "your-default-model-id"
+reasoning_effort = "high"
+
+[roles.implement]
+model = "your-coding-model-id"
+reasoning_effort = "xhigh"
+```
+
+Supported role tables are `bootstrap`, `propose`, `implement`, and `analyze`.
+Settings are frozen into the campaign; credentials remain in the normal CLI
+environment. Do not put secrets in this file.
+
 ## Scope boundaries
 
-Not in v0.1: parallel experiments, DAG orchestration, model routing, generated evaluators, vector memory, SaaS/web UI, auto push/merge, generic LLM judges, distributed workers, or a full security sandbox.
+Not in v0.1: parallel experiments, DAG orchestration, model routing, autonomous invention of a trustworthy evaluation objective from no evidence, vector memory, SaaS/web UI, auto push/merge, generic LLM judges, distributed workers, or a full security sandbox.
 
 See `design/adr.md`, `standalone_harness_proposal.md`, and `examples/rag_tender/README.md` for rationale and integration guidance.

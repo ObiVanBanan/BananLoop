@@ -39,10 +39,14 @@ class PiAdapter(AgentAdapter):
         model: str | None = None,
         extra_args: list[str] | None = None,
         command: list[str] | None = None,
+        provider: str | None = None,
+        reasoning_effort: str | None = None,
     ):
         self.model = model
         self.extra_args = extra_args or []
         self.command = command or ["pi"]
+        self.provider = provider
+        self.reasoning_effort = reasoning_effort
         self._active: dict[str, subprocess.Popen[str]] = {}
         self._lock = threading.Lock()
 
@@ -82,6 +86,8 @@ class PiAdapter(AgentAdapter):
             "resolved_command": resolved_command,
             "version": version,
             "model": self.model,
+            "provider": self.provider,
+            "reasoning_effort": self.reasoning_effort,
         }
 
     @staticmethod
@@ -94,13 +100,46 @@ class PiAdapter(AgentAdapter):
         argv = [*self._resolved_command(), "--mode", "rpc", "--no-session", "--no-approve"]
         if self.model:
             argv += ["--model", self.model]
+        if self.provider and "--provider" not in self.extra_args:
+            argv += ["--provider", self.provider]
+        if self.reasoning_effort and "--thinking" not in self.extra_args:
+            argv += ["--thinking", self.reasoning_effort]
         argv += self.extra_args
         return argv
 
     @staticmethod
     def _prompt(task: dict[str, Any]) -> str:
         role = task.get("role")
-        if role == "propose":
+        if role == "bootstrap":
+            instruction = (
+                "You are the campaign bootstrapper inside BananLoop. Inspect the repository and human goal and "
+                "build an executable measurement contract. The top-level goal field is authoritative human intent. "
+                "Never request a repository-side goal/fix/brief file just to confirm that intent; do not require "
+                ".hermes/fix.md when goal is present. If evaluators conflict, choose the one whose semantics best "
+                "match the explicit goal. Use repository.detected_python_runtimes and probe those executables before "
+                "claiming that Python or a required package environment is missing. You may create or modify files only under "
+                ".bananloop_eval/. Never modify production code, tests, reference assets, or user configuration. "
+                "Prefer an existing trustworthy evaluator; otherwise create a thin evaluator adapter. Freeze cases "
+                "and randomness where possible, avoid per-evaluation LLM planning, and use paired case-level "
+                "measurements for stochastic outputs. The core runs three A/A smoke measurements on one snapshot, "
+                "requires stable case/input and protocol identity, and compares empirical noise with min_improvement; "
+                "emit a stable protocol_sha256 in every evaluation result. "
+                "Also include signal_sanity. Configure it only from defensible repository-backed positive and negative "
+                "case IDs or controls, using evidence_kind known_examples, controlled_degradation, metamorphic, or "
+                "invariants, and the primary metric. Never invent labels or derive labels from the evaluator's own "
+                "scores. If evidence is absent, mark status unavailable, leave evidence_kind/metric null and case lists "
+                "empty, and state the reason; this must not claim scorer validity. The core independently checks "
+                "The core checks directed separation in every A/A smoke run. Do not invent missing references or "
+                "credentials; if essential inputs are missing, set status to needs_input and list exactly what the operator must provide. "
+                "Your final assistant message MUST be exactly one JSON object with keys: status, summary, "
+                "project_context, needs_input, evaluation_command, smoke_command, validation_command, holdout_command, "
+                "primary_metric, guardrails, non_regression, mandatory_checks, editable_scope, protected_paths, "
+                "agent_visible_metrics, agent_visible_diagnostics, paired_comparison, signal_sanity, evaluator_timeout_seconds. "
+                "primary_metric must contain name, direction, target, min_improvement. paired_comparison must "
+                "contain enabled, case_count, repetitions, metric, direction, min_wins, worst_case_tolerance. "
+                "Do not use markdown fences or prose outside the JSON object."
+            )
+        elif role == "propose":
             instruction = (
                 "You are the proposer inside BananLoop. Inspect the repository and propose exactly one "
                 "bounded, falsifiable hypothesis. Do not modify files during this role. "
@@ -201,7 +240,23 @@ class PiAdapter(AgentAdapter):
     @staticmethod
     def _repair_prompt(task: dict[str, Any]) -> str:
         role = task.get("role")
-        if role == "propose":
+        if role == "bootstrap":
+            schema = (
+                '{"status":"ready","summary":"...","project_context":"...","needs_input":[],'
+                '"evaluation_command":["python",".bananloop_eval/evaluator.py"],'
+                '"smoke_command":["python",".bananloop_eval/evaluator.py","--smoke"],'
+                '"validation_command":[],"holdout_command":[],'
+                '"primary_metric":{"name":"quality","direction":"maximize","target":1.0,"min_improvement":0.01},'
+                '"guardrails":[],"non_regression":[],"mandatory_checks":[],"editable_scope":["**"],'
+                '"protected_paths":[".bananloop_eval/**"],"agent_visible_metrics":["quality"],'
+                '"agent_visible_diagnostics":[],"paired_comparison":{"enabled":false,"case_count":1,'
+                '"repetitions":1,"metric":"quality","direction":"maximize","min_wins":1,'
+                '"worst_case_tolerance":0.0},"signal_sanity":{"status":"unavailable",'
+                '"evidence_kind":null,"metric":null,"positive_case_ids":[],"negative_case_ids":[],'
+                '"reason":"No defensible repository-backed positive/negative examples available."},'
+                '"evaluator_timeout_seconds":900}'
+            )
+        elif role == "propose":
             schema = (
                 '{"hypothesis":"...","rationale":"...","expected_effect":"...",'
                 '"files_or_area":["..."],"falsification_condition":"...","mechanism_key":"...",'

@@ -8,6 +8,59 @@ from typing import Any
 from .contracts import CampaignSpec, FailureCapsule, Hypothesis, MechanismEvidence, ResearchState
 
 
+def attempt_bucket(row: dict[str, Any]) -> str:
+    """Classify current outcome, including legacy REJECTED operational rows."""
+    status = row.get("status")
+    failure = row.get("failure_category")
+    decision = json.loads(row.get("decision_json") or "{}")
+    if (
+        status == "ACCEPTED"
+        and row.get("evaluation_json")
+        and decision.get("accepted") is True
+    ):
+        # A completed acceptance is authoritative. Legacy versions could leave
+        # a stale operational failure category on the experiment row.
+        return "scientific_trials"
+    categories = {
+        "NO_CHANGES": "no_changes",
+        "IMPLEMENTATION_BLOCKED": "implementation_blocked",
+        "UNGROUNDED_HYPOTHESIS": "ungrounded",
+        "UNGROUNDED": "ungrounded",
+        "REDUNDANT_HYPOTHESIS": "redundant",
+        "REDUNDANT": "redundant",
+        "NO_HYPOTHESIS": "no_hypothesis",
+        "SCOPE_VIOLATION": "pre_evaluation_rejected",
+        "LEAKAGE_GUARD": "pre_evaluation_rejected",
+        "PRE_EVALUATION_REJECTED": "pre_evaluation_rejected",
+        "INVALID_EVALUATION": "infra_failures",
+        "INVALID_VALIDATION": "infra_failures",
+        "EVALUATOR_CHANGED": "infra_failures",
+        "AGENT_PROTOCOL_ERROR": "infra_failures",
+        "CANDIDATE_NOT_MATERIALIZED": "infra_failures",
+        "PAIRED_INPUT_MISMATCH": "infra_failures",
+    }
+    if failure in categories:
+        return categories[failure]
+    if status == "ACTIVE":
+        return "active"
+    if status in categories:
+        return categories[status]
+    if any(
+        reason in {
+            "INVALID_VALIDATION",
+            "PAIRED_INPUT_MISMATCH",
+            "VALIDATION:PAIRED_INPUT_MISMATCH",
+        }
+        for reason in decision.get("reasons", [])
+    ):
+        return "infra_failures"
+    if status == "REJECTED" and row.get("evaluation_json") and decision:
+        return "scientific_trials"
+    if status == "CANCELLED":
+        return "cancelled"
+    return "other"
+
+
 def planning_mode(non_improve_streak: int, plateau_experiments: int) -> str:
     """Choose a deterministic research strategy from durable campaign evidence."""
     if non_improve_streak <= 0:
@@ -141,6 +194,8 @@ def classify_dev_outcome(
     spec: CampaignSpec,
     row: dict[str, Any],
 ) -> str:
+    if attempt_bucket(row) == "infra_failures":
+        return "OPERATIONAL_FAILURE"
     decision = agent_decision_view(spec, _dev_decision_from_row(row))
     if row.get("evaluation_json") and decision is not None:
         if decision.get("accepted"):
@@ -262,7 +317,7 @@ def build_research_state(
 
     dev_non_improve_streak = 0
     for row in experiments:
-        if row.get("status") == "ACTIVE" or not row.get("evaluation_json"):
+        if attempt_bucket(row) != "scientific_trials":
             continue
         outcome = classify_dev_outcome(spec, row)
         if outcome == "DEV_IMPROVEMENT":

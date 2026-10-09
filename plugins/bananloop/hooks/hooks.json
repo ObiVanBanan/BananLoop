@@ -1,0 +1,18 @@
+{
+  "description": "BananLoop durable campaign continuation bridge",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bananloop codex-hook",
+            "commandWindows": "bananloop codex-hook",
+            "timeout": 3,
+            "statusMessage": "Checking BananLoop campaign state"
+          }
+        ]
+      }
+    ]
+  }
+}

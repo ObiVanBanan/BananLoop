@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -23,10 +24,15 @@ from .contracts import (
 )
 from .evaluators import CommandEvaluator, EvaluatorError
 from .integrity import evaluation_fingerprint, verify_evaluation_assets
+from .evaluator_binding import (
+    EvaluationReceipt, EvaluatorBinding, canonical_hash, make_binding,
+    make_receipt, runtime_descriptor, validate_receipt_linkage,
+)
 from .leakage import scan_forbidden_diff_patterns
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
 from .process import ProcessCancelled, check_process_control, process_control
 from .research import (
+    attempt_bucket,
     agent_decision_view,
     agent_evaluation_view,
     build_history,
@@ -35,6 +41,8 @@ from .research import (
 )
 from .store import CampaignStore
 from .workspace import WorkspaceError, WorkspaceManager
+
+logger = logging.getLogger(__name__)
 
 
 class ControlledInterruption(RuntimeError):
@@ -53,8 +61,20 @@ class CampaignHalted(Exception):
     """A budget gate has durably stopped the campaign; unwind the active stage."""
 
 
+class BindingRuntimeMismatch(EngineError):
+    pass
+
+
 def _hash_payload(payload: dict[str, Any]) -> str:
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    durable = dict(payload)
+    # candidate_proof is derived deterministically from the immutable snapshot.
+    # Excluding it preserves replay compatibility with evaluator actions created
+    # before provenance proofs were added; the proof is re-verified before every
+    # candidate evaluation.
+    durable.pop("candidate_proof", None)
+    return hashlib.sha256(
+        json.dumps(durable, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 class Engine:
@@ -71,6 +91,7 @@ class Engine:
         self._retry_failed_actions = False
         self._agent_timeout_seconds: int | None = None
         self.spec = store.spec()
+        self._evaluator_binding: EvaluatorBinding | None = None
         self.evaluator = CommandEvaluator(self.spec.evaluation_command)
         self.validation_evaluator = (
             CommandEvaluator(self.spec.validation_command)
@@ -82,13 +103,7 @@ class Engine:
             if self.spec.holdout_command
             else None
         )
-        self.agent: AgentAdapter
-        if self.spec.agent.kind == "codex":
-            self.agent = CodexAdapter(self.spec.agent.model, self.spec.agent.extra_args)
-        elif self.spec.agent.kind == "pi":
-            self.agent = PiAdapter(self.spec.agent.model, self.spec.agent.extra_args)
-        else:
-            self.agent = CommandAgentAdapter(self.spec.agent.command)
+        self.agent: AgentAdapter = self._make_agent_adapter(self.spec.agent)
 
     def _progress(self, message: str) -> None:
         if self._progress_callback:
@@ -138,12 +153,32 @@ class Engine:
         hidden = self._agent_hidden_paths()
         agent_workspace = self.workspace.prepare_agent_workspace(hidden)
         try:
-            result = self.agent.execute(task, agent_workspace, timeout=timeout)
+            role = str(task.get("role", "propose"))
+            adapter = (
+                self._make_agent_adapter(self.spec.agent.for_role(role))
+                if role in self.spec.agent.roles
+                else self.agent
+            )
+            result = adapter.execute(task, agent_workspace, timeout=timeout)
             if apply_changes:
                 self.workspace.apply_agent_changes(agent_workspace, hidden)
             return result
         finally:
-            self.workspace.cleanup_agent_workspace()
+            try:
+                self.workspace.cleanup_agent_workspace()
+            except WorkspaceError as exc:
+                # Codex may create sandbox-owned cache directories inside its
+                # disposable checkout. Keep a completed agent response usable;
+                # candidate materialization and evaluator gates still run next.
+                logger.warning("temporary agent workspace cleanup failed: %s", exc)
+
+    @staticmethod
+    def _make_agent_adapter(config):
+        if config.kind == "codex":
+            return CodexAdapter(config.model, config.extra_args, config.reasoning_effort)
+        if config.kind == "pi":
+            return PiAdapter(config.model, config.extra_args, config.command, config.provider, config.reasoning_effort)
+        return CommandAgentAdapter(config.command)
 
     def _checkpoint(self, stage: str) -> None:
         if os.getenv("BANANLOOP_TEST_STOP_AFTER_STAGE") == stage:
@@ -291,7 +326,11 @@ class Engine:
                     root = self.store.path.parent / "artifacts" / hashlib.sha256(action_id.encode()).hexdigest()[:24]
                     retained = EvaluationResult.model_validate(response)
                     retain_artifacts(retained, root, experiment_id, request["snapshot"])
+                if kind != "agent":
+                    self._verify_completed_receipt(action_id)
                 return response
+            if kind != "agent":
+                self._ensure_evaluator_binding()
             if existing["status"] == "CANCELLED":
                 if self._budget_or_stop(kind):
                     raise CampaignHalted()
@@ -322,6 +361,8 @@ class Engine:
                     f"action {action_id} has unsupported prior status {existing['status']}"
                 )
         else:
+            if kind != "agent":
+                self._ensure_evaluator_binding()
             if self._budget_or_stop(kind):
                 raise CampaignHalted()
             self.store.start_action(action_id, experiment_id, stage, kind, request_hash, request)
@@ -329,12 +370,31 @@ class Engine:
         output_dir = self.store.path.parent / "artifacts" / hashlib.sha256(action_id.encode()).hexdigest()[:24]
         if kind != "agent":
             output_dir.mkdir(parents=True, exist_ok=True)
+            candidate_proof = request.get("candidate_proof")
+            if candidate_proof:
+                (output_dir / "candidate-proof.json").write_text(
+                    json.dumps(candidate_proof, indent=2, sort_keys=True),
+                    encoding="utf-8",
+                )
             context = {
                 "BANANLOOP_ARTIFACT_DIR": str(output_dir.resolve()),
                 "BANANLOOP_EVALUATION_ID": action_id,
                 "BANANLOOP_SNAPSHOT": request["snapshot"],
                 "BANANLOOP_EVALUATION_TIER": request.get("tier", "dev"),
+                "BANANLOOP_WORKSPACE": str(self.workspace.workspace.resolve()),
             }
+            if candidate_proof:
+                context["BANANLOOP_PARENT_SNAPSHOT"] = str(
+                    candidate_proof["parent_snapshot"]
+                )
+                context["BANANLOOP_CANDIDATE_TREE"] = str(candidate_proof["tree"])
+                context["BANANLOOP_CANDIDATE_DIFF_SHA256"] = str(
+                    candidate_proof["diff_sha256"]
+                )
+                context["BANANLOOP_CANDIDATE_CHANGED_PATHS"] = json.dumps(
+                    candidate_proof["changed_paths"],
+                    ensure_ascii=False,
+                )
             if self.spec.budget.evaluation_units_per_call is not None:
                 context["BANANLOOP_EVALUATION_UNIT_LIMIT"] = str(self.spec.budget.evaluation_units_per_call)
             for evaluator in (self.evaluator, self.validation_evaluator, self.holdout_evaluator):
@@ -351,7 +411,28 @@ class Engine:
                 if ceiling is not None and (result.resource_units is None or result.resource_units > ceiling):
                     raise EvaluatorError("missing resource_units or reported work exceeds reserved limit")
                 retain_artifacts(result, output_dir, experiment_id, request["snapshot"])
+                violations = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
+                if violations:
+                    raise EvaluatorError(
+                        "frozen evaluation assets changed during measurement: " + ", ".join(violations)
+                    )
+                receipt = make_receipt(
+                    action_id=action_id,
+                    tier=request.get("tier", "dev"),
+                    snapshot=request["snapshot"],
+                    candidate_proof=request.get("candidate_proof"),
+                    binding=self._ensure_evaluator_binding(),
+                    result=result,
+                )
+                sidecar = output_dir / "evaluation-receipt.json"
+                tmp_sidecar = output_dir / ".evaluation-receipt.json.tmp"
+                tmp_sidecar.write_text(
+                    json.dumps(receipt.model_dump(mode="json"), sort_keys=True, separators=(",", ":")),
+                    encoding="utf-8",
+                )
+                tmp_sidecar.replace(sidecar)
                 response = result.model_dump(mode="json")
+                response["_evaluation_receipt"] = receipt.model_dump(mode="json")
         except ProcessCancelled as exc:
             self.store.cancel_action(action_id, exc.reason)
             raise
@@ -366,19 +447,97 @@ class Engine:
         self._progress(f"{action_id}: completed")
         return response
 
+    def _ensure_evaluator_binding(self, *, verify_runtime: bool = True) -> EvaluatorBinding:
+        commands = {"dev": self.spec.evaluation_command}
+        if self.spec.validation_command:
+            commands["validation"] = self.spec.validation_command
+        if self.spec.holdout_command:
+            commands["holdout"] = self.spec.holdout_command
+        current = make_binding(self.spec, runtime_descriptor(commands))
+        row = self.store.evaluator_binding()
+        if row is None:
+            self.store.save_evaluator_binding(
+                current.binding_id,
+                canonical_hash(current.model_dump(mode="json")),
+                json.dumps(current.model_dump(mode="json"), sort_keys=True),
+            )
+            self._evaluator_binding = current
+            self._write_binding_sidecar(current)
+            return current
+        stored = EvaluatorBinding.model_validate_json(row["binding_json"])
+        if row["binding_hash"] != canonical_hash(stored.model_dump(mode="json")):
+            raise BindingRuntimeMismatch("persisted evaluator binding hash is invalid")
+        if stored.approved_spec_hash != self.spec.approved_hash() or stored.binding_id != current.binding_id and verify_runtime:
+            raise BindingRuntimeMismatch("immutable evaluator binding does not match campaign specification/runtime")
+        if verify_runtime and stored.runtime_fingerprint != current.runtime_fingerprint:
+            raise BindingRuntimeMismatch("bounded evaluator runtime differs from immutable campaign binding")
+        sidecar = self.store.path.parent / "artifacts" / "evaluator-binding.json"
+        if sidecar.exists():
+            try:
+                sidecar_binding = EvaluatorBinding.model_validate_json(sidecar.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise BindingRuntimeMismatch("evaluator binding sidecar is invalid") from exc
+            if sidecar_binding != stored:
+                raise BindingRuntimeMismatch("evaluator binding sidecar differs from immutable database binding")
+        else:
+            self._write_binding_sidecar(stored)
+        self._evaluator_binding = stored
+        return stored
+
+    def _write_binding_sidecar(self, binding: EvaluatorBinding) -> None:
+        path = self.store.path.parent / "artifacts" / "evaluator-binding.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(".evaluator-binding.json.tmp")
+        temp.write_text(
+            json.dumps(binding.model_dump(mode="json"), sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        temp.replace(path)
+
+    def _verify_completed_receipt(self, action_id: str) -> None:
+        stored = self.store.evaluation_receipt(action_id)
+        if stored is None:  # Historical completed actions intentionally remain unreceipted.
+            return
+        action = self.store.action(action_id)
+        binding_row = self.store.evaluator_binding()
+        if binding_row is None or action is None:
+            raise EvaluatorError(f"evaluation receipt has no binding or action for {action_id}")
+        try:
+            receipt = validate_receipt_linkage(
+                stored["receipt"],
+                stored_receipt_hash=stored["receipt_hash"],
+                action=action,
+                binding_data=json.loads(binding_row["binding_json"]),
+                stored_binding_hash=binding_row["binding_hash"],
+            )
+        except Exception as exc:
+            raise EvaluatorError(f"evaluation receipt integrity failure for {action_id}: {exc}") from exc
+        sidecar = self.store.path.parent / "artifacts" / hashlib.sha256(action_id.encode()).hexdigest()[:24] / "evaluation-receipt.json"
+        if sidecar.exists():
+            try:
+                sidecar_receipt = EvaluationReceipt.model_validate_json(sidecar.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise EvaluatorError(f"evaluation receipt sidecar is invalid for {action_id}") from exc
+            if sidecar_receipt.receipt_hash != receipt.receipt_hash or sidecar_receipt != receipt:
+                raise EvaluatorError(f"evaluation receipt sidecar mismatch for {action_id}")
+
     def _evaluation_request(
         self,
         snapshot: str,
         *,
         tier: str = "dev",
         command: list[str] | None = None,
+        candidate_proof: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return {
+        request = {
             "snapshot": snapshot,
             "tier": tier,
             "command": command or self.spec.evaluation_command,
             "evaluation_fingerprint": evaluation_fingerprint(self.spec.evaluation_assets),
         }
+        if candidate_proof is not None:
+            request["candidate_proof"] = candidate_proof
+        return request
 
     def _validation_reference(self) -> EvaluationResult:
         snapshot = self.store.campaign()["champion_snapshot"]
@@ -584,6 +743,7 @@ class Engine:
             "schema_version": 1,
             "role": role,
             "goal": self.spec.goal,
+            "project_context": self.spec.project_context,
             "primary_metric": self.spec.primary_metric.model_dump(mode="json"),
             "guardrails": [
                 g.model_dump(mode="json")
@@ -615,6 +775,60 @@ class Engine:
             "experiment_id": experiment_id,
         }
 
+    @staticmethod
+    def _hypothesis_grounding_error(
+        hypothesis: Hypothesis,
+        task: dict[str, Any],
+    ) -> str | None:
+        if not hypothesis.files_or_area:
+            return "hypothesis has no concrete files_or_area grounding"
+        supplied = {
+            "research_state": bool(task.get("research_state")),
+            "planning_mode": bool((task.get("research_state") or {}).get("planning_mode")),
+            "project_context": bool(task.get("project_context")),
+        }
+        text = " ".join(
+            [
+                hypothesis.hypothesis,
+                hypothesis.rationale,
+                hypothesis.expected_effect,
+                hypothesis.novelty_rationale,
+            ]
+        ).lower()
+        patterns = (
+            ("research_state", r"(research_state|research state).{0,100}(missing|not provided|unavailable|absent|not supplied)"),
+            ("research_state", r"(missing|not provided|unavailable|absent|not supplied).{0,100}(research_state|research state)"),
+            ("planning_mode", r"(planning_mode|planning mode).{0,100}(missing|not provided|unavailable|absent|not supplied)"),
+            ("planning_mode", r"(missing|not provided|unavailable|absent|not supplied).{0,100}(planning_mode|planning mode)"),
+            ("project_context", r"(project_context|project context|campaign context).{0,100}(missing|not provided|unavailable|absent|not supplied|insufficient)"),
+            ("project_context", r"(missing|not provided|unavailable|absent|not supplied|insufficient).{0,100}(project_context|project context|campaign context)"),
+        )
+        for key, pattern in patterns:
+            if supplied[key] and re.search(pattern, text):
+                return f"hypothesis falsely claims supplied {key} is missing"
+        return None
+
+    def _candidate_materialization_proof(
+        self,
+        experiment_id: int,
+        *,
+        require_changes: bool = True,
+    ) -> dict[str, Any]:
+        exp = self.store.experiment(experiment_id)
+        candidate = exp.get("candidate_snapshot")
+        parent = exp.get("parent_snapshot")
+        if not candidate or not parent:
+            raise WorkspaceError(
+                f"experiment {experiment_id} is missing parent/candidate snapshot"
+            )
+        self.workspace.checkout(candidate)
+        proof = self.workspace.snapshot_proof(parent, candidate)
+        if require_changes and not proof["changed_paths"]:
+            raise WorkspaceError(
+                f"candidate snapshot {candidate} has no diff from parent {parent}"
+            )
+        return proof
+
     def _stage_propose(self, attempt_id: int, experiment_id: int) -> None:
         self.workspace.checkout(self.store.campaign()["champion_snapshot"])
         task = self._task_context("propose", experiment_id)
@@ -643,6 +857,32 @@ class Engine:
             self.store.update_experiment(experiment_id, failure_category="AGENT_PROTOCOL_ERROR", lesson=str(exc)[:1000])
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(f"propose failed: {exc}") from exc
+
+        grounding_error = self._hypothesis_grounding_error(hypothesis, task)
+        if grounding_error:
+            self.store.update_experiment(
+                experiment_id,
+                hypothesis_json=hypothesis.model_dump_json(),
+                failure_category="UNGROUNDED_HYPOTHESIS",
+                lesson=grounding_error[:1000],
+            )
+            self.store.event(
+                "UNGROUNDED_HYPOTHESIS_REJECTED",
+                {
+                    "experiment_id": experiment_id,
+                    "ordinal": self.store.experiment(experiment_id)["ordinal"],
+                    "reason": grounding_error[:1000],
+                },
+            )
+            self.store.finish_attempt(
+                attempt_id,
+                experiment_id,
+                status="UNGROUNDED",
+                scientific=False,
+                improved=False,
+            )
+            self._refresh_research_state()
+            return
 
         duplicate = redundancy_reason(
             hypothesis,
@@ -706,7 +946,69 @@ class Engine:
                 ),
             )
             raw = self.agent.normalize_result(task, raw)
-            ImplementResult.model_validate(raw)
+            implementation = ImplementResult.model_validate(raw)
+            if implementation.blockers:
+                self.store.update_experiment(
+                    experiment_id,
+                    failure_category="IMPLEMENTATION_BLOCKED",
+                    lesson="; ".join(implementation.blockers)[:1000],
+                )
+                self.store.event(
+                    "IMPLEMENTATION_BLOCKED",
+                    {
+                        "experiment_id": experiment_id,
+                        "blockers": implementation.blockers[:8],
+                    },
+                )
+                self.store.conn.commit()
+                self.store.set_stage(attempt_id, "REJECT")
+                self._checkpoint("REJECT")
+                return
+
+            observed_changes = self.workspace.working_tree_changed_paths()
+            if not observed_changes:
+                if implementation.changed_paths:
+                    error = (
+                        "implementer reported changed_paths but no changes reached the "
+                        "supervisor workspace: " + ", ".join(implementation.changed_paths)
+                    )
+                    self.store.update_experiment(
+                        experiment_id,
+                        failure_category="CANDIDATE_NOT_MATERIALIZED",
+                        lesson=error[:1000],
+                    )
+                    self.store.event(
+                        "CANDIDATE_TRANSFER_FAILED",
+                        {
+                            "experiment_id": experiment_id,
+                            "reported_paths": implementation.changed_paths,
+                        },
+                    )
+                    self.store.conn.commit()
+                    self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+                    raise EngineError(error)
+                self.store.update_experiment(
+                    experiment_id,
+                    failure_category="NO_CHANGES",
+                    lesson="Implementer produced no material repository changes",
+                )
+                self.store.event(
+                    "NO_CHANGES_REJECTED",
+                    {"experiment_id": experiment_id},
+                )
+                self.store.conn.commit()
+                self.store.set_stage(attempt_id, "REJECT")
+                self._checkpoint("REJECT")
+                return
+
+            self.store.event(
+                "IMPLEMENTATION_TRANSFER_VERIFIED",
+                {
+                    "experiment_id": experiment_id,
+                    "observed_paths": observed_changes,
+                    "reported_paths": implementation.changed_paths,
+                },
+            )
             self.store.update_experiment(
                 experiment_id,
                 failure_category=None,
@@ -720,8 +1022,39 @@ class Engine:
         self._checkpoint("SNAPSHOT")
 
     def _stage_snapshot(self, attempt_id: int, experiment_id: int) -> None:
+        exp = self.store.experiment(experiment_id)
         snapshot = self.workspace.snapshot(f"bananloop experiment {experiment_id}")
         self.store.update_experiment(experiment_id, candidate_snapshot=snapshot)
+        try:
+            proof = self.workspace.snapshot_proof(exp["parent_snapshot"], snapshot)
+            if not proof["changed_paths"]:
+                raise WorkspaceError(
+                    "snapshot persisted no candidate diff after a material implementation"
+                )
+        except WorkspaceError as exc:
+            self.store.update_experiment(
+                experiment_id,
+                failure_category="CANDIDATE_NOT_MATERIALIZED",
+                lesson=str(exc)[:1000],
+            )
+            self.store.event(
+                "CANDIDATE_SNAPSHOT_FAILED",
+                {
+                    "experiment_id": experiment_id,
+                    "parent_snapshot": exp["parent_snapshot"],
+                    "candidate_snapshot": snapshot,
+                    "error": str(exc)[:1000],
+                },
+            )
+            self.store.conn.commit()
+            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+            raise EngineError(f"candidate snapshot failed: {exc}") from exc
+
+        self.store.event(
+            "CANDIDATE_SNAPSHOT_RECORDED",
+            {"experiment_id": experiment_id, **proof},
+        )
+        self.store.conn.commit()
         self.store.set_stage(attempt_id, "VERIFY")
         self._checkpoint("VERIFY")
 
@@ -732,22 +1065,16 @@ class Engine:
         valid, violations = self.workspace.verify_scope(changed, self.spec.editable_scope, self.spec.protected_paths)
         integrity_violations = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
         if integrity_violations:
-            decision = {
-                "accepted": False,
-                "primary_value": None,
-                "champion_value": None,
-                "delta": None,
-                "predicates": {"evaluation_integrity": False},
-                "reasons": ["EVALUATOR_CHANGED", *integrity_violations],
-            }
             self.store.update_experiment(
                 experiment_id,
-                decision_json=json.dumps(decision),
                 failure_category="EVALUATOR_CHANGED",
                 lesson="Frozen evaluation assets changed",
             )
-            self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
-            self.store.set_stage(attempt_id, "REJECT")
+            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+            raise EngineError(
+                "frozen evaluation assets changed before measurement: "
+                + ", ".join(integrity_violations)
+            )
         elif not valid:
             decision = {
                 "accepted": False,
@@ -806,7 +1133,28 @@ class Engine:
 
     def _stage_evaluate(self, attempt_id: int, experiment_id: int) -> None:
         exp = self.store.experiment(experiment_id)
-        self.workspace.checkout(exp["candidate_snapshot"])
+        try:
+            candidate_proof = self._candidate_materialization_proof(experiment_id)
+        except WorkspaceError as exc:
+            self.store.update_experiment(
+                experiment_id,
+                failure_category="CANDIDATE_NOT_MATERIALIZED",
+                lesson=str(exc)[:1000],
+            )
+            self.store.event(
+                "CANDIDATE_EVALUATION_BLOCKED",
+                {"experiment_id": experiment_id, "error": str(exc)[:1000]},
+            )
+            self.store.conn.commit()
+            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+            raise EngineError(
+                f"candidate is not materialized in evaluator workspace: {exc}"
+            ) from exc
+        self.store.event(
+            "CANDIDATE_EVALUATION_READY",
+            {"experiment_id": experiment_id, **candidate_proof},
+        )
+        self.store.conn.commit()
         integrity_violations = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
         if integrity_violations:
             self.store.update_experiment(
@@ -814,9 +1162,15 @@ class Engine:
                 failure_category="EVALUATOR_CHANGED",
                 lesson="Frozen evaluation assets changed before measurement: " + ", ".join(integrity_violations),
             )
-            self.store.set_stage(attempt_id, "REJECT")
-            return
-        request = self._evaluation_request(exp["candidate_snapshot"])
+            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+            raise EngineError(
+                "frozen evaluation assets changed before measurement: "
+                + ", ".join(integrity_violations)
+            )
+        request = self._evaluation_request(
+            exp["candidate_snapshot"],
+            candidate_proof=candidate_proof,
+        )
         try:
             raw = self._action(
                 action_id=f"exp:{experiment_id}:evaluate",
@@ -824,18 +1178,16 @@ class Engine:
                 stage="EVALUATE",
                 kind="evaluator",
                 request=request,
-                invoke=lambda: self.evaluator.evaluate(
-                    self.workspace.workspace,
-                    timeout=self.spec.evaluator_timeout_seconds,
-                ).model_dump(mode="json"),
+                invoke=lambda: self._checked_candidate_evaluation(
+                    self.evaluator,
+                    self.spec.evaluator_timeout_seconds,
+                    EvaluationResult.model_validate_json(self.store.campaign()["champion_json"]),
+                ),
             )
             result = EvaluationResult.model_validate(raw)
             validate_evaluation(self.spec, result)
-        except (EvaluatorError, InvalidEvaluation, ValidationError) as exc:
+        except (EvaluatorError, InvalidEvaluation, ValidationError, EngineError) as exc:
             self.store.update_experiment(experiment_id, failure_category="INVALID_EVALUATION", lesson=str(exc)[:1000])
-            self.store.set_stage(attempt_id, "REJECT")
-            return
-        except UnknownActionOutcome as exc:
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(str(exc)) from exc
         self.store.record_evaluation(
@@ -844,9 +1196,20 @@ class Engine:
             result.model_dump(mode="json"),
             tier="dev",
         )
-        self.store.update_experiment(experiment_id, evaluation_json=result.model_dump_json())
+        self.store.update_experiment(experiment_id, evaluation_json=result.model_dump_json(), failure_category=None, lesson=None)
         self.store.set_stage(attempt_id, "DECIDE")
         self._checkpoint("DECIDE")
+
+    def _checked_candidate_evaluation(
+        self, evaluator: CommandEvaluator, timeout: int, reference: EvaluationResult,
+    ) -> dict[str, Any]:
+        # Validate before completing the action receipt, so a known invalid
+        # measurement can use the explicit FAILED-action retry path.
+        result = evaluator.evaluate(self.workspace.workspace, timeout=timeout)
+        decision = decide(self.spec, reference, result)
+        if "PAIRED_INPUT_MISMATCH" in decision.reasons:
+            raise InvalidEvaluation("PAIRED_INPUT_MISMATCH")
+        return result.model_dump(mode="json")
 
     @staticmethod
     def _redact_failure_text(value: str) -> str:
@@ -954,7 +1317,15 @@ class Engine:
         exp = self.store.experiment(experiment_id)
         champion = EvaluationResult.model_validate_json(campaign["champion_json"])
         candidate = EvaluationResult.model_validate_json(exp["evaluation_json"])
-        decision = decide(self.spec, champion, candidate)
+        try:
+            decision = decide(self.spec, champion, candidate)
+            if "PAIRED_INPUT_MISMATCH" in decision.reasons:
+                raise InvalidEvaluation("PAIRED_INPUT_MISMATCH")
+        except (InvalidEvaluation, ValidationError) as exc:
+            self.store.update_experiment(experiment_id, failure_category="INVALID_EVALUATION", lesson=str(exc)[:1000])
+            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+            raise EngineError(str(exc)) from exc
+        self.store.update_experiment(experiment_id, failure_category=None, lesson=None)
         self.store.update_experiment(
             experiment_id,
             dev_decision_json=decision.model_dump_json(),
@@ -1061,11 +1432,28 @@ class Engine:
 
     def _stage_validate(self, attempt_id: int, experiment_id: int) -> None:
         exp = self.store.experiment(experiment_id)
-        self.workspace.checkout(exp["candidate_snapshot"])
+        try:
+            candidate_proof = self._candidate_materialization_proof(experiment_id)
+        except WorkspaceError as exc:
+            self.store.update_experiment(
+                experiment_id,
+                failure_category="CANDIDATE_NOT_MATERIALIZED",
+                lesson=str(exc)[:1000],
+            )
+            self.store.event(
+                "CANDIDATE_VALIDATION_BLOCKED",
+                {"experiment_id": experiment_id, "error": str(exc)[:1000]},
+            )
+            self.store.conn.commit()
+            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+            raise EngineError(
+                f"candidate is not materialized in validation workspace: {exc}"
+            ) from exc
         request = self._evaluation_request(
             exp["candidate_snapshot"],
             tier="validation",
             command=self.spec.validation_command,
+            candidate_proof=candidate_proof,
         )
         try:
             raw = self._action(
@@ -1074,49 +1462,29 @@ class Engine:
                 stage="VALIDATE",
                 kind="evaluator",
                 request=request,
-                invoke=lambda: self.validation_evaluator.evaluate(
-                    self.workspace.workspace,
-                    timeout=(
-                        self.spec.validation_timeout_seconds
-                        or self.spec.evaluator_timeout_seconds
-                    ),
-                ).model_dump(mode="json"),
+                invoke=lambda: self._checked_candidate_evaluation(
+                    self.validation_evaluator,
+                    self.spec.validation_timeout_seconds or self.spec.evaluator_timeout_seconds,
+                    self._validation_reference(),
+                ),
             )
             result = EvaluationResult.model_validate(raw)
             validate_evaluation(self.spec, result)
             reference = self._validation_reference()
             validation_decision = decide(self.spec, reference, result)
-        except (EvaluatorError, InvalidEvaluation, ValidationError) as exc:
-            combined = json.loads(exp["decision_json"])
-            combined["accepted"] = False
-            combined["reasons"] = [
-                reason
-                for reason in combined.get("reasons", [])
-                if reason != "ACCEPTED"
-            ]
-            combined.setdefault("predicates", {})["validation"] = False
-            combined.setdefault("reasons", []).append("INVALID_VALIDATION")
-            combined["validation"] = {
-                "accepted": False,
-                "reasons": ["INVALID_VALIDATION"],
-            }
+            if "PAIRED_INPUT_MISMATCH" in validation_decision.reasons:
+                raise InvalidEvaluation("PAIRED_INPUT_MISMATCH")
+        except (EvaluatorError, InvalidEvaluation, ValidationError, EngineError) as exc:
             self.store.update_experiment(
                 experiment_id,
-                decision_json=json.dumps(combined),
+                decision_json=None,
                 failure_category="INVALID_VALIDATION",
                 lesson=str(exc)[:1000],
             )
-            self.store.record_decision(
-                experiment_id,
-                exp["candidate_snapshot"],
-                combined,
-            )
-            self.store.set_stage(attempt_id, "REJECT")
-            return
-        except UnknownActionOutcome as exc:
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(str(exc)) from exc
 
+        self.store.update_experiment(experiment_id, failure_category=None, lesson=None)
         self.store.record_evaluation(
             experiment_id,
             exp["candidate_snapshot"],
@@ -1124,7 +1492,7 @@ class Engine:
             tier="validation",
         )
 
-        combined = json.loads(exp["decision_json"])
+        combined = json.loads(exp["dev_decision_json"] or exp["decision_json"])
         combined["validation"] = validation_decision.model_dump(mode="json")
         combined.setdefault("predicates", {})["validation"] = validation_decision.accepted
         if not validation_decision.accepted:
@@ -1176,11 +1544,19 @@ class Engine:
 
     def _stage_record(self, attempt_id: int, experiment_id: int) -> None:
         exp = self.store.experiment(experiment_id)
-        scientific = bool(exp["evaluation_json"])
         accepted = False
         if exp["decision_json"]:
             accepted = bool(json.loads(exp["decision_json"]).get("accepted"))
         status = "ACCEPTED" if accepted else "REJECTED"
+        bucket = attempt_bucket({**exp, "status": status, "failure_category": None if accepted else exp["failure_category"]})
+        scientific = bucket == "scientific_trials"
+        if not accepted:
+            status = {
+                "no_changes": "NO_CHANGES",
+                "implementation_blocked": "IMPLEMENTATION_BLOCKED",
+                "pre_evaluation_rejected": "PRE_EVALUATION_REJECTED",
+                "infra_failures": "INFRA_FAILED",
+            }.get(bucket, status)
         if accepted:
             failure = None
             lesson = "Promoted as new champion"
@@ -1237,6 +1613,10 @@ class Engine:
             )
         except CampaignHalted:
             return self.store.campaign()
+        except BindingRuntimeMismatch as exc:
+            self.store.event("EVALUATOR_BINDING_MISMATCH", {"error": str(exc)[:500]})
+            self.store.conn.commit()
+            return self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
         except ProcessCancelled as exc:
             return self._stop(StopReason(exc.reason))
 
@@ -1263,10 +1643,23 @@ class Engine:
             return self._stop(StopReason(campaign["stop_reason"]))
         if resume and campaign["status"] in {CampaignStatus.PAUSED_INFRA.value, CampaignStatus.PAUSED_NEEDS_INPUT.value}:
             self.store.update_campaign(status=CampaignStatus.RUNNING.value, stop_reason=None)
-        probe = self.agent.probe()
-        if not probe.get("available"):
-            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
-            raise EngineError(f"agent unavailable: {probe}")
+        launch_roles = {}
+        for role in ("propose", "implement", "analyze"):
+            config = self.spec.agent.for_role(role)
+            probe = self._make_agent_adapter(config).probe()
+            if not probe.get("available"):
+                self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+                raise EngineError(f"agent unavailable for {role}: {probe}")
+            launch_roles[role] = {
+                "kind": config.kind,
+                "model": config.model or "external-cli-default",
+                "provider": config.provider,
+                "reasoning_effort": config.reasoning_effort,
+                "cli_version": probe.get("version", "unknown"),
+            }
+        self.store.event("AGENT_LAUNCH_PROFILE", {"roles": launch_roles})
+        self.store.conn.commit()
+        self._ensure_evaluator_binding(verify_runtime=False)
         self.workspace.ensure(self.spec.base_commit)
         self._baseline()
         if self._post_iteration_stop():

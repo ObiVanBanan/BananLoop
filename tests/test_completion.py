@@ -18,7 +18,7 @@ from bananloop.engine import ControlledInterruption, Engine, EngineError
 from bananloop.evaluators.command import EvaluatorError
 from bananloop.policy import decide
 from bananloop.process import run_process
-from bananloop.report import build_report
+from bananloop.report import build_report, render_markdown
 from bananloop.store import CampaignStore
 from test_engine import make_engine, make_staged_engine, git
 
@@ -43,6 +43,57 @@ def test_failed_holdout_never_reports_goal_met_or_reopens_search(tmp_path):
         assert engine.run(resume=True)["stop_reason"] == "FINAL_HOLDOUT_REJECTED"
         assert calls == (store.campaign()["agent_calls"], store.campaign()["evaluator_calls"])
         assert len(store.evaluations("holdout")) == 1
+    finally:
+        store.close()
+
+
+def test_unavailable_signal_sanity_downgrades_target_reaching_holdout_to_dev_only(tmp_path):
+    store, engine, _, _ = make_staged_engine(tmp_path)
+    try:
+        outcome = engine.run()
+        assert outcome["status"] == "GOAL_MET"
+        spec = store.spec()
+        legacy_hash = spec.approved_hash()
+        spec.signal_sanity_status = "UNAVAILABLE"
+        spec.signal_sanity_receipt_sha256 = "a" * 64
+        # Optional None defaults are omitted, preserving the pre-signal hash.
+        spec_without_signal = spec.model_copy(deep=True)
+        spec_without_signal.signal_sanity_status = None
+        spec_without_signal.signal_sanity_receipt_sha256 = None
+        assert spec_without_signal.approved_hash() == legacy_hash
+        store.update_campaign(
+            spec_json=spec.model_dump_json(), spec_hash=spec.approved_hash()
+        )
+        report = build_report(store)
+        assert report["evaluation_protocol"]["holdout"]["target_met"] is True
+        assert report["final_assessment"] == "DEV_ONLY"
+        assert report["signal_sanity"] == {
+            "status": "UNAVAILABLE",
+            "receipt_sha256": "a" * 64,
+            "evidence_level": "unavailable",
+        }
+        markdown = render_markdown(report)
+        assert "## Evaluator signal sanity" in markdown
+        assert "`UNAVAILABLE`" in markdown
+        assert "`" + "a" * 64 + "`" in markdown
+    finally:
+        store.close()
+
+
+def test_bootstrap_controlled_signal_labels_are_diagnostic_not_an_assessment_upgrade(tmp_path):
+    store, engine, _, _ = make_staged_engine(tmp_path)
+    try:
+        assert engine.run()["status"] == "GOAL_MET"
+        legacy_assessment = build_report(store)["final_assessment"]
+        spec = store.spec()
+        spec.signal_sanity_status = "DIAGNOSTIC_ONLY"
+        spec.signal_sanity_receipt_sha256 = "b" * 64
+        store.update_campaign(spec_json=spec.model_dump_json(), spec_hash=spec.approved_hash())
+
+        report = build_report(store)
+        assert report["final_assessment"] == legacy_assessment
+        assert report["signal_sanity"]["status"] == "DIAGNOSTIC_ONLY"
+        assert report["signal_sanity"]["evidence_level"] == "diagnostic_only_unverified_labels"
     finally:
         store.close()
 

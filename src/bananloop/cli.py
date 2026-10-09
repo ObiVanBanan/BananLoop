@@ -6,14 +6,19 @@ import shlex
 import sys
 from pathlib import Path
 
+from .bootstrap import BootstrapError, bootstrap_campaign
+from .agent_profiles import AgentProfileError, load_agent_profiles
 from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, NonRegressionSpec, PairedComparison, RuntimePaths
+from .codex_hook import main as codex_hook_main
 from .engine import ControlledInterruption, Engine, EngineError
 from .export import export_champion
 from .integrity import EvaluationIntegrityError, discover_evaluation_assets, evaluation_fingerprint
 from .lock import CampaignLock, CampaignLockError
 from .report import build_report, render_markdown
+from .replay import replay_dev_action
+from .registry import CampaignRegistry, RegistryError, assert_safe_campaign_db
 from .store import CampaignStore, StoreError
-from .wizard import confirm_spec, needs_interactive_init, run_init_wizard
+from .wizard import confirm_spec, discover_project, needs_interactive_init, run_init_wizard
 from .workspace import WorkspaceError, WorkspaceManager, assert_clean_source, current_commit
 
 
@@ -42,24 +47,54 @@ def _non_regression(value: str) -> NonRegressionSpec:
 def _paths(repo: Path, state_dir: str | None) -> RuntimePaths:
     paths = RuntimePaths.for_repo(repo, Path(state_dir) if state_dir else None)
     paths.ensure()
+    assert_safe_campaign_db(paths.db)
+    return paths
+
+
+def _selected_paths(args: argparse.Namespace, *, create: bool = True) -> RuntimePaths:
+    repo = Path(args.repo).resolve()
+    state_dir = getattr(args, "state_dir", None)
+    campaign_id = getattr(args, "campaign_id", None)
+    if state_dir and campaign_id:
+        raise RegistryError("--state-dir and --campaign-id cannot be used together")
+    if state_dir:
+        return _paths(repo, state_dir) if create else RuntimePaths.for_repo(repo, Path(state_dir))
+    state_root, _ = CampaignRegistry(repo).resolve(campaign_id)
+    paths = RuntimePaths.for_repo(repo, state_root)
+    if create:
+        paths.ensure()
+    assert_safe_campaign_db(paths.db)
     return paths
 
 
 def _agent_config(args: argparse.Namespace) -> AgentConfig:
+    profiles = load_agent_profiles(Path(args.agent_profiles) if getattr(args, "agent_profiles", None) else None)
+    agent_kind = args.agent or profiles["default"].get("kind") or "codex"
     extra_args: list[str] = []
-    if args.agent == "codex":
+    if agent_kind == "codex":
         extra_args = args.codex_arg or []
-    elif args.agent == "pi":
-        if args.provider:
-            extra_args += ["--provider", args.provider]
-        if args.thinking:
-            extra_args += ["--thinking", args.thinking]
+    elif agent_kind == "pi":
         extra_args += args.pi_arg or []
+    base = {
+        "kind": agent_kind,
+        "command": shlex.split(args.agent_cmd) if args.agent_cmd else [],
+        "model": args.model,
+        "extra_args": extra_args,
+        "provider": args.provider,
+        "reasoning_effort": args.thinking if agent_kind == "pi" else None,
+    }
+    base.update({key: value for key, value in profiles["default"].items() if value is not None})
+    # Explicit CLI options are more specific than the optional profile file.
+    base.update({
+        "kind": agent_kind,
+        "model": args.model if args.model is not None else base.get("model"),
+        "provider": args.provider if args.provider is not None else base.get("provider"),
+        "reasoning_effort": args.thinking if args.thinking is not None else base.get("reasoning_effort"),
+        "extra_args": extra_args if extra_args else base.get("extra_args", []),
+    })
     return AgentConfig(
-        kind=args.agent,
-        command=shlex.split(args.agent_cmd) if args.agent_cmd else [],
-        model=args.model,
-        extra_args=extra_args,
+        **base,
+        roles=profiles["roles"],
     )
 
 
@@ -80,9 +115,6 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     if args.direction is None:
         args.direction = "maximize"
-    if args.agent is None:
-        args.agent = "codex"
-
     agent = _agent_config(args)
     evaluation_command = shlex.split(args.eval_cmd)
     validation_command = (
@@ -168,9 +200,172 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).resolve()
+    discovery = discover_project(repo)
+    registry = None
+    active_campaign_id = None
+    if args.state_dir:
+        paths = RuntimePaths.for_repo(repo, Path(args.state_dir))
+    else:
+        registry = CampaignRegistry(repo)
+        state_root, active_campaign_id = registry.resolve()
+        paths = RuntimePaths.for_repo(repo, state_root)
+    payload = {
+        "repo": str(repo),
+        "base_commit": current_commit(repo) if (repo / ".git").exists() else None,
+        "state": str(paths.root),
+        "campaign_exists": paths.db.exists(),
+        "detected_agents": discovery["agents"],
+        "detected_test_commands": discovery["test_commands"],
+        "detected_python_runtimes": discovery["python_runtimes"],
+    }
+    if registry is not None:
+        entries = registry.list()
+        payload["campaign_registry"] = str(registry.path)
+        payload["active_campaign_id"] = active_campaign_id
+        payload["campaign_count"] = len(entries)
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print("\n".join(f"{key}: {value}" for key, value in payload.items()))
+    return 0
+
+
+def cmd_codex_hook(args: argparse.Namespace) -> int:
+    """Internal Stop-hook entry point; consumes Codex JSON from stdin."""
+    return codex_hook_main()
+
+
+def cmd_campaigns_list(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).resolve()
+    registry = CampaignRegistry(repo)
+    payload = []
+    for entry, active in registry.list():
+        state = registry._validate_state_path(entry.state_path, entry.origin)
+        status = "RESERVED"
+        db = state / "campaign.sqlite3"
+        if db.exists():
+            store = CampaignStore(db)
+            try:
+                status = store.campaign()["status"]
+            finally:
+                store.close()
+        payload.append({
+            "campaign_id": entry.campaign_id,
+            "goal": entry.goal_summary,
+            "goal_fingerprint": entry.goal_fingerprint,
+            "origin": entry.origin,
+            "status": status,
+            "active": active,
+        })
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        for item in payload:
+            marker = " *" if item["active"] else ""
+            print(f"{item['campaign_id']}{marker}\t{item['status']}\t{item['origin']}\t{item['goal']}")
+    return 0
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).resolve()
+    if not args.allow_dirty:
+        assert_clean_source(repo)
+    if args.state_dir:
+        paths = _paths(repo, args.state_dir)
+        if paths.db.exists():
+            raise StoreError(
+                "campaign state already exists; use run/resume or choose a fresh --state-dir"
+            )
+    else:
+        registry = CampaignRegistry(repo)
+        entry, state_root, _ = registry.reserve(args.goal, getattr(args, "request_id", None))
+        paths = RuntimePaths.for_repo(repo, state_root)
+        paths.ensure()
+        args.campaign_id = entry.campaign_id
+
+    reused_campaign = False
+    if paths.db.exists():
+        reused_campaign = True
+        store = CampaignStore(paths.db)
+        try:
+            spec = store.spec()
+            campaign = store.campaign()
+        finally:
+            store.close()
+        plan = None
+        if not args.prepare_only and campaign["status"] in {"GOAL_MET", "STOPPED"}:
+            print(json.dumps({"status": campaign["status"], "state": str(paths.root), "campaign_id": getattr(args, "campaign_id", None)}, indent=2))
+            return 0
+    else:
+        try:
+            with CampaignLock(paths.root / "campaign.lock"):
+                if paths.db.exists():
+                    reused_campaign = True
+                    store = CampaignStore(paths.db)
+                    try:
+                        spec = store.spec()
+                        campaign = store.campaign()
+                    finally:
+                        store.close()
+                    plan = None
+                    if not args.prepare_only and campaign["status"] in {"GOAL_MET", "STOPPED"}:
+                        print(json.dumps({"status": campaign["status"], "state": str(paths.root), "campaign_id": getattr(args, "campaign_id", None)}, indent=2))
+                        return 0
+                else:
+                    plan, spec = bootstrap_campaign(
+                        repo=repo,
+                        goal=args.goal,
+                        paths=paths,
+                        agent_config=_agent_config(args),
+                        agent_timeout_seconds=args.bootstrap_timeout_seconds,
+                        max_experiments=args.max_experiments,
+                        max_attempts=args.max_attempts,
+                        max_agent_calls=args.max_agent_calls,
+                        max_evaluator_calls=args.max_evaluator_calls,
+                        deadline_seconds=args.deadline_seconds,
+                        plateau_experiments=args.plateau,
+                    )
+        except CampaignLockError as exc:
+            print(f"BananLoop error: {exc}", file=sys.stderr)
+            return 2
+    if spec is None:
+        print(json.dumps({
+            "status": "PAUSED_NEEDS_INPUT",
+            "summary": plan.summary,
+            "needs_input": plan.needs_input,
+            "bootstrap_plan": str(paths.root / "bootstrap-plan.json"),
+        }, indent=2, ensure_ascii=False))
+        return 3
+
+    plan_file = paths.root / "bootstrap-plan.json"
+    bootstrap_record = json.loads(plan_file.read_text(encoding="utf-8")) if plan_file.exists() else {"bootstrap_attempts": []}
+    last_attempt = bootstrap_record["bootstrap_attempts"][-1] if bootstrap_record["bootstrap_attempts"] else {}
+    readiness = last_attempt.get("readiness")
+    print(json.dumps({
+        "status": "READY",
+        "summary": plan.summary if plan else "Resuming reserved campaign",
+        "primary_metric": spec.primary_metric.model_dump(mode="json"),
+        "paired_comparison": spec.paired_comparison.model_dump(mode="json") if spec.paired_comparison else None,
+        "preparation": {
+            "attempts": len(bootstrap_record["bootstrap_attempts"]),
+            "snapshot": last_attempt.get("snapshot"),
+            "readiness": readiness,
+        },
+        "state": str(paths.root),
+        "campaign_id": getattr(args, "campaign_id", None),
+        "spec": spec.approved_hash(),
+    }, indent=2, ensure_ascii=False))
+    if args.prepare_only:
+        return 0
+    return cmd_run(args, resume=reused_campaign)
+
+
 def _open(args: argparse.Namespace) -> tuple[RuntimePaths, CampaignStore, Engine]:
     repo = Path(args.repo).resolve()
-    paths = _paths(repo, args.state_dir)
+    paths = _selected_paths(args)
     store = CampaignStore(paths.db)
     spec = store.spec()
     workspace = WorkspaceManager(Path(spec.source_repo), paths.workspace)
@@ -180,7 +375,7 @@ def _open(args: argparse.Namespace) -> tuple[RuntimePaths, CampaignStore, Engine
 
 def cmd_run(args: argparse.Namespace, resume: bool = False) -> int:
     repo = Path(args.repo).resolve()
-    paths = _paths(repo, args.state_dir)
+    paths = _selected_paths(args)
     try:
         with CampaignLock(paths.root / "campaign.lock"):
             _, store, engine = _open(args)
@@ -211,7 +406,7 @@ def cmd_run(args: argparse.Namespace, resume: bool = False) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
-    paths = _paths(repo, args.state_dir)
+    paths = _selected_paths(args)
     store = CampaignStore(paths.db)
     try:
         c = store.campaign()
@@ -229,7 +424,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_stop(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
-    paths = _paths(repo, args.state_dir)
+    paths = _selected_paths(args)
     store = CampaignStore(paths.db)
     try:
         store.campaign()  # Fail clearly if the state directory is uninitialized.
@@ -251,7 +446,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
 
 def cmd_report(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
-    paths = _paths(repo, args.state_dir)
+    paths = _selected_paths(args)
     store = CampaignStore(paths.db)
     try:
         report = build_report(store)
@@ -268,7 +463,7 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 def cmd_export(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
-    paths = _paths(repo, args.state_dir)
+    paths = _selected_paths(args)
     try:
         with CampaignLock(paths.root / "campaign.lock"):
             store = CampaignStore(paths.db)
@@ -282,9 +477,131 @@ def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_replay(args: argparse.Namespace) -> int:
+    paths = _selected_paths(args, create=False)
+    try:
+        with CampaignLock(paths.root / "campaign.lock"):
+            store = CampaignStore(paths.db)
+            try:
+                spec = store.spec()
+                workspace = WorkspaceManager(Path(spec.source_repo), paths.workspace)
+                result = replay_dev_action(store, workspace, args.action)
+            finally:
+                store.close()
+    except CampaignLockError as exc:
+        result = {
+            "status": "NOT_REPRODUCIBLE_INFRA",
+            "reason": f"campaign lock is held: {exc}",
+            "source_action_id": args.action,
+        }
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 2
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if result.get("status") == "REPRODUCIBLE":
+        return 0
+    if result.get("status") == "REPLAY_MISMATCH":
+        return 1
+    return 2
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bananloop")
     sub = p.add_subparsers(dest="command", required=True)
+
+    goal = sub.add_parser(
+        "goal",
+        help="chat-first autopilot: repo + one human goal",
+    )
+    goal.add_argument(
+        "goal",
+        help="human-language improvement goal",
+    )
+    goal.add_argument("--repo", default=".")
+    goal.add_argument("--state-dir")
+    goal.add_argument("--request-id", help="idempotency key; use a new value to intentionally repeat a goal")
+    goal.add_argument("--agent-profiles", help="TOML profile file for default and role-specific agent settings")
+    goal.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help="prepare and freeze the evaluator contract without starting optimization",
+    )
+    goal.set_defaults(
+        func=cmd_start,
+        agent=None,
+        agent_cmd=None,
+        model=None,
+        provider=None,
+        thinking=None,
+        codex_arg=None,
+        pi_arg=None,
+        bootstrap_timeout_seconds=1200,
+        agent_timeout_seconds=None,
+        max_experiments=4,
+        max_attempts=7,
+        max_agent_calls=18,
+        max_evaluator_calls=16,
+        deadline_seconds=14400,
+        plateau=3,
+        allow_dirty=False,
+    )
+
+    doctor = sub.add_parser(
+        "doctor",
+        help="show the environment BananLoop will use before bootstrap",
+    )
+    doctor.add_argument("--repo", default=".")
+    doctor.add_argument("--state-dir")
+    doctor.add_argument("--json", action="store_true")
+    doctor.set_defaults(func=cmd_doctor)
+
+    codex_hook = sub.add_parser("codex-hook", help=argparse.SUPPRESS)
+    codex_hook.set_defaults(func=cmd_codex_hook)
+
+    start = sub.add_parser(
+        "start",
+        help="autonomously turn repo + goal into a campaign and run it",
+    )
+    start.add_argument("--repo", default=".")
+    start.add_argument("--state-dir")
+    start.add_argument("--request-id", help="idempotency key; use a new value to intentionally repeat a goal")
+    start.add_argument("--goal", required=True)
+    start.add_argument("--agent", choices=["codex", "command", "pi"])
+    start.add_argument("--agent-cmd")
+    start.add_argument("--model")
+    start.add_argument("--agent-profiles", help="TOML profile file for default and role-specific agent settings")
+    start.add_argument("--provider", help="Pi provider, e.g. ollama-cloud")
+    start.add_argument(
+        "--thinking",
+        choices=["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+        help="Pi thinking level",
+    )
+    start.add_argument("--codex-arg", action="append")
+    start.add_argument("--pi-arg", action="append")
+    start.add_argument(
+        "--bootstrap-timeout-seconds",
+        type=int,
+        default=1200,
+        help="maximum time for repository discovery and evaluator construction",
+    )
+    start.add_argument(
+        "--agent-timeout-seconds",
+        type=int,
+        help="override per-agent-call wall time during the optimization loop",
+    )
+    start.add_argument("--max-experiments", type=int, default=4)
+    start.add_argument("--max-attempts", type=int, default=7)
+    start.add_argument("--max-agent-calls", type=int, default=18)
+    start.add_argument("--max-evaluator-calls", type=int, default=16)
+    start.add_argument("--deadline-seconds", type=int, default=14400)
+    start.add_argument("--plateau", type=int, default=3)
+    start.add_argument("--allow-dirty", action="store_true")
+    start.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help="build and persist CampaignSpec but do not start optimization",
+    )
+    start.set_defaults(func=cmd_start)
+
     init = sub.add_parser("init", help="approve and persist a campaign specification")
     init.add_argument("--repo", default=".")
     init.add_argument("--state-dir")
@@ -365,6 +682,7 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--agent", choices=["codex", "command", "pi"])
     init.add_argument("--agent-cmd")
     init.add_argument("--model")
+    init.add_argument("--agent-profiles", help="TOML profile file for default and role-specific agent settings")
     init.add_argument("--provider", help="Pi provider, e.g. ollama-cloud")
     init.add_argument(
         "--thinking",
@@ -391,6 +709,7 @@ def parser() -> argparse.ArgumentParser:
         sp = sub.add_parser(name)
         sp.add_argument("--repo", default=".")
         sp.add_argument("--state-dir")
+        sp.add_argument("--campaign-id")
         if name in {"run", "resume"}:
             sp.add_argument(
                 "--agent-timeout-seconds",
@@ -423,6 +742,20 @@ def parser() -> argparse.ArgumentParser:
             sp.set_defaults(func=lambda a: cmd_run(a, resume=True))
         else:
             sp.set_defaults(func=lambda a: cmd_run(a, resume=False))
+
+    replay = sub.add_parser("replay", help="re-run a stored DEV evaluation in a disposable frozen workspace")
+    replay.add_argument("--repo", default=".")
+    replay.add_argument("--state-dir")
+    replay.add_argument("--campaign-id")
+    replay.add_argument("--action", required=True, help="DEV action id or bootstrap:attempt:N:smoke:N")
+    replay.set_defaults(func=cmd_replay)
+
+    campaigns = sub.add_parser("campaigns", help="list repository campaigns")
+    campaign_sub = campaigns.add_subparsers(dest="campaign_command", required=True)
+    list_cmd = campaign_sub.add_parser("list", help="list indexed campaigns")
+    list_cmd.add_argument("--repo", default=".")
+    list_cmd.add_argument("--json", action="store_true")
+    list_cmd.set_defaults(func=cmd_campaigns_list)
     return p
 
 
@@ -430,7 +763,7 @@ def main() -> None:
     try:
         code = parser().parse_args()
         raise SystemExit(code.func(code))
-    except (StoreError, WorkspaceError, EvaluationIntegrityError, ValueError) as exc:
+    except (BootstrapError, StoreError, WorkspaceError, EvaluationIntegrityError, RegistryError, CampaignLockError, ValueError) as exc:
         print(f"BananLoop error: {exc}", file=sys.stderr)
         raise SystemExit(2)
 

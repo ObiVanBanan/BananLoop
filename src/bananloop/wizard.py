@@ -1,11 +1,118 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
 import sys
 from argparse import Namespace
 from pathlib import Path
 from typing import Any, Callable
+
+
+def _python_version(executable: str) -> str | None:
+    try:
+        result = subprocess.run(
+            [executable, "-c", "import platform; print(platform.python_version())"],
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    version = result.stdout.strip()
+    return version or None
+
+
+def _parse_py_launcher_paths(output: str) -> list[str]:
+    paths: list[str] = []
+    for raw in output.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        # py -0p typically prints "-V:3.13 * C:\\Python313\\python.exe";
+        # keep everything from the first absolute drive/UNC path onward.
+        drive = next(
+            (
+                index
+                for index in range(len(line) - 2)
+                if line[index].isalpha()
+                and line[index + 1] == ":"
+                and line[index + 2] in {"\\", "/"}
+            ),
+            None,
+        )
+        if drive is not None:
+            paths.append(line[drive:].strip())
+            continue
+        if line.startswith("\\\\"):
+            paths.append(line)
+    return paths
+
+
+def discover_python_runtimes(repo: Path) -> list[dict[str, str]]:
+    candidates: list[str] = []
+
+    def add(value: str | Path | None) -> None:
+        if not value:
+            return
+        path = str(value)
+        if path not in candidates:
+            candidates.append(path)
+
+    add(sys.executable)
+    for name in ("python", "python3"):
+        add(shutil.which(name))
+
+    for relative in (
+        ".venv/Scripts/python.exe",
+        "venv/Scripts/python.exe",
+        ".venv/bin/python",
+        "venv/bin/python",
+    ):
+        path = repo / relative
+        if path.is_file():
+            add(path.resolve())
+
+    if os.name == "nt":
+        py = shutil.which("py")
+        if py:
+            try:
+                result = subprocess.run(
+                    [py, "-0p"],
+                    text=True,
+                    capture_output=True,
+                    timeout=5,
+                    check=False,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                if result.returncode == 0:
+                    for path in _parse_py_launcher_paths(result.stdout):
+                        add(path)
+            except (OSError, subprocess.SubprocessError):
+                pass
+
+        system_drive = os.environ.get("SystemDrive", "C:")
+        root = Path(system_drive + "\\")
+        try:
+            for path in sorted(root.glob("Python3*/python.exe")):
+                if path.is_file():
+                    add(path)
+        except OSError:
+            pass
+
+    runtimes: list[dict[str, str]] = []
+    for executable in candidates:
+        version = _python_version(executable)
+        if version:
+            runtimes.append({"executable": executable, "version": version})
+    return runtimes
 
 
 def discover_project(repo: Path) -> dict[str, Any]:
@@ -23,6 +130,7 @@ def discover_project(repo: Path) -> dict[str, Any]:
     return {
         "test_commands": list(dict.fromkeys(commands)),
         "agents": agents,
+        "python_runtimes": discover_python_runtimes(repo),
     }
 
 

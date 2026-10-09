@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import os
 import shutil
 import stat
@@ -65,6 +66,64 @@ class WorkspaceManager:
             cwd=self.workspace,
             timeout=30,
         ).stdout
+
+    def working_tree_changed_paths(self) -> list[str]:
+        tracked = run_process(
+            ["git", "diff", "--name-only", "HEAD"],
+            cwd=self.workspace,
+            timeout=20,
+        ).stdout.splitlines()
+        untracked = run_process(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=self.workspace,
+            timeout=20,
+        ).stdout.splitlines()
+        return sorted(
+            {
+                line.strip().replace("\\", "/")
+                for line in [*tracked, *untracked]
+                if line.strip()
+            }
+        )
+
+    def snapshot_proof(self, parent: str, candidate: str) -> dict[str, object]:
+        head = self.head()
+        if head != candidate:
+            raise WorkspaceError(
+                f"candidate checkout mismatch: expected HEAD {candidate}, got {head}"
+            )
+        try:
+            tree = run_process(
+                ["git", "rev-parse", f"{candidate}^{{tree}}"],
+                cwd=self.workspace,
+                timeout=10,
+            ).stdout.strip()
+            head_tree = run_process(
+                ["git", "rev-parse", "HEAD^{tree}"],
+                cwd=self.workspace,
+                timeout=10,
+            ).stdout.strip()
+        except Exception as exc:
+            raise WorkspaceError(
+                f"candidate snapshot {candidate} is not a readable commit"
+            ) from exc
+        if not tree or tree != head_tree:
+            raise WorkspaceError(
+                f"candidate tree mismatch for snapshot {candidate}"
+            )
+        changed = self.changed_paths(parent, candidate)
+        diff = run_process(
+            ["git", "diff", "--binary", "--full-index", f"{parent}..{candidate}"],
+            cwd=self.workspace,
+            timeout=30,
+        ).stdout
+        return {
+            "parent_snapshot": parent,
+            "candidate_snapshot": candidate,
+            "tree": tree,
+            "changed_paths": changed,
+            "diff_sha256": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
+        }
 
     @staticmethod
     def _matches(path: str, patterns: list[str]) -> bool:

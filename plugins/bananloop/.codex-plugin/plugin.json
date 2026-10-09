@@ -1,0 +1,25 @@
+{
+  "name": "bananloop",
+  "version": "0.1.0",
+  "description": "Turn a repository and a human goal into an independently evaluated improvement campaign.",
+  "author": {
+    "name": "ObiVanBanan",
+    "url": "https://github.com/ObiVanBanan"
+  },
+  "repository": "https://github.com/ObiVanBanan/BananLoop",
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "BananLoop",
+    "shortDescription": "Turn a repo and goal into an independently evaluated improvement loop.",
+    "longDescription": "Use Codex as the conversational entry point while BananLoop owns evaluator freezing, staged evaluation, budgets, champion promotion and durable campaign state.",
+    "developerName": "ObiVanBanan",
+    "category": "Developer Tools",
+    "capabilities": ["Write"],
+    "defaultPrompt": [
+      "Improve this repository against the goal with BananLoop.",
+      "Prepare a BananLoop campaign but do not run it yet."
+    ],
+    "brandColor": "#F4C542"
+  }
+}
