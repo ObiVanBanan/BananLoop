@@ -106,6 +106,17 @@ def test_replay_comparison_uses_input_identity_and_explicit_metric_tolerance():
     within = EvaluationResult.model_validate(within_data)
     assert not _compare_results(original, within, metric_tolerances={"quality": 0.05})["mismatches"]
 
+    relative_data = original.model_dump(mode="json")
+    relative_data["metrics"]["quality"]["value"] = 1.1
+    relative_data["cases"][0]["metrics"]["quality"] = 1.1
+    relative = EvaluationResult.model_validate(relative_data)
+    assert not _compare_results(
+        original,
+        relative,
+        metric_tolerances={"quality": 0.0},
+        relative_metric_tolerances={"quality": 0.1},
+    )["mismatches"]
+
     changed_input_data = original.model_dump(mode="json")
     changed_input_data["cases"][0]["input_sha256"] = "c" * 64
     changed_input = EvaluationResult.model_validate(changed_input_data)

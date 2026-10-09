@@ -119,6 +119,8 @@ def test_readiness_runs_three_times_and_records_stable_inputs(tmp_path: Path):
         "primary_metric": "quality",
         "median": 0.5,
         "empirical_noise_bound": 0.0,
+        "metric_noise_bounds": {"quality": 0.0},
+        "metric_relative_noise_bounds": {"quality": 0.0},
         "min_improvement": 0.1,
         "noise_gate_passed": True,
         "paired_metric": "quality",
@@ -127,6 +129,40 @@ def test_readiness_runs_three_times_and_records_stable_inputs(tmp_path: Path):
         "paired_noise_gate_passed": True,
     }
     assert receipt["runs"][0]["case_count"] == 1
+
+
+def test_readiness_records_aa_noise_bounds_for_every_aggregate_metric(tmp_path: Path):
+    counter = tmp_path / "counter.txt"
+    script = tmp_path / "eval.py"
+    protocol_hash = hashlib.sha256(b"multi-metric protocol").hexdigest()
+    script.write_text(
+        "import json\n"
+        "from pathlib import Path\n"
+        f"p=Path({str(counter)!r})\n"
+        "n=int(p.read_text())+1 if p.exists() else 1\n"
+        "p.write_text(str(n))\n"
+        "latency=[1.0,1.5,1.2][(n-1)%3]\n"
+        f"print(json.dumps({{'status':'ok','metrics':{{'quality':0.5,'latency':{{'value':latency,'unit':'ms','n':3}}}},'checks':{{'tests':True}},'protocol_sha256':'{protocol_hash}'}}))\n",
+        encoding="utf-8",
+    )
+    init_repo(tmp_path)
+
+    receipt = run_bootstrap_readiness(
+        plan=plan([sys.executable, str(script)], min_improvement=0.1),
+        workspace=tmp_path,
+        snapshot=snapshot(tmp_path),
+        state_root=tmp_path / "state",
+        attempt=1,
+    )
+
+    assert receipt["calibration"]["metric_noise_bounds"] == {
+        "latency": pytest.approx(0.5),
+        "quality": 0.0,
+    }
+    assert receipt["calibration"]["metric_relative_noise_bounds"] == {
+        "latency": pytest.approx(0.5 / 1.2),
+        "quality": 0.0,
+    }
 
 
 @pytest.mark.parametrize("repeats", [1, 6])

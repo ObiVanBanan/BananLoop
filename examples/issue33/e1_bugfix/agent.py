@@ -55,10 +55,10 @@ def main() -> None:
         emit({
             "status": "ready",
             "summary": "Fixed CPU regression test for repeated-space slug normalization.",
-            "project_context": "slug.py is the production behavior. tests/test_slug.py is the frozen regression contract. The evaluator scores its pass fraction and records the fixed input identity.",
+            "project_context": "slug.py is production behavior. tests/test_slug.py is the frozen DEV regression contract. A separate operator-authored validation oracle is protected under tests/ and hidden from the agent.",
             "needs_input": [],
             "evaluation_command": [sys.executable, ".bananloop_eval/evaluator.py", "tests/test_slug.py"],
-            "validation_command": [],
+            "validation_command": [sys.executable, "tests/validation_oracle.py"],
             "holdout_command": [],
             "primary_metric": {"name": "quality", "direction": "maximize", "target": 1.0, "min_improvement": 0.5, "unit": "pass_fraction"},
             "guardrails": [],

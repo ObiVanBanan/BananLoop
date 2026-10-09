@@ -398,6 +398,29 @@ def run_bootstrap_readiness(
     median = statistics.median(values)
     primary_range = max(values) - min(values)
     threshold = float(plan.primary_metric.min_improvement)
+    metric_names = set(results[0].metrics)
+    if any(set(result.metrics) != metric_names for result in results[1:]):
+        receipt["status"] = "FAILED"
+        receipt["error"] = "smoke evaluator changed aggregate metric names across A/A runs"
+        raise ReadinessError(receipt["error"], receipt)
+    metric_noise_bounds: dict[str, float] = {}
+    metric_relative_noise_bounds: dict[str, float] = {}
+    for name in sorted(metric_names):
+        measurements = [result.metrics[name] for result in results]
+        if any(
+            item.unit != measurements[0].unit or item.n != measurements[0].n
+            for item in measurements[1:]
+        ):
+            receipt["status"] = "FAILED"
+            receipt["error"] = f"smoke evaluator changed aggregate metric metadata for {name!r} across A/A runs"
+            raise ReadinessError(receipt["error"], receipt)
+        metric_noise_bounds[name] = max(item.value for item in measurements) - min(
+            item.value for item in measurements
+        )
+        metric_median = statistics.median(item.value for item in measurements)
+        metric_relative_noise_bounds[name] = (
+            metric_noise_bounds[name] / abs(metric_median) if metric_median != 0 else 0.0
+        )
     receipt["input_identity_stable"] = True
     receipt["primary_values"] = values
     receipt["primary_range"] = primary_range
@@ -407,6 +430,8 @@ def run_bootstrap_readiness(
         "primary_metric": plan.primary_metric.name,
         "median": median,
         "empirical_noise_bound": primary_range,
+        "metric_noise_bounds": metric_noise_bounds,
+        "metric_relative_noise_bounds": metric_relative_noise_bounds,
         "min_improvement": threshold,
         "noise_gate_passed": primary_range < threshold,
     }

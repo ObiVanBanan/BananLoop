@@ -87,7 +87,15 @@ def _compare_results(
     replayed: EvaluationResult,
     *,
     metric_tolerances: dict[str, float],
+    relative_metric_tolerances: dict[str, float] | None = None,
 ) -> dict[str, Any]:
+    relative_metric_tolerances = relative_metric_tolerances or {}
+
+    def tolerance_for(name: str, before: float, after: float) -> float:
+        absolute = max(0.0, float(metric_tolerances.get(name, 0.0)))
+        relative = max(0.0, float(relative_metric_tolerances.get(name, 0.0)))
+        return max(absolute, relative * max(abs(before), abs(after)))
+
     comparisons: dict[str, Any] = {}
     mismatches: list[str] = []
 
@@ -117,7 +125,11 @@ def _compare_results(
     for name in sorted(set(original.metrics) | set(replayed.metrics)):
         before = original.metrics.get(name)
         after = replayed.metrics.get(name)
-        tolerance = max(0.0, float(metric_tolerances.get(name, 0.0)))
+        tolerance = tolerance_for(
+            name,
+            before.value if before is not None else 0.0,
+            after.value if after is not None else 0.0,
+        )
         passed = bool(
             before is not None
             and after is not None
@@ -147,7 +159,7 @@ def _compare_results(
             per_case_mismatches.append(f"case {key!r} metric set changed")
             continue
         for name in sorted(before.metrics):
-            tolerance = max(0.0, float(metric_tolerances.get(name, 0.0)))
+            tolerance = tolerance_for(name, before.metrics[name], after.metrics[name])
             if not _float_equal(before.metrics[name], after.metrics[name], tolerance):
                 per_case_mismatches.append(f"case {key!r} metric {name!r} changed outside tolerance")
     comparisons["per_case_measurements"] = {
@@ -205,10 +217,12 @@ def _replay_dev_action(
     source_kind: Literal["dev_action", "bootstrap_smoke"] = (
         "bootstrap_smoke" if action_id.startswith("bootstrap:") else "dev_action"
     )
+    relative_metric_tolerances: dict[str, float] = {}
     try:
         store.campaign()
         spec = store.spec()
         metric_tolerances = dict(spec.evaluation_evidence.metric_tolerances) if spec.evaluation_evidence else {}
+        relative_metric_tolerances = dict(spec.evaluation_evidence.metric_relative_tolerances) if spec.evaluation_evidence else {}
     except (ReplayInfrastructureError, ValueError, KeyError, OSError) as exc:
         return _persist_receipt(
             replay_root, replay_id=replay_id, source_kind=source_kind, action_id=action_id,
@@ -225,15 +239,25 @@ def _replay_dev_action(
             )
             experiment_id = None
             tier = "bootstrap_smoke"
+            calibration = metadata["readiness"]["calibration"]
             metric_tolerances = {
-                metadata["readiness"]["calibration"]["primary_metric"]: float(
-                    metadata["readiness"]["calibration"]["empirical_noise_bound"]
-                )
+                str(name): float(value)
+                for name, value in calibration.get("metric_noise_bounds", {}).items()
             }
+            relative_metric_tolerances = {
+                str(name): float(value)
+                for name, value in calibration.get("metric_relative_noise_bounds", {}).items()
+            }
+            metric_tolerances.setdefault(
+                calibration["primary_metric"],
+                float(calibration["empirical_noise_bound"]),
+            )
             paired = metadata["readiness"].get("paired_metric")
-            paired_tolerance = metadata["readiness"]["calibration"].get("paired_empirical_noise_bound")
+            paired_tolerance = calibration.get("paired_empirical_noise_bound")
             if paired and paired_tolerance is not None:
-                metric_tolerances[paired] = float(paired_tolerance)
+                metric_tolerances[paired] = max(
+                    metric_tolerances.get(paired, 0.0), float(paired_tolerance)
+                )
         else:
             action = store.action(action_id)
             if action is None:
@@ -379,7 +403,12 @@ def _replay_dev_action(
         if before != snapshot or after != snapshot or dirty:
             raise ValueError("replayed evaluator changed the frozen workspace")
         _atomic_json(replay_result_path, replayed.model_dump(mode="json"))
-        comparisons = _compare_results(original, replayed, metric_tolerances=metric_tolerances)
+        comparisons = _compare_results(
+            original,
+            replayed,
+            metric_tolerances=metric_tolerances,
+            relative_metric_tolerances=relative_metric_tolerances,
+        )
         case_sha = _json_hash(_case_manifest(replayed))
         return _persist_receipt(
             replay_root,

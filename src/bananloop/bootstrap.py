@@ -504,14 +504,21 @@ def bootstrap_campaign(
     ).hexdigest()
     runtime = runtime_descriptor({"dev": plan.smoke_command or plan.evaluation_command})
     runtime_fingerprint = canonical_hash(runtime)
+    calibration = readiness.get("calibration", {})
     metric_tolerances = {
-        plan.primary_metric.name: float(
-            readiness.get("calibration", {}).get("empirical_noise_bound", 0.0)
-        )
+        str(name): float(value)
+        for name, value in calibration.get("metric_noise_bounds", {}).items()
     }
+    metric_tolerances.setdefault(
+        plan.primary_metric.name,
+        float(calibration.get("empirical_noise_bound", 0.0)),
+    )
     paired_noise = readiness.get("calibration", {}).get("paired_empirical_noise_bound")
     if plan.paired_comparison.enabled and paired_noise is not None:
-        metric_tolerances[plan.paired_comparison.metric] = float(paired_noise)
+        metric = plan.paired_comparison.metric
+        metric_tolerances[metric] = max(
+            metric_tolerances.get(metric, 0.0), float(paired_noise)
+        )
     evaluation_evidence = EvaluationEvidence(
         technical_readiness="READY",
         # Bootstrap-authored cases/labels are not independent evidence of
@@ -529,6 +536,10 @@ def bootstrap_campaign(
         runtime=runtime,
         runtime_fingerprint=runtime_fingerprint,
         metric_tolerances=metric_tolerances,
+        metric_relative_tolerances={
+            str(name): float(value)
+            for name, value in calibration.get("metric_relative_noise_bounds", {}).items()
+        },
         readiness_receipt_sha256=readiness_receipt_sha256,
         verified_invariants=[
             key for key, passed in (

@@ -16,4 +16,4 @@
 
 ## Remaining
 
-M4 implementation is partial pending dogfood evidence. E0/E1/E2/E3 are not claimed as completed experiments, and E2/E4 runtime prerequisites remain unprovisioned. M1 independent reference provenance and smoke/full evaluator equivalence remain open. Issue #33 stays open.
+M4 implementation is partial pending broader dogfood evidence. E0 technical negative controls, E1 local DEV+validation, and E3 a bounded paired CPU benchmark are now recorded in `plan/issue-33-experiment-evidence.md`; E2 remains unrun and E4 runtime prerequisites remain unprovisioned. E1/E3 evaluator trust remains `UNVERIFIED`. M1 independent reference provenance and smoke/full evaluator equivalence remain open. Issue #33 stays open.

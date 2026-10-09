@@ -335,6 +335,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 "runtime": {},
                 "runtime_fingerprint": None,
                 "metric_tolerances": {},
+                "metric_relative_tolerances": {},
                 "readiness_receipt_sha256": None,
                 "verified_invariants": [],
                 "limitations": ["legacy campaign has no persisted evaluator evidence"],

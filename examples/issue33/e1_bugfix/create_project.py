@@ -29,6 +29,8 @@ def main() -> None:
         "    assert slugify('Alpha  Beta') == 'alpha-beta'\n",
         encoding="utf-8",
     )
+    oracle_source = Path(__file__).with_name("validation_oracle.py").read_text(encoding="utf-8")
+    (tests / "validation_oracle.py").write_text(oracle_source, encoding="utf-8")
     run("git", "init", cwd=root)
     run("git", "config", "user.email", "issue33-e1@example.invalid", cwd=root)
     run("git", "config", "user.name", "Issue 33 E1 Fixture", cwd=root)
