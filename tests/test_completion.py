@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import bananloop.workspace as workspace_module
 
 from bananloop.agents.base import AgentError
 from bananloop.cli import cmd_stop
@@ -418,8 +419,17 @@ def test_stop_cli_cancels_running_agent_and_preserves_source(tmp_path):
             proc.communicate(timeout=5)
 
 
-def test_agent_commits_and_untracked_changes_are_transferred(tmp_path):
+def test_agent_commits_and_untracked_changes_are_transferred(tmp_path, monkeypatch):
     store, engine, repo, base = make_engine(tmp_path)
+    original_run_process = workspace_module.run_process
+    diff_commands = []
+
+    def capture_diff_command(argv, **kwargs):
+        if argv[:2] == ["git", "diff"] and "--binary" in argv:
+            diff_commands.append(list(argv))
+        return original_run_process(argv, **kwargs)
+
+    monkeypatch.setattr(workspace_module, "run_process", capture_diff_command)
     try:
         engine.workspace.ensure(base)
         isolated = engine.workspace.prepare_agent_workspace(["evaluator.py"])
@@ -432,6 +442,8 @@ def test_agent_commits_and_untracked_changes_are_transferred(tmp_path):
         assert (engine.workspace.workspace / "value.txt").read_text() == "1\n"
         assert (engine.workspace.workspace / "new.txt").exists()
         assert git(["rev-parse", "HEAD"], repo) == base
+        assert diff_commands
+        assert all("--no-ext-diff" in argv and "--no-textconv" in argv for argv in diff_commands)
     finally:
         engine.workspace.cleanup_agent_workspace()
         store.close()
