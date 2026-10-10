@@ -174,6 +174,8 @@ class WorkspaceManager:
     def apply_agent_changes(self, agent_workspace: Path, hidden_paths: list[str]) -> list[str]:
         if agent_workspace != self.agent_workspace or self._agent_base is None:
             raise WorkspaceError("agent workspace has no supervisor-owned baseline")
+        changed: list[str] = []
+        patch_sha256: str | None = None
         try:
             run_process(["git", "add", "-A"], cwd=agent_workspace, timeout=30)
             changed_out = run_process(
@@ -189,11 +191,21 @@ class WorkspaceManager:
                     "agent attempted to write hidden path(s): " + ", ".join(sorted(violations))
                 )
             patch = run_process(
-                ["git", "diff", "--cached", "--binary", "--full-index", self._agent_base],
+                [
+                    "git",
+                    "diff",
+                    "--cached",
+                    "--binary",
+                    "--full-index",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    self._agent_base,
+                ],
                 cwd=agent_workspace,
                 timeout=30,
             ).stdout
             if patch:
+                patch_sha256 = hashlib.sha256(patch.encode("utf-8")).hexdigest()
                 run_process(
                     ["git", "apply", "--whitespace=nowarn", "-"],
                     cwd=self.workspace,
@@ -202,8 +214,15 @@ class WorkspaceManager:
                 )
             return changed
         except ProcessError as exc:
+            details = []
+            if changed:
+                paths = ",".join(path[:160] for path in changed[:10])
+                details.append(f"changed_paths={paths}")
+            if patch_sha256:
+                details.append(f"patch_sha256={patch_sha256}")
+            suffix = f" ({'; '.join(details)})" if details else ""
             raise WorkspaceError(
-                f"candidate change transfer from agent workspace failed: {exc}"
+                f"candidate change transfer from agent workspace failed{suffix}: {exc}"
             ) from exc
 
     def cleanup_agent_workspace(self) -> None:

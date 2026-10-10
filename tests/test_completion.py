@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import time
@@ -450,8 +451,10 @@ def test_agent_patch_apply_process_error_is_reported_as_workspace_error(tmp_path
         engine.workspace.ensure(base)
         isolated = engine.workspace.prepare_agent_workspace(["evaluator.py"])
         (isolated / "value.txt").write_text("1\n", encoding="utf-8")
-        with pytest.raises(WorkspaceError, match="candidate change transfer.*git apply rejected"):
+        with pytest.raises(WorkspaceError, match="candidate change transfer.*git apply rejected") as error:
             engine.workspace.apply_agent_changes(isolated, ["evaluator.py"])
+        assert "changed_paths=value.txt" in str(error.value)
+        assert re.search(r"patch_sha256=[0-9a-f]{64}", str(error.value))
     finally:
         engine.workspace.cleanup_agent_workspace()
         store.close()
