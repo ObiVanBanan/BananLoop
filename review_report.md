@@ -1,7 +1,7 @@
 # Issue #33 review report
 
 Date: 2026-10-10
-Reviewed implementation HEAD: `4ea8155f44ee12ea04a08005394699e9360ebaab` on `feat/issue-33-evidence-aware-research`.
+Reviewed implementation HEAD: `47f04f1f522c35d0ed51c4d0854583923bb4c72d` on `feat/issue-33-evidence-aware-research`.
 PR: [#35](https://github.com/ObiVanBanan/BananLoop/pull/35) (open draft)
 
 ## Result
@@ -12,8 +12,8 @@ The operator reference path now accepts an exact-byte SHA-256-pinned JSON manife
 
 ## Validation
 
-- The focused replay-tolerance and readiness-invocation regression tests pass locally with the repository test environment. `compileall` and `git diff --check` pass. A separate local attempt at engine/report integration tests is blocked by this Windows sandbox's Git Bash `NtCreateDirectoryObject` permission failure while spawning `git clone`; it fails before those tests reach the code under test.
-- GitHub Actions [run 38038341831](https://github.com/ObiVanBanan/BananLoop/actions/runs/38038341831) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 at `4ea8155`. Follow-up [run 38039112619](https://github.com/ObiVanBanan/BananLoop/actions/runs/38039112619) at `498e1ce` caught a test-fixture setup error: 258 tests passed and two failed because the test requested a Git HEAD before initializing its temporary repository. The fixture now initializes that repository; the four targeted replay/readiness regression tests pass locally, and the full rerun is pending publication. The preceding full matrix [run 38035653436](https://github.com/ObiVanBanan/BananLoop/actions/runs/38035653436) passed on its published tree.
+- The four focused replay/readiness regression tests pass locally. `compileall` and `git diff --check` pass. A local attempt at engine/report integration tests cannot start Git Bash child processes in this sandbox (`NtCreateDirectoryObject` permission failure during `git clone`); the same full suite is covered by CI.
+- GitHub Actions [run 38039245343](https://github.com/ObiVanBanan/BananLoop/actions/runs/38039245343) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 at `47f04f1`. The preceding [run 38039112619](https://github.com/ObiVanBanan/BananLoop/actions/runs/38039112619) at `498e1ce` exposed a test-fixture initialization error (258 passed, two failed); the fixture was fixed and the complete matrix passed on the next commit. The earlier full matrix [run 38038341831](https://github.com/ObiVanBanan/BananLoop/actions/runs/38038341831) also passed at `4ea8155`.
 - M5 includes `bananloop trace export`, a read-only and deterministic portable JSONL/JSON/Markdown package with hash manifest, safe allowlisting, redaction, legacy-schema and campaign-state coverage, and refusal to overwrite exports containing extra files or malformed manifests. The summary includes metric deltas, budgets, and path-free evaluator/runtime fingerprints. Role-dispatch tests verify strong/high and fast/low selection, identical launch receipts after resume, unknown effective model reporting, and bootstrap metadata projection without raw prompts.
 - E0–E3 evidence and limits are recorded in `plan/issue-33-experiment-evidence.md`; E2 includes bounded paired DEV, separate product-group validation, replay, and exported-patch verification.
 - An existing 56-generation real GPU AnimeDiff smoke is now recorded as partial E4 evidence: it proves the generic campaign path and rejection of a null candidate, not image-quality improvement. The protocol only measures coarse RGB fidelity on neutral geometric cases.
