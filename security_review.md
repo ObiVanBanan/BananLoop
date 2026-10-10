@@ -1,7 +1,7 @@
 # Issue #33 security review
 
-Date: 2026-10-09
-Reviewed HEAD: `b829169e5557b84c658dec871746b12afb9f5491`.
+Date: 2026-10-10
+Reviewed base: `01a795e52fee6c3bda3a86add4c44f58a2453c2f`; scope also includes the current uncommitted M5 profile-dispatch diff.
 
 ## Trust boundaries reviewed
 
@@ -10,6 +10,7 @@ Reviewed HEAD: `b829169e5557b84c658dec871746b12afb9f5491`.
 - The candidate workspace does not receive the reference manifest. BananLoop stores its frozen bytes and the verification/readiness receipts under campaign state. Reports validate the manifest digest, self-hashed verification receipt, and readiness receipt hash; missing or altered sidecars force report trust to `UNVERIFIED`.
 - Reference verification is scoped to DEV. It cannot establish validation/holdout trust, and a campaign with an unverified holdout remains `DEV_ONLY`.
 - Replay remains restricted to DEV/bootstrap smoke, uses a disposable workspace, and does not mutate campaign science state. Hidden validation/holdout data remains outside agent-facing planning and replay.
+- Model-role receipts must describe settings actually selected by a model-aware adapter. The reviewed diff rejects model/provider/reasoning metadata on deterministic command backends, preventing those profiles from being recorded as if the adapter had applied them. Codex role dispatch builds its argv from the selected role config; a local deterministic fixture verifies strong/high vs fast/low arguments without an external model call.
 
 ## Findings and limits
 
@@ -17,4 +18,4 @@ No new exploitable security issue was found in the reviewed change. The operator
 
 An integration test verifies successful receipt persistence and report linkage; a tamper test confirms trust downgrade. E0–E3 campaign evidence remains unverified until an actual operator-approved manifest is used. E4 was not run because this environment has no GPU/A1111 runtime.
 
-Validation at review HEAD: full local test suite passed; CI run [37894295543](https://github.com/ObiVanBanan/BananLoop/actions/runs/37894295543) passed Ubuntu 3.11/3.12/3.13 and Windows 3.12.
+Validation for this review: full local Windows `pytest tests` passed (exit 0); four symlink-only cases separately skipped because Windows symlink creation is unavailable (`WinError 1314`). CI run [38043153458](https://github.com/ObiVanBanan/BananLoop/actions/runs/38043153458) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 on the reviewed base. New CI for the reviewed diff is pending push.

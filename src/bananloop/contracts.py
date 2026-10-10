@@ -145,6 +145,27 @@ class AgentConfig(BaseModel):
     def command_required(self) -> "AgentConfig":
         if self.kind == "command" and not self.command:
             raise ValueError("command agent requires command argv")
+        if self.kind == "command" and any(
+            value is not None
+            for value in (self.model, self.provider, self.reasoning_effort)
+        ):
+            raise ValueError(
+                "command agents cannot declare model/provider/reasoning settings; "
+                "their argv must configure the invoked program directly"
+            )
+        for role, override in self.roles.items():
+            effective_kind = override.kind or self.kind
+            if effective_kind == "command" and any(
+                value is not None
+                for value in (
+                    override.model,
+                    override.provider,
+                    override.reasoning_effort,
+                )
+            ):
+                raise ValueError(
+                    f"command role {role!r} cannot declare model/provider/reasoning settings"
+                )
         flags = set(self.extra_args)
         if self.kind == "codex":
             if self.model is not None and (

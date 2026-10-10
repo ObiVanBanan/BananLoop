@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from bananloop.agents.base import AgentAdapter
+from bananloop.agents.codex import CodexAdapter
+from bananloop.agents.command import CommandAgentAdapter
 from bananloop.contracts import AgentConfig, AgentRoleOverride, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, EvaluationResult, GuardrailSpec, Hypothesis, MetricSpec, RuntimePaths
 from bananloop.engine import ControlledInterruption, Engine, EngineError, UnknownActionOutcome, _hash_payload
 from bananloop.evaluator_binding import EvaluatorBinding, canonical_hash, make_binding, runtime_descriptor
@@ -185,21 +187,31 @@ def test_role_dispatch_and_launch_receipt_are_stable_across_resume(tmp_path: Pat
     }
     roles["implement"] = AgentRoleOverride(model="fast-model", reasoning_effort="low")
     config = AgentConfig(
-        kind="command",
-        command=[sys.executable, "agent.py"],
+        kind="codex",
         model="fallback-model",
         reasoning_effort="medium",
         roles=roles,
     )
     store, engine, _, _ = make_engine(tmp_path, agent_config=config)
     dispatched: list[tuple[str | None, str | None]] = []
-    def capture_factory(delegate):
-        def capture(selected: AgentConfig):
-            dispatched.append((selected.model, selected.reasoning_effort))
-            return delegate(selected)
-        return capture
+    argv_by_role: dict[str, list[str]] = {}
+    fixture_adapter = CommandAgentAdapter([sys.executable, "agent.py"])
+    monkeypatch.setattr(
+        CodexAdapter,
+        "probe",
+        lambda self: {"available": True, "kind": "codex", "version": "fixture-codex"},
+    )
 
-    engine._make_agent_adapter = capture_factory(engine._make_agent_adapter)
+    def execute_fixture(self, task, workspace, timeout):
+        role = task["role"]
+        self._resolved_command = lambda: ["codex"]
+        argv_by_role[role] = self._argv(
+            workspace / "schema.json", workspace / "result.json"
+        )
+        dispatched.append((self.model, self.reasoning_effort))
+        return fixture_adapter.execute(task, workspace, timeout)
+
+    monkeypatch.setattr(CodexAdapter, "execute", execute_fixture)
     try:
         assert config.for_role("bootstrap").model == "strong-model"
         assert config.for_role("bootstrap").reasoning_effort == "high"
@@ -218,7 +230,6 @@ def test_role_dispatch_and_launch_receipt_are_stable_across_resume(tmp_path: Pat
         store.close()
         store = CampaignStore(db_path)
         engine = Engine(store, workspace)
-        engine._make_agent_adapter = capture_factory(engine._make_agent_adapter)
         assert engine.run(resume=True)["status"] == "GOAL_MET"
         profiles = [
             json.loads(row["payload_json"])
@@ -234,6 +245,10 @@ def test_role_dispatch_and_launch_receipt_are_stable_across_resume(tmp_path: Pat
         assert ("strong-model", "high") in dispatched
         assert ("fast-model", "low") in dispatched
         assert ("fallback-model", "medium") not in dispatched
+        assert argv_by_role["propose"][argv_by_role["propose"].index("-m") + 1] == "strong-model"
+        assert argv_by_role["propose"][argv_by_role["propose"].index("-c") + 1] == "model_reasoning_effort=high"
+        assert argv_by_role["implement"][argv_by_role["implement"].index("-m") + 1] == "fast-model"
+        assert argv_by_role["implement"][argv_by_role["implement"].index("-c") + 1] == "model_reasoning_effort=low"
         role_summary = build_trace_package(store)["summary.json"]["model_roles"]
         assert role_summary["propose"]["effective_model"] is None
         assert role_summary["propose"]["effective_model_status"] == "unknown"

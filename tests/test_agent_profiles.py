@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from bananloop.agent_profiles import AgentProfileError, load_agent_profiles
-from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, MetricSpec
+from bananloop.contracts import AgentConfig, AgentRoleOverride, BudgetSpec, CampaignSpec, Direction, MetricSpec
 
 
 def test_loads_default_and_per_role_profile(tmp_path: Path):
@@ -57,3 +57,26 @@ def test_empty_profile_fields_preserve_approved_hash():
         old_payload["agent"].pop(key, None)
     old_spec = CampaignSpec.model_validate(old_payload)
     assert spec.approved_hash() == old_spec.approved_hash()
+
+
+def test_command_backend_rejects_unapplied_model_metadata():
+    with pytest.raises(ValueError, match="command agents cannot declare"):
+        AgentConfig(kind="command", command=["agent"], model="claimed-model")
+
+    with pytest.raises(ValueError, match="command role 'implement'"):
+        AgentConfig(
+            kind="command",
+            command=["agent"],
+            roles={"implement": AgentRoleOverride(model="claimed-model")},
+        )
+
+    config = AgentConfig(
+        kind="command",
+        command=["agent"],
+        roles={
+            "implement": AgentRoleOverride(
+                kind="codex", model="real-model", reasoning_effort="low"
+            )
+        },
+    )
+    assert config.for_role("implement").model == "real-model"
