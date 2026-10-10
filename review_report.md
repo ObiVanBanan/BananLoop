@@ -1,7 +1,7 @@
 # Issue #33 review report
 
 Date: 2026-10-10
-Reviewed HEAD: `d504c4f10434965ef6c12dfd960c8dd7a9df6222` on `feat/issue-33-evidence-aware-research`.
+Reviewed implementation HEAD: `d504c4f10434965ef6c12dfd960c8dd7a9df6222` on `feat/issue-33-evidence-aware-research`.
 PR: [#35](https://github.com/ObiVanBanan/BananLoop/pull/35) (open draft)
 
 ## Result
@@ -13,7 +13,7 @@ The operator reference path now accepts an exact-byte SHA-256-pinned JSON manife
 ## Validation
 
 - Full local `pytest -q` passes on the current worktree using a short Windows temp path; `python -m compileall -q src/bananloop` and `git diff --check` pass.
-- GitHub Actions [run 38035108531](https://github.com/ObiVanBanan/BananLoop/actions/runs/38035108531) is running Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 for this reviewed HEAD.
+- GitHub Actions [run 38035137175](https://github.com/ObiVanBanan/BananLoop/actions/runs/38035137175) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 for the reviewed implementation and report refresh.
 - M5 now includes `bananloop trace export`, a read-only and deterministic portable JSONL/JSON/Markdown package with hash manifest, safe allowlisting, redaction, and legacy-schema coverage.
 - E0–E3 evidence and limits are recorded in `plan/issue-33-experiment-evidence.md`; E2 includes bounded paired DEV, separate product-group validation, replay, and exported-patch verification.
 - An existing 56-generation real GPU AnimeDiff smoke is now recorded as partial E4 evidence: it proves the generic campaign path and rejection of a null candidate, not image-quality improvement. The protocol only measures coarse RGB fidelity on neutral geometric cases.
