@@ -13,7 +13,12 @@ import pytest
 from bananloop.bootstrap import BootstrapPairedPlan, BootstrapPlan
 from bananloop import readiness
 from bananloop.contracts import EvaluationResult
-from bananloop.readiness import ReadinessError, _compare_smoke_full, run_bootstrap_readiness
+from bananloop.readiness import (
+    ReadinessError,
+    _compare_smoke_full,
+    _relative_noise_bound,
+    run_bootstrap_readiness,
+)
 
 
 
@@ -169,6 +174,69 @@ def test_readiness_records_aa_noise_bounds_for_every_aggregate_metric(tmp_path: 
     }
     assert receipt["smoke_full_equivalence"]["status"] == "INCONCLUSIVE"
     assert receipt["smoke_full_equivalence"]["comparison_mode"] == "aggregate_contract_only"
+
+
+def test_relative_noise_bound_disables_unstable_near_zero_tolerance():
+    assert _relative_noise_bound(noise=0.2, center=0.1) == 0.0
+    assert _relative_noise_bound(noise=0.2, center=0.0) == 0.0
+    assert _relative_noise_bound(noise=0.2, center=1.0) == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize(
+    ("failure_tier", "completed_before_failure"),
+    [("bootstrap_smoke", 0), ("dev", 3)],
+)
+def test_readiness_persists_failed_smoke_and_full_evaluator_invocations(
+    tmp_path: Path,
+    failure_tier: str,
+    completed_before_failure: int,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    protocol_hash = hashlib.sha256(b"readiness invocation protocol").hexdigest()
+    persisted_receipts: list[dict] = []
+
+    def run_evaluator(**kwargs):
+        invocation = kwargs["on_evaluator_start"]()
+        tier = kwargs["tier"]
+        if tier == ("bootstrap_smoke" if failure_tier == "bootstrap_smoke" else "dev"):
+            kwargs["on_evaluator_finish"](invocation, "FAILED", "evaluator_error")
+            raise readiness.EvaluatorError("forced readiness evaluator failure")
+        kwargs["on_evaluator_finish"](invocation, "COMPLETED", None)
+        result = EvaluationResult.model_validate(
+            {
+                "status": "ok",
+                "metrics": {"quality": {"value": 0.5, "unit": "score", "n": 1}},
+                "checks": {"tests": {"passed": True, "executed": 1, "skipped": 0}},
+                "protocol_sha256": protocol_hash,
+                "cases": [],
+            }
+        )
+        return result, {"replay": {}, "case_count": 0}
+
+    monkeypatch.setattr(readiness, "_run_readiness_command", run_evaluator)
+
+    with pytest.raises(ReadinessError) as exc:
+        run_bootstrap_readiness(
+            plan=plan([sys.executable, "fake-evaluator.py"]),
+            workspace=tmp_path,
+            snapshot=snapshot(tmp_path),
+            state_root=tmp_path / "state",
+            attempt=1,
+            on_receipt_update=lambda receipt: persisted_receipts.append(
+                json.loads(json.dumps(receipt))
+            ),
+        )
+
+    invocations = exc.value.receipt["evaluator_invocations"]
+    assert len(invocations) == completed_before_failure + 1
+    assert [item["status"] for item in invocations[:-1]] == [
+        "COMPLETED"
+    ] * completed_before_failure
+    assert invocations[-1]["status"] == "FAILED"
+    assert invocations[-1]["tier"] == (
+        "bootstrap_smoke" if failure_tier == "bootstrap_smoke" else "bootstrap_full"
+    )
+    assert persisted_receipts[-1]["evaluator_invocations"] == invocations
 
 
 def test_readiness_rejects_smoke_full_metric_drift(tmp_path: Path):
