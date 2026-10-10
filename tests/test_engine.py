@@ -10,12 +10,13 @@ from pathlib import Path
 import pytest
 
 from bananloop.agents.base import AgentAdapter
-from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, EvaluationResult, GuardrailSpec, Hypothesis, MetricSpec, RuntimePaths
+from bananloop.contracts import AgentConfig, AgentRoleOverride, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, EvaluationResult, GuardrailSpec, Hypothesis, MetricSpec, RuntimePaths
 from bananloop.engine import ControlledInterruption, Engine, EngineError, UnknownActionOutcome, _hash_payload
 from bananloop.evaluator_binding import EvaluatorBinding, canonical_hash, make_binding, runtime_descriptor
 from bananloop.integrity import sha256_evaluation_asset
 from bananloop.report import build_report, render_markdown
 from bananloop.store import CampaignStore
+from bananloop.trace_export import build_trace_package
 from bananloop.workspace import WorkspaceError, WorkspaceManager
 
 
@@ -65,7 +66,7 @@ def make_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def make_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str]:
+def make_engine(tmp_path: Path, *, agent_config: AgentConfig | None = None) -> tuple[CampaignStore, Engine, Path, str]:
     repo = make_repo(tmp_path)
     base = git(["rev-parse", "HEAD"], repo)
     paths = RuntimePaths.for_repo(repo, tmp_path / "state")
@@ -81,7 +82,7 @@ def make_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str]:
         editable_scope=["value.txt", "guard.txt"],
         protected_paths=["evaluator.py", "agent.py"],
         budget=BudgetSpec(max_experiments=5, max_attempts=6, max_agent_calls=12, max_evaluator_calls=8, plateau_experiments=3),
-        agent=AgentConfig(kind="command", command=[sys.executable, "agent.py"]),
+        agent=agent_config or AgentConfig(kind="command", command=[sys.executable, "agent.py"]),
     )
     store = CampaignStore(paths.db)
     store.initialize(spec)
@@ -172,6 +173,65 @@ def test_resume_after_durable_stage_does_not_restart_experiment(tmp_path: Path, 
         assert [e["status"] for e in experiments] == ["ACCEPTED", "REJECTED", "ACCEPTED"]
         first_eval = json.loads(experiments[0]["evaluation_json"])
         assert first_eval["metrics"]["quality"]["value"] == 1
+    finally:
+        store.close()
+
+
+def test_role_dispatch_and_launch_receipt_are_stable_across_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    strong = {"model": "strong-model", "reasoning_effort": "high"}
+    roles = {
+        role: AgentRoleOverride(**strong)
+        for role in ("bootstrap", "propose", "analyze")
+    }
+    roles["implement"] = AgentRoleOverride(model="fast-model", reasoning_effort="low")
+    config = AgentConfig(
+        kind="command",
+        command=[sys.executable, "agent.py"],
+        model="fallback-model",
+        reasoning_effort="medium",
+        roles=roles,
+    )
+    store, engine, _, _ = make_engine(tmp_path, agent_config=config)
+    dispatched: list[tuple[str | None, str | None]] = []
+    factory = engine._make_agent_adapter
+
+    def capture_factory(selected: AgentConfig):
+        dispatched.append((selected.model, selected.reasoning_effort))
+        return factory(selected)
+
+    engine._make_agent_adapter = capture_factory
+    try:
+        assert config.for_role("bootstrap").model == "strong-model"
+        assert config.for_role("bootstrap").reasoning_effort == "high"
+        monkeypatch.setenv("BANANLOOP_TEST_STOP_AFTER_STAGE", "VERIFY")
+        with pytest.raises(ControlledInterruption):
+            engine.run()
+        first = next(
+            json.loads(row["payload_json"])
+            for row in store.events()
+            if row["event_type"] == "AGENT_LAUNCH_PROFILE"
+        )
+
+        monkeypatch.delenv("BANANLOOP_TEST_STOP_AFTER_STAGE")
+        assert engine.run(resume=True)["status"] == "GOAL_MET"
+        profiles = [
+            json.loads(row["payload_json"])
+            for row in store.events()
+            if row["event_type"] == "AGENT_LAUNCH_PROFILE"
+        ]
+        assert profiles == [first, first]
+        assert first["roles"]["propose"]["model"] == "strong-model"
+        assert first["roles"]["propose"]["reasoning_effort"] == "high"
+        assert first["roles"]["analyze"]["model"] == "strong-model"
+        assert first["roles"]["implement"]["model"] == "fast-model"
+        assert first["roles"]["implement"]["reasoning_effort"] == "low"
+        assert ("strong-model", "high") in dispatched
+        assert ("fast-model", "low") in dispatched
+        assert ("fallback-model", "medium") not in dispatched
+        role_summary = build_trace_package(store)["summary.json"]["model_roles"]
+        assert role_summary["propose"]["effective_model"] is None
+        assert role_summary["propose"]["effective_model_status"] == "unknown"
+        assert role_summary["implement"]["requested_model"] == "fast-model"
     finally:
         store.close()
 

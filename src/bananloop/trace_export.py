@@ -53,9 +53,32 @@ def _sha(data: bytes) -> str:
 def _safe_model(value: Any) -> str | None:
     if not isinstance(value, str) or not _MODEL_ID.fullmatch(value) or _SENSITIVE.search(value):
         return None
+    if "\\" in value or value.startswith("/") or re.match(r"^[A-Za-z]:[/\\]", value):
+        return None
     if re.search(r"(?:^sk-[A-Za-z0-9_-]{16,}$|^Bearer$|^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}$)", value):
         return None
     return value
+
+
+def _safe_changed_paths(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    safe = []
+    for item in value:
+        if not isinstance(item, str) or not item or len(item) > 240:
+            continue
+        path = item.replace("\\", "/")
+        parts = path.split("/")
+        if (
+            path.startswith("/")
+            or re.match(r"^[A-Za-z]:", path)
+            or any(part in {"", ".", ".."} for part in parts)
+            or _SENSITIVE.search(path)
+            or re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", path)
+        ):
+            continue
+        safe.append(path)
+    return sorted(set(safe))
 
 
 def _safe_action_id(value: str) -> str:
@@ -105,7 +128,7 @@ def _model_roles(store: CampaignStore) -> dict[str, Any]:
         config = spec.agent.for_role(role)
         roles[role] = {
             "kind": config.kind,
-            "provider": config.provider if isinstance(config.provider, str) and _MODEL_ID.fullmatch(config.provider) and not _SENSITIVE.search(config.provider) else None,
+            "provider": _safe_model(config.provider),
             "requested_model": _safe_model(config.model),
             "reasoning_effort": config.reasoning_effort,
             "effective_model": None,
@@ -290,6 +313,7 @@ def _event_records(store: CampaignStore, campaign_id: str) -> list[dict[str, Any
             if isinstance(paths, list) and all(isinstance(path, str) for path in paths):
                 payload["changed_path_count"] = len(paths)
                 payload["changed_paths_sha256"] = _sha("\n".join(sorted(paths)).encode("utf-8"))
+                payload["changed_paths"] = _safe_changed_paths(paths)
             digest = raw.get("diff_sha256")
             if isinstance(digest, str) and _HASH.fullmatch(digest):
                 payload["diff_sha256"] = digest

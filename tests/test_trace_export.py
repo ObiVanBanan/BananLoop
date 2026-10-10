@@ -28,6 +28,10 @@ def test_trace_export_is_deterministic_read_only_and_redacts_untrusted_payloads(
             "label": "PRIVATE_PROMPT_CANARY",
             "reason": "api_key=SECRET_CANARY",
         })
+        store.event("CANDIDATE_SNAPSHOT_RECORDED", {
+            "changed_paths": ["value.txt", "C:/Users/alice/secret.txt", "src/alice@example.com", "../.env"],
+            "diff_sha256": hashlib.sha256(b"fixture-diff").hexdigest(),
+        })
         store.conn.commit()
         before = store.campaign()["updated_at"]
         snapshot = CampaignStore(store.path, readonly=True)
@@ -44,13 +48,19 @@ def test_trace_export_is_deterministic_read_only_and_redacts_untrusted_payloads(
         assert set(first) == {"events.jsonl", "summary.json", "report.md", "manifest.json", "manifest.sha256"}
         assert store.campaign()["updated_at"] == before
         text = b"\n".join(first.values()).decode("utf-8")
-        for secret in ("GOLD_CANARY", "PRIVATE_PROMPT_CANARY", "SECRET_CANARY", "api_key"):
+        for secret in (
+            "GOLD_CANARY", "PRIVATE_PROMPT_CANARY", "SECRET_CANARY", "api_key",
+            "C:/Users/alice", "alice@example.com", "../.env",
+        ):
             assert secret not in text
 
         events = [json.loads(line) for line in first["events.jsonl"].decode().splitlines()]
         assert events
         assert [event["seq"] for event in events] == sorted(event["seq"] for event in events)
         assert all(event["event_id"] and event["campaign_id"] for event in events)
+        snapshot = [event for event in events if event["event_type"] == "CANDIDATE_SNAPSHOT_RECORDED"][-1]
+        assert snapshot["payload"]["changed_paths"] == ["value.txt"]
+        assert snapshot["payload"]["changed_path_count"] == 4
         summary = json.loads(first["summary.json"])
         assert summary["evidence"]["raw_prompts_included"] is False
         manifest = json.loads(first["manifest.json"])
@@ -58,6 +68,13 @@ def test_trace_export_is_deterministic_read_only_and_redacts_untrusted_payloads(
         assert hashlib.sha256(first["manifest.json"]).hexdigest() + "\n" == first["manifest.sha256"].decode()
     finally:
         store.close()
+
+
+def test_trace_export_redacts_host_paths_from_model_and_provider_ids():
+    assert trace_export._safe_model("provider/model-name") == "provider/model-name"
+    assert trace_export._safe_model("C:/Users/alice/private-model") is None
+    assert trace_export._safe_model(r"C:\Users\alice\private-model") is None
+    assert trace_export._safe_model("/home/alice/model") is None
 
 
 def test_trace_export_staging_failure_preserves_prior_complete_package(tmp_path: Path, monkeypatch):
