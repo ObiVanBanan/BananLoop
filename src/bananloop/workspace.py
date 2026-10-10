@@ -199,6 +199,8 @@ class WorkspaceManager:
                     "--full-index",
                     "--no-ext-diff",
                     "--no-textconv",
+                    "--src-prefix=a/",
+                    "--dst-prefix=b/",
                     self._agent_base,
                 ],
                 cwd=agent_workspace,

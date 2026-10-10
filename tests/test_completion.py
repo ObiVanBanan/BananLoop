@@ -443,7 +443,30 @@ def test_agent_commits_and_untracked_changes_are_transferred(tmp_path, monkeypat
         assert (engine.workspace.workspace / "new.txt").exists()
         assert git(["rev-parse", "HEAD"], repo) == base
         assert diff_commands
-        assert all("--no-ext-diff" in argv and "--no-textconv" in argv for argv in diff_commands)
+        assert all(
+            "--no-ext-diff" in argv
+            and "--no-textconv" in argv
+            and "--src-prefix=a/" in argv
+            and "--dst-prefix=b/" in argv
+            for argv in diff_commands
+        )
+    finally:
+        engine.workspace.cleanup_agent_workspace()
+        store.close()
+
+
+def test_agent_patch_transfer_ignores_global_git_noprefix(tmp_path, monkeypatch):
+    store, engine, _, base = make_engine(tmp_path)
+    global_config = tmp_path / "gitconfig"
+    global_config.write_text("[diff]\n\tnoprefix = true\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    try:
+        engine.workspace.ensure(base)
+        isolated = engine.workspace.prepare_agent_workspace(["evaluator.py"])
+        (isolated / "value.txt").write_text("prefix-safe transfer\n", encoding="utf-8")
+        changed = engine.workspace.apply_agent_changes(isolated, ["evaluator.py"])
+        assert changed == ["value.txt"]
+        assert (engine.workspace.workspace / "value.txt").read_text(encoding="utf-8") == "prefix-safe transfer\n"
     finally:
         engine.workspace.cleanup_agent_workspace()
         store.close()
