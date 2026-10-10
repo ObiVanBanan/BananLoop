@@ -464,17 +464,36 @@ def test_agent_patch_transfer_ignores_global_git_noprefix(tmp_path, monkeypatch)
         engine.workspace.ensure(base)
         isolated = engine.workspace.prepare_agent_workspace(["evaluator.py"])
         (isolated / "value.txt").write_text("prefix-safe transfer\n", encoding="utf-8")
+        binary = isolated / "opaque.bin"
+        binary.write_bytes(b"\x00\xFFbinary payload")
         pycache = isolated / "__pycache__"
         pycache.mkdir()
         bytecode = pycache / "slug.cpython-313.pyc"
         bytecode.write_bytes(b"\x00\xFFbinary artifact")
         changed = engine.workspace.apply_agent_changes(isolated, ["evaluator.py"])
-        assert set(changed) == {"value.txt", "__pycache__/slug.cpython-313.pyc"}
+        assert set(changed) == {"value.txt", "opaque.bin"}
         assert (engine.workspace.workspace / "value.txt").read_text(encoding="utf-8") == "prefix-safe transfer\n"
-        assert (engine.workspace.workspace / "__pycache__" / bytecode.name).read_bytes() == bytecode.read_bytes()
+        assert (engine.workspace.workspace / binary.name).read_bytes() == binary.read_bytes()
+        assert not (engine.workspace.workspace / "__pycache__").exists()
     finally:
         engine.workspace.cleanup_agent_workspace()
         store.close()
+
+
+def test_agent_patch_transfer_preserves_baseline_bytecode(tmp_path):
+    cache = tmp_path / "__pycache__"
+    cache.mkdir()
+    tracked = cache / "tracked.pyc"
+    generated = cache / "generated.pyc"
+    tracked.write_bytes(b"baseline bytecode")
+    generated.write_bytes(b"agent runtime artifact")
+
+    workspace_module.WorkspaceManager._remove_untracked_python_bytecode(
+        tmp_path, {"__pycache__/tracked.pyc"}
+    )
+
+    assert tracked.read_bytes() == b"baseline bytecode"
+    assert not generated.exists()
 
 
 def test_agent_patch_apply_process_error_is_reported_as_workspace_error(tmp_path, monkeypatch):

@@ -178,6 +178,15 @@ class WorkspaceManager:
         patch_sha256: str | None = None
         patch_path: Path | None = None
         try:
+            baseline_paths = {
+                line.replace("\\", "/")
+                for line in run_process(
+                    ["git", "ls-tree", "-r", "--name-only", self._agent_base],
+                    cwd=agent_workspace,
+                    timeout=20,
+                ).stdout.splitlines()
+            }
+            self._remove_untracked_python_bytecode(agent_workspace, baseline_paths)
             run_process(["git", "add", "-A"], cwd=agent_workspace, timeout=30)
             changed_out = run_process(
                 ["git", "diff", "--cached", "--name-only", self._agent_base],
@@ -243,6 +252,38 @@ class WorkspaceManager:
                     raise WorkspaceError(
                         "cannot remove temporary candidate patch file"
                     ) from exc
+
+    @staticmethod
+    def _remove_untracked_python_bytecode(
+        agent_workspace: Path, baseline_paths: set[str]
+    ) -> None:
+        """Drop Python bytecode created during agent-side verification.
+
+        Agent sandboxes are disposable and start without their own Git metadata.
+        Running a Python check there can therefore create new ``__pycache__``
+        paths that look like candidate source changes. Remove only bytecode
+        absent from the supervisor-owned baseline; preserve any such files
+        that were already part of the source repository.
+        """
+        root = agent_workspace.resolve()
+        for path in root.rglob("*"):
+            is_cache_dir = path.name == "__pycache__" and path.is_dir() and not path.is_symlink()
+            is_bytecode = path.is_file() and path.suffix.lower() in {".pyc", ".pyo"}
+            if not (is_cache_dir or is_bytecode):
+                continue
+            try:
+                relative = path.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if relative in baseline_paths or any(
+                baseline_path.startswith(relative + "/")
+                for baseline_path in baseline_paths
+            ):
+                continue
+            if is_cache_dir:
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
 
     def cleanup_agent_workspace(self) -> None:
         workspace = self.agent_workspace
