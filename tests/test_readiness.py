@@ -193,6 +193,7 @@ def test_readiness_persists_failed_smoke_and_full_evaluator_invocations(
     monkeypatch: pytest.MonkeyPatch,
 ):
     protocol_hash = hashlib.sha256(b"readiness invocation protocol").hexdigest()
+    init_repo(tmp_path)
     persisted_receipts: list[dict] = []
 
     def run_evaluator(**kwargs):
