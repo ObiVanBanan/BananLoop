@@ -1,7 +1,7 @@
 # Issue #33 review report
 
 Date: 2026-10-10
-Reviewed implementation HEAD: `d504c4f10434965ef6c12dfd960c8dd7a9df6222` on `feat/issue-33-evidence-aware-research`.
+Reviewed implementation HEAD: `469425bfc684694db11c78b55998607e11372343` on `feat/issue-33-evidence-aware-research`.
 PR: [#35](https://github.com/ObiVanBanan/BananLoop/pull/35) (open draft)
 
 ## Result
@@ -13,8 +13,8 @@ The operator reference path now accepts an exact-byte SHA-256-pinned JSON manife
 ## Validation
 
 - Full local `pytest -q` passes on the current worktree using a short Windows temp path; `python -m compileall -q src/bananloop` and `git diff --check` pass.
-- GitHub Actions [run 38035137175](https://github.com/ObiVanBanan/BananLoop/actions/runs/38035137175) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 for the reviewed implementation and report refresh.
-- M5 now includes `bananloop trace export`, a read-only and deterministic portable JSONL/JSON/Markdown package with hash manifest, safe allowlisting, redaction, and legacy-schema coverage.
+- GitHub Actions [run 38035653436](https://github.com/ObiVanBanan/BananLoop/actions/runs/38035653436) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 on the preceding implementation; CI for `469425bfc684694db11c78b55998607e11372343` will run after publication.
+- M5 includes `bananloop trace export`, a read-only and deterministic portable JSONL/JSON/Markdown package with hash manifest, safe allowlisting, redaction, legacy-schema coverage, and refusal to overwrite exports containing extra files or malformed manifests. A role-dispatch fixture verifies strong/high and fast/low selection, identical launch receipts after resume, and unknown effective model reporting.
 - E0–E3 evidence and limits are recorded in `plan/issue-33-experiment-evidence.md`; E2 includes bounded paired DEV, separate product-group validation, replay, and exported-patch verification.
 - An existing 56-generation real GPU AnimeDiff smoke is now recorded as partial E4 evidence: it proves the generic campaign path and rejection of a null candidate, not image-quality improvement. The protocol only measures coarse RGB fidelity on neutral geometric cases.
 
