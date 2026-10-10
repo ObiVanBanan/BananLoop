@@ -176,6 +176,7 @@ class WorkspaceManager:
             raise WorkspaceError("agent workspace has no supervisor-owned baseline")
         changed: list[str] = []
         patch_sha256: str | None = None
+        patch_path: Path | None = None
         try:
             run_process(["git", "add", "-A"], cwd=agent_workspace, timeout=30)
             changed_out = run_process(
@@ -208,14 +209,22 @@ class WorkspaceManager:
             ).stdout
             if patch:
                 patch_sha256 = hashlib.sha256(patch.encode("utf-8")).hexdigest()
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    prefix=".bananloop-agent-patch-",
+                    suffix=".diff",
+                    dir=agent_workspace,
+                    delete=False,
+                ) as patch_file:
+                    patch_path = Path(patch_file.name)
+                    patch_file.write(patch.encode("utf-8"))
                 run_process(
-                    ["git", "apply", "--whitespace=nowarn", "-"],
+                    ["git", "apply", "--binary", "--whitespace=nowarn", str(patch_path)],
                     cwd=self.workspace,
                     timeout=60,
-                    input_text=patch,
                 )
             return changed
-        except ProcessError as exc:
+        except (ProcessError, OSError) as exc:
             details = []
             if changed:
                 paths = ",".join(path[:160] for path in changed[:10])
@@ -226,6 +235,14 @@ class WorkspaceManager:
             raise WorkspaceError(
                 f"candidate change transfer from agent workspace failed{suffix}: {exc}"
             ) from exc
+        finally:
+            if patch_path is not None:
+                try:
+                    patch_path.unlink(missing_ok=True)
+                except OSError as exc:
+                    raise WorkspaceError(
+                        "cannot remove temporary candidate patch file"
+                    ) from exc
 
     def cleanup_agent_workspace(self) -> None:
         workspace = self.agent_workspace

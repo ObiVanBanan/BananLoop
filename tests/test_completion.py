@@ -464,9 +464,14 @@ def test_agent_patch_transfer_ignores_global_git_noprefix(tmp_path, monkeypatch)
         engine.workspace.ensure(base)
         isolated = engine.workspace.prepare_agent_workspace(["evaluator.py"])
         (isolated / "value.txt").write_text("prefix-safe transfer\n", encoding="utf-8")
+        pycache = isolated / "__pycache__"
+        pycache.mkdir()
+        bytecode = pycache / "slug.cpython-313.pyc"
+        bytecode.write_bytes(b"\x00\xFFbinary artifact")
         changed = engine.workspace.apply_agent_changes(isolated, ["evaluator.py"])
-        assert changed == ["value.txt"]
+        assert set(changed) == {"value.txt", "__pycache__/slug.cpython-313.pyc"}
         assert (engine.workspace.workspace / "value.txt").read_text(encoding="utf-8") == "prefix-safe transfer\n"
+        assert (engine.workspace.workspace / "__pycache__" / bytecode.name).read_bytes() == bytecode.read_bytes()
     finally:
         engine.workspace.cleanup_agent_workspace()
         store.close()
