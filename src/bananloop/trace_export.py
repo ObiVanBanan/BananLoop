@@ -602,8 +602,22 @@ def _verify_existing_export(output: Path) -> None:
         raise StoreError("refusing to replace an unrecognized or modified trace export")
     payload = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
     files = manifest.get("files") if isinstance(manifest, dict) else None
-    if manifest.get("format") != FORMAT or _sha(payload) != manifest_hash or not isinstance(files, dict):
+    expected_files = {"events.jsonl", "summary.json", "report.md"}
+    expected_entries = expected_files | {"manifest.json", "manifest.sha256"}
+    if (
+        manifest.get("schema_version") != 1
+        or manifest.get("format") != FORMAT
+        or _sha(payload) != manifest_hash
+        or not isinstance(files, dict)
+        or set(files) != expected_files
+    ):
         raise StoreError("refusing to replace an unrecognized or modified trace export")
+    try:
+        actual_entries = {entry.name for entry in output.iterdir()}
+    except OSError as exc:
+        raise StoreError("refusing to replace an unreadable trace export") from exc
+    if actual_entries != expected_entries:
+        raise StoreError("refusing to replace a trace export with missing or extra files")
     for name, metadata in files.items():
         if name not in {"events.jsonl", "summary.json", "report.md"} or not isinstance(metadata, dict):
             raise StoreError("refusing to replace a modified trace export manifest")
@@ -667,7 +681,7 @@ def export_trace(store: CampaignStore, output: Path, source_repo: Path) -> Path:
             output.replace(backup)
         stage.replace(output)
         if backup is not None:
-            shutil.rmtree(backup)
+            shutil.rmtree(backup, ignore_errors=True)
         return output
     except BaseException:
         if backup is not None and backup.exists() and not output.exists():

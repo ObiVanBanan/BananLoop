@@ -86,6 +86,44 @@ def test_trace_export_staging_failure_preserves_prior_complete_package(tmp_path:
         store.close()
 
 
+def test_trace_export_refuses_to_replace_package_with_extra_files(tmp_path: Path):
+    store, _, _, _ = make_engine(tmp_path)
+    output = tmp_path / "share" / "trace"
+    try:
+        export_trace(store, output, Path(store.spec().source_repo))
+        original = _package_bytes(output)
+        extra = output / "operator-notes.txt"
+        extra.write_text("preserve this", encoding="utf-8")
+
+        with pytest.raises(StoreError, match="missing or extra files"):
+            export_trace(store, output, Path(store.spec().source_repo))
+
+        assert _package_bytes(output) == {**original, extra.name: b"preserve this"}
+    finally:
+        store.close()
+
+
+def test_trace_export_rejects_self_hashed_manifest_with_missing_entries(tmp_path: Path):
+    store, _, _, _ = make_engine(tmp_path)
+    output = tmp_path / "share" / "trace"
+    output.mkdir(parents=True)
+    manifest_bytes = json.dumps(
+        {"schema_version": 1, "format": trace_export.FORMAT, "files": {}},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8") + b"\n"
+    (output / "manifest.json").write_bytes(manifest_bytes)
+    (output / "manifest.sha256").write_text(
+        hashlib.sha256(manifest_bytes).hexdigest() + "\n", encoding="ascii"
+    )
+    try:
+        with pytest.raises(StoreError, match="unrecognized or modified"):
+            export_trace(store, output, Path(store.spec().source_repo))
+        assert {item.name for item in output.iterdir()} == {"manifest.json", "manifest.sha256"}
+    finally:
+        store.close()
+
+
 def test_trace_export_reads_legacy_schema_without_migrating_campaign_db(tmp_path: Path):
     store, engine, _, _ = make_engine(tmp_path)
     output = tmp_path / "legacy-share" / "trace"
