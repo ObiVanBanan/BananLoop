@@ -22,6 +22,15 @@ This is a **diagnostic, one-trial-per-arm implement-role pilot**, not a successf
 
 An M5 implementation audit found that a deterministic `command` backend could be configured with model/provider/reasoning metadata that its argv never applied, while the launch receipt still reported that metadata. `AgentConfig` now rejects such unapplied settings for command backends and command role overrides. The role-dispatch regression now runs the actual Codex adapter selection and `_argv()` builder for strong/high and fast/low roles, while delegating task execution to the local deterministic fixture; it checks the constructed per-role model and reasoning arguments, receipt stability across resume, and unknown effective-model reporting. This verifies dispatch wiring without spending additional model calls; it is not the outstanding multi-seed model A/B.
 
+## Bounded M5 A/B follow-up (2026-10-10)
+
+The operator raised the total authorized Pi action cap from 4 to 12. After the original four-action diagnostic pilot, two more paired-profile campaign attempts consumed four actions (8/12 total); the remaining four were not spent after the same candidate-transfer infrastructure failure reproduced in both arms. These runs reused source commit `83c5f38357a28d6f211d2d27b1fbdb2a9fe0b498`, evaluator fingerprint `a43ecc51d0803ca09a5800b182c00ca15dba4e4370c072c3eadb9c8a31c57237`, protocol SHA-256 `e876d39cb2f20f91305aa7e1edb09cd18c696d8272e29db3190e305eef36b339`, identical one-attempt budgets, and the same repeated-space DEV case (baseline 0/1).
+
+- **A1 strong/high:** proposer and implementer returned, for two recorded agent actions. Before transfer-error handling was fixed, `git apply` rejected the generated patch (`git diff header lacks filename information`, line 4); no candidate or scientific experiment was recorded. The action is durably `FAILED`, and that early code left the campaign `RUNNING` at `EXECUTE` instead of pausing it.
+- **B1 strong/high proposal + fast/low implementation:** same transfer error after two agent actions. With the follow-up fix, the campaign now ends `PAUSED_INFRA`; `CANDIDATE_NOT_MATERIALIZED` and `CANDIDATE_TRANSFER_FAILED` are recorded, the champion remains the baseline, and scientific experiment count stays zero.
+
+The matching failure across profiles makes this A/B **inconclusive**: it measures the Windows candidate-transfer boundary, not validated model quality or model-role benefit. The four remaining actions were held back until the generated-patch/Windows-transfer cause can be captured and repaired. No AnimeDiff assets or runtime were accessed.
+
 ## Remaining acceptance gaps
 
 - M1 now has an opt-in core-verifiable operator reference manifest/hash contract. The vertical bootstrap test verifies pinned input identities and values, durable manifest/readiness/verification receipts, report linkage, and trust downgrade after receipt tampering. No real campaign has yet supplied an operator-approved manifest, so E1–E3 remain `UNVERIFIED`; a constructed test manifest is not product evidence.
