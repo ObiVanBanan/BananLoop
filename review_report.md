@@ -1,7 +1,7 @@
 # Issue #33 review report
 
 Date: 2026-10-10
-Reviewed implementation HEAD: `47f04f1f522c35d0ed51c4d0854583923bb4c72d` on `feat/issue-33-evidence-aware-research`.
+Reviewed implementation: Pi/runtime follow-ups are on `codex/issue33-review-fixes`; the CI run listed below predates these follow-ups.
 PR: [#35](https://github.com/ObiVanBanan/BananLoop/pull/35) (open draft)
 
 ## Result
@@ -12,7 +12,8 @@ The operator reference path now accepts an exact-byte SHA-256-pinned JSON manife
 
 ## Validation
 
-- The four focused replay/readiness regression tests pass locally. `compileall` and `git diff --check` pass. A local attempt at engine/report integration tests cannot start Git Bash child processes in this sandbox (`NtCreateDirectoryObject` permission failure during `git clone`); the same full suite is covered by CI.
+- The full local Windows `pytest tests` suite passes when run from a short dedicated `%TEMP%` basetemp. The worktree's long nested basetemp hit Windows `Filename too long` in two Git-clone integration tests; both passed when re-run with the short temp path. The targeted Pi/evaluator regressions also pass.
+- Current-head evaluator commands resolve to the same absolute executable recorded in runtime receipts before spawning, with a regression proving the effective child interpreter matches its fingerprint. Pi shutdown now tolerates a closed stderr pipe, and string-list verification notes normalize to the protocol's newline-delimited string form.
 - GitHub Actions [run 38039245343](https://github.com/ObiVanBanan/BananLoop/actions/runs/38039245343) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 at `47f04f1`. The preceding [run 38039112619](https://github.com/ObiVanBanan/BananLoop/actions/runs/38039112619) at `498e1ce` exposed a test-fixture initialization error (258 passed, two failed); the fixture was fixed and the complete matrix passed on the next commit. The earlier full matrix [run 38038341831](https://github.com/ObiVanBanan/BananLoop/actions/runs/38038341831) also passed at `4ea8155`.
 - M5 includes `bananloop trace export`, a read-only and deterministic portable JSONL/JSON/Markdown package with hash manifest, safe allowlisting, redaction, legacy-schema and campaign-state coverage, and refusal to overwrite exports containing extra files or malformed manifests. The summary includes metric deltas, budgets, and path-free evaluator/runtime fingerprints. Role-dispatch tests verify strong/high and fast/low selection, identical launch receipts after resume, unknown effective model reporting, and bootstrap metadata projection without raw prompts.
 - E0–E3 evidence and limits are recorded in `plan/issue-33-experiment-evidence.md`; E2 includes bounded paired DEV, separate product-group validation, replay, and exported-patch verification.
@@ -24,11 +25,13 @@ The operator reference path now accepts an exact-byte SHA-256-pinned JSON manife
 - Scientific outcome uses `scientific_assessment`, so a `GOAL_MET` technical result with only DEV-tier independent evidence and an unverified holdout is reported as `UNVERIFIED_EVIDENCE`, not scientific `GOAL_MET`.
 - Readiness evaluator attempts have durable per-invocation status records. Report accounting counts attempts and separates completed, failed, and unknown calls; regression coverage includes failures in smoke and full preflight.
 - Portable trace export has a large-history regression with 1,000 durable attempts, monotonically ordered sequences, unique event identities, and byte-identical repeat export.
+- A four-call, one-trial-per-arm Pi role-profile pilot is recorded in `plan/issue-33-experiment-evidence.md`. It surfaced the Windows executable-resolution mismatch: replay under the corrected launcher detects the historical `0.0 → 1.0` result drift. The pilot is diagnostic only, not a validated model A/B.
 
 ## Remaining acceptance gaps
 
 - No real operator-approved reference manifest has been supplied for E1–E3. The test manifest verifies the mechanics only and does not upgrade those campaigns' trust.
 - E2 still lacks human-reject labels and continues to have poor generic no-match behavior; its negatives are constructed controls.
 - E3 is a single synthetic CPU workload on one runtime, not broad performance generalization.
+- M5 still needs multiple seeds/repeats and complete role execution for a meaningful model A/B; the operator-authorized four Pi actions have been consumed.
 - E4 has a historical real GPU run, but no current-head rerun or semantic/prompt-adherence/safety/human-review evidence. Per operator direction, AnimeDiff is currently in use and was not touched for this implementation.
 - The issue requires actual domain campaigns and independent evidence. This report does not claim full DoD completion; issue #33 and PR #35 remain open, and PR #35 remains draft.

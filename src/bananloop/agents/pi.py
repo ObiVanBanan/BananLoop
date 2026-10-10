@@ -308,16 +308,28 @@ class PiAdapter(AgentAdapter):
                 "no blocker",
             }:
                 normalized["blockers"] = []
+            verification_notes = normalized.get("verification_notes")
             if normalized.get("verification_notes") is None:
                 normalized["verification_notes"] = ""
+            elif isinstance(verification_notes, list) and all(
+                isinstance(note, str) for note in verification_notes
+            ):
+                normalized["verification_notes"] = "\n".join(verification_notes)
         return normalized
 
     @staticmethod
     def _stderr_reader(stream, sink: list[str]) -> None:
-        for line in iter(stream.readline, ""):
-            sink.append(line.rstrip())
-            if len(sink) > 100:
-                del sink[:-100]
+        try:
+            for line in iter(stream.readline, ""):
+                sink.append(line.rstrip())
+                if len(sink) > 100:
+                    del sink[:-100]
+        except (OSError, ValueError):
+            # Process teardown may close stderr while this daemon reader is
+            # blocked in readline(). The child has already been reaped, so the
+            # remaining diagnostics are unavailable and must not escape on the
+            # background thread.
+            return
 
     @staticmethod
     def _send(proc: subprocess.Popen[str], payload: dict[str, Any]) -> None:
