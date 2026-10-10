@@ -116,6 +116,37 @@ def test_trace_export_supports_active_paused_stopped_and_completed_statuses(tmp_
         store.close()
 
 
+def test_trace_export_scales_to_a_large_durable_attempt_history(tmp_path: Path):
+    store, _, _, base = make_engine(tmp_path)
+    output = tmp_path / "share" / "large-trace"
+    attempt_count = 1000
+    try:
+        for _ in range(attempt_count):
+            store.create_attempt(base)
+
+        export_trace(store, output, Path(store.spec().source_repo))
+        first = _package_bytes(output)
+        export_trace(store, output, Path(store.spec().source_repo))
+        second = _package_bytes(output)
+
+        events = [
+            json.loads(line)
+            for line in first["events.jsonl"].decode("utf-8").splitlines()
+        ]
+        attempts = [event for event in events if event["event_type"] == "ATTEMPT_STARTED"]
+        sequences = [event["seq"] for event in events]
+        assert len(attempts) == attempt_count
+        assert [event["payload"]["experiment_id"] for event in attempts] == sorted(
+            event["payload"]["experiment_id"] for event in attempts
+        )
+        assert sequences == sorted(sequences)
+        assert events[-1]["event_type"] == "EXPORT"
+        assert len({event["event_id"] for event in events}) == len(events)
+        assert first == second
+    finally:
+        store.close()
+
+
 def test_trace_export_staging_failure_preserves_prior_complete_package(tmp_path: Path, monkeypatch):
     store, engine, _, _ = make_engine(tmp_path)
     output = tmp_path / "share" / "trace"

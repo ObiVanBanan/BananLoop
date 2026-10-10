@@ -23,6 +23,7 @@ The operator reference path now accepts an exact-byte SHA-256-pinned JSON manife
 - Replay relative tolerance is anchored to the frozen/original metric, and readiness disables relative tolerance when the measured center is zero or within the absolute A/A noise range. Regressions exercise extreme drift from both ordinary and near-zero baselines; smoke/full metric drift also has a failing-readiness test.
 - Scientific outcome uses `scientific_assessment`, so a `GOAL_MET` technical result with only DEV-tier independent evidence and an unverified holdout is reported as `UNVERIFIED_EVIDENCE`, not scientific `GOAL_MET`.
 - Readiness evaluator attempts have durable per-invocation status records. Report accounting counts attempts and separates completed, failed, and unknown calls; regression coverage includes failures in smoke and full preflight.
+- Portable trace export has a large-history regression with 1,000 durable attempts, monotonically ordered sequences, unique event identities, and byte-identical repeat export.
 
 ## Remaining acceptance gaps
 
