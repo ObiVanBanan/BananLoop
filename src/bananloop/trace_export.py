@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import EvaluationResult
-from .evaluator_binding import EvaluationReceipt, canonical_hash
+from .evaluator_binding import EvaluationReceipt, EvaluatorBinding, canonical_hash
 from .policy import target_met
 from .store import CampaignStore, StoreError
 
@@ -134,6 +134,24 @@ def _model_roles(store: CampaignStore) -> dict[str, Any]:
             "effective_model": None,
             "effective_model_status": "unknown",
         }
+    bootstrap_path = store.path.parent / "bootstrap-plan.json"
+    try:
+        record = json.loads(bootstrap_path.read_text(encoding="utf-8"))
+        if not isinstance(record, dict):
+            raise ValueError("invalid bootstrap receipt")
+        claimed = record.pop("bootstrap_receipt_sha256")
+        profile = record.get("agent_launch_profile")
+        if (
+            claimed == canonical_hash(record)
+            and isinstance(profile, dict)
+            and profile.get("role") == "bootstrap"
+        ):
+            version = profile.get("cli_version")
+            if isinstance(version, str) and len(version) <= 80 and not _SENSITIVE.search(version):
+                roles["bootstrap"]["cli_version"] = version
+            roles["bootstrap"]["launch_profile_recorded"] = True
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
     for event in _safe_events(store):
         if event["event_type"] != "AGENT_LAUNCH_PROFILE":
             continue
@@ -207,6 +225,58 @@ def _binding_hash(store: CampaignStore) -> str | None:
         return None
     digest = value.get("binding_hash") if value else None
     return digest if isinstance(digest, str) and _HASH.fullmatch(digest) else None
+
+
+def _evaluator_projection(store: CampaignStore) -> dict[str, Any]:
+    empty = {
+        "binding_sha256": None,
+        "protocol_sha256": None,
+        "evaluation_assets_sha256": None,
+        "runtime_fingerprint_sha256": None,
+        "runner": None,
+    }
+    if not _table_exists(store, "evaluator_bindings"):
+        return empty
+    try:
+        row = store.evaluator_binding()
+        if not row:
+            return empty
+        binding = EvaluatorBinding.model_validate_json(row["binding_json"])
+        binding_hash = canonical_hash(binding.model_dump(mode="json"))
+        if binding_hash != row.get("binding_hash") or binding.binding_id != row.get("binding_id"):
+            return empty
+        runtime = binding.runtime
+        return {
+            "binding_sha256": binding_hash,
+            "protocol_sha256": binding.protocol_hash,
+            "evaluation_assets_sha256": binding.evaluation_fingerprint,
+            "runtime_fingerprint_sha256": binding.runtime_fingerprint,
+            "runner": {
+                "python_version": runtime.get("python_version") if isinstance(runtime.get("python_version"), str) else None,
+                "python_implementation": runtime.get("python_implementation") if isinstance(runtime.get("python_implementation"), str) else None,
+                "os": runtime.get("os") if isinstance(runtime.get("os"), str) else None,
+                "architecture": runtime.get("architecture") if isinstance(runtime.get("architecture"), str) else None,
+            },
+        }
+    except (KeyError, TypeError, ValueError):
+        return empty
+
+
+def _metric_deltas(baseline: dict[str, Any], champion: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    deltas: dict[str, dict[str, Any]] = {}
+    for name in sorted(set(baseline) & set(champion)):
+        before = baseline[name]
+        after = champion[name]
+        if before.get("unit") != after.get("unit"):
+            continue
+        deltas[name] = {
+            "value": after["value"] - before["value"],
+            "unit": after["unit"],
+            "n": after["n"] if after["n"] == before["n"] else None,
+            "baseline_n": before["n"],
+            "champion_n": after["n"],
+        }
+    return deltas
 
 
 def _reference_integrity(store: CampaignStore, spec: Any) -> bool:
@@ -538,6 +608,23 @@ def build_trace_package(store: CampaignStore) -> dict[str, Any]:
         })
     roles = _model_roles(store)
     resources = _resource_projection(store, campaign)
+    evaluator = _evaluator_projection(store)
+    try:
+        baseline_metrics = _safe_metrics(json.loads(campaign["baseline_json"]).get("metrics", {}) if campaign.get("baseline_json") else {})
+        champion_metrics = _safe_metrics(json.loads(campaign["champion_json"]).get("metrics", {}) if campaign.get("champion_json") else {})
+    except (TypeError, ValueError):
+        baseline_metrics = {}
+        champion_metrics = {}
+    budgets = {
+        "max_experiments": spec.budget.max_experiments,
+        "max_attempts": spec.budget.max_attempts,
+        "max_agent_calls": spec.budget.max_agent_calls,
+        "max_evaluator_calls": spec.budget.max_evaluator_calls,
+        "max_evaluation_units": spec.budget.max_evaluation_units,
+        "evaluation_units_per_call": spec.budget.evaluation_units_per_call,
+        "deadline_seconds": spec.budget.deadline_seconds,
+        "plateau_experiments": spec.budget.plateau_experiments,
+    }
     metric_name = spec.primary_metric.name
     safe_metric_name = metric_name if _METRIC.fullmatch(metric_name) and not _SENSITIVE.search(metric_name) else "primary_metric"
     summary = {
@@ -562,13 +649,16 @@ def build_trace_package(store: CampaignStore) -> dict[str, Any]:
             tier: "INDEPENDENTLY_VALIDATED" if tier in independently_validated else trust_level
             for tier in ("dev", "validation", "holdout")
         },
-        "baseline_metrics": _safe_metrics(json.loads(campaign["baseline_json"]).get("metrics", {}) if campaign.get("baseline_json") else {}),
-        "champion_metrics": _safe_metrics(json.loads(campaign["champion_json"]).get("metrics", {}) if campaign.get("champion_json") else {}),
+        "baseline_metrics": baseline_metrics,
+        "champion_metrics": champion_metrics,
+        "metric_deltas": _metric_deltas(baseline_metrics, champion_metrics),
         "evaluations": evaluations,
+        "evaluator": evaluator,
+        "budgets": budgets,
         "model_roles": roles,
         "resources": resources,
         "evidence": {
-            "evaluator_binding_sha256": _binding_hash(store),
+            "evaluator_binding_sha256": evaluator["binding_sha256"] or _binding_hash(store),
             "receipt_sha256s": sorted(row["receipt_hash"] for row in receipts),
             "raw_prompts_included": False,
             "case_level_validation_or_holdout_included": False,
@@ -587,6 +677,7 @@ def build_trace_package(store: CampaignStore) -> dict[str, Any]:
 
 def _render_summary(summary: dict[str, Any]) -> str:
     resources = summary["resources"]
+    evaluator = summary["evaluator"]
     lines = [
         "# BananLoop campaign trace",
         "",
@@ -597,6 +688,9 @@ def _render_summary(summary: dict[str, Any]) -> str:
         f"- Source commit: `{summary['source_base_commit']}`; champion: `{summary['champion_commit'] or 'unknown'}`",
         f"- Baseline metrics: `{json.dumps(summary['baseline_metrics'], sort_keys=True)}`",
         f"- Champion metrics: `{json.dumps(summary['champion_metrics'], sort_keys=True)}`",
+        f"- Metric deltas (champion - baseline): `{json.dumps(summary['metric_deltas'], sort_keys=True)}`",
+        f"- Evaluator protocol: `{evaluator['protocol_sha256'] or 'unknown'}`; runtime fingerprint: `{evaluator['runtime_fingerprint_sha256'] or 'unknown'}`",
+        f"- Budget limits: `{json.dumps(summary['budgets'], sort_keys=True)}`",
         f"- Calls: {resources['agent_calls']} agent, {resources['evaluator_calls']} evaluator; {resources['attempts']} attempts, {resources['scientific_trials']} scientific trials",
         f"- Evaluation units: {resources['evaluation_units_reported']}; cost: unknown without metering",
         "- Raw prompts, local paths, per-case validation/holdout data, and raw artifacts are not included.",

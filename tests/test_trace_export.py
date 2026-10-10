@@ -18,7 +18,7 @@ def _package_bytes(path: Path) -> dict[str, bytes]:
 
 
 def test_trace_export_is_deterministic_read_only_and_redacts_untrusted_payloads(tmp_path: Path):
-    store, engine, _, _ = make_engine(tmp_path)
+    store, engine, repo, _ = make_engine(tmp_path)
     output = tmp_path / "share" / "trace"
     try:
         engine.run()
@@ -29,9 +29,20 @@ def test_trace_export_is_deterministic_read_only_and_redacts_untrusted_payloads(
             "reason": "api_key=SECRET_CANARY",
         })
         store.event("CANDIDATE_SNAPSHOT_RECORDED", {
-            "changed_paths": ["value.txt", "C:/Users/alice/secret.txt", "src/alice@example.com", "../.env"],
+            "changed_paths": ["value.txt", "docs/说明.md", "C:/Users/alice/secret.txt", "src/alice@example.com", "../.env"],
             "diff_sha256": hashlib.sha256(b"fixture-diff").hexdigest(),
         })
+        bootstrap_record = {
+            "agent_launch_profile": {
+                "role": "bootstrap", "kind": "codex", "model": "strong-model",
+                "provider": None, "reasoning_effort": "high", "cli_version": "Codex 1.0",
+            },
+            "bootstrap_attempts": [{"request": {"goal": "BOOTSTRAP_PROMPT_CANARY"}}],
+        }
+        bootstrap_record["bootstrap_receipt_sha256"] = trace_export.canonical_hash(bootstrap_record)
+        (store.path.parent / "bootstrap-plan.json").write_text(
+            json.dumps(bootstrap_record), encoding="utf-8"
+        )
         store.conn.commit()
         before = store.campaign()["updated_at"]
         snapshot = CampaignStore(store.path, readonly=True)
@@ -50,19 +61,34 @@ def test_trace_export_is_deterministic_read_only_and_redacts_untrusted_payloads(
         text = b"\n".join(first.values()).decode("utf-8")
         for secret in (
             "GOLD_CANARY", "PRIVATE_PROMPT_CANARY", "SECRET_CANARY", "api_key",
-            "C:/Users/alice", "alice@example.com", "../.env",
+            "C:/Users/alice", "alice@example.com", "../.env", "BOOTSTRAP_PROMPT_CANARY",
         ):
             assert secret not in text
+        assert "docs/说明.md" in text
 
         events = [json.loads(line) for line in first["events.jsonl"].decode().splitlines()]
         assert events
         assert [event["seq"] for event in events] == sorted(event["seq"] for event in events)
         assert all(event["event_id"] and event["campaign_id"] for event in events)
         snapshot = [event for event in events if event["event_type"] == "CANDIDATE_SNAPSHOT_RECORDED"][-1]
-        assert snapshot["payload"]["changed_paths"] == ["value.txt"]
-        assert snapshot["payload"]["changed_path_count"] == 4
+        assert snapshot["payload"]["changed_paths"] == ["docs/说明.md", "value.txt"]
+        assert snapshot["payload"]["changed_path_count"] == 5
         summary = json.loads(first["summary.json"])
         assert summary["evidence"]["raw_prompts_included"] is False
+        assert summary["metric_deltas"]["quality"]["value"] == 3.0
+        assert summary["metric_deltas"]["quality"]["baseline_n"] is None
+        assert summary["metric_deltas"]["quality"]["champion_n"] is None
+        assert summary["budgets"]["max_agent_calls"] == 12
+        assert summary["evaluator"]["runtime_fingerprint_sha256"]
+        assert summary["evaluator"]["runner"]["python_version"]
+        assert "python_executable" not in json.dumps(summary["evaluator"])
+        assert summary["model_roles"]["bootstrap"]["launch_profile_recorded"] is True
+        assert summary["model_roles"]["bootstrap"]["cli_version"] == "Codex 1.0"
+        assert str(repo) not in text
+        report = first["report.md"].decode("utf-8")
+        assert "Metric deltas (champion - baseline)" in report
+        assert "runtime fingerprint" in report
+        assert "Budget limits" in report
         manifest = json.loads(first["manifest.json"])
         assert all(hashlib.sha256(first[name]).hexdigest() == entry["sha256"] for name, entry in manifest["files"].items())
         assert hashlib.sha256(first["manifest.json"]).hexdigest() + "\n" == first["manifest.sha256"].decode()
@@ -75,6 +101,19 @@ def test_trace_export_redacts_host_paths_from_model_and_provider_ids():
     assert trace_export._safe_model("C:/Users/alice/private-model") is None
     assert trace_export._safe_model(r"C:\Users\alice\private-model") is None
     assert trace_export._safe_model("/home/alice/model") is None
+
+
+def test_trace_export_supports_active_paused_stopped_and_completed_statuses(tmp_path: Path):
+    store, _, _, _ = make_engine(tmp_path)
+    output = tmp_path / "share" / "trace"
+    try:
+        for status in ("RUNNING", "PAUSED_INFRA", "PAUSED_NEEDS_INPUT", "STOPPED", "GOAL_MET"):
+            store.update_campaign(status=status)
+            export_trace(store, output, Path(store.spec().source_repo))
+            summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
+            assert summary["campaign_outcome"] == status
+    finally:
+        store.close()
 
 
 def test_trace_export_staging_failure_preserves_prior_complete_package(tmp_path: Path, monkeypatch):
