@@ -15,6 +15,7 @@ from .contracts import (
     BudgetSpec,
     CampaignSpec,
     EvaluationEvidence,
+    EvaluationResult,
     GuardrailSpec,
     MetricSpec,
     NonRegressionSpec,
@@ -24,6 +25,7 @@ from .contracts import (
 from .evaluator_binding import canonical_hash, runtime_descriptor
 from .integrity import discover_evaluation_assets, sha256_evaluation_asset
 from .readiness import ReadinessError, run_bootstrap_readiness
+from .reference_evidence import parse_reference_manifest, verify_reference_results
 from .store import CampaignStore, StoreError
 from .wizard import discover_project
 from .workspace import WorkspaceManager, current_commit
@@ -273,6 +275,9 @@ def bootstrap_campaign(
     max_evaluator_calls: int = 16,
     deadline_seconds: int = 14400,
     plateau_experiments: int = 3,
+    reference_manifest_path: Path | None = None,
+    reference_manifest_sha256: str | None = None,
+    reference_approved_by: str | None = None,
 ) -> tuple[BootstrapPlan, CampaignSpec | None]:
     """Turn repo + goal into an approved CampaignSpec without touching source checkout."""
 
@@ -280,6 +285,17 @@ def bootstrap_campaign(
         raise StoreError(
             "campaign state already exists; use run/resume or choose a fresh --state-dir"
         )
+    reference_receipt = None
+    if any((reference_manifest_path, reference_manifest_sha256, reference_approved_by)):
+        if not all((reference_manifest_path, reference_manifest_sha256, reference_approved_by)):
+            raise BootstrapError("reference manifest, pinned SHA-256, and approver must be supplied together")
+        if reference_manifest_path.is_symlink():
+            raise BootstrapError("operator reference manifest must be a regular non-symlink file")
+        source = reference_manifest_path.resolve(strict=True)
+        if not source.is_file():
+            raise BootstrapError("operator reference manifest must be a regular non-symlink file")
+        raw_manifest = source.read_bytes()
+        manifest = parse_reference_manifest(raw_manifest, reference_manifest_sha256)
 
     paths.ensure()
     source_base = current_commit(repo)
@@ -317,10 +333,12 @@ def bootstrap_campaign(
             "plan": plan.model_dump(mode="json") if plan is not None else None,
         }
         record["bootstrap_receipt_sha256"] = canonical_hash(record)
-        (paths.root / "bootstrap-plan.json").write_text(
-            json.dumps(record, indent=2, ensure_ascii=False),
-            encoding="utf-8",
+        record_path = paths.root / "bootstrap-plan.json"
+        temporary = record_path.with_suffix(record_path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+        temporary.replace(record_path)
 
     for attempt_index in range(3):
         call_started = time.perf_counter()
@@ -437,12 +455,21 @@ def bootstrap_campaign(
 
         try:
             readiness_started = time.perf_counter()
+
+            def persist_readiness(receipt: dict[str, Any]) -> None:
+                attempt_record["readiness"] = receipt
+                attempt_record["readiness_duration_ms"] = round(
+                    (time.perf_counter() - readiness_started) * 1000.0, 3
+                )
+                persist_record()
+
             readiness = run_bootstrap_readiness(
                 plan=plan,
                 workspace=workspace.workspace,
                 snapshot=bootstrap_snapshot,
                 state_root=paths.root,
                 attempt=attempt_index + 1,
+                on_receipt_update=persist_readiness,
             )
             readiness["duration_ms"] = round((time.perf_counter() - readiness_started) * 1000.0, 3)
             attempt_record["readiness_duration_ms"] = readiness["duration_ms"]
@@ -488,11 +515,43 @@ def bootstrap_campaign(
     assert plan is not None
     signal_receipt = readiness.get("signal_sanity", {})
     readiness_payload = dict(readiness)
+    if reference_manifest_path is not None:
+        full_info = readiness.get("full_evaluation", {}).get("replay", {})
+        def load_result(info: dict[str, Any]) -> EvaluationResult:
+            result_path = (paths.root / str(info.get("result_path", ""))).resolve(strict=True)
+            if paths.root.resolve() not in result_path.parents:
+                raise BootstrapError("readiness result escaped campaign state")
+            payload = result_path.read_bytes()
+            if hashlib.sha256(payload).hexdigest() != info.get("result_sha256"):
+                raise BootstrapError("readiness result digest mismatch")
+            return EvaluationResult.model_validate_json(payload)
+        full_result = load_result(full_info)
+        smoke_results = [load_result(run.get("replay", {})) for run in readiness.get("runs", [])]
+        reference_receipt = verify_reference_results(
+            manifest=manifest, manifest_sha256=reference_manifest_sha256,
+            approved_by=reference_approved_by, primary_metric=plan.primary_metric,
+            full_result=full_result, smoke_results=smoke_results,
+        )
+        evidence_dir = paths.root / "reference-evidence"
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        (evidence_dir / "operator-reference.json").write_bytes(raw_manifest)
+        (evidence_dir / "verification-receipt.json").write_text(
+            json.dumps(reference_receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        readiness_payload["operator_reference"] = reference_receipt
+        signal_receipt = {"status": "REFERENCE_VERIFIED", "receipt_sha256": reference_receipt["receipt_sha256"]}
     readiness_receipt_sha256 = hashlib.sha256(
         json.dumps(
             readiness_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
     ).hexdigest()
+    if reference_receipt is not None:
+        evidence_dir = paths.root / "reference-evidence"
+        (evidence_dir / "readiness-receipt.json").write_text(
+            json.dumps(readiness_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
     protocol_hashes = readiness.get("protocol_sha256_values", [])
     first_run = readiness.get("runs", [{}])[0]
     case_inputs = sorted(
@@ -502,26 +561,36 @@ def bootstrap_campaign(
     case_manifest_sha256 = hashlib.sha256(
         json.dumps(case_inputs, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    runtime = runtime_descriptor({"dev": plan.smoke_command or plan.evaluation_command})
+    runtime = runtime_descriptor({
+        "smoke": plan.smoke_command or plan.evaluation_command,
+        "dev": plan.evaluation_command,
+    })
     runtime_fingerprint = canonical_hash(runtime)
+    calibration = readiness.get("calibration", {})
     metric_tolerances = {
-        plan.primary_metric.name: float(
-            readiness.get("calibration", {}).get("empirical_noise_bound", 0.0)
-        )
+        str(name): float(value)
+        for name, value in calibration.get("metric_noise_bounds", {}).items()
     }
+    metric_tolerances.setdefault(
+        plan.primary_metric.name,
+        float(calibration.get("empirical_noise_bound", 0.0)),
+    )
     paired_noise = readiness.get("calibration", {}).get("paired_empirical_noise_bound")
     if plan.paired_comparison.enabled and paired_noise is not None:
-        metric_tolerances[plan.paired_comparison.metric] = float(paired_noise)
+        metric = plan.paired_comparison.metric
+        metric_tolerances[metric] = max(
+            metric_tolerances.get(metric, 0.0), float(paired_noise)
+        )
     evaluation_evidence = EvaluationEvidence(
         technical_readiness="READY",
         # Bootstrap-authored cases/labels are not independent evidence of
         # business relevance. Keep this unverified until an operator-approved
         # reference or an independent oracle is recorded.
-        trust_level="UNVERIFIED",
-        case_source="bootstrap_agent_configured",
+        trust_level="INDEPENDENTLY_VALIDATED" if reference_receipt else "UNVERIFIED",
+        case_source=manifest.case_source if reference_receipt else "bootstrap_agent_configured",
         label_source=(
-            "bootstrap_agent_configured"
-            if signal_receipt.get("status") == "DIAGNOSTIC_ONLY"
+            manifest.label_source if reference_receipt
+            else "bootstrap_agent_configured" if signal_receipt.get("status") == "DIAGNOSTIC_ONLY"
             else None
         ),
         protocol_sha256=protocol_hashes[0] if protocol_hashes else None,
@@ -529,17 +598,35 @@ def bootstrap_campaign(
         runtime=runtime,
         runtime_fingerprint=runtime_fingerprint,
         metric_tolerances=metric_tolerances,
+        metric_relative_tolerances={
+            str(name): float(value)
+            for name, value in calibration.get("metric_relative_noise_bounds", {}).items()
+        },
         readiness_receipt_sha256=readiness_receipt_sha256,
+        reference_manifest_sha256=reference_manifest_sha256 if reference_receipt else None,
+        reference_approved_by=reference_approved_by if reference_receipt else None,
+        reference_receipt_sha256=reference_receipt["receipt_sha256"] if reference_receipt else None,
+        reference_receipt_path="reference-evidence/verification-receipt.json" if reference_receipt else None,
+        independently_validated_tiers=["dev"] if reference_receipt else [],
         verified_invariants=[
             key for key, passed in (
                 ("stable_case_inputs", readiness.get("input_identity_stable") and bool(case_inputs)),
                 ("stable_protocol_identity", readiness.get("protocol_identity_stable")),
+                (
+                    "smoke_full_per_case_equivalence",
+                    readiness.get("smoke_full_equivalence", {}).get("status") == "PASSED",
+                ),
                 ("aa_noise_below_minimum_improvement", readiness.get("calibration", {}).get("noise_gate_passed")),
             ) if passed is True
         ],
         limitations=[
-            "bootstrap-authored evaluator cases and labels have no independent provenance",
+            *([] if reference_receipt else ["bootstrap-authored evaluator cases and labels have no independent provenance"]),
             "A/A stability and signal separation do not prove business-goal validity",
+            *(
+                ["smoke/full evaluator equivalence is inconclusive because per-case measurements are missing"]
+                if readiness.get("smoke_full_equivalence", {}).get("status") == "INCONCLUSIVE"
+                else []
+            ),
         ],
     )
 

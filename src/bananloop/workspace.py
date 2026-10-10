@@ -8,7 +8,7 @@ import stat
 import tempfile
 from pathlib import Path
 
-from .process import run_process
+from .process import ProcessError, run_process
 
 
 class WorkspaceError(RuntimeError):
@@ -174,32 +174,116 @@ class WorkspaceManager:
     def apply_agent_changes(self, agent_workspace: Path, hidden_paths: list[str]) -> list[str]:
         if agent_workspace != self.agent_workspace or self._agent_base is None:
             raise WorkspaceError("agent workspace has no supervisor-owned baseline")
-        run_process(["git", "add", "-A"], cwd=agent_workspace, timeout=30)
-        changed_out = run_process(
-            ["git", "diff", "--cached", "--name-only", self._agent_base],
-            cwd=agent_workspace,
-            timeout=20,
-        ).stdout
-        changed = [line.strip().replace("\\", "/") for line in changed_out.splitlines() if line.strip()]
-        hidden = [".git", ".git/**", ".bananloop_eval", ".bananloop_eval/**", *hidden_paths]
-        violations = [path for path in changed if self._matches(path, hidden)]
-        if violations:
+        changed: list[str] = []
+        patch_sha256: str | None = None
+        patch_path: Path | None = None
+        try:
+            baseline_paths = {
+                line.replace("\\", "/")
+                for line in run_process(
+                    ["git", "ls-tree", "-r", "--name-only", self._agent_base],
+                    cwd=agent_workspace,
+                    timeout=20,
+                ).stdout.splitlines()
+            }
+            self._remove_untracked_python_bytecode(agent_workspace, baseline_paths)
+            run_process(["git", "add", "-A"], cwd=agent_workspace, timeout=30)
+            changed_out = run_process(
+                ["git", "diff", "--cached", "--name-only", self._agent_base],
+                cwd=agent_workspace,
+                timeout=20,
+            ).stdout
+            changed = [line.strip().replace("\\", "/") for line in changed_out.splitlines() if line.strip()]
+            hidden = [".git", ".git/**", ".bananloop_eval", ".bananloop_eval/**", *hidden_paths]
+            violations = [path for path in changed if self._matches(path, hidden)]
+            if violations:
+                raise WorkspaceError(
+                    "agent attempted to write hidden path(s): " + ", ".join(sorted(violations))
+                )
+            patch = run_process(
+                [
+                    "git",
+                    "diff",
+                    "--cached",
+                    "--binary",
+                    "--full-index",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--src-prefix=a/",
+                    "--dst-prefix=b/",
+                    self._agent_base,
+                ],
+                cwd=agent_workspace,
+                timeout=30,
+            ).stdout
+            if patch:
+                patch_sha256 = hashlib.sha256(patch.encode("utf-8")).hexdigest()
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    prefix=".bananloop-agent-patch-",
+                    suffix=".diff",
+                    dir=agent_workspace,
+                    delete=False,
+                ) as patch_file:
+                    patch_path = Path(patch_file.name)
+                    patch_file.write(patch.encode("utf-8"))
+                run_process(
+                    ["git", "apply", "--binary", "--whitespace=nowarn", str(patch_path)],
+                    cwd=self.workspace,
+                    timeout=60,
+                )
+            return changed
+        except (ProcessError, OSError) as exc:
+            details = []
+            if changed:
+                paths = ",".join(path[:160] for path in changed[:10])
+                details.append(f"changed_paths={paths}")
+            if patch_sha256:
+                details.append(f"patch_sha256={patch_sha256}")
+            suffix = f" ({'; '.join(details)})" if details else ""
             raise WorkspaceError(
-                "agent attempted to write hidden path(s): " + ", ".join(sorted(violations))
-            )
-        patch = run_process(
-            ["git", "diff", "--cached", "--binary", "--full-index", self._agent_base],
-            cwd=agent_workspace,
-            timeout=30,
-        ).stdout
-        if patch:
-            run_process(
-                ["git", "apply", "--whitespace=nowarn", "-"],
-                cwd=self.workspace,
-                timeout=60,
-                input_text=patch,
-            )
-        return changed
+                f"candidate change transfer from agent workspace failed{suffix}: {exc}"
+            ) from exc
+        finally:
+            if patch_path is not None:
+                try:
+                    patch_path.unlink(missing_ok=True)
+                except OSError as exc:
+                    raise WorkspaceError(
+                        "cannot remove temporary candidate patch file"
+                    ) from exc
+
+    @staticmethod
+    def _remove_untracked_python_bytecode(
+        agent_workspace: Path, baseline_paths: set[str]
+    ) -> None:
+        """Drop Python bytecode created during agent-side verification.
+
+        Agent sandboxes are disposable and start without their own Git metadata.
+        Running a Python check there can therefore create new ``__pycache__``
+        paths that look like candidate source changes. Remove only bytecode
+        absent from the supervisor-owned baseline; preserve any such files
+        that were already part of the source repository.
+        """
+        root = agent_workspace.resolve()
+        for path in root.rglob("*"):
+            is_cache_dir = path.name == "__pycache__" and path.is_dir() and not path.is_symlink()
+            is_bytecode = path.is_file() and path.suffix.lower() in {".pyc", ".pyo"}
+            if not (is_cache_dir or is_bytecode):
+                continue
+            try:
+                relative = path.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if relative in baseline_paths or any(
+                baseline_path.startswith(relative + "/")
+                for baseline_path in baseline_paths
+            ):
+                continue
+            if is_cache_dir:
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
 
     def cleanup_agent_workspace(self) -> None:
         workspace = self.agent_workspace

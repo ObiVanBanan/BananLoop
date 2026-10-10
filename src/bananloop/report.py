@@ -18,10 +18,40 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
     spec = CampaignSpec.model_validate_json(campaign["spec_json"])
     evidence = spec.evaluation_evidence
     trust_level = evidence.trust_level if evidence is not None else "UNVERIFIED"
+    reference_receipt_integrity = None
+    if spec.signal_sanity_status == "REFERENCE_VERIFIED" and evidence is not None:
+        try:
+            state_root = store.path.parent.resolve()
+            manifest_path = (state_root / "reference-evidence" / "operator-reference.json").resolve(strict=True)
+            receipt_path = (state_root / (evidence.reference_receipt_path or "")).resolve(strict=True)
+            readiness_path = (state_root / "reference-evidence" / "readiness-receipt.json").resolve(strict=True)
+            if any(state_root not in path.parents for path in (manifest_path, receipt_path, readiness_path)):
+                raise ValueError("reference evidence path escaped campaign state")
+            manifest_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt_identity = receipt.pop("receipt_sha256")
+            receipt_hash_valid = canonical_hash(receipt) == receipt_identity
+            readiness_digest = hashlib.sha256(readiness_path.read_bytes()).hexdigest()
+            reference_receipt_integrity = bool(
+                manifest_digest == evidence.reference_manifest_sha256
+                and receipt_identity == evidence.reference_receipt_sha256
+                and receipt_hash_valid
+                and readiness_digest == evidence.readiness_receipt_sha256
+            )
+        except (OSError, ValueError, KeyError, TypeError):
+            reference_receipt_integrity = False
+        if not reference_receipt_integrity:
+            trust_level = "UNVERIFIED"
     baseline = EvaluationResult.model_validate_json(campaign["baseline_json"]) if campaign["baseline_json"] else None
     champion = EvaluationResult.model_validate_json(campaign["champion_json"]) if campaign["champion_json"] else None
     experiments: list[dict[str, Any]] = []
     actions_by_id = {row["id"]: row for row in store.actions()}
+    selection_by_experiment = {
+        payload.get("experiment_id"): payload
+        for event in store.events()
+        if event["event_type"] == "HYPOTHESIS_SELECTION"
+        for payload in [json.loads(event["payload_json"])]
+    }
     for row in store.experiments():
         accepted = row["status"] == "ACCEPTED"
         evaluation_action = store.action(f"exp:{row['id']}:evaluate")
@@ -39,6 +69,8 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
         hypothesis = json.loads(row["hypothesis_json"]) if row["hypothesis_json"] else None
         proof = evaluation_request.get("candidate_proof")
         decision = json.loads(row["decision_json"]) if row["decision_json"] else None
+        trace_action_ids = sorted(action["id"] for action in actions_by_id.values() if action.get("experiment_id") == row["id"])
+        selection_event = selection_by_experiment.get(row["id"], {})
         validation_decision = (decision or {}).get("validation") or {}
         if row["status"] == "REJECTED" and validation_decision:
             scientific_outcome = "DEV_ACCEPT_VALIDATION_REJECT"
@@ -65,9 +97,12 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 "predecessor_experiments": (hypothesis or {}).get("prior_experiment_refs", []),
                 "relation": (hypothesis or {}).get("relation", "new"),
                 "mechanism_key": (hypothesis or {}).get("mechanism_key"),
+                "rationale": selection_event.get("selection_rationale") or (hypothesis or {}).get("novelty_rationale"),
+                "redundancy_check": selection_event.get("redundancy_check"),
             },
             "expected_change": (hypothesis or {}).get("expected_effect"),
             "actual_changed_paths": proof.get("changed_paths", []) if proof else [],
+            "diff_signature": canonical_hash(sorted(proof.get("changed_paths", []))) if proof and proof.get("changed_paths") else None,
             "measurement": {
                 "decision": decision,
                 "metrics": (json.loads(row["evaluation_json"]).get("metrics", {}) if row["evaluation_json"] else {}),
@@ -79,7 +114,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 "validation_reasons": validation_decision.get("reasons", []),
             },
             "scientific_outcome": scientific_outcome,
-            "next_hypothesis_rationale": (row.get("failure_analysis_json") and json.loads(row["failure_analysis_json"]).get("next_test")) or None,
+            "next_hypothesis_rationale": (row.get("failure_analysis_json") and [capsule.get("suggested_regression") for capsule in json.loads(row["failure_analysis_json"]).get("capsules", []) if capsule.get("suggested_regression")]) or None,
             "observation": (
                 "; ".join(capsule.get("observation", "") for capsule in (json.loads(row["failure_analysis_json"]).get("capsules", []) if row.get("failure_analysis_json") else []) if capsule.get("observation"))
                 or row.get("failure_category")
@@ -90,6 +125,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 or [{"cause": "Cause not established; no generalized failure analysis was recorded.", "confidence": 0.0}]
             ),
             "proposed_test": [capsule.get("suggested_regression") for capsule in (json.loads(row["failure_analysis_json"]).get("capsules", []) if row.get("failure_analysis_json") else []) if capsule.get("suggested_regression")],
+            "evidence_ids": trace_action_ids,
         }
         item = {
             "id": row["id"],
@@ -107,7 +143,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 else None
             ),
             "causal_record": causal_record,
-            "trace_action_ids": sorted(action["id"] for action in actions_by_id.values() if action.get("experiment_id") == row["id"]),
+            "trace_action_ids": trace_action_ids,
         }
         experiments.append(item)
     accounting_buckets = (
@@ -179,7 +215,11 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
     # An unavailable signal check is an explicit lack of scorer-validity
     # evidence. It keeps even a target-reaching holdout at DEV_ONLY. None is
     # reserved for historical campaigns and retains their original semantics.
-    if spec.signal_sanity_status == "UNAVAILABLE":
+    if spec.signal_sanity_status == "UNAVAILABLE" or (
+        spec.signal_sanity_status == "REFERENCE_VERIFIED"
+        and spec.holdout_command
+        and "holdout" not in (spec.evaluation_evidence.independently_validated_tiers if spec.evaluation_evidence else [])
+    ):
         final_assessment = "DEV_ONLY"
 
     if trust_level == "INDEPENDENTLY_VALIDATED":
@@ -217,7 +257,18 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
     bootstrap_record = json.loads(bootstrap_path.read_text(encoding="utf-8")) if bootstrap_path.is_file() else {}
     bootstrap_attempts = bootstrap_record.get("bootstrap_attempts", [])
     bootstrap_calls = len(bootstrap_attempts)
+    readiness_invocations = [
+        invocation
+        for attempt in bootstrap_attempts
+        for invocation in (attempt.get("readiness") or {}).get("evaluator_invocations", [])
+    ]
+    # Older receipts predate per-invocation accounting; retain their best available counts.
     bootstrap_readiness_runs = sum(len((attempt.get("readiness") or {}).get("runs", [])) for attempt in bootstrap_attempts)
+    bootstrap_full_evaluations = sum(
+        1 for attempt in bootstrap_attempts
+        if (attempt.get("readiness") or {}).get("full_evaluation")
+        or (attempt.get("readiness") or {}).get("full_evaluation_error")
+    )
     replay_receipts = []
     replay_wall_time = 0.0
     for receipt_path in sorted((store.path.parent / "replays").glob("*/replay-receipt.json")):
@@ -294,7 +345,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             })
     campaign_scientific_outcome = (
         "UNVERIFIED_EVIDENCE"
-        if campaign["status"] == "GOAL_MET" and trust_level != "INDEPENDENTLY_VALIDATED"
+        if campaign["status"] == "GOAL_MET" and scientific_assessment != "VALIDATED"
         else "GOAL_MET" if campaign["status"] == "GOAL_MET"
         else "BUDGET_EXHAUSTED" if campaign.get("stop_reason") in {"BUDGET_EXHAUSTED", "ATTEMPT_LIMIT", "EVALUATOR_CALL_LIMIT", "AGENT_CALL_LIMIT"}
         else "BLOCKED" if campaign["status"] == "PAUSED_NEEDS_INPUT" or campaign.get("stop_reason") in {"NO_HYPOTHESIS", "USER_STOPPED", "PAUSED_NEEDS_INPUT"}
@@ -311,7 +362,11 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
         "final_assessment": final_assessment,
         "scientific_assessment": scientific_assessment,
         "evaluator_evidence": (
-            evidence.model_dump(mode="json")
+            {
+                **evidence.model_dump(mode="json"),
+                "trust_level": trust_level,
+                **({"reference_receipt_integrity": reference_receipt_integrity} if reference_receipt_integrity is not None else {}),
+            }
             if evidence is not None
             else {
                 "technical_readiness": "UNKNOWN",
@@ -323,6 +378,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 "runtime": {},
                 "runtime_fingerprint": None,
                 "metric_tolerances": {},
+                "metric_relative_tolerances": {},
                 "readiness_receipt_sha256": None,
                 "verified_invariants": [],
                 "limitations": ["legacy campaign has no persisted evaluator evidence"],
@@ -368,8 +424,17 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             "evidence_level": (
                 "diagnostic_only_unverified_labels" if spec.signal_sanity_status == "DIAGNOSTIC_ONLY"
                 else "unavailable" if spec.signal_sanity_status == "UNAVAILABLE"
+                else "operator_reference_manifest" if spec.signal_sanity_status == "REFERENCE_VERIFIED"
                 else None
             ),
+            **({
+                "reference_manifest_sha256": spec.evaluation_evidence.reference_manifest_sha256,
+                "reference_approved_by": spec.evaluation_evidence.reference_approved_by,
+                "reference_receipt_sha256": spec.evaluation_evidence.reference_receipt_sha256,
+                "reference_receipt_path": spec.evaluation_evidence.reference_receipt_path,
+                "reference_receipt_integrity": reference_receipt_integrity,
+                "validated_tiers": spec.evaluation_evidence.independently_validated_tiers,
+            } if spec.signal_sanity_status == "REFERENCE_VERIFIED" and spec.evaluation_evidence else {}),
         },
         "measurements": [
             {"experiment_id": row["experiment_id"], "candidate_snapshot": row["candidate_snapshot"],
@@ -406,6 +471,20 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 "agent_calls": bootstrap_calls,
                 "repairs": max(0, bootstrap_calls - 1),
                 "readiness_runs": bootstrap_readiness_runs,
+                "readiness_full_evaluations": bootstrap_full_evaluations,
+                "readiness_evaluator_calls": (
+                    len(readiness_invocations)
+                    if readiness_invocations
+                    else bootstrap_readiness_runs + bootstrap_full_evaluations
+                ),
+                "readiness_evaluator_attempted": (
+                    len(readiness_invocations)
+                    if readiness_invocations
+                    else bootstrap_readiness_runs + bootstrap_full_evaluations
+                ),
+                "readiness_evaluator_completed": sum(item.get("status") == "COMPLETED" for item in readiness_invocations),
+                "readiness_evaluator_failed": sum(item.get("status") == "FAILED" for item in readiness_invocations),
+                "readiness_evaluator_unknown": sum(item.get("status") in {"UNKNOWN", "RUNNING"} for item in readiness_invocations),
                 "duration_seconds": round(sum(float(item.get("duration_ms") or 0.0) for item in bootstrap_attempts) / 1000.0, 3),
                 "readiness_duration_seconds": round(sum(float(item.get("readiness_duration_ms") or 0.0) for item in bootstrap_attempts) / 1000.0, 3),
                 "unknown_duration_calls": sum(1 for item in bootstrap_attempts if item.get("duration_ms") is None),
@@ -493,6 +572,13 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         f"- Status: `{signal.get('status') or 'legacy/unspecified'}`; evidence level: `{signal.get('evidence_level') or 'legacy/unspecified'}`",
         f"- Readiness receipt SHA-256: `{signal.get('receipt_sha256') or '-'}`",
+        *(
+            [
+                f"- Operator reference: `{signal.get('reference_manifest_sha256')}` approved by `{signal.get('reference_approved_by')}`; receipt `{signal.get('reference_receipt_path')}` integrity=`{signal.get('reference_receipt_integrity')}`; tiers=`{signal.get('validated_tiers')}`",
+            ]
+            if signal.get("reference_manifest_sha256")
+            else []
+        ),
         "",
         "## Experiments",
         "",
@@ -584,7 +670,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Action wall time: {r['wall_time_seconds']:.3f} s",
         f"- Resource reservations: {r['reservation_count']} ({r['open_reservations']} open)",
         f"- Unknown action outcomes: {r['unknown_outcomes']}",
-        f"- Bootstrap calls / repairs / readiness runs / agent time / readiness time: {r['bootstrap']['agent_calls']} / {r['bootstrap']['repairs']} / {r['bootstrap']['readiness_runs']} / {r['bootstrap']['duration_seconds']:.3f} s / {r['bootstrap']['readiness_duration_seconds']:.3f} s",
+        f"- Bootstrap agent calls / repairs / smoke runs / full preflights / evaluator calls / agent time / readiness time: {r['bootstrap']['agent_calls']} / {r['bootstrap']['repairs']} / {r['bootstrap']['readiness_runs']} / {r['bootstrap']['readiness_full_evaluations']} / {r['bootstrap']['readiness_evaluator_calls']} / {r['bootstrap']['duration_seconds']:.3f} s / {r['bootstrap']['readiness_duration_seconds']:.3f} s",
         f"- Replay calls / time: {r['replay']['calls']} / {r['replay']['wall_time_seconds']:.3f} s",
         "",
     ]

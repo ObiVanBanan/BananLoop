@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import subprocess
 import sys
 import time
@@ -10,16 +12,19 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import bananloop.workspace as workspace_module
 
 from bananloop.agents.base import AgentError
 from bananloop.cli import cmd_stop
-from bananloop.contracts import EvaluationResult, PairedComparison
+from bananloop.contracts import EvaluationEvidence, EvaluationResult, PairedComparison
 from bananloop.engine import ControlledInterruption, Engine, EngineError
+from bananloop.evaluator_binding import canonical_hash
 from bananloop.evaluators.command import EvaluatorError
 from bananloop.policy import decide
-from bananloop.process import run_process
+from bananloop.process import ProcessError, run_process
 from bananloop.report import build_report, render_markdown
 from bananloop.store import CampaignStore
+from bananloop.workspace import WorkspaceError
 from test_engine import make_engine, make_staged_engine, git
 
 
@@ -76,6 +81,110 @@ def test_unavailable_signal_sanity_downgrades_target_reaching_holdout_to_dev_onl
         assert "## Evaluator signal sanity" in markdown
         assert "`UNAVAILABLE`" in markdown
         assert "`" + "a" * 64 + "`" in markdown
+    finally:
+        store.close()
+
+
+def test_reference_evidence_receipt_is_durable_and_tampering_downgrades_trust(tmp_path):
+    store, engine, _, _ = make_staged_engine(tmp_path)
+    try:
+        assert engine.run()["status"] == "GOAL_MET"
+        state = store.path.parent
+        evidence_dir = state / "reference-evidence"
+        evidence_dir.mkdir()
+        manifest = b'{"approved":true}\n'
+        (evidence_dir / "operator-reference.json").write_bytes(manifest)
+        readiness = b'{"status":"PASSED"}\n'
+        (evidence_dir / "readiness-receipt.json").write_bytes(readiness)
+        receipt_body = {"schema_version": 1, "checks": {"protocol_matches": True}}
+        receipt_body["receipt_sha256"] = canonical_hash(receipt_body)
+        receipt_path = evidence_dir / "verification-receipt.json"
+        receipt_path.write_text(json.dumps(receipt_body, sort_keys=True, separators=(",", ":")))
+
+        spec = store.spec()
+        spec.signal_sanity_status = "REFERENCE_VERIFIED"
+        spec.signal_sanity_receipt_sha256 = receipt_body["receipt_sha256"]
+        spec.evaluation_evidence = EvaluationEvidence(
+            technical_readiness="READY", trust_level="INDEPENDENTLY_VALIDATED",
+            case_source="operator fixtures", label_source="operator labels",
+            reference_manifest_sha256=hashlib.sha256(manifest).hexdigest(),
+            reference_approved_by="operator",
+            reference_receipt_sha256=receipt_body["receipt_sha256"],
+            reference_receipt_path="reference-evidence/verification-receipt.json",
+            readiness_receipt_sha256=hashlib.sha256(readiness).hexdigest(),
+            independently_validated_tiers=["dev"],
+        )
+        store.update_campaign(spec_json=spec.model_dump_json(), spec_hash=spec.approved_hash())
+        report = build_report(store)
+        assert report["evaluator_evidence"]["trust_level"] == "INDEPENDENTLY_VALIDATED"
+        assert report["signal_sanity"]["reference_receipt_integrity"] is True
+
+        receipt_path.write_text("{}", encoding="utf-8")
+        report = build_report(store)
+        assert report["evaluator_evidence"]["trust_level"] == "UNVERIFIED"
+        assert report["signal_sanity"]["reference_receipt_integrity"] is False
+    finally:
+        store.close()
+
+
+def test_dev_only_independent_validation_does_not_report_scientific_goal_met(tmp_path):
+    store, engine, _, _ = make_staged_engine(tmp_path)
+    try:
+        assert engine.run()["status"] == "GOAL_MET"
+        state = store.path.parent
+        evidence_dir = state / "reference-evidence"
+        evidence_dir.mkdir()
+        manifest = b'{"approved":true}\n'
+        (evidence_dir / "operator-reference.json").write_bytes(manifest)
+        readiness = b'{"status":"PASSED"}\n'
+        (evidence_dir / "readiness-receipt.json").write_bytes(readiness)
+        receipt_body = {"schema_version": 1, "checks": {"protocol_matches": True}}
+        receipt_body["receipt_sha256"] = canonical_hash(receipt_body)
+        (evidence_dir / "verification-receipt.json").write_text(
+            json.dumps(receipt_body, sort_keys=True, separators=(",", ":"))
+        )
+        spec = store.spec()
+        spec.signal_sanity_status = "REFERENCE_VERIFIED"
+        spec.signal_sanity_receipt_sha256 = receipt_body["receipt_sha256"]
+        spec.evaluation_evidence = EvaluationEvidence(
+            technical_readiness="READY", trust_level="INDEPENDENTLY_VALIDATED",
+            case_source="operator fixtures", label_source="operator labels",
+            reference_manifest_sha256=hashlib.sha256(manifest).hexdigest(),
+            reference_approved_by="operator",
+            reference_receipt_sha256=receipt_body["receipt_sha256"],
+            reference_receipt_path="reference-evidence/verification-receipt.json",
+            readiness_receipt_sha256=hashlib.sha256(readiness).hexdigest(),
+            independently_validated_tiers=["dev"],
+        )
+        store.update_campaign(spec_json=spec.model_dump_json(), spec_hash=spec.approved_hash())
+        report = build_report(store)
+        assert report["campaign_outcome"] == "GOAL_MET"
+        assert report["evaluator_evidence"]["trust_level"] == "INDEPENDENTLY_VALIDATED"
+        assert report["final_assessment"] == "DEV_ONLY"
+        assert report["scientific_assessment"] == "DEV_ONLY"
+        assert report["scientific_outcome"] == "UNVERIFIED_EVIDENCE"
+    finally:
+        store.close()
+
+
+def test_report_counts_failed_and_unknown_bootstrap_evaluator_attempts(tmp_path):
+    store, engine, _, _ = make_staged_engine(tmp_path)
+    try:
+        assert engine.run()["status"] == "GOAL_MET"
+        bootstrap_path = store.path.parent / "bootstrap-plan.json"
+        bootstrap_path.write_text(json.dumps({"bootstrap_attempts": [{
+            "readiness": {"evaluator_invocations": [
+                {"action_id": "smoke-1", "status": "COMPLETED"},
+                {"action_id": "smoke-2", "status": "FAILED"},
+                {"action_id": "full", "status": "UNKNOWN"},
+            ]}
+        }]}))
+        resources = build_report(store)["resources"]["bootstrap"]
+        assert resources["readiness_evaluator_calls"] == 3
+        assert resources["readiness_evaluator_attempted"] == 3
+        assert resources["readiness_evaluator_completed"] == 1
+        assert resources["readiness_evaluator_failed"] == 1
+        assert resources["readiness_evaluator_unknown"] == 1
     finally:
         store.close()
 
@@ -310,8 +419,17 @@ def test_stop_cli_cancels_running_agent_and_preserves_source(tmp_path):
             proc.communicate(timeout=5)
 
 
-def test_agent_commits_and_untracked_changes_are_transferred(tmp_path):
+def test_agent_commits_and_untracked_changes_are_transferred(tmp_path, monkeypatch):
     store, engine, repo, base = make_engine(tmp_path)
+    original_run_process = workspace_module.run_process
+    diff_commands = []
+
+    def capture_diff_command(argv, **kwargs):
+        if argv[:2] == ["git", "diff"] and "--binary" in argv:
+            diff_commands.append(list(argv))
+        return original_run_process(argv, **kwargs)
+
+    monkeypatch.setattr(workspace_module, "run_process", capture_diff_command)
     try:
         engine.workspace.ensure(base)
         isolated = engine.workspace.prepare_agent_workspace(["evaluator.py"])
@@ -324,6 +442,78 @@ def test_agent_commits_and_untracked_changes_are_transferred(tmp_path):
         assert (engine.workspace.workspace / "value.txt").read_text() == "1\n"
         assert (engine.workspace.workspace / "new.txt").exists()
         assert git(["rev-parse", "HEAD"], repo) == base
+        assert diff_commands
+        assert all(
+            "--no-ext-diff" in argv
+            and "--no-textconv" in argv
+            and "--src-prefix=a/" in argv
+            and "--dst-prefix=b/" in argv
+            for argv in diff_commands
+        )
+    finally:
+        engine.workspace.cleanup_agent_workspace()
+        store.close()
+
+
+def test_agent_patch_transfer_ignores_global_git_noprefix(tmp_path, monkeypatch):
+    store, engine, _, base = make_engine(tmp_path)
+    global_config = tmp_path / "gitconfig"
+    global_config.write_text("[diff]\n\tnoprefix = true\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    try:
+        engine.workspace.ensure(base)
+        isolated = engine.workspace.prepare_agent_workspace(["evaluator.py"])
+        (isolated / "value.txt").write_text("prefix-safe transfer\n", encoding="utf-8")
+        binary = isolated / "opaque.bin"
+        binary.write_bytes(b"\x00\xFFbinary payload")
+        pycache = isolated / "__pycache__"
+        pycache.mkdir()
+        bytecode = pycache / "slug.cpython-313.pyc"
+        bytecode.write_bytes(b"\x00\xFFbinary artifact")
+        changed = engine.workspace.apply_agent_changes(isolated, ["evaluator.py"])
+        assert set(changed) == {"value.txt", "opaque.bin"}
+        assert (engine.workspace.workspace / "value.txt").read_text(encoding="utf-8") == "prefix-safe transfer\n"
+        assert (engine.workspace.workspace / binary.name).read_bytes() == binary.read_bytes()
+        assert not (engine.workspace.workspace / "__pycache__").exists()
+    finally:
+        engine.workspace.cleanup_agent_workspace()
+        store.close()
+
+
+def test_agent_patch_transfer_preserves_baseline_bytecode(tmp_path):
+    cache = tmp_path / "__pycache__"
+    cache.mkdir()
+    tracked = cache / "tracked.pyc"
+    generated = cache / "generated.pyc"
+    tracked.write_bytes(b"baseline bytecode")
+    generated.write_bytes(b"agent runtime artifact")
+
+    workspace_module.WorkspaceManager._remove_untracked_python_bytecode(
+        tmp_path, {"__pycache__/tracked.pyc"}
+    )
+
+    assert tracked.read_bytes() == b"baseline bytecode"
+    assert not generated.exists()
+
+
+def test_agent_patch_apply_process_error_is_reported_as_workspace_error(tmp_path, monkeypatch):
+    store, engine, _, base = make_engine(tmp_path)
+    original_run_process = run_process
+
+    def fail_apply(argv, **kwargs):
+        if argv[:2] == ["git", "apply"]:
+            raise ProcessError("git apply rejected malformed patch")
+        return original_run_process(argv, **kwargs)
+
+    monkeypatch.setattr("bananloop.workspace.run_process", fail_apply)
+    try:
+        engine.workspace.ensure(base)
+        isolated = engine.workspace.prepare_agent_workspace(["evaluator.py"])
+        (isolated / "value.txt").write_text("1\n", encoding="utf-8")
+        with pytest.raises(WorkspaceError, match="candidate change transfer.*git apply rejected") as error:
+            engine.workspace.apply_agent_changes(isolated, ["evaluator.py"])
+        assert "changed_paths=value.txt" in str(error.value)
+        assert re.search(r"patch_sha256=[0-9a-f]{64}", str(error.value))
     finally:
         engine.workspace.cleanup_agent_workspace()
         store.close()

@@ -187,6 +187,26 @@ def test_goal_cli_can_prepare_only():
     assert args.prepare_only is True
 
 
+def test_goal_cli_exposes_bounded_command_agent_run_options():
+    args = parser().parse_args([
+        "goal",
+        "fix the regression",
+        "--agent", "command",
+        "--agent-cmd", "python agent.py",
+        "--max-experiments", "1",
+        "--max-attempts", "1",
+        "--max-agent-calls", "2",
+        "--max-evaluator-calls", "2",
+        "--deadline-seconds", "300",
+    ])
+
+    assert args.agent == "command"
+    assert args.agent_cmd == "python agent.py"
+    assert args.max_experiments == args.max_attempts == 1
+    assert args.max_agent_calls == args.max_evaluator_calls == 2
+    assert args.deadline_seconds == 300
+
+
 def test_doctor_cli_has_json_mode():
     args = parser().parse_args([
         "doctor",

@@ -1,0 +1,18 @@
+{"category": "exact_article", "expected_ld_articles": ["11111259253euld000000000", "11111259253ewld000000000"], "query": "11с67п 2ЦФ.01.9.025.125"}
+{"category": "modified_article", "expected_ld_articles": ["11111259253euld000000000", "11111259253ewld000000000"], "query": "11с67п 2цф.01.9.025.125"}
+{"category": "partial_article", "expected_ld_articles": ["11111259253euld000000000", "11111259253ewld000000000"], "query": "11с67п2цф"}
+{"category": "full_name", "expected_ld_articles": ["11111259253euld000000000", "11111259253ewld000000000"], "query": "Кран шаровой MARSHAL 11с67п 2ЦФ.01.9.025.125"}
+{"category": "brand_dn_pn", "expected_ld_articles": ["11111259253euld000000000", "11111259253ewld000000000"], "query": "MARSHAL DN125 PN25"}
+{"category": "natural_language", "expected_ld_articles": ["11111259253euld000000000", "11111259253ewld000000000"], "query": "Нужен аналог Кран шаровой MARSHAL 11с67п 2ЦФ.01.9.025.125 для DN 125 PN 25 фланцевое жидкость"}
+{"category": "mixed", "expected_ld_articles": ["11111259253euld000000000", "11111259253ewld000000000"], "query": "MARSHAL 11с67п 2ЦФ.01.9.025.125 Кран шаровой MARSHAL 11с67п 2ЦФ.01.9.025.125 DN125 PN25 фланцевое"}
+{"category": "no_match", "expected_ld_articles": [], "query": "no_match_0006_zxqv"}
+{"category": "technical_contradiction", "expected_ld_articles": [], "query": "11с67п 2ЦФ.01.9.025.125 DN99999 PN99999 фланцевое газ"}
+{"category": "exact_article", "expected_ld_articles": ["11111509253meld000000000", "11111509253mgld000000000"], "query": "321501252MVA00000"}
+{"category": "modified_article", "expected_ld_articles": ["11111509253meld000000000", "11111509253mgld000000000"], "query": "32150125 2mva00000"}
+{"category": "partial_article", "expected_ld_articles": ["11111509253meld000000000", "11111509253mgld000000000"], "query": "32150125 2mva00000"}
+{"category": "full_name", "expected_ld_articles": ["11111509253meld000000000", "11111509253mgld000000000"], "query": "Кран шаровой фланцевый стандартнопроходной DN 150 PN 25 RS Ст. 09Г2С 321501252MVA00000 ALSO"}
+{"category": "brand_dn_pn", "expected_ld_articles": ["11111509253meld000000000", "11111509253mgld000000000"], "query": "ALSO DN150 PN25"}
+{"category": "natural_language", "expected_ld_articles": ["11111509253meld000000000", "11111509253mgld000000000"], "query": "Нужен аналог Кран шаровой фланцевый стандартнопроходной DN 150 PN 25 RS Ст. 09Г2С 321501252MVA00000 ALSO для DN 150 PN 25 фланцевое газ"}
+{"category": "mixed", "expected_ld_articles": ["11111509253meld000000000", "11111509253mgld000000000"], "query": "ALSO 321501252MVA00000 Кран шаровой фланцевый стандартнопроходной DN 150 PN 25 RS Ст. 09Г2С 321501252MVA00000 ALSO DN150 PN25 фланцевое"}
+{"category": "no_match", "expected_ld_articles": [], "query": "no_match_0007_zxqv"}
+{"category": "technical_contradiction", "expected_ld_articles": [], "query": "321501252MVA00000 DN99999 PN99999 фланцевое газ"}

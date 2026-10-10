@@ -121,7 +121,13 @@ class EvaluationEvidence(BaseModel):
     runtime: dict[str, Any] = Field(default_factory=dict)
     runtime_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     metric_tolerances: dict[str, float] = Field(default_factory=dict)
+    metric_relative_tolerances: dict[str, float] = Field(default_factory=dict)
     readiness_receipt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    reference_manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    reference_approved_by: str | None = None
+    reference_receipt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    reference_receipt_path: str | None = None
+    independently_validated_tiers: list[Literal["dev", "validation", "holdout"]] = Field(default_factory=list)
     verified_invariants: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
 
@@ -139,6 +145,27 @@ class AgentConfig(BaseModel):
     def command_required(self) -> "AgentConfig":
         if self.kind == "command" and not self.command:
             raise ValueError("command agent requires command argv")
+        if self.kind == "command" and any(
+            value is not None
+            for value in (self.model, self.provider, self.reasoning_effort)
+        ):
+            raise ValueError(
+                "command agents cannot declare model/provider/reasoning settings; "
+                "their argv must configure the invoked program directly"
+            )
+        for role, override in self.roles.items():
+            effective_kind = override.kind or self.kind
+            if effective_kind == "command" and any(
+                value is not None
+                for value in (
+                    override.model,
+                    override.provider,
+                    override.reasoning_effort,
+                )
+            ):
+                raise ValueError(
+                    f"command role {role!r} cannot declare model/provider/reasoning settings"
+                )
         flags = set(self.extra_args)
         if self.kind == "codex":
             if self.model is not None and (
@@ -209,7 +236,7 @@ class CampaignSpec(BaseModel):
     paired_comparison: PairedComparison | None = None
     # Optional readiness metadata. None is omitted from approved_hash to keep
     # all campaigns created before signal sanity byte-for-byte compatible.
-    signal_sanity_status: Literal["DIAGNOSTIC_ONLY", "UNAVAILABLE"] | None = None
+    signal_sanity_status: Literal["DIAGNOSTIC_ONLY", "UNAVAILABLE", "REFERENCE_VERIFIED"] | None = None
     signal_sanity_receipt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     evaluation_evidence: EvaluationEvidence | None = None
     primary_metric: MetricSpec
@@ -477,11 +504,17 @@ class MechanismEvidence(BaseModel):
     experiment_ordinals: list[int] = Field(default_factory=list)
     dev_outcomes: dict[str, int] = Field(default_factory=dict)
     last_relation: str | None = None
+    canonical_areas: list[str] = Field(default_factory=list)
 
 
 class ResearchState(BaseModel):
     schema_version: int = 1
     planning_mode: Literal["exploit", "explore", "reframe"] = "exploit"
+    planning_rationale: str = ""
+    last_scientific_outcome: str | None = None
+    evidence_strength: str = "UNVERIFIED"
+    reframe_available: bool = True
+    expected_next_test_cost: dict[str, int] = Field(default_factory=dict)
     dev_non_improve_streak: int = Field(default=0, ge=0)
     failure_counts: dict[str, int] = Field(default_factory=dict)
     mechanisms: list[MechanismEvidence] = Field(default_factory=list)

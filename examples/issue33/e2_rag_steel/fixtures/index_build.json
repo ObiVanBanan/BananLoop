@@ -1,0 +1,14 @@
+{
+  "csv_sha256": "2b2b952609dfff21c1fe595451704f3b7a835000a146e304a8ccdcf33079e22c",
+  "embedding_model": "paraphrase-multilingual-MiniLM-L12-v2",
+  "embedding_revision": "e8f8c211226b894fcb81acc59f3b34ba3efd5f42",
+  "embedding_dimension": 384,
+  "embedding_dtype": "float32",
+  "max_sequence_length": 512,
+  "build_timestamp": "20261009T051950Z",
+  "document_count": 72,
+  "source_row_count": 247,
+  "deduplicated_row_count": 184,
+  "collection_name": "steel_products_paraphrase-multilingual-minilm-l12-v2_20261009T051950Z",
+  "collection_alias": "issue33_e2_base"
+}

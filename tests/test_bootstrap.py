@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -180,7 +181,6 @@ def test_repo_goal_bootstrap_creates_campaign_without_touching_source(tmp_path: 
         assert persisted.primary_metric.name == "quality"
     finally:
         store.close()
-
     record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
     assert record["source_base_commit"] == source_base
     assert record["changed_paths"] == [".bananloop_eval/evaluator.py"]
@@ -189,6 +189,68 @@ def test_repo_goal_bootstrap_creates_campaign_without_touching_source(tmp_path: 
     assert record["bootstrap_request"]["goal"] == "improve fixture quality"
     assert record["bootstrap_request"]["repository"]["detected_python_runtimes"]
 
+
+def test_operator_reference_manifest_receipt_is_persisted_and_report_verified(tmp_path: Path):
+    repo, _ = make_repo(tmp_path)
+    bootstrap_script = repo / "bootstrap_agent.py"
+    bootstrap_script.write_text(
+        "import json\nfrom pathlib import Path\n"
+        "root=Path('.bananloop_eval'); root.mkdir(exist_ok=True)\n"
+        f"(root/'evaluator.py').write_text(\"import json\\nprint(json.dumps({{'status':'ok','metrics':{{'quality':0.5}},'protocol_sha256':'{PROTOCOL_SHA256}','cases':[{{'case_id':'good','repetition':0,'input_sha256':'{'1' * 64}','metrics':{{'quality':1.0}}}},{{'case_id':'bad','repetition':0,'input_sha256':'{'2' * 64}','metrics':{{'quality':0.0}}}}]}}))\\n\")\n"
+        "print(json.dumps({"
+        "'status':'ready','summary':'reference fixture','project_context':'fixed examples',"
+        "'needs_input':[],'evaluation_command':[" + repr(sys.executable) + ",'.bananloop_eval/evaluator.py'],"
+        "'validation_command':[],'holdout_command':[],"
+        "'primary_metric':{'name':'quality','direction':'maximize','target':1.0,'min_improvement':0.1},"
+        "'editable_scope':['value.txt'],'agent_visible_metrics':['quality'],"
+        "'signal_sanity':{'status':'unavailable','reason':'manifest provides labels'},"
+        "'evaluator_timeout_seconds':60}))\n",
+        encoding="utf-8",
+    )
+    git(["add", "bootstrap_agent.py"], repo)
+    git(["commit", "-m", "prepare reference evaluator"], repo)
+    manifest = {
+        "schema_version": 1,
+        "protocol_sha256": PROTOCOL_SHA256,
+        "primary_metric": "quality",
+        "direction": "maximize",
+        "case_source": "operator fixture",
+        "label_source": "operator reviewed labels",
+        "reference_basis": "known good and known bad examples",
+        "cases": [
+            {"case_id": "good", "repetition": 0, "input_sha256": "1" * 64, "label": "positive", "expected_metric_value": 1.0},
+            {"case_id": "bad", "repetition": 0, "input_sha256": "2" * 64, "label": "negative", "expected_metric_value": 0.0},
+        ],
+    }
+    manifest_path = tmp_path / "operator-reference.json"
+    manifest_path.write_text(json.dumps(manifest, separators=(",", ":")), encoding="utf-8")
+    digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    paths = RuntimePaths.for_repo(repo, tmp_path / "reference-state")
+
+    _, spec = bootstrap_campaign(
+        repo=repo, goal="improve fixture quality", paths=paths,
+        agent_config=AgentConfig(kind="command", command=[sys.executable, "bootstrap_agent.py"]),
+        max_experiments=1, max_attempts=1, max_agent_calls=1,
+        max_evaluator_calls=1, deadline_seconds=180,
+        reference_manifest_path=manifest_path,
+        reference_manifest_sha256=digest,
+        reference_approved_by="test operator",
+    )
+    assert spec is not None
+    assert spec.signal_sanity_status == "REFERENCE_VERIFIED"
+    assert spec.evaluation_evidence.trust_level == "INDEPENDENTLY_VALIDATED"
+    receipt_path = paths.root / spec.evaluation_evidence.reference_receipt_path
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["manifest_sha256"] == digest
+    assert receipt["approved_by"] == "test operator"
+    assert (paths.root / "reference-evidence" / "readiness-receipt.json").is_file()
+    store = CampaignStore(paths.db)
+    try:
+        report = build_report(store)
+        assert report["evaluator_evidence"]["trust_level"] == "INDEPENDENTLY_VALIDATED"
+        assert report["signal_sanity"]["reference_receipt_integrity"] is True
+    finally:
+        store.close()
 
 def test_bootstrap_agent_failure_persists_sanitized_attempt_receipt(tmp_path, monkeypatch):
     import bananloop.bootstrap as bootstrap_module
@@ -433,6 +495,28 @@ def test_bootstrap_contract_preserves_real_prerequisites(tmp_path: Path, message
 
 def test_bootstrap_auto_repairs_false_goal_request(tmp_path: Path):
     repo, source_base = make_repo(tmp_path)
+    proxy_evaluator_source = (
+        "import hashlib,json\n"
+        "captions={'long_caption':'a detailed caption for a complex image with many descriptive words',"
+        "'short_caption':'cat'}\n"
+        "cases=[]\n"
+        "for case_id,caption in captions.items():\n"
+        " score=len(caption)\n"
+        " cases.append({'case_id':case_id,'repetition':0,'input_sha256':hashlib.sha256(caption.encode()).hexdigest(),'metrics':{'quality':float(score)}})\n"
+        f"print(json.dumps({{'status':'ok','metrics':{{'quality':sum(c['metrics']['quality'] for c in cases)/len(cases)}},'checks':{{}},'protocol_sha256':'{PROTOCOL_SHA256}','cases':cases}}))\n"
+    )
+    proxy_plan = _bootstrap_payload(
+        status="ready",
+        needs_input=[],
+        summary="goal recovered; evaluator uses caption length as a proxy",
+    )
+    proxy_plan["signal_sanity"] = {
+        "status": "configured",
+        "evidence_kind": "known_examples",
+        "metric": "quality",
+        "positive_case_ids": ["long_caption"],
+        "negative_case_ids": ["short_caption"],
+    }
     (repo / "repair_agent.py").write_text(
         "import json\n"
         "from pathlib import Path\n"
@@ -447,13 +531,9 @@ def test_bootstrap_auto_repairs_false_goal_request(tmp_path: Path):
         )) + "))\n"
         "else:\n"
         " Path('.bananloop_eval/evaluator.py').write_text("
-        f"\"import json\\nprint(json.dumps({{'status':'ok','metrics':{{'quality':0.0}},'protocol_sha256':'{PROTOCOL_SHA256}'}}))\\n\""
-        ")\n"
-        " print(json.dumps(" + repr(_bootstrap_payload(
-            status="ready",
-            needs_input=[],
-            summary="goal recovered from bootstrap request",
-        )) + "))\n",
+        + repr(proxy_evaluator_source)
+        + ",encoding='utf-8')\n"
+        " print(json.dumps(" + repr(proxy_plan) + "))\n",
         encoding="utf-8",
     )
     git(["add", "repair_agent.py"], repo)
@@ -478,15 +558,17 @@ def test_bootstrap_auto_repairs_false_goal_request(tmp_path: Path):
 
     assert plan.status == "ready"
     assert spec is not None
-    assert spec.signal_sanity_status == "UNAVAILABLE"
+    assert spec.signal_sanity_status == "DIAGNOSTIC_ONLY"
     assert len(spec.signal_sanity_receipt_sha256) == 64
     assert spec.evaluation_evidence.technical_readiness == "READY"
     assert spec.evaluation_evidence.trust_level == "UNVERIFIED"
-    assert spec.evaluation_evidence.label_source is None
+    assert "smoke_full_per_case_equivalence" in spec.evaluation_evidence.verified_invariants
+    assert spec.evaluation_evidence.label_source == "bootstrap_agent_configured"
     assert len(spec.evaluation_evidence.case_input_manifest_sha256) == 64
     assert len(spec.evaluation_evidence.runtime_fingerprint) == 64
     assert spec.evaluation_evidence.readiness_receipt_sha256
     assert "A/A stability and signal separation do not prove business-goal validity" in spec.evaluation_evidence.limitations
+    assert "bootstrap-authored evaluator cases and labels have no independent provenance" in spec.evaluation_evidence.limitations
     assert spec.approved_hash() == spec.model_copy(update={"evaluation_evidence": None}).approved_hash()
     record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
     assert len(record["bootstrap_attempts"]) == 2
@@ -496,16 +578,23 @@ def test_bootstrap_auto_repairs_false_goal_request(tmp_path: Path):
     assert record["bootstrap_attempts"][1]["readiness_duration_ms"] >= 0
     assert record["bootstrap_attempts"][0]["contract_error"]
     assert record["bootstrap_attempts"][1]["contract_error"] is None
+    proxy_signal = record["bootstrap_attempts"][1]["readiness"]["signal_sanity"]
+    assert proxy_signal["status"] == "DIAGNOSTIC_ONLY"
+    assert all(item["directed_separation"] > 0 for item in proxy_signal["repeat_results"])
     assert record["bootstrap_request"]["goal"] == "improve similarity to reference images"
     assert git(["rev-parse", "HEAD"], repo) == source_base
 
     store = CampaignStore(paths.db)
     try:
         report_before = build_report(store)
+        assert report_before["evaluator_evidence"]["trust_level"] == "UNVERIFIED"
+        assert report_before["signal_sanity"]["evidence_level"] == "diagnostic_only_unverified_labels"
         assert report_before["resources"]["bootstrap"]["receipt_status"] == "RECORDED"
         assert report_before["resources"]["bootstrap"]["agent_calls"] == 2
         assert report_before["resources"]["bootstrap"]["repairs"] == 1
         assert report_before["resources"]["bootstrap"]["readiness_runs"] == 3
+        assert report_before["resources"]["bootstrap"]["readiness_full_evaluations"] == 1
+        assert report_before["resources"]["bootstrap"]["readiness_evaluator_calls"] == 4
         before = store.campaign()
         before_actions = store.actions()
         replay = replay_dev_action(

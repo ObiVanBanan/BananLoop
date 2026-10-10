@@ -212,6 +212,25 @@ class CodexAdapter(AgentAdapter):
                 "model": self.model,
                 "reasoning_effort": self.reasoning_effort}
 
+    def _argv(self, schema_path: Path, result_path: Path) -> list[str]:
+        argv = [
+            *self._resolved_command(),
+            "exec",
+            "--skip-git-repo-check",
+            "--output-schema",
+            str(schema_path),
+            "-o",
+            str(result_path),
+        ]
+        if self.model:
+            argv += ["-m", self.model]
+        if self.reasoning_effort:
+            argv += ["-c", f"model_reasoning_effort={self.reasoning_effort}"]
+        argv += self.extra_args
+        # Keep generated campaign context off the Windows command line.
+        argv.append("-")
+        return argv
+
     def execute(self, task: dict[str, Any], workspace: Path, timeout: int) -> dict[str, Any]:
         role = task.get("role")
         if role == "bootstrap":
@@ -304,16 +323,7 @@ class CodexAdapter(AgentAdapter):
             schema_path = Path(td) / "schema.json"
             result_path = Path(td) / "result.json"
             schema_path.write_text(json.dumps(schema), encoding="utf-8")
-            argv = [*self._resolved_command(), "exec", "--skip-git-repo-check", "--output-schema", str(schema_path), "-o", str(result_path)]
-            if self.model:
-                argv += ["-m", self.model]
-            if self.reasoning_effort:
-                argv += ["-c", f"model_reasoning_effort={self.reasoning_effort}"]
-            argv += self.extra_args
-            # Keep generated campaign context off the Windows command line.
-            # It can exceed CreateProcess' command-line limit after DEV history
-            # grows; Codex's `-` prompt sentinel reads the same text from stdin.
-            argv.append("-")
+            argv = self._argv(schema_path, result_path)
             try:
                 run_process(
                     argv,

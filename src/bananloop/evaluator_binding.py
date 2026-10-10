@@ -21,6 +21,17 @@ def canonical_hash(value: Any) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def resolve_executable(executable: str) -> str | None:
+    """Resolve a command the same way receipts describe it before Popen search."""
+    resolved = shutil.which(executable)
+    if resolved is not None:
+        return str(Path(resolved).resolve())
+    candidate = Path(executable)
+    if candidate.is_file():
+        return str(candidate.resolve())
+    return None
+
+
 class EvaluatorBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -127,12 +138,10 @@ def runtime_descriptor(commands: dict[str, list[str]]) -> dict[str, Any]:
     runner: dict[str, Any] = {}
     for tier, argv in sorted(commands.items()):
         executable = argv[0] if argv else ""
-        resolved = shutil.which(executable)
-        if resolved is None:
-            candidate = Path(executable)
-            if candidate.is_file():
-                resolved = str(candidate.resolve())
-        runner[tier] = {"configured_executable": executable, "resolved_executable": str(Path(resolved).resolve()) if resolved else None}
+        runner[tier] = {
+            "configured_executable": executable,
+            "resolved_executable": resolve_executable(executable),
+        }
     python_distributions = sorted(
         {
             (str(item.metadata.get("Name") or "").lower(), str(item.version))

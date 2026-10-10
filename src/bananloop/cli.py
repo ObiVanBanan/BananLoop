@@ -12,6 +12,7 @@ from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, Guardra
 from .codex_hook import main as codex_hook_main
 from .engine import ControlledInterruption, Engine, EngineError
 from .export import export_champion
+from .trace_export import export_trace
 from .integrity import EvaluationIntegrityError, discover_evaluation_assets, evaluation_fingerprint
 from .lock import CampaignLock, CampaignLockError
 from .report import build_report, render_markdown
@@ -51,7 +52,7 @@ def _paths(repo: Path, state_dir: str | None) -> RuntimePaths:
     return paths
 
 
-def _selected_paths(args: argparse.Namespace, *, create: bool = True) -> RuntimePaths:
+def _selected_paths(args: argparse.Namespace, *, create: bool = True, readonly: bool = False) -> RuntimePaths:
     repo = Path(args.repo).resolve()
     state_dir = getattr(args, "state_dir", None)
     campaign_id = getattr(args, "campaign_id", None)
@@ -59,7 +60,7 @@ def _selected_paths(args: argparse.Namespace, *, create: bool = True) -> Runtime
         raise RegistryError("--state-dir and --campaign-id cannot be used together")
     if state_dir:
         return _paths(repo, state_dir) if create else RuntimePaths.for_repo(repo, Path(state_dir))
-    state_root, _ = CampaignRegistry(repo).resolve(campaign_id)
+    state_root, _ = CampaignRegistry(repo).resolve(campaign_id, readonly=readonly)
     paths = RuntimePaths.for_repo(repo, state_root)
     if create:
         paths.ensure()
@@ -327,6 +328,9 @@ def cmd_start(args: argparse.Namespace) -> int:
                         max_evaluator_calls=args.max_evaluator_calls,
                         deadline_seconds=args.deadline_seconds,
                         plateau_experiments=args.plateau,
+                        reference_manifest_path=Path(args.reference_manifest) if args.reference_manifest else None,
+                        reference_manifest_sha256=args.reference_manifest_sha256,
+                        reference_approved_by=args.reference_approved_by,
                     )
         except CampaignLockError as exc:
             print(f"BananLoop error: {exc}", file=sys.stderr)
@@ -490,7 +494,7 @@ def cmd_explain(args: argparse.Namespace) -> int:
                 "ordinal": item["ordinal"],
                 "hypothesis": item["hypothesis"],
                 "causal_record": _agent_safe_causal_record(item["causal_record"]),
-                "trace_action_ids": item["trace_action_ids"],
+                "trace_action_ids": _agent_safe_action_ids(item["trace_action_ids"]),
             }
             for item in recent
         ],
@@ -546,6 +550,8 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     item = dict(item)
     item["decision"] = _agent_safe_decision(item.get("decision"))
     item["causal_record"] = _agent_safe_causal_record(item["causal_record"])
+    item["trace_action_ids"] = _agent_safe_action_ids(item["trace_action_ids"])
+    actions = [row for row in actions if row["stage"] not in {"VALIDATE", "FINAL_HOLDOUT", "BASELINE_VALIDATION"}]
     payload = {"experiment": item, "actions": actions}
     if args.json:
         print(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
@@ -586,7 +592,15 @@ def _agent_safe_causal_record(record):
     rejection = dict(safe.get("stage_rejection") or {})
     rejection["validation_reasons"] = []
     safe["stage_rejection"] = rejection
+    safe["evidence_ids"] = _agent_safe_action_ids(safe.get("evidence_ids", []))
     return safe
+
+
+def _agent_safe_action_ids(action_ids):
+    return [
+        action_id for action_id in action_ids
+        if not any(part in action_id.casefold() for part in ("validation", "holdout"))
+    ]
 
 
 def cmd_export(args: argparse.Namespace) -> int:
@@ -602,6 +616,19 @@ def cmd_export(args: argparse.Namespace) -> int:
     except CampaignLockError as exc:
         raise StoreError("stop or pause the campaign before exporting its champion") from exc
     print(f"Champion patch, manifest and operator reports exported to {output}")
+    return 0
+
+
+def cmd_trace_export(args: argparse.Namespace) -> int:
+    paths = _selected_paths(args, create=False, readonly=True)
+    store = CampaignStore(paths.db, readonly=True)
+    try:
+        store.conn.execute("BEGIN")
+        store.campaign()
+        output = export_trace(store, Path(args.output), Path(store.spec().source_repo))
+    finally:
+        store.close()
+    print(f"Shareable campaign trace exported to {output}")
     return 0
 
 
@@ -646,8 +673,27 @@ def parser() -> argparse.ArgumentParser:
     )
     goal.add_argument("--repo", default=".")
     goal.add_argument("--state-dir")
+    goal.add_argument("--reference-manifest", help="operator-approved reference JSON (requires pinned SHA-256 and approver)")
+    goal.add_argument("--reference-manifest-sha256")
+    goal.add_argument("--reference-approved-by")
     goal.add_argument("--request-id", help="idempotency key; use a new value to intentionally repeat a goal")
+    goal.add_argument("--agent", choices=["codex", "command", "pi"])
+    goal.add_argument("--agent-cmd")
+    goal.add_argument("--model")
+    goal.add_argument("--provider")
+    goal.add_argument("--thinking", choices=["off", "minimal", "low", "medium", "high", "xhigh"])
+    goal.add_argument("--codex-arg", action="append")
+    goal.add_argument("--pi-arg", action="append")
     goal.add_argument("--agent-profiles", help="TOML profile file for default and role-specific agent settings")
+    goal.add_argument("--bootstrap-timeout-seconds", type=int, default=1200)
+    goal.add_argument("--agent-timeout-seconds", type=int)
+    goal.add_argument("--max-experiments", type=int, default=4)
+    goal.add_argument("--max-attempts", type=int, default=7)
+    goal.add_argument("--max-agent-calls", type=int, default=18)
+    goal.add_argument("--max-evaluator-calls", type=int, default=16)
+    goal.add_argument("--deadline-seconds", type=int, default=14400)
+    goal.add_argument("--plateau", type=int, default=3)
+    goal.add_argument("--allow-dirty", action="store_true")
     goal.add_argument(
         "--prepare-only",
         action="store_true",
@@ -691,6 +737,9 @@ def parser() -> argparse.ArgumentParser:
     )
     start.add_argument("--repo", default=".")
     start.add_argument("--state-dir")
+    start.add_argument("--reference-manifest", help="operator-approved reference JSON (requires pinned SHA-256 and approver)")
+    start.add_argument("--reference-manifest-sha256")
+    start.add_argument("--reference-approved-by")
     start.add_argument("--request-id", help="idempotency key; use a new value to intentionally repeat a goal")
     start.add_argument("--goal", required=True)
     start.add_argument("--agent", choices=["codex", "command", "pi"])
@@ -892,6 +941,15 @@ def parser() -> argparse.ArgumentParser:
     inspect.add_argument("--experiment", type=int, required=True, help="experiment ordinal")
     inspect.add_argument("--json", action="store_true")
     inspect.set_defaults(func=cmd_inspect)
+
+    trace = sub.add_parser("trace", help="export a portable, shareable campaign trace")
+    trace_sub = trace.add_subparsers(dest="trace_command", required=True)
+    trace_export = trace_sub.add_parser("export", help="export allowlisted durable campaign evidence")
+    trace_export.add_argument("--repo", default=".")
+    trace_export.add_argument("--state-dir")
+    trace_export.add_argument("--campaign-id")
+    trace_export.add_argument("--output", required=True, help="new or existing verified export directory")
+    trace_export.set_defaults(func=cmd_trace_export)
 
     campaigns = sub.add_parser("campaigns", help="list repository campaigns")
     campaign_sub = campaigns.add_subparsers(dest="campaign_command", required=True)

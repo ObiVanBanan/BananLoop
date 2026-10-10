@@ -6,4 +6,10 @@ This check is **diagnostic only**. The bootstrap agent selects the case IDs, and
 
 When defensible examples are unavailable, the plan records `UNAVAILABLE` with a reason and no case IDs. The campaign may still run as DEV-only, and a target-reaching holdout remains reported as `DEV_ONLY`. Legacy campaigns with no signal-sanity fields retain their historical report semantics.
 
-Promoting signal sanity to independent evidence requires a future core-verifiable provenance contract for fixtures and labels. Until then, do not interpret `DIAGNOSTIC_ONLY` as evaluator validation.
+## Operator reference manifests
+
+An operator can supply a frozen JSON manifest to `bananloop goal` or `bananloop start` with `--reference-manifest`, `--reference-manifest-sha256`, and `--reference-approved-by`. All three are required. The digest is computed over the exact file bytes and pins the operator's approval; BananLoop copies those bytes into campaign state and records the approver, manifest digest, and verification receipt.
+
+The version 1 manifest contains `protocol_sha256`, `primary_metric`, `direction`, `case_source`, `label_source`, `reference_basis`, and `cases`. Each case row contains `case_id`, `repetition`, `input_sha256`, `label` (`positive` or `negative`), `expected_metric_value`, and optional `tolerance`. The core checks that the protocol and complete case/input set match the readiness baseline, every measured baseline and smoke value is within its approved tolerance, and smoke runs include separated positive and negative groups.
+
+This currently validates the DEV tier only. A campaign with a holdout remains `DEV_ONLY` until holdout has its own independent provenance contract. An operator manifest is an explicit trust assertion: BananLoop verifies its pin and consistency with measurements, but cannot establish that the approver's fixtures or labels are meaningful. Do not use a constructed manifest to claim independent validation.

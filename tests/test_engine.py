@@ -10,12 +10,15 @@ from pathlib import Path
 import pytest
 
 from bananloop.agents.base import AgentAdapter
-from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, EvaluationResult, GuardrailSpec, Hypothesis, MetricSpec, RuntimePaths
+from bananloop.agents.codex import CodexAdapter
+from bananloop.agents.command import CommandAgentAdapter
+from bananloop.contracts import AgentConfig, AgentRoleOverride, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, EvaluationResult, GuardrailSpec, Hypothesis, MetricSpec, RuntimePaths
 from bananloop.engine import ControlledInterruption, Engine, EngineError, UnknownActionOutcome, _hash_payload
 from bananloop.evaluator_binding import EvaluatorBinding, canonical_hash, make_binding, runtime_descriptor
 from bananloop.integrity import sha256_evaluation_asset
 from bananloop.report import build_report, render_markdown
 from bananloop.store import CampaignStore
+from bananloop.trace_export import build_trace_package, export_trace
 from bananloop.workspace import WorkspaceError, WorkspaceManager
 
 
@@ -65,7 +68,7 @@ def make_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def make_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str]:
+def make_engine(tmp_path: Path, *, agent_config: AgentConfig | None = None) -> tuple[CampaignStore, Engine, Path, str]:
     repo = make_repo(tmp_path)
     base = git(["rev-parse", "HEAD"], repo)
     paths = RuntimePaths.for_repo(repo, tmp_path / "state")
@@ -81,7 +84,7 @@ def make_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str]:
         editable_scope=["value.txt", "guard.txt"],
         protected_paths=["evaluator.py", "agent.py"],
         budget=BudgetSpec(max_experiments=5, max_attempts=6, max_agent_calls=12, max_evaluator_calls=8, plateau_experiments=3),
-        agent=AgentConfig(kind="command", command=[sys.executable, "agent.py"]),
+        agent=agent_config or AgentConfig(kind="command", command=[sys.executable, "agent.py"]),
     )
     store = CampaignStore(paths.db)
     store.initialize(spec)
@@ -172,6 +175,116 @@ def test_resume_after_durable_stage_does_not_restart_experiment(tmp_path: Path, 
         assert [e["status"] for e in experiments] == ["ACCEPTED", "REJECTED", "ACCEPTED"]
         first_eval = json.loads(experiments[0]["evaluation_json"])
         assert first_eval["metrics"]["quality"]["value"] == 1
+    finally:
+        store.close()
+
+
+def test_role_dispatch_and_launch_receipt_are_stable_across_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    strong = {"model": "strong-model", "reasoning_effort": "high"}
+    roles = {
+        role: AgentRoleOverride(**strong)
+        for role in ("bootstrap", "propose", "analyze")
+    }
+    roles["implement"] = AgentRoleOverride(model="fast-model", reasoning_effort="low")
+    config = AgentConfig(
+        kind="codex",
+        model="fallback-model",
+        reasoning_effort="medium",
+        roles=roles,
+    )
+    store, engine, _, _ = make_engine(tmp_path, agent_config=config)
+    dispatched: list[tuple[str | None, str | None]] = []
+    argv_by_role: dict[str, list[str]] = {}
+    fixture_adapter = CommandAgentAdapter([sys.executable, "agent.py"])
+    monkeypatch.setattr(
+        CodexAdapter,
+        "probe",
+        lambda self: {"available": True, "kind": "codex", "version": "fixture-codex"},
+    )
+
+    def execute_fixture(self, task, workspace, timeout):
+        role = task["role"]
+        self._resolved_command = lambda: ["codex"]
+        argv_by_role[role] = self._argv(
+            workspace / "schema.json", workspace / "result.json"
+        )
+        dispatched.append((self.model, self.reasoning_effort))
+        return fixture_adapter.execute(task, workspace, timeout)
+
+    monkeypatch.setattr(CodexAdapter, "execute", execute_fixture)
+    try:
+        assert config.for_role("bootstrap").model == "strong-model"
+        assert config.for_role("bootstrap").reasoning_effort == "high"
+        monkeypatch.setenv("BANANLOOP_TEST_STOP_AFTER_STAGE", "VERIFY")
+        with pytest.raises(ControlledInterruption):
+            engine.run()
+        first = next(
+            json.loads(row["payload_json"])
+            for row in store.events()
+            if row["event_type"] == "AGENT_LAUNCH_PROFILE"
+        )
+
+        monkeypatch.delenv("BANANLOOP_TEST_STOP_AFTER_STAGE")
+        db_path = store.path
+        workspace = engine.workspace
+        store.close()
+        store = CampaignStore(db_path)
+        engine = Engine(store, workspace)
+        assert engine.run(resume=True)["status"] == "GOAL_MET"
+        profiles = [
+            json.loads(row["payload_json"])
+            for row in store.events()
+            if row["event_type"] == "AGENT_LAUNCH_PROFILE"
+        ]
+        assert profiles == [first, first]
+        assert first["roles"]["propose"]["model"] == "strong-model"
+        assert first["roles"]["propose"]["reasoning_effort"] == "high"
+        assert first["roles"]["analyze"]["model"] == "strong-model"
+        assert first["roles"]["implement"]["model"] == "fast-model"
+        assert first["roles"]["implement"]["reasoning_effort"] == "low"
+        assert ("strong-model", "high") in dispatched
+        assert ("fast-model", "low") in dispatched
+        assert ("fallback-model", "medium") not in dispatched
+        assert argv_by_role["propose"][argv_by_role["propose"].index("-m") + 1] == "strong-model"
+        assert argv_by_role["propose"][argv_by_role["propose"].index("-c") + 1] == "model_reasoning_effort=high"
+        assert argv_by_role["implement"][argv_by_role["implement"].index("-m") + 1] == "fast-model"
+        assert argv_by_role["implement"][argv_by_role["implement"].index("-c") + 1] == "model_reasoning_effort=low"
+        role_summary = build_trace_package(store)["summary.json"]["model_roles"]
+        assert role_summary["propose"]["effective_model"] is None
+        assert role_summary["propose"]["effective_model_status"] == "unknown"
+        assert role_summary["implement"]["requested_model"] == "fast-model"
+        output = tmp_path / "portable-trace"
+        export_trace(store, output, Path(store.spec().source_repo))
+        exported = [
+            json.loads(line)
+            for line in (output / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        assert sum(event["event_type"] == "AGENT_LAUNCH_PROFILE" for event in exported) == 2
+        assert json.loads((output / "summary.json").read_text(encoding="utf-8"))["campaign_outcome"] == "GOAL_MET"
+    finally:
+        store.close()
+
+
+def test_candidate_transfer_process_failure_pauses_as_infrastructure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    store, engine, _, base = make_engine(tmp_path)
+
+    def fail_transfer(_agent_workspace, _hidden_paths):
+        raise WorkspaceError("candidate change transfer from agent workspace failed: git apply rejected patch")
+
+    monkeypatch.setattr(engine.workspace, "apply_agent_changes", fail_transfer)
+    try:
+        with pytest.raises(EngineError, match="implement failed: candidate change transfer"):
+            engine.run()
+
+        campaign = store.campaign()
+        assert campaign["status"] == "PAUSED_INFRA"
+        assert campaign["agent_calls"] == 2
+        assert campaign["champion_snapshot"] == base
+        experiment = store.experiments()[0]
+        assert experiment["failure_category"] == "CANDIDATE_NOT_MATERIALIZED"
+        report = build_report(store)
+        assert report["experiments"][0]["causal_record"]["scientific_outcome"] == "INFRA_FAILED"
+        assert any(event["event_type"] == "CANDIDATE_TRANSFER_FAILED" for event in store.events())
     finally:
         store.close()
 

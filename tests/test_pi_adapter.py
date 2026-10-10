@@ -229,6 +229,45 @@ def test_pi_does_not_repair_nonempty_blocker_text():
     assert data["blockers"] == "tests are failing"
 
 
+def test_pi_stderr_reader_tolerates_pipe_closed_during_teardown():
+    class ClosedStream:
+        def readline(self):
+            raise ValueError("I/O operation on closed file")
+
+    sink: list[str] = []
+    PiAdapter._stderr_reader(ClosedStream(), sink)
+
+    assert sink == []
+
+
+def test_pi_stderr_reader_keeps_recent_diagnostics():
+    class LineStream:
+        def __init__(self):
+            self.lines = iter(f"line-{index}\n" for index in range(105))
+
+        def readline(self):
+            return next(self.lines, "")
+
+    sink: list[str] = []
+    PiAdapter._stderr_reader(LineStream(), sink)
+
+    assert sink == [f"line-{index}" for index in range(5, 105)]
+
+
+def test_pi_normalizes_verification_notes_as_a_string_list():
+    normalized = PiAdapter.normalize_result(
+        {"role": "implement"},
+        {
+            "summary": "implemented",
+            "changed_paths": ["value.txt"],
+            "verification_notes": ["unit check passed", "manual check passed"],
+            "blockers": [],
+        },
+    )
+
+    assert normalized["verification_notes"] == "unit check passed\nmanual check passed"
+
+
 
 def test_pi_parses_json_after_closed_think_tag():
     parsed = PiAdapter._parse_final_json(
