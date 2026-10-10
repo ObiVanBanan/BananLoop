@@ -257,6 +257,12 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
     bootstrap_record = json.loads(bootstrap_path.read_text(encoding="utf-8")) if bootstrap_path.is_file() else {}
     bootstrap_attempts = bootstrap_record.get("bootstrap_attempts", [])
     bootstrap_calls = len(bootstrap_attempts)
+    readiness_invocations = [
+        invocation
+        for attempt in bootstrap_attempts
+        for invocation in (attempt.get("readiness") or {}).get("evaluator_invocations", [])
+    ]
+    # Older receipts predate per-invocation accounting; retain their best available counts.
     bootstrap_readiness_runs = sum(len((attempt.get("readiness") or {}).get("runs", [])) for attempt in bootstrap_attempts)
     bootstrap_full_evaluations = sum(
         1 for attempt in bootstrap_attempts
@@ -339,7 +345,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             })
     campaign_scientific_outcome = (
         "UNVERIFIED_EVIDENCE"
-        if campaign["status"] == "GOAL_MET" and trust_level != "INDEPENDENTLY_VALIDATED"
+        if campaign["status"] == "GOAL_MET" and scientific_assessment != "VALIDATED"
         else "GOAL_MET" if campaign["status"] == "GOAL_MET"
         else "BUDGET_EXHAUSTED" if campaign.get("stop_reason") in {"BUDGET_EXHAUSTED", "ATTEMPT_LIMIT", "EVALUATOR_CALL_LIMIT", "AGENT_CALL_LIMIT"}
         else "BLOCKED" if campaign["status"] == "PAUSED_NEEDS_INPUT" or campaign.get("stop_reason") in {"NO_HYPOTHESIS", "USER_STOPPED", "PAUSED_NEEDS_INPUT"}
@@ -466,7 +472,19 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 "repairs": max(0, bootstrap_calls - 1),
                 "readiness_runs": bootstrap_readiness_runs,
                 "readiness_full_evaluations": bootstrap_full_evaluations,
-                "readiness_evaluator_calls": bootstrap_readiness_runs + bootstrap_full_evaluations,
+                "readiness_evaluator_calls": (
+                    len(readiness_invocations)
+                    if readiness_invocations
+                    else bootstrap_readiness_runs + bootstrap_full_evaluations
+                ),
+                "readiness_evaluator_attempted": (
+                    len(readiness_invocations)
+                    if readiness_invocations
+                    else bootstrap_readiness_runs + bootstrap_full_evaluations
+                ),
+                "readiness_evaluator_completed": sum(item.get("status") == "COMPLETED" for item in readiness_invocations),
+                "readiness_evaluator_failed": sum(item.get("status") == "FAILED" for item in readiness_invocations),
+                "readiness_evaluator_unknown": sum(item.get("status") in {"UNKNOWN", "RUNNING"} for item in readiness_invocations),
                 "duration_seconds": round(sum(float(item.get("duration_ms") or 0.0) for item in bootstrap_attempts) / 1000.0, 3),
                 "readiness_duration_seconds": round(sum(float(item.get("readiness_duration_ms") or 0.0) for item in bootstrap_attempts) / 1000.0, 3),
                 "unknown_duration_calls": sum(1 for item in bootstrap_attempts if item.get("duration_ms") is None),

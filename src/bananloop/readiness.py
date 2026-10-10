@@ -6,8 +6,9 @@ import os
 import shutil
 import stat
 import statistics
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .artifacts import retain_artifacts
 from .contracts import EvaluationResult
@@ -81,6 +82,8 @@ def _run_readiness_command(
     assets: list[Any],
     frozen_asset_root: Path,
     plan: Any,
+    on_evaluator_start: Callable[[], dict[str, Any]] | None = None,
+    on_evaluator_finish: Callable[[dict[str, Any], str, str | None], None] | None = None,
 ) -> tuple[EvaluationResult, dict[str, Any]]:
     artifact_dir = run_dir / "artifacts"
     managed_workspace = run_dir / "workspace"
@@ -114,7 +117,22 @@ def _run_readiness_command(
         head = run_process(["git", "rev-parse", "HEAD"], cwd=managed_workspace, timeout=10).stdout.strip()
         if head != snapshot:
             raise ReadinessError(f"managed readiness workspace snapshot drifted: expected {snapshot}, found {head}")
-        result = evaluator.evaluate(managed_workspace, timeout=timeout)
+        invocation = on_evaluator_start() if on_evaluator_start else None
+        try:
+            result = evaluator.evaluate(managed_workspace, timeout=timeout)
+        except EvaluatorError as exc:
+            cause = exc.__cause__
+            unknown = isinstance(cause, ProcessError) and "timed out" in str(cause).casefold()
+            if invocation is not None and on_evaluator_finish:
+                on_evaluator_finish(
+                    invocation,
+                    "UNKNOWN" if unknown else "FAILED",
+                    "timeout" if unknown else "evaluator_error",
+                )
+            raise
+        else:
+            if invocation is not None and on_evaluator_finish:
+                on_evaluator_finish(invocation, "COMPLETED", None)
         summary = _validate_result(plan, result)
         retain_artifacts(result, artifact_dir, None, snapshot)
         head = run_process(["git", "rev-parse", "HEAD"], cwd=managed_workspace, timeout=10).stdout.strip()
@@ -193,7 +211,7 @@ def _compare_smoke_full(
             tolerance = max(
                 max(0.0, float(key_noise)),
                 max(0.0, float(key_relative_noise))
-                * max(abs(before_value), abs(after_value)),
+                * abs(before_value),
             )
             if abs(before_value - after_value) > tolerance:
                 mismatches.append(f"case {key!r} metric {name!r} differs beyond A/A tolerance")
@@ -297,6 +315,15 @@ def _signal_sanity(plan: Any, results: list[EvaluationResult]) -> dict[str, Any]
     return evidence
 
 
+def _relative_noise_bound(noise: float, center: float) -> float:
+    """Avoid unstable relative tolerances when the measured center is noise-sized."""
+    magnitude = abs(float(center))
+    absolute_noise = max(0.0, float(noise))
+    if magnitude == 0.0 or magnitude <= absolute_noise:
+        return 0.0
+    return absolute_noise / magnitude
+
+
 def _validate_result(plan: Any, result: EvaluationResult) -> dict[str, Any]:
     if result.status != "ok":
         raise ReadinessError(f"smoke evaluator returned status={result.status}")
@@ -381,6 +408,7 @@ def run_bootstrap_readiness(
     state_root: Path,
     attempt: int,
     repeats: int = 3,
+    on_receipt_update: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Execute a core-owned evaluator smoke gate before a bootstrap plan can be READY."""
 
@@ -418,7 +446,27 @@ def run_bootstrap_readiness(
         "timeout_seconds": timeout,
         "repeat_count": repeats,
         "runs": [],
+        "evaluator_invocations": [],
     }
+
+    def persist_receipt() -> None:
+        if on_receipt_update is not None:
+            on_receipt_update(receipt)
+
+    def begin_invocation(action_id: str, tier: str) -> dict[str, Any]:
+        invocation = {"action_id": action_id, "tier": tier, "status": "RUNNING"}
+        receipt["evaluator_invocations"].append(invocation)
+        persist_receipt()
+        return invocation
+
+    def finish_invocation(
+        invocation: dict[str, Any], status: str, failure_kind: str | None
+    ) -> None:
+        invocation["status"] = status
+        if failure_kind is not None:
+            invocation["failure_kind"] = failure_kind
+        persist_receipt()
+
     results: list[EvaluationResult] = []
 
     for repetition in range(repeats):
@@ -442,6 +490,8 @@ def run_bootstrap_readiness(
                 assets=assets,
                 frozen_asset_root=frozen_asset_root,
                 plan=plan,
+                on_evaluator_start=lambda run_id=f"bootstrap:attempt:{attempt}:smoke:{repetition + 1}": begin_invocation(run_id, "bootstrap_smoke"),
+                on_evaluator_finish=finish_invocation,
             )
         except (EvaluatorError, ProcessError, ReadinessError) as exc:
             receipt["status"] = "FAILED"
@@ -515,8 +565,8 @@ def run_bootstrap_readiness(
             item.value for item in measurements
         )
         metric_median = statistics.median(item.value for item in measurements)
-        metric_relative_noise_bounds[name] = (
-            metric_noise_bounds[name] / abs(metric_median) if metric_median != 0 else 0.0
+        metric_relative_noise_bounds[name] = _relative_noise_bound(
+            metric_noise_bounds[name], metric_median
         )
     case_maps = [
         {(case.case_id, case.repetition): case for case in result.cases}
@@ -536,7 +586,7 @@ def run_bootstrap_readiness(
             noise = max(case_values) - min(case_values)
             center = statistics.median(case_values)
             case_metric_noise_bounds[key][name] = noise
-            case_metric_relative_noise_bounds[key][name] = noise / abs(center) if center != 0 else 0.0
+            case_metric_relative_noise_bounds[key][name] = _relative_noise_bound(noise, center)
     receipt["case_metric_noise_bounds"] = [
         {
             "case_id": case_id,
@@ -612,6 +662,10 @@ def run_bootstrap_readiness(
             assets=assets,
             frozen_asset_root=frozen_asset_root,
             plan=plan,
+            on_evaluator_start=lambda: begin_invocation(
+                f"bootstrap:attempt:{attempt}:full", "bootstrap_full"
+            ),
+            on_evaluator_finish=finish_invocation,
         )
     except (EvaluatorError, ProcessError, ReadinessError) as exc:
         receipt["status"] = "FAILED"

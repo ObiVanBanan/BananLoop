@@ -117,6 +117,17 @@ def test_replay_comparison_uses_input_identity_and_explicit_metric_tolerance():
         relative_metric_tolerances={"quality": 0.1},
     )["mismatches"]
 
+    huge_drift_data = original.model_dump(mode="json")
+    huge_drift_data["metrics"]["quality"]["value"] = 100.0
+    huge_drift_data["cases"][0]["metrics"]["quality"] = 100.0
+    huge_drift = EvaluationResult.model_validate(huge_drift_data)
+    assert _compare_results(
+        original,
+        huge_drift,
+        metric_tolerances={"quality": 0.0},
+        relative_metric_tolerances={"quality": 2.0},
+    )["mismatches"]
+
     changed_input_data = original.model_dump(mode="json")
     changed_input_data["cases"][0]["input_sha256"] = "c" * 64
     changed_input = EvaluationResult.model_validate(changed_input_data)

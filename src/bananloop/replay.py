@@ -94,7 +94,9 @@ def _compare_results(
     def tolerance_for(name: str, before: float, after: float) -> float:
         absolute = max(0.0, float(metric_tolerances.get(name, 0.0)))
         relative = max(0.0, float(relative_metric_tolerances.get(name, 0.0)))
-        return max(absolute, relative * max(abs(before), abs(after)))
+        # Anchor relative tolerance to the frozen result. Using the replayed
+        # value lets a wildly drifted replay inflate its own acceptance band.
+        return max(absolute, relative * abs(before)) + 1e-12 * max(1.0, abs(before))
 
     comparisons: dict[str, Any] = {}
     mismatches: list[str] = []

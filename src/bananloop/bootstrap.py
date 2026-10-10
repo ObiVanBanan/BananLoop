@@ -333,10 +333,12 @@ def bootstrap_campaign(
             "plan": plan.model_dump(mode="json") if plan is not None else None,
         }
         record["bootstrap_receipt_sha256"] = canonical_hash(record)
-        (paths.root / "bootstrap-plan.json").write_text(
-            json.dumps(record, indent=2, ensure_ascii=False),
-            encoding="utf-8",
+        record_path = paths.root / "bootstrap-plan.json"
+        temporary = record_path.with_suffix(record_path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+        temporary.replace(record_path)
 
     for attempt_index in range(3):
         call_started = time.perf_counter()
@@ -453,12 +455,21 @@ def bootstrap_campaign(
 
         try:
             readiness_started = time.perf_counter()
+
+            def persist_readiness(receipt: dict[str, Any]) -> None:
+                attempt_record["readiness"] = receipt
+                attempt_record["readiness_duration_ms"] = round(
+                    (time.perf_counter() - readiness_started) * 1000.0, 3
+                )
+                persist_record()
+
             readiness = run_bootstrap_readiness(
                 plan=plan,
                 workspace=workspace.workspace,
                 snapshot=bootstrap_snapshot,
                 state_root=paths.root,
                 attempt=attempt_index + 1,
+                on_receipt_update=persist_readiness,
             )
             readiness["duration_ms"] = round((time.perf_counter() - readiness_started) * 1000.0, 3)
             attempt_record["readiness_duration_ms"] = readiness["duration_ms"]

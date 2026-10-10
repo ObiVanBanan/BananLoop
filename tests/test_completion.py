@@ -124,6 +124,68 @@ def test_reference_evidence_receipt_is_durable_and_tampering_downgrades_trust(tm
         store.close()
 
 
+def test_dev_only_independent_validation_does_not_report_scientific_goal_met(tmp_path):
+    store, engine, _, _ = make_staged_engine(tmp_path)
+    try:
+        assert engine.run()["status"] == "GOAL_MET"
+        state = store.path.parent
+        evidence_dir = state / "reference-evidence"
+        evidence_dir.mkdir()
+        manifest = b'{"approved":true}\n'
+        (evidence_dir / "operator-reference.json").write_bytes(manifest)
+        readiness = b'{"status":"PASSED"}\n'
+        (evidence_dir / "readiness-receipt.json").write_bytes(readiness)
+        receipt_body = {"schema_version": 1, "checks": {"protocol_matches": True}}
+        receipt_body["receipt_sha256"] = canonical_hash(receipt_body)
+        (evidence_dir / "verification-receipt.json").write_text(
+            json.dumps(receipt_body, sort_keys=True, separators=(",", ":"))
+        )
+        spec = store.spec()
+        spec.signal_sanity_status = "REFERENCE_VERIFIED"
+        spec.signal_sanity_receipt_sha256 = receipt_body["receipt_sha256"]
+        spec.evaluation_evidence = EvaluationEvidence(
+            technical_readiness="READY", trust_level="INDEPENDENTLY_VALIDATED",
+            case_source="operator fixtures", label_source="operator labels",
+            reference_manifest_sha256=hashlib.sha256(manifest).hexdigest(),
+            reference_approved_by="operator",
+            reference_receipt_sha256=receipt_body["receipt_sha256"],
+            reference_receipt_path="reference-evidence/verification-receipt.json",
+            readiness_receipt_sha256=hashlib.sha256(readiness).hexdigest(),
+            independently_validated_tiers=["dev"],
+        )
+        store.update_campaign(spec_json=spec.model_dump_json(), spec_hash=spec.approved_hash())
+        report = build_report(store)
+        assert report["campaign_outcome"] == "GOAL_MET"
+        assert report["evaluator_evidence"]["trust_level"] == "INDEPENDENTLY_VALIDATED"
+        assert report["final_assessment"] == "DEV_ONLY"
+        assert report["scientific_assessment"] == "DEV_ONLY"
+        assert report["scientific_outcome"] == "UNVERIFIED_EVIDENCE"
+    finally:
+        store.close()
+
+
+def test_report_counts_failed_and_unknown_bootstrap_evaluator_attempts(tmp_path):
+    store, engine, _, _ = make_staged_engine(tmp_path)
+    try:
+        assert engine.run()["status"] == "GOAL_MET"
+        bootstrap_path = store.path.parent / "bootstrap-plan.json"
+        bootstrap_path.write_text(json.dumps({"bootstrap_attempts": [{
+            "readiness": {"evaluator_invocations": [
+                {"action_id": "smoke-1", "status": "COMPLETED"},
+                {"action_id": "smoke-2", "status": "FAILED"},
+                {"action_id": "full", "status": "UNKNOWN"},
+            ]}
+        }]}))
+        resources = build_report(store)["resources"]["bootstrap"]
+        assert resources["readiness_evaluator_calls"] == 3
+        assert resources["readiness_evaluator_attempted"] == 3
+        assert resources["readiness_evaluator_completed"] == 1
+        assert resources["readiness_evaluator_failed"] == 1
+        assert resources["readiness_evaluator_unknown"] == 1
+    finally:
+        store.close()
+
+
 def test_bootstrap_controlled_signal_labels_are_diagnostic_not_an_assessment_upgrade(tmp_path):
     store, engine, _, _ = make_staged_engine(tmp_path)
     try:
