@@ -16,7 +16,7 @@ from bananloop.evaluator_binding import EvaluatorBinding, canonical_hash, make_b
 from bananloop.integrity import sha256_evaluation_asset
 from bananloop.report import build_report, render_markdown
 from bananloop.store import CampaignStore
-from bananloop.trace_export import build_trace_package
+from bananloop.trace_export import build_trace_package, export_trace
 from bananloop.workspace import WorkspaceError, WorkspaceManager
 
 
@@ -193,13 +193,13 @@ def test_role_dispatch_and_launch_receipt_are_stable_across_resume(tmp_path: Pat
     )
     store, engine, _, _ = make_engine(tmp_path, agent_config=config)
     dispatched: list[tuple[str | None, str | None]] = []
-    factory = engine._make_agent_adapter
+    def capture_factory(delegate):
+        def capture(selected: AgentConfig):
+            dispatched.append((selected.model, selected.reasoning_effort))
+            return delegate(selected)
+        return capture
 
-    def capture_factory(selected: AgentConfig):
-        dispatched.append((selected.model, selected.reasoning_effort))
-        return factory(selected)
-
-    engine._make_agent_adapter = capture_factory
+    engine._make_agent_adapter = capture_factory(engine._make_agent_adapter)
     try:
         assert config.for_role("bootstrap").model == "strong-model"
         assert config.for_role("bootstrap").reasoning_effort == "high"
@@ -213,6 +213,12 @@ def test_role_dispatch_and_launch_receipt_are_stable_across_resume(tmp_path: Pat
         )
 
         monkeypatch.delenv("BANANLOOP_TEST_STOP_AFTER_STAGE")
+        db_path = store.path
+        workspace = engine.workspace
+        store.close()
+        store = CampaignStore(db_path)
+        engine = Engine(store, workspace)
+        engine._make_agent_adapter = capture_factory(engine._make_agent_adapter)
         assert engine.run(resume=True)["status"] == "GOAL_MET"
         profiles = [
             json.loads(row["payload_json"])
@@ -232,6 +238,14 @@ def test_role_dispatch_and_launch_receipt_are_stable_across_resume(tmp_path: Pat
         assert role_summary["propose"]["effective_model"] is None
         assert role_summary["propose"]["effective_model_status"] == "unknown"
         assert role_summary["implement"]["requested_model"] == "fast-model"
+        output = tmp_path / "portable-trace"
+        export_trace(store, output, Path(store.spec().source_repo))
+        exported = [
+            json.loads(line)
+            for line in (output / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        assert sum(event["event_type"] == "AGENT_LAUNCH_PROFILE" for event in exported) == 2
+        assert json.loads((output / "summary.json").read_text(encoding="utf-8"))["campaign_outcome"] == "GOAL_MET"
     finally:
         store.close()
 
