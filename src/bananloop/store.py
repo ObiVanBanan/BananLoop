@@ -125,13 +125,20 @@ class StoreError(RuntimeError):
 
 
 class CampaignStore:
-    def __init__(self, path: Path):
-        path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, path: Path, *, readonly: bool = False):
+        if not readonly:
+            path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
-        self.conn = sqlite3.connect(path)
+        self.readonly = readonly
+        if readonly:
+            self.conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+            self.conn.execute("PRAGMA query_only=ON")
+        else:
+            self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(SCHEMA)
-        self._migrate_schema()
+        if not readonly:
+            self.conn.executescript(SCHEMA)
+            self._migrate_schema()
 
     def _migrate_schema(self) -> None:
         """Apply additive migrations so existing campaign state remains usable."""

@@ -304,7 +304,27 @@ class CampaignRegistry:
             finally:
                 conn.close()
 
-    def resolve(self, campaign_id: str | None = None) -> tuple[Path, str | None]:
+    def resolve(self, campaign_id: str | None = None, *, readonly: bool = False) -> tuple[Path, str | None]:
+        if readonly:
+            if not self.path.exists():
+                return self.legacy_db.parent, None
+            assert_safe_local_path(self.path, "campaign registry")
+            conn = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+            conn.row_factory = sqlite3.Row
+            try:
+                if campaign_id is None:
+                    meta = conn.execute("SELECT active_campaign_id FROM project_meta WHERE id=1").fetchone()
+                    campaign_id = meta[0] if meta and meta[0] else None
+                if campaign_id is None:
+                    return self.legacy_db.parent, None
+                row = conn.execute("SELECT * FROM campaign_index WHERE campaign_id=?", (campaign_id,)).fetchone()
+                if row is None:
+                    raise RegistryError(f"unknown campaign-id: {campaign_id}")
+                return self._validate_state_path(row["state_path"], row["origin"]), campaign_id
+            except sqlite3.DatabaseError as exc:
+                raise RegistryError(f"campaign registry is corrupt at {self.path}; preserve a backup") from exc
+            finally:
+                conn.close()
         self.ensure_legacy()
         with _RegistryLock(self.lock_path):
             conn = self._connect()

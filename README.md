@@ -391,6 +391,22 @@ rejected/pending holdout. Artifact files remain in the state directory; the
 export contains their references, so preserve the complete state for full evidence.
 Review these operator reports before sharing them or placing them in agent context.
 
+To create a portable, shareable campaign trace after or during a run:
+
+```powershell
+bananloop trace export --repo . --campaign-id ID --output .bananloop/exports/ID
+```
+
+The package contains `events.jsonl`, `summary.json`, `report.md`, `manifest.json`
+and `manifest.sha256`. It is rebuilt deterministically from a read-only campaign
+snapshot; an existing verified export can be refreshed safely. `.bananloop/` is
+gitignored by default. The shareable export omits raw agent prompts/responses,
+local filesystem paths, per-case validation/holdout data, and raw artifacts. It
+includes aggregate tier results, receipt digests, role configuration, resource
+counts, and explicit unknowns for unmetered cost or provider-observed model
+identity. Keep the campaign state and retained artifacts when a full operator
+audit is needed. The export is not consumed by the experiment agent.
+
 ## Codex plugin: chat UX, independent core
 
 BananLoop now ships a Codex plugin bundle under `plugins/bananloop/` plus a

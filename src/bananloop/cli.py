@@ -12,6 +12,7 @@ from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, Guardra
 from .codex_hook import main as codex_hook_main
 from .engine import ControlledInterruption, Engine, EngineError
 from .export import export_champion
+from .trace_export import export_trace
 from .integrity import EvaluationIntegrityError, discover_evaluation_assets, evaluation_fingerprint
 from .lock import CampaignLock, CampaignLockError
 from .report import build_report, render_markdown
@@ -51,7 +52,7 @@ def _paths(repo: Path, state_dir: str | None) -> RuntimePaths:
     return paths
 
 
-def _selected_paths(args: argparse.Namespace, *, create: bool = True) -> RuntimePaths:
+def _selected_paths(args: argparse.Namespace, *, create: bool = True, readonly: bool = False) -> RuntimePaths:
     repo = Path(args.repo).resolve()
     state_dir = getattr(args, "state_dir", None)
     campaign_id = getattr(args, "campaign_id", None)
@@ -59,7 +60,7 @@ def _selected_paths(args: argparse.Namespace, *, create: bool = True) -> Runtime
         raise RegistryError("--state-dir and --campaign-id cannot be used together")
     if state_dir:
         return _paths(repo, state_dir) if create else RuntimePaths.for_repo(repo, Path(state_dir))
-    state_root, _ = CampaignRegistry(repo).resolve(campaign_id)
+    state_root, _ = CampaignRegistry(repo).resolve(campaign_id, readonly=readonly)
     paths = RuntimePaths.for_repo(repo, state_root)
     if create:
         paths.ensure()
@@ -618,6 +619,19 @@ def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_trace_export(args: argparse.Namespace) -> int:
+    paths = _selected_paths(args, create=False, readonly=True)
+    store = CampaignStore(paths.db, readonly=True)
+    try:
+        store.conn.execute("BEGIN")
+        store.campaign()
+        output = export_trace(store, Path(args.output), Path(store.spec().source_repo))
+    finally:
+        store.close()
+    print(f"Shareable campaign trace exported to {output}")
+    return 0
+
+
 def cmd_replay(args: argparse.Namespace) -> int:
     paths = _selected_paths(args, create=False)
     try:
@@ -927,6 +941,15 @@ def parser() -> argparse.ArgumentParser:
     inspect.add_argument("--experiment", type=int, required=True, help="experiment ordinal")
     inspect.add_argument("--json", action="store_true")
     inspect.set_defaults(func=cmd_inspect)
+
+    trace = sub.add_parser("trace", help="export a portable, shareable campaign trace")
+    trace_sub = trace.add_subparsers(dest="trace_command", required=True)
+    trace_export = trace_sub.add_parser("export", help="export allowlisted durable campaign evidence")
+    trace_export.add_argument("--repo", default=".")
+    trace_export.add_argument("--state-dir")
+    trace_export.add_argument("--campaign-id")
+    trace_export.add_argument("--output", required=True, help="new or existing verified export directory")
+    trace_export.set_defaults(func=cmd_trace_export)
 
     campaigns = sub.add_parser("campaigns", help="list repository campaigns")
     campaign_sub = campaigns.add_subparsers(dest="campaign_command", required=True)

@@ -1,7 +1,7 @@
 # Issue #33 review report
 
-Date: 2026-10-09
-Reviewed HEAD: `b829169e5557b84c658dec871746b12afb9f5491` on `feat/issue-33-evidence-aware-research`.
+Date: 2026-10-10
+Reviewed HEAD: `35222568973b260c73ffd334545197f0b22d52d1` on `feat/issue-33-review-fixes` (published to PR #35 head branch).
 PR: [#35](https://github.com/ObiVanBanan/BananLoop/pull/35) (open draft)
 
 ## Result
@@ -12,14 +12,15 @@ The operator reference path now accepts an exact-byte SHA-256-pinned JSON manife
 
 ## Validation
 
-- Full local `pytest -q` passes on the current worktree; `python -m compileall -q src/bananloop` and `git diff --check` pass.
-- GitHub Actions [run 37894295543](https://github.com/ObiVanBanan/BananLoop/actions/runs/37894295543) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 at the reviewed HEAD.
+- The four affected local suites (`test_replay.py`, `test_completion.py`, `test_readiness.py`, `test_bootstrap.py`) passed after the three review fixes. The focused replay/trust/accounting regressions also passed. `git diff --check` passed before commit.
+- CI for `35222568973b260c73ffd334545197f0b22d52d1` is running as GitHub Actions [run 38033649216](https://github.com/ObiVanBanan/BananLoop/actions/runs/38033649216); do not treat the previous green run at an older commit as validation of this head.
 - E0–E3 evidence and limits are recorded in `plan/issue-33-experiment-evidence.md`; E2 includes bounded paired DEV, separate product-group validation, replay, and exported-patch verification.
+- An existing 56-generation real GPU AnimeDiff smoke is now recorded as partial E4 evidence: it proves the generic campaign path and rejection of a null candidate, not image-quality improvement. The protocol only measures coarse RGB fidelity on neutral geometric cases.
 
 ## Remaining acceptance gaps
 
 - No real operator-approved reference manifest has been supplied for E1–E3. The test manifest verifies the mechanics only and does not upgrade those campaigns' trust.
 - E2 still lacks human-reject labels and continues to have poor generic no-match behavior; its negatives are constructed controls.
 - E3 is a single synthetic CPU workload on one runtime, not broad performance generalization.
-- E4 cannot run here: no GPU/A1111 runtime or frozen AnimeDiff benchmark is present.
+- E4 has a historical real GPU run, but no current-head rerun or semantic/prompt-adherence/safety/human-review evidence. A1111 is not currently listening and the GPU is occupied.
 - The issue requires actual domain campaigns and independent evidence. This report does not claim full DoD completion; issue #33 and PR #35 remain open, and PR #35 remains draft.
