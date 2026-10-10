@@ -19,9 +19,10 @@ from bananloop.engine import ControlledInterruption, Engine, EngineError
 from bananloop.evaluator_binding import canonical_hash
 from bananloop.evaluators.command import EvaluatorError
 from bananloop.policy import decide
-from bananloop.process import run_process
+from bananloop.process import ProcessError, run_process
 from bananloop.report import build_report, render_markdown
 from bananloop.store import CampaignStore
+from bananloop.workspace import WorkspaceError
 from test_engine import make_engine, make_staged_engine, git
 
 
@@ -430,6 +431,27 @@ def test_agent_commits_and_untracked_changes_are_transferred(tmp_path):
         assert (engine.workspace.workspace / "value.txt").read_text() == "1\n"
         assert (engine.workspace.workspace / "new.txt").exists()
         assert git(["rev-parse", "HEAD"], repo) == base
+    finally:
+        engine.workspace.cleanup_agent_workspace()
+        store.close()
+
+
+def test_agent_patch_apply_process_error_is_reported_as_workspace_error(tmp_path, monkeypatch):
+    store, engine, _, base = make_engine(tmp_path)
+    original_run_process = run_process
+
+    def fail_apply(argv, **kwargs):
+        if argv[:2] == ["git", "apply"]:
+            raise ProcessError("git apply rejected malformed patch")
+        return original_run_process(argv, **kwargs)
+
+    monkeypatch.setattr("bananloop.workspace.run_process", fail_apply)
+    try:
+        engine.workspace.ensure(base)
+        isolated = engine.workspace.prepare_agent_workspace(["evaluator.py"])
+        (isolated / "value.txt").write_text("1\n", encoding="utf-8")
+        with pytest.raises(WorkspaceError, match="candidate change transfer.*git apply rejected"):
+            engine.workspace.apply_agent_changes(isolated, ["evaluator.py"])
     finally:
         engine.workspace.cleanup_agent_workspace()
         store.close()

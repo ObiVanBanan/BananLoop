@@ -265,6 +265,30 @@ def test_role_dispatch_and_launch_receipt_are_stable_across_resume(tmp_path: Pat
         store.close()
 
 
+def test_candidate_transfer_process_failure_pauses_as_infrastructure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    store, engine, _, base = make_engine(tmp_path)
+
+    def fail_transfer(_agent_workspace, _hidden_paths):
+        raise WorkspaceError("candidate change transfer from agent workspace failed: git apply rejected patch")
+
+    monkeypatch.setattr(engine.workspace, "apply_agent_changes", fail_transfer)
+    try:
+        with pytest.raises(EngineError, match="implement failed: candidate change transfer"):
+            engine.run()
+
+        campaign = store.campaign()
+        assert campaign["status"] == "PAUSED_INFRA"
+        assert campaign["agent_calls"] == 2
+        assert campaign["champion_snapshot"] == base
+        experiment = store.experiments()[0]
+        assert experiment["failure_category"] == "CANDIDATE_NOT_MATERIALIZED"
+        report = build_report(store)
+        assert report["experiments"][0]["causal_record"]["scientific_outcome"] == "INFRA_FAILED"
+        assert any(event["event_type"] == "CANDIDATE_TRANSFER_FAILED" for event in store.events())
+    finally:
+        store.close()
+
+
 
 class ReplayNormalizingAgent(AgentAdapter):
     def probe(self):

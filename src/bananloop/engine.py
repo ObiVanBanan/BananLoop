@@ -1066,7 +1066,27 @@ class Engine:
                 lesson=None,
             )
         except (AgentError, ValidationError, UnknownActionOutcome, WorkspaceError) as exc:
-            self.store.update_experiment(experiment_id, failure_category="AGENT_PROTOCOL_ERROR", lesson=str(exc)[:1000])
+            failure_category = (
+                "CANDIDATE_NOT_MATERIALIZED"
+                if isinstance(exc, WorkspaceError)
+                else "AGENT_PROTOCOL_ERROR"
+            )
+            self.store.update_experiment(
+                experiment_id,
+                failure_category=failure_category,
+                lesson=str(exc)[:1000],
+            )
+            self.store.event(
+                "CANDIDATE_TRANSFER_FAILED"
+                if isinstance(exc, WorkspaceError)
+                else "AGENT_PROTOCOL_FAILED",
+                {
+                    "experiment_id": experiment_id,
+                    "category": failure_category,
+                    "reason": str(exc)[:1000],
+                },
+            )
+            self.store.conn.commit()
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(f"implement failed: {exc}") from exc
         self.store.set_stage(attempt_id, "SNAPSHOT")

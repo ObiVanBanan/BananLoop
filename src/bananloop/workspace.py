@@ -8,7 +8,7 @@ import stat
 import tempfile
 from pathlib import Path
 
-from .process import run_process
+from .process import ProcessError, run_process
 
 
 class WorkspaceError(RuntimeError):
@@ -174,32 +174,37 @@ class WorkspaceManager:
     def apply_agent_changes(self, agent_workspace: Path, hidden_paths: list[str]) -> list[str]:
         if agent_workspace != self.agent_workspace or self._agent_base is None:
             raise WorkspaceError("agent workspace has no supervisor-owned baseline")
-        run_process(["git", "add", "-A"], cwd=agent_workspace, timeout=30)
-        changed_out = run_process(
-            ["git", "diff", "--cached", "--name-only", self._agent_base],
-            cwd=agent_workspace,
-            timeout=20,
-        ).stdout
-        changed = [line.strip().replace("\\", "/") for line in changed_out.splitlines() if line.strip()]
-        hidden = [".git", ".git/**", ".bananloop_eval", ".bananloop_eval/**", *hidden_paths]
-        violations = [path for path in changed if self._matches(path, hidden)]
-        if violations:
+        try:
+            run_process(["git", "add", "-A"], cwd=agent_workspace, timeout=30)
+            changed_out = run_process(
+                ["git", "diff", "--cached", "--name-only", self._agent_base],
+                cwd=agent_workspace,
+                timeout=20,
+            ).stdout
+            changed = [line.strip().replace("\\", "/") for line in changed_out.splitlines() if line.strip()]
+            hidden = [".git", ".git/**", ".bananloop_eval", ".bananloop_eval/**", *hidden_paths]
+            violations = [path for path in changed if self._matches(path, hidden)]
+            if violations:
+                raise WorkspaceError(
+                    "agent attempted to write hidden path(s): " + ", ".join(sorted(violations))
+                )
+            patch = run_process(
+                ["git", "diff", "--cached", "--binary", "--full-index", self._agent_base],
+                cwd=agent_workspace,
+                timeout=30,
+            ).stdout
+            if patch:
+                run_process(
+                    ["git", "apply", "--whitespace=nowarn", "-"],
+                    cwd=self.workspace,
+                    timeout=60,
+                    input_text=patch,
+                )
+            return changed
+        except ProcessError as exc:
             raise WorkspaceError(
-                "agent attempted to write hidden path(s): " + ", ".join(sorted(violations))
-            )
-        patch = run_process(
-            ["git", "diff", "--cached", "--binary", "--full-index", self._agent_base],
-            cwd=agent_workspace,
-            timeout=30,
-        ).stdout
-        if patch:
-            run_process(
-                ["git", "apply", "--whitespace=nowarn", "-"],
-                cwd=self.workspace,
-                timeout=60,
-                input_text=patch,
-            )
-        return changed
+                f"candidate change transfer from agent workspace failed: {exc}"
+            ) from exc
 
     def cleanup_agent_workspace(self) -> None:
         workspace = self.agent_workspace
