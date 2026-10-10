@@ -10,7 +10,7 @@ import bananloop.trace_export as trace_export
 from bananloop.cli import parser
 from bananloop.store import CampaignStore, StoreError
 from bananloop.trace_export import export_trace
-from test_engine import make_engine
+from test_engine import make_engine, make_staged_engine
 
 
 def _package_bytes(path: Path) -> dict[str, bytes]:
@@ -101,6 +101,57 @@ def test_trace_export_redacts_host_paths_from_model_and_provider_ids():
     assert trace_export._safe_model("C:/Users/alice/private-model") is None
     assert trace_export._safe_model(r"C:\Users\alice\private-model") is None
     assert trace_export._safe_model("/home/alice/model") is None
+
+
+def test_trace_export_omits_case_labels_and_failure_payloads_from_hidden_tiers(tmp_path: Path):
+    store, _, _, base = make_staged_engine(tmp_path)
+    output = tmp_path / "share" / "hidden-tier-trace"
+    try:
+        for tier in ("validation", "holdout"):
+            result = {
+                "status": "ok",
+                "metrics": {
+                    "quality": {"value": 3.0, "unit": "score", "n": 1},
+                    "regressions": {"value": 0.0, "unit": "count", "n": 1},
+                },
+                "checks": {"tests": {"passed": True, "executed": 1, "skipped": 0}},
+                "protocol_sha256": "a" * 64,
+                "cases": [{
+                    "case_id": f"{tier}_GOLD_CANARY",
+                    "repetition": 0,
+                    "input_sha256": "b" * 64,
+                    "metrics": {"quality": 3.0},
+                }],
+                "failure_signals": [{
+                "failure_type": "CONTROLLED_FAILURE",
+                "symptom": f"{tier}_RAW_FAILURE_CANARY",
+                "evidence": ["hidden evaluator explanation"],
+                }],
+            }
+            store.conn.execute(
+                "INSERT INTO evaluations(experiment_id,candidate_snapshot,tier,result_json,created_at) "
+                "VALUES(NULL,?,?,?,?)",
+                (base, tier, json.dumps(result, sort_keys=True), "2026-10-10T00:00:00Z"),
+            )
+        store.conn.commit()
+        evaluations_before = store.evaluations()
+        events_before = store.events()
+
+        export_trace(store, output, Path(store.spec().source_repo))
+
+        exported = b"\n".join(_package_bytes(output).values()).decode("utf-8")
+        for canary in (
+            "validation_GOLD_CANARY",
+            "holdout_GOLD_CANARY",
+            "validation_RAW_FAILURE_CANARY",
+            "holdout_RAW_FAILURE_CANARY",
+            "hidden evaluator explanation",
+        ):
+            assert canary not in exported
+        assert store.evaluations() == evaluations_before
+        assert store.events() == events_before
+    finally:
+        store.close()
 
 
 def test_trace_export_supports_active_paused_stopped_and_completed_statuses(tmp_path: Path):
