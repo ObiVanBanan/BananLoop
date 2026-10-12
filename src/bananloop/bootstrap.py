@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import re
 from pathlib import Path
 from typing import Any, Literal
@@ -298,6 +299,52 @@ def bootstrap_campaign(
     bootstrap_snapshot = source_base
     changed: list[str] = []
 
+    # A missing external prerequisite is a pause, not a discarded bootstrap.
+    # Reuse the previously prepared evaluator snapshot on the next invocation.
+    record_path = paths.root / "bootstrap-plan.json"
+    if record_path.is_file():
+        previous = json.loads(record_path.read_text(encoding="utf-8"))
+        previous_attempts = previous.get("bootstrap_attempts", [])
+        previous_plan = previous.get("plan")
+        if (
+            previous.get("source_base_commit") == source_base
+            and previous_attempts
+            and isinstance(previous_plan, dict)
+            and previous_plan.get("status") == "needs_input"
+        ):
+            prior_snapshot = previous.get("bootstrap_snapshot", source_base)
+            # Do not trust an arbitrary snapshot from a stale or foreign state.
+            if not isinstance(prior_snapshot, str) or not re.fullmatch(r"[0-9a-f]{40}", prior_snapshot):
+                raise BootstrapError("invalid saved bootstrap snapshot")
+            workspace.checkout(prior_snapshot)
+            bootstrap_snapshot = prior_snapshot
+            changed = workspace.changed_paths(source_base, prior_snapshot)
+            if any(not _bootstrap_path(path) for path in changed):
+                raise BootstrapError("saved bootstrap snapshot modifies protected source paths")
+            bootstrap_attempts = previous_attempts
+            prior = BootstrapPlan.model_validate(previous_plan)
+            # Fail immediately for still-missing, explicitly named environment
+            # variables. Never persist their values in campaign state.
+            named_keys = sorted(set(re.findall(
+                r"\\b[A-Z][A-Z0-9_]*(?:_API_KEY|_TOKEN|_SECRET)\\b",
+                " ".join(prior.needs_input),
+            )))
+            missing = [key for key in named_keys if not os.environ.get(key)]
+            if missing:
+                return prior, None
+            task = {
+                **task,
+                "resume_bootstrap": {
+                    "previous_plan": previous_plan,
+                    "previous_snapshot": prior_snapshot,
+                    "instruction": (
+                        "Continue the existing evaluator setup; do not rebuild "
+                        "working .bananloop_eval assets. Recheck prerequisites "
+                        "and return ready only after successful smoke evaluation."
+                    ),
+                },
+            }
+
     def persist_record() -> None:
         record = {
             "source_base_commit": source_base,
@@ -425,7 +472,8 @@ def bootstrap_campaign(
 
         if plan.status == "needs_input":
             persist_record()
-            workspace.checkout(source_base)
+            # Keep the private bootstrap snapshot so retrying after supplying
+            # credentials does not repeat evaluator construction.
             return plan, None
 
         try:
