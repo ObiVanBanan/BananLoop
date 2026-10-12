@@ -239,7 +239,7 @@ def _bootstrap_contract_error(
 def _missing_named_credentials(needs_input: list[str]) -> list[str]:
     """Only check explicitly requested environment variables, never their values."""
     names = set(re.findall(
-        r"\\b[A-Z][A-Z0-9_]*(?:_API_KEY|_TOKEN|_SECRET)\\b",
+        r"\b[A-Z][A-Z0-9_]*(?:_API_KEY|_TOKEN|_SECRET)\b",
         " ".join(needs_input),
     ))
     return sorted(name for name in names if not os.environ.get(name))
