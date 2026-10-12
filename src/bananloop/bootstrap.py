@@ -236,6 +236,15 @@ def _bootstrap_contract_error(
     return None
 
 
+def _missing_named_credentials(needs_input: list[str]) -> list[str]:
+    """Only check explicitly requested environment variables, never their values."""
+    names = set(re.findall(
+        r"\\b[A-Z][A-Z0-9_]*(?:_API_KEY|_TOKEN|_SECRET)\\b",
+        " ".join(needs_input),
+    ))
+    return sorted(name for name in names if not os.environ.get(name))
+
+
 def _bootstrap_path(path: str) -> bool:
     normalized = path.replace("\\", "/")
     return normalized == ".bananloop_eval" or normalized.startswith(".bananloop_eval/")
@@ -325,11 +334,7 @@ def bootstrap_campaign(
             prior = BootstrapPlan.model_validate(previous_plan)
             # Fail immediately for still-missing, explicitly named environment
             # variables. Never persist their values in campaign state.
-            named_keys = sorted(set(re.findall(
-                r"\\b[A-Z][A-Z0-9_]*(?:_API_KEY|_TOKEN|_SECRET)\\b",
-                " ".join(prior.needs_input),
-            )))
-            missing = [key for key in named_keys if not os.environ.get(key)]
+            missing = _missing_named_credentials(prior.needs_input)
             if missing:
                 return prior, None
             task = {
