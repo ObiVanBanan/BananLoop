@@ -697,6 +697,11 @@ def test_bootstrap_delegates_agent_smoke_timeout_to_core(tmp_path: Path, monkeyp
             payload["project_context"] = "existing evaluator"
             payload["evaluation_command"] = [sys.executable, ".bananloop_eval/evaluator.py"]
             payload["smoke_command"] = [sys.executable, ".bananloop_eval/evaluator.py"]
+            payload["primary_metric"] = _bootstrap_payload(
+                status="ready", needs_input=[], summary="valid metric",
+            )["primary_metric"]
+            payload["editable_scope"] = ["value.txt"]
+            payload["agent_visible_metrics"] = ["quality"]
             return payload
 
     monkeypatch.setattr(bootstrap_module, "_agent", lambda _config: Agent())
