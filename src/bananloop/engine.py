@@ -22,7 +22,7 @@ from .contracts import (
     ImplementResult,
     StopReason,
 )
-from .evaluators import CommandEvaluator, EvaluatorError
+from .evaluators import CommandCheck, CommandEvaluator, EvaluatorError
 from .integrity import evaluation_fingerprint, verify_evaluation_assets
 from .evaluator_binding import (
     EvaluationReceipt, EvaluatorBinding, canonical_hash, make_binding,
@@ -98,6 +98,7 @@ class Engine:
             if self.spec.validation_command
             else None
         )
+        self.regression_check = CommandCheck(self.spec.regression_command) if self.spec.regression_command else None
         self.holdout_evaluator = (
             CommandEvaluator(self.spec.holdout_command)
             if self.spec.holdout_command
@@ -255,7 +256,7 @@ class Engine:
         if control_reason:
             raise ProcessCancelled(control_reason)
         campaign = self.store.campaign()
-        if kind in {"evaluator", "final_evaluator"}:
+        if kind in {"evaluator", "final_evaluator", "regression"}:
             reserve = int(kind != "final_evaluator" and self.holdout_evaluator is not None)
             if campaign["evaluator_calls"] + 1 + reserve > self.spec.budget.max_evaluator_calls:
                 if kind == "final_evaluator":
@@ -288,12 +289,17 @@ class Engine:
     def _new_attempt_fits_evaluator_budget(self) -> bool:
         campaign = self.store.campaign()
         required = 1  # dev evaluation
+        measured_required = 1
         if self.validation_evaluator is not None:
             required += 1  # worst case: dev ACCEPT also needs validation
+            measured_required += 1
+        if self.regression_check is not None:
+            required += 1  # candidate regression gate
         if self.holdout_evaluator is not None:
             required += 1  # reserved final-only holdout slot
+            measured_required += 1
         if self.spec.budget.max_evaluation_units is not None:
-            if self.store.evaluation_work_reserved() + required * self.spec.budget.evaluation_units_per_call > self.spec.budget.max_evaluation_units:
+            if self.store.evaluation_work_reserved() + measured_required * self.spec.budget.evaluation_units_per_call > self.spec.budget.max_evaluation_units:
                 return False
         return (
             campaign["evaluator_calls"] + required
@@ -322,14 +328,14 @@ class Engine:
             if existing["status"] == "COMPLETED":
                 self._progress(f"{action_id}: reuse completed result")
                 response = json.loads(existing["response_json"])
-                if kind != "agent" and response.get("artifact_manifest"):
+                if kind not in {"agent", "regression"} and response.get("artifact_manifest"):
                     root = self.store.path.parent / "artifacts" / hashlib.sha256(action_id.encode()).hexdigest()[:24]
                     retained = EvaluationResult.model_validate(response)
                     retain_artifacts(retained, root, experiment_id, request["snapshot"])
-                if kind != "agent":
+                if kind not in {"agent", "regression"}:
                     self._verify_completed_receipt(action_id)
                 return response
-            if kind != "agent":
+            if kind not in {"agent", "regression"}:
                 self._ensure_evaluator_binding()
             if existing["status"] == "CANCELLED":
                 if self._budget_or_stop(kind):
@@ -361,14 +367,14 @@ class Engine:
                     f"action {action_id} has unsupported prior status {existing['status']}"
                 )
         else:
-            if kind != "agent":
+            if kind not in {"agent", "regression"}:
                 self._ensure_evaluator_binding()
             if self._budget_or_stop(kind):
                 raise CampaignHalted()
             self.store.start_action(action_id, experiment_id, stage, kind, request_hash, request)
         self._progress(f"{action_id}: invoke {kind}")
         output_dir = self.store.path.parent / "artifacts" / hashlib.sha256(action_id.encode()).hexdigest()[:24]
-        if kind != "agent":
+        if kind not in {"agent", "regression"}:
             output_dir.mkdir(parents=True, exist_ok=True)
             candidate_proof = request.get("candidate_proof")
             if candidate_proof:
@@ -405,7 +411,7 @@ class Engine:
                 check_process_control()
                 response = invoke()
                 check_process_control()
-            if kind != "agent":
+            if kind not in {"agent", "regression"}:
                 result = EvaluationResult.model_validate(response)
                 ceiling = self.spec.budget.evaluation_units_per_call
                 if ceiling is not None and (result.resource_units is None or result.resource_units > ceiling):
@@ -433,6 +439,10 @@ class Engine:
                 tmp_sidecar.replace(sidecar)
                 response = result.model_dump(mode="json")
                 response["_evaluation_receipt"] = receipt.model_dump(mode="json")
+            elif kind == "regression":
+                violations = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
+                if violations:
+                    raise EvaluatorError("frozen evaluation assets changed during regression check: " + ", ".join(violations))
         except ProcessCancelled as exc:
             self.store.cancel_action(action_id, exc.reason)
             raise
@@ -449,8 +459,9 @@ class Engine:
 
     def _ensure_evaluator_binding(self, *, verify_runtime: bool = True) -> EvaluatorBinding:
         commands = {"dev": self.spec.evaluation_command}
-        if self.spec.validation_command:
-            commands["validation"] = self.spec.validation_command
+        validation_command = self.spec.validation_command or (self.spec.regression_command if self.spec.regression_command else [])
+        if validation_command:
+            commands["validation"] = validation_command
         if self.spec.holdout_command:
             commands["holdout"] = self.spec.holdout_command
         current = make_binding(self.spec, runtime_descriptor(commands))
@@ -467,7 +478,7 @@ class Engine:
         stored = EvaluatorBinding.model_validate_json(row["binding_json"])
         if row["binding_hash"] != canonical_hash(stored.model_dump(mode="json")):
             raise BindingRuntimeMismatch("persisted evaluator binding hash is invalid")
-        if stored.approved_spec_hash != self.spec.approved_hash() or stored.binding_id != current.binding_id and verify_runtime:
+        if stored.approved_spec_hash != self.spec.evaluator_binding_hash() or stored.binding_id != current.binding_id and verify_runtime:
             raise BindingRuntimeMismatch("immutable evaluator binding does not match campaign specification/runtime")
         if verify_runtime and stored.runtime_fingerprint != current.runtime_fingerprint:
             raise BindingRuntimeMismatch("bounded evaluator runtime differs from immutable campaign binding")
@@ -699,6 +710,23 @@ class Engine:
                 tier="validation",
             )
             self.store.event("BASELINE_VALIDATION_RECORDED", {"snapshot": snapshot})
+
+        if self.regression_check is not None:
+            regression = self._action(
+                action_id="baseline:regression", experiment_id=None,
+                stage="BASELINE_REGRESSION", kind="regression",
+                request={"snapshot": snapshot, "tier": "regression", "command": self.spec.regression_command},
+                invoke=lambda: self.regression_check.check(
+                    self.workspace.workspace,
+                    self.spec.regression_timeout_seconds or self.spec.evaluator_timeout_seconds,
+                ),
+            )
+            if not regression.get("passed"):
+                error = f"baseline regression command exited {regression.get('returncode')}"
+                self.store.event("BASELINE_REGRESSION_FAILED", {"error": error})
+                self.store.conn.commit()
+                self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+                raise EngineError(error)
 
         self.store.update_campaign(
             baseline_json=result.model_dump_json(),
@@ -1306,6 +1334,8 @@ class Engine:
     def _route_after_dev_analysis(self, attempt_id: int, decision: dict[str, Any]) -> None:
         if decision.get("accepted") and self.validation_evaluator is not None:
             self.store.set_stage(attempt_id, "VALIDATE")
+        elif decision.get("accepted") and self.regression_check is not None:
+            self.store.set_stage(attempt_id, "REGRESSION")
         else:
             self.store.set_stage(
                 attempt_id,
@@ -1530,7 +1560,37 @@ class Engine:
                 exp["candidate_snapshot"],
                 combined,
             )
+            self.store.set_stage(attempt_id, "REGRESSION" if self.regression_check is not None else "PROMOTE")
+
+    def _stage_regression(self, attempt_id: int, experiment_id: int) -> None:
+        exp = self.store.experiment(experiment_id)
+        proof = self._candidate_materialization_proof(experiment_id)
+        snapshot = exp["candidate_snapshot"]
+        request = {"snapshot": snapshot, "tier": "regression", "command": self.spec.regression_command,
+                   "candidate_proof": proof}
+        try:
+            result = self._action(
+                action_id=f"exp:{experiment_id}:regression", experiment_id=experiment_id,
+                stage="REGRESSION", kind="regression", request=request,
+                invoke=lambda: self.regression_check.check(
+                    self.workspace.workspace,
+                    self.spec.regression_timeout_seconds or self.spec.evaluator_timeout_seconds,
+                ),
+            )
+        except (EvaluatorError, EngineError) as exc:
+            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+            raise EngineError(f"regression command failed to run: {exc}") from exc
+        if result.get("passed"):
             self.store.set_stage(attempt_id, "PROMOTE")
+        else:
+            decision = json.loads(exp["dev_decision_json"] or exp["decision_json"])
+            decision["accepted"] = False
+            decision.setdefault("reasons", []).append("REGRESSION_REJECTED")
+            self.store.update_experiment(experiment_id, decision_json=json.dumps(decision),
+                                         failure_category="REGRESSION_REJECTED",
+                                         lesson=f"Regression command exited {result.get('returncode')}")
+            self.store.record_decision(experiment_id, snapshot, decision)
+            self.store.set_stage(attempt_id, "REJECT")
         self._checkpoint(self.store.attempt(attempt_id)["stage"])
 
     def _stage_promote(self, attempt_id: int, experiment_id: int) -> None:
@@ -1702,6 +1762,8 @@ class Engine:
                 self._stage_analyze(attempt_id, experiment_id)
             elif stage == "VALIDATE":
                 self._stage_validate(attempt_id, experiment_id)
+            elif stage == "REGRESSION":
+                self._stage_regression(attempt_id, experiment_id)
             elif stage == "PROMOTE":
                 self._stage_promote(attempt_id, experiment_id)
             elif stage == "REJECT":

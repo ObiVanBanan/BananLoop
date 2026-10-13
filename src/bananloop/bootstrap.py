@@ -98,6 +98,7 @@ class BootstrapPlan(BaseModel):
     evaluation_command: list[str] = Field(default_factory=list)
     smoke_command: list[str] = Field(default_factory=list)
     validation_command: list[str] = Field(default_factory=list)
+    regression_command: list[str] = Field(default_factory=list)
     holdout_command: list[str] = Field(default_factory=list)
     primary_metric: MetricSpec
     guardrails: list[GuardrailSpec] = Field(default_factory=list)
@@ -703,6 +704,7 @@ def bootstrap_campaign(
         plan.smoke_command,
         plan.evaluation_command,
         plan.validation_command,
+        plan.regression_command,
         plan.holdout_command,
     ]
     assets = _freeze_assets(workspace.workspace, commands)
@@ -736,6 +738,7 @@ def bootstrap_campaign(
         evaluation_command=plan.evaluation_command,
         evaluator_timeout_seconds=plan.evaluator_timeout_seconds,
         validation_command=plan.validation_command,
+        regression_command=plan.regression_command,
         holdout_command=plan.holdout_command,
         evaluation_assets=assets,
         agent_hidden_paths=[".bananloop_eval/**"],

@@ -167,13 +167,17 @@ def runtime_descriptor(commands: dict[str, list[str]]) -> dict[str, Any]:
 def make_binding(spec: CampaignSpec, runtime: dict[str, Any]) -> EvaluatorBinding:
     commands = {"dev": spec.evaluation_command}
     timeouts = {"dev": spec.evaluator_timeout_seconds}
-    if spec.validation_command:
-        commands["validation"] = spec.validation_command
-        timeouts["validation"] = spec.validation_timeout_seconds or spec.evaluator_timeout_seconds
+    validation_command = spec.validation_command or (
+        spec.regression_command if spec.regression_command and not spec.validation_command else []
+    )
+    if validation_command:
+        commands["validation"] = validation_command
+        timeouts["validation"] = (spec.validation_timeout_seconds or spec.regression_timeout_seconds
+                                   or spec.evaluator_timeout_seconds)
     if spec.holdout_command:
         commands["holdout"] = spec.holdout_command
         timeouts["holdout"] = spec.holdout_timeout_seconds or spec.evaluator_timeout_seconds
-    approved = spec.approved_hash()
+    approved = spec.evaluator_binding_hash()
     goal_fp = canonical_hash(spec.goal)
     policy = {
         "primary_metric": spec.primary_metric.model_dump(mode="json"),

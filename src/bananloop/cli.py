@@ -423,6 +423,35 @@ def cmd_continue(args: argparse.Namespace) -> int:
         store = CampaignStore(paths.db)
         try:
             campaign = store.campaign()
+            if getattr(args, "migrate_pytest_validation", False):
+                old_spec = store.spec()
+                failed_validation = store.action("baseline:validation")
+                if (old_spec.regression_command or not old_spec.validation_command
+                        or not any("pytest" in token.lower() for token in old_spec.validation_command)
+                        or not failed_validation or failed_validation["status"] != "FAILED"
+                        or not store.action("baseline:evaluate")
+                        or store.action("baseline:evaluate")["status"] != "COMPLETED"):
+                    raise ValueError("pytest migration requires a failed baseline:validation, a completed baseline:evaluate, and no existing regression command")
+                new_spec = old_spec.model_copy(update={
+                    "regression_command": old_spec.validation_command,
+                    "regression_timeout_seconds": old_spec.validation_timeout_seconds,
+                    "validation_command": [],
+                    "validation_timeout_seconds": None,
+                })
+                if new_spec.evaluator_binding_hash() != old_spec.approved_hash():
+                    raise ValueError("migration would alter the immutable baseline evaluator binding")
+                now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+                with store.conn:
+                    store.conn.execute("UPDATE campaigns SET spec_json=?,spec_hash=?,updated_at=? WHERE id=1",
+                                       (new_spec.model_dump_json(), new_spec.approved_hash(), now))
+                    store.conn.execute("UPDATE actions SET status='CANCELLED',error=?,updated_at=? WHERE id='baseline:validation'",
+                                       ("superseded by explicit pytest regression-gate migration", now))
+                    store.event("PYTEST_VALIDATION_MIGRATED_TO_REGRESSION", {
+                        "action_id": "baseline:validation", "command": old_spec.validation_command,
+                        "baseline_snapshot": campaign.get("baseline_snapshot"),
+                        "new_spec_hash": new_spec.approved_hash(),
+                    })
+                campaign = store.campaign()
             actions = store.actions()
         finally:
             store.close()
@@ -673,6 +702,7 @@ def parser() -> argparse.ArgumentParser:
     continue_cmd.add_argument("--campaign-id")
     continue_cmd.add_argument("--state-dir")
     continue_cmd.add_argument("--yes", action="store_true", help="approve retry of known FAILED actions")
+    continue_cmd.add_argument("--migrate-pytest-validation", action="store_true", help="move a failed pytest JSON validation command to an exit-code regression gate, preserving the completed baseline")
     continue_cmd.add_argument("--retry-running-action", action="store_true", help="confirm an orphaned RUNNING action after verifying the old process has exited")
     continue_cmd.set_defaults(func=cmd_continue)
 

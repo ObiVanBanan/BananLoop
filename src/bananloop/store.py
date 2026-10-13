@@ -351,7 +351,7 @@ class CampaignStore:
         return int(self.conn.execute("SELECT COALESCE(SUM(amount),0) FROM reservations WHERE resource='evaluation_unit'").fetchone()[0])
 
     def _reserve_action(self, action_id: str, kind: str, now: str) -> None:
-        if kind != "agent":
+        if kind in {"evaluator", "final_evaluator"}:
             units = self.spec().budget.evaluation_units_per_call
             if units is not None:
                 # Never refund failed, cancelled or unknown work: it may have run.
