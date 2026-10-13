@@ -248,16 +248,9 @@ def _missing_named_credentials(needs_input: list[str]) -> list[str]:
     return sorted(name for name in names if not os.environ.get(name))
 
 
-def _agent_smoke_timeout(plan: BootstrapPlan) -> bool:
-    """Agent smoke time limits do not establish missing operator prerequisites.
-
-    Only promote a fully specified evaluator to the core-owned readiness gate.
-    Core validation still enforces snapshot/protocol identity, repeatability and
-    evaluation integrity; no quality gate is skipped.
-    """
-    if plan.status != "needs_input" or not plan.evaluation_command or not plan.smoke_command:
-        return False
-    if not plan.project_context.strip() or not plan.needs_input:
+def _agent_smoke_timeout_report(plan: BootstrapPlan) -> bool:
+    """A smoke timeout by the bootstrap agent is not missing operator input."""
+    if plan.status != "needs_input" or not plan.needs_input:
         return False
     explanation = " ".join([plan.summary, *plan.needs_input])
     smoke = re.search(r"\\bsmoke\\b|смоук", explanation, re.IGNORECASE)
@@ -280,6 +273,16 @@ def _agent_smoke_timeout(plan: BootstrapPlan) -> bool:
         ):
             return False
     return True
+
+
+def _agent_smoke_timeout(plan: BootstrapPlan) -> bool:
+    """Delegate fully specified plans to core, never skip authoritative checks."""
+    return bool(
+        _agent_smoke_timeout_report(plan)
+        and plan.evaluation_command
+        and plan.smoke_command
+        and plan.project_context.strip()
+    )
 
 
 def _core_smoke_timed_out(readiness: dict[str, Any] | None) -> bool:
@@ -562,8 +565,25 @@ def bootstrap_campaign(
 
         if plan.status == "needs_input":
             persist_record()
-            # Keep the private bootstrap snapshot so retrying after supplying
-            # credentials does not repeat evaluator construction.
+            if _agent_smoke_timeout_report(plan) and attempt_index < 2:
+                # The agent could not finish its own smoke call but omitted a
+                # complete evaluator contract. Ask for command metadata, not a
+                # second expensive smoke execution or human intervention.
+                task = {
+                    **task,
+                    "repair": {
+                        "reason": "agent-side smoke timeout is core-owned",
+                        "previous_plan": plan.model_dump(mode="json"),
+                        "instruction": (
+                            "Return the complete READY evaluator contract and "
+                            "exact argv commands. Do NOT execute smoke yourself; "
+                            "BananLoop core will verify it. Reuse the existing "
+                            ".bananloop_eval snapshot and do not change its protocol."
+                        ),
+                    },
+                }
+                continue
+            # Genuine prerequisites remain a pause, not an invented answer.
             return plan, None
 
         try:
