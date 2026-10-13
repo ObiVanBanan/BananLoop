@@ -12,7 +12,10 @@ import pytest
 from bananloop.agents.base import AgentAdapter
 from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, EvaluationResult, GuardrailSpec, Hypothesis, MetricSpec, RuntimePaths
 from bananloop.engine import ControlledInterruption, Engine, EngineError, UnknownActionOutcome, _hash_payload
-from bananloop.evaluator_binding import EvaluatorBinding, canonical_hash, make_binding, runtime_descriptor
+from bananloop.evaluator_binding import (
+    EvaluatorBinding, canonical_hash, make_binding, runtime_descriptor,
+    runtime_environment_has_only_path, runtime_matches_except_environment,
+)
 from bananloop.integrity import sha256_evaluation_asset
 from bananloop.report import build_report, render_markdown
 from bananloop.store import CampaignStore
@@ -1169,6 +1172,47 @@ def test_evaluator_binding_is_stable_and_tampering_is_rejected(tmp_path: Path):
         with pytest.raises(Exception):
             EvaluatorBinding.model_validate(payload)
         assert engine.spec.approved_hash() == store.campaign()["spec_hash"]
+    finally:
+        store.close()
+
+
+def test_runtime_drift_acceptance_requires_only_opaque_environment_hash_to_differ(monkeypatch):
+    runtime = runtime_descriptor({"dev": [sys.executable]})
+    changed_environment = {**runtime, "runtime_environment_sha256": "a" * 64}
+    assert runtime_matches_except_environment(runtime, changed_environment)
+    changed_packages = {**changed_environment, "python_distributions": []}
+    assert not runtime_matches_except_environment(runtime, changed_packages)
+    assert not runtime_matches_except_environment(runtime, runtime)
+
+    monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
+    for key in ("PYTHONPATH", "PYTHONHOME", "PYTHONSAFEPATH", "VIRTUAL_ENV", "CONDA_PREFIX", "NODE_PATH", "NODE_ENV"):
+        monkeypatch.delenv(key, raising=False)
+    assert runtime_environment_has_only_path()
+    monkeypatch.setenv("PYTHONPATH", "/tmp/other-python-path")
+    assert not runtime_environment_has_only_path()
+
+
+def test_evaluator_binding_accepts_opted_in_path_hash_drift_without_rebinding(tmp_path, monkeypatch):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        stored = engine._ensure_evaluator_binding(verify_runtime=False)
+        changed_runtime = dict(stored.runtime)
+        changed_runtime["runtime_environment_sha256"] = "a" * 64
+        monkeypatch.setattr("bananloop.engine.runtime_descriptor", lambda _commands: changed_runtime)
+        for key in ("PYTHONPATH", "PYTHONHOME", "PYTHONSAFEPATH", "VIRTUAL_ENV", "CONDA_PREFIX", "NODE_PATH", "NODE_ENV"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
+
+        with pytest.raises(Exception, match="immutable evaluator binding"):
+            engine._ensure_evaluator_binding(verify_runtime=True)
+        engine._allow_runtime_env_drift = True
+        accepted = engine._ensure_evaluator_binding(verify_runtime=True)
+
+        assert accepted.binding_id == stored.binding_id
+        assert engine._runtime_observed_fingerprint is not None
+        events = store.events()
+        assert any(event["event_type"] == "EVALUATOR_ENVIRONMENT_DRIFT_ACCEPTED" for event in events)
+        assert store.evaluator_binding()["binding_id"] == stored.binding_id
     finally:
         store.close()
 

@@ -27,7 +27,8 @@ from .evaluators import CommandCheck, CommandEvaluator, EvaluatorError
 from .integrity import evaluation_fingerprint, verify_evaluation_assets
 from .evaluator_binding import (
     EvaluationReceipt, EvaluatorBinding, canonical_hash, make_binding,
-    make_receipt, runtime_descriptor, validate_receipt_linkage,
+    make_receipt, runtime_descriptor, runtime_environment_has_only_path,
+    runtime_matches_except_environment, validate_receipt_linkage,
 )
 from .leakage import scan_forbidden_diff_patterns
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
@@ -91,6 +92,8 @@ class Engine:
         self._retry_running_actions = False
         self._retry_failed_actions = False
         self._agent_timeout_seconds: int | None = None
+        self._allow_runtime_env_drift = False
+        self._runtime_observed_fingerprint: str | None = None
         self.spec = store.spec()
         self.budget = self.spec.budget
         for event in reversed(store.events()):
@@ -437,6 +440,7 @@ class Engine:
                     candidate_proof=request.get("candidate_proof"),
                     binding=self._ensure_evaluator_binding(),
                     result=result,
+                    runtime_observed_fingerprint=self._runtime_observed_fingerprint,
                 )
                 sidecar = output_dir / "evaluation-receipt.json"
                 tmp_sidecar = output_dir / ".evaluation-receipt.json.tmp"
@@ -486,9 +490,38 @@ class Engine:
         stored = EvaluatorBinding.model_validate_json(row["binding_json"])
         if row["binding_hash"] != canonical_hash(stored.model_dump(mode="json")):
             raise BindingRuntimeMismatch("persisted evaluator binding hash is invalid")
-        if stored.approved_spec_hash != self.spec.evaluator_binding_hash() or stored.binding_id != current.binding_id and verify_runtime:
+        if stored.approved_spec_hash != self.spec.evaluator_binding_hash():
             raise BindingRuntimeMismatch("immutable evaluator binding does not match campaign specification/runtime")
-        if verify_runtime and stored.runtime_fingerprint != current.runtime_fingerprint:
+        if verify_runtime and stored.binding_id != current.binding_id:
+            env_drift_is_only_difference = runtime_matches_except_environment(
+                stored.runtime, current.runtime,
+            ) and stored.model_copy(update={"binding_id": current.binding_id,
+                                             "runtime": current.runtime,
+                                             "runtime_fingerprint": current.runtime_fingerprint}).model_dump(mode="json") == current.model_dump(mode="json")
+            if not (
+                self._allow_runtime_env_drift
+                and env_drift_is_only_difference
+                and runtime_environment_has_only_path()
+            ):
+                raise BindingRuntimeMismatch("immutable evaluator binding does not match campaign specification/runtime")
+            self._runtime_observed_fingerprint = current.runtime_fingerprint
+            prior_acceptance = any(
+                event.get("event_type") == "EVALUATOR_ENVIRONMENT_DRIFT_ACCEPTED"
+                and json.loads(event.get("payload_json") or "{}").get("observed_runtime_fingerprint") == current.runtime_fingerprint
+                for event in self.store.events()
+            )
+            if not prior_acceptance:
+                self.store.event("EVALUATOR_ENVIRONMENT_DRIFT_ACCEPTED", {
+                    "stored_runtime_fingerprint": stored.runtime_fingerprint,
+                    "observed_runtime_fingerprint": current.runtime_fingerprint,
+                    "stored_environment_sha256": stored.runtime.get("runtime_environment_sha256"),
+                    "observed_environment_sha256": current.runtime.get("runtime_environment_sha256"),
+                    "environment_variables_present": ["PATH"],
+                    "other_runtime_components_match": True,
+                    "operator_opt_in": True,
+                })
+                self.store.conn.commit()
+        elif verify_runtime and stored.runtime_fingerprint != current.runtime_fingerprint:
             raise BindingRuntimeMismatch("bounded evaluator runtime differs from immutable campaign binding")
         sidecar = self.store.path.parent / "artifacts" / "evaluator-binding.json"
         if sidecar.exists():
@@ -1671,6 +1704,7 @@ class Engine:
         retry_running_actions: bool = False,
         retry_failed_actions: bool = False,
         agent_timeout_seconds: int | None = None,
+        allow_runtime_env_drift: bool = False,
     ) -> dict[str, Any]:
         try:
             return self._run(
@@ -1678,6 +1712,7 @@ class Engine:
                 retry_running_actions=retry_running_actions,
                 retry_failed_actions=retry_failed_actions,
                 agent_timeout_seconds=agent_timeout_seconds,
+                allow_runtime_env_drift=allow_runtime_env_drift,
             )
         except CampaignHalted:
             return self.store.campaign()
@@ -1695,10 +1730,12 @@ class Engine:
         retry_running_actions: bool,
         retry_failed_actions: bool,
         agent_timeout_seconds: int | None,
+        allow_runtime_env_drift: bool,
     ) -> dict[str, Any]:
         self._retry_running_actions = retry_running_actions
         self._retry_failed_actions = retry_failed_actions
         self._agent_timeout_seconds = agent_timeout_seconds
+        self._allow_runtime_env_drift = allow_runtime_env_drift
         campaign = self.store.campaign()
         if campaign["spec_hash"] != self.spec.approved_hash():
             raise EngineError("approved campaign spec hash mismatch")

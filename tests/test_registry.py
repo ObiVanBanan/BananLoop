@@ -559,6 +559,11 @@ def test_continue_can_extend_plateau_campaign_budget_without_changing_evaluator(
     assert received[0][1] is True
 
 
+def test_continue_parser_accepts_explicit_runtime_environment_drift_opt_in():
+    args = parser().parse_args(["continue", "--accept-runtime-env-drift"])
+    assert args.accept_runtime_env_drift is True
+
+
 def test_continue_failed_action_requires_explicit_approval(tmp_path, monkeypatch):
     from bananloop import cli
 

@@ -21,6 +21,26 @@ def canonical_hash(value: Any) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def runtime_matches_except_environment(stored: dict[str, Any], current: dict[str, Any]) -> bool:
+    """True when every measured runtime component except the opaque env hash matches."""
+    if not stored.get("runtime_environment_sha256") or not current.get("runtime_environment_sha256"):
+        return False
+    if stored["runtime_environment_sha256"] == current["runtime_environment_sha256"]:
+        return False
+    keys = set(stored) | set(current)
+    keys.discard("runtime_environment_sha256")
+    return all(canonical_hash(stored.get(key)) == canonical_hash(current.get(key)) for key in keys)
+
+
+def runtime_environment_has_only_path() -> bool:
+    tracked = {
+        "PATH", "PYTHONPATH", "PYTHONHOME", "PYTHONSAFEPATH", "VIRTUAL_ENV",
+        "CONDA_PREFIX", "NODE_PATH", "NODE_ENV",
+    }
+    present = tracked.intersection(os.environ)
+    return present <= {"PATH"}
+
+
 class EvaluatorBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -61,6 +81,7 @@ class EvaluationReceipt(BaseModel):
     binding_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     protocol_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     runtime_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    runtime_observed_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     case_input_manifest_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     result_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     artifact_manifest_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -69,6 +90,8 @@ class EvaluationReceipt(BaseModel):
     @model_validator(mode="after")
     def verify_identity(self):
         body = self.model_dump(mode="json")
+        if body.get("runtime_observed_fingerprint") is None:
+            body.pop("runtime_observed_fingerprint", None)
         identity = body.pop("receipt_hash")
         if identity != canonical_hash(body):
             raise ValueError("evaluation receipt hash mismatch")
@@ -203,7 +226,8 @@ def make_binding(spec: CampaignSpec, runtime: dict[str, Any]) -> EvaluatorBindin
 
 
 def make_receipt(*, action_id: str, tier: str, snapshot: str, candidate_proof: dict[str, Any] | None,
-                 binding: EvaluatorBinding, result: EvaluationResult) -> EvaluationReceipt:
+                 binding: EvaluatorBinding, result: EvaluationResult,
+                 runtime_observed_fingerprint: str | None = None) -> EvaluationReceipt:
     inputs = [{"case_id": c.case_id, "repetition": c.repetition, "input_sha256": c.input_sha256}
               for c in result.cases]
     artifacts = [{"case_id": a.case_id, "repetition": a.repetition, "path": a.path, "sha256": a.sha256}
@@ -223,4 +247,6 @@ def make_receipt(*, action_id: str, tier: str, snapshot: str, candidate_proof: d
         "artifact_manifest_hash": canonical_hash(artifacts),
         "exit_code": 0,
     }
+    if runtime_observed_fingerprint and runtime_observed_fingerprint != binding.runtime_fingerprint:
+        body["runtime_observed_fingerprint"] = runtime_observed_fingerprint
     return EvaluationReceipt(receipt_hash=canonical_hash(body), **body)

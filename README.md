@@ -98,6 +98,14 @@ action still requires `--retry-running-action` after verifying its original
 process is gone. Genuine missing prerequisites and protected protocol changes
 are still operator decisions.
 
+If recovery stops only because the hashed launch environment changed, an
+operator may opt in to `--accept-runtime-env-drift`. BananLoop still requires
+the Python executable and version, installed distributions, operating system,
+architecture, and resolved evaluator commands to match the frozen binding; in
+the current process only `PATH` may be present among tracked environment
+selectors. The immutable binding is retained, and each new evaluation receipt
+records the observed runtime fingerprint alongside it.
+
 This is a terminal and recovery MVP, **not** a general autonomous repair agent
 or a full-screen TUI. The long-form CLI is maintained for scripting.
 

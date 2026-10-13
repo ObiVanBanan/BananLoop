@@ -396,6 +396,7 @@ def cmd_run(args: argparse.Namespace, resume: bool = False) -> int:
                     retry_running_actions=bool(getattr(args, "retry_running_action", False)),
                     retry_failed_actions=bool(getattr(args, "retry_failed_action", False)),
                     agent_timeout_seconds=getattr(args, "agent_timeout_seconds", None),
+                    allow_runtime_env_drift=bool(getattr(args, "accept_runtime_env_drift", False)),
                 )
                 print(json.dumps({k: campaign[k] for k in ("status", "stop_reason", "stage", "experiment_count", "attempt_count", "agent_calls", "evaluator_calls", "champion_snapshot")}, indent=2))
                 return 0 if campaign["status"] != "PAUSED_INFRA" else 2
@@ -523,6 +524,7 @@ def cmd_continue(args: argparse.Namespace) -> int:
             retry_failed_action=retry_failed,
             retry_running_action=bool(getattr(args, "retry_running_action", False)),
             agent_timeout_seconds=None,
+            accept_runtime_env_drift=bool(getattr(args, "accept_runtime_env_drift", False)),
         )
         print("[BananLoop] Reusing completed actions and saved evaluations.")
         return cmd_run(run_args, resume=True)
@@ -733,6 +735,7 @@ def parser() -> argparse.ArgumentParser:
     continue_cmd.add_argument("--state-dir")
     continue_cmd.add_argument("--yes", action="store_true", help="approve retry of known FAILED actions")
     continue_cmd.add_argument("--extend-budget", type=int, default=0, metavar="N", help="resume a PLATEAU campaign with N more attempts, experiments, and plateau tolerance")
+    continue_cmd.add_argument("--accept-runtime-env-drift", action="store_true", help="accept a PATH-only runtime hash change when Python, packages, and resolved evaluator commands exactly match the frozen binding")
     continue_cmd.add_argument("--migrate-pytest-validation", action="store_true", help="move a failed pytest JSON validation command to an exit-code regression gate, preserving the completed baseline")
     continue_cmd.add_argument("--retry-running-action", action="store_true", help="confirm an orphaned RUNNING action after verifying the old process has exited")
     continue_cmd.set_defaults(func=cmd_continue)
