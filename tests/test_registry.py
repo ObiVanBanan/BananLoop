@@ -439,3 +439,104 @@ def test_doctor_reports_active_managed_registry_location(tmp_path, monkeypatch, 
     assert payload["active_campaign_id"] == entry.campaign_id
     assert payload["campaign_exists"] is False
     assert payload["campaign_count"] == 1
+
+
+def test_continue_bootstrap_reuses_goal_agent_and_campaign_state(tmp_path, monkeypatch):
+    import json
+    from bananloop import cli
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    registry = CampaignRegistry(repo)
+    entry, state, _ = registry.reserve("Original full human goal", "original-request")
+    saved_agent = {"kind": "codex", "extra_args": ["workspace-write"]}
+    (state / "bootstrap-plan.json").write_text(
+        json.dumps({
+            "source_base_commit": "a" * 40,
+            "bootstrap_request": {"goal": "Original full human goal", "agent": saved_agent},
+            "operator_agent_config": saved_agent,
+            "bootstrap_options": {
+                "max_experiments": 9, "agent_timeout_seconds": 1800,
+            },
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "current_commit", lambda _repo: "a" * 40)
+    received = []
+    monkeypatch.setattr(cli, "cmd_start", lambda args: received.append(args) or 0)
+    args = parser().parse_args([
+        "continue", "--repo", str(repo), "--campaign-id", entry.campaign_id,
+    ])
+    assert cli.cmd_continue(args) == 0
+    assert len(received) == 1
+    assert received[0].goal == "Original full human goal"
+    assert received[0].state_dir == str(state)
+    assert received[0]._bootstrap_agent_config.extra_args == ["workspace-write"]
+    assert received[0].max_experiments == 9
+    assert received[0].bootstrap_timeout_seconds == 1800
+    assert len(registry.list()) == 1
+
+
+def test_continue_rejects_changed_head_without_starting_again(tmp_path, monkeypatch):
+    import json
+    from bananloop import cli
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _, state, _ = CampaignRegistry(repo).reserve("goal")
+    (state / "bootstrap-plan.json").write_text(json.dumps({
+        "source_base_commit": "a" * 40,
+        "bootstrap_request": {"goal": "goal", "agent": {"kind": "codex"}},
+    }), encoding="utf-8")
+    monkeypatch.setattr(cli, "current_commit", lambda _repo: "b" * 40)
+    monkeypatch.setattr(cli, "cmd_start", lambda args: pytest.fail("must not restart"))
+    with pytest.raises(cli.BootstrapError, match="HEAD differs"):
+        cli.cmd_continue(parser().parse_args(["continue", "--repo", str(repo)]))
+
+
+def test_continue_paused_campaign_reuses_existing_db(tmp_path, monkeypatch):
+    from bananloop import cli
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    entry, state, _ = CampaignRegistry(repo).reserve("original goal")
+    store = CampaignStore(state / "campaign.sqlite3")
+    store.initialize(_spec(repo, "original goal"))
+    store.update_campaign(status="PAUSED_INFRA", stop_reason="INTERRUPTED")
+    store.close()
+    received = []
+    monkeypatch.setattr(cli, "cmd_run", lambda args, resume=False: received.append((args, resume)) or 0)
+    assert cli.cmd_continue(parser().parse_args([
+        "continue", "--repo", str(repo), "--campaign-id", entry.campaign_id,
+    ])) == 0
+    assert len(received) == 1
+    assert received[0][1] is True
+    assert received[0][0].state_dir == str(state)
+    assert received[0][0].retry_failed_action is False
+
+
+def test_continue_failed_action_requires_explicit_approval(tmp_path, monkeypatch):
+    from bananloop import cli
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _, state, _ = CampaignRegistry(repo).reserve("goal")
+    store = CampaignStore(state / "campaign.sqlite3")
+    store.initialize(_spec(repo, "goal"))
+    store.update_campaign(status="PAUSED_INFRA", stop_reason="TEST")
+    store.close()
+    monkeypatch.setattr(CampaignStore, "actions", lambda self: [
+        {"id": "baseline:validation", "status": "FAILED", "error": "invalid command"}
+    ])
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    received = []
+    monkeypatch.setattr(cli, "cmd_run", lambda args, resume=False: received.append((args, resume)) or 0)
+    command = ["continue", "--repo", str(repo)]
+    assert cli.cmd_continue(parser().parse_args(command)) == 3
+    assert received == []
+    assert cli.cmd_continue(parser().parse_args(command + ["--yes"])) == 0
+    assert received[0][0].retry_failed_action is True
