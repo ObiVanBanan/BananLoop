@@ -685,8 +685,8 @@ def test_bootstrap_delegates_agent_smoke_timeout_to_core(tmp_path: Path, monkeyp
             evaluator = workspace / ".bananloop_eval" / "evaluator.py"
             evaluator.parent.mkdir(parents=True, exist_ok=True)
             evaluator.write_text(
-                "import json\\n"
-                f"print(json.dumps({{'status':'ok','metrics':{{'quality':0.2}},'protocol_sha256':'{PROTOCOL_SHA256}'}}))\\n",
+                "import json\n"
+                f"print(json.dumps({{'status':'ok','metrics':{{'quality':0.2}},'protocol_sha256':'{PROTOCOL_SHA256}'}}))\n",
                 encoding="utf-8",
             )
             payload = _bootstrap_payload(
@@ -744,8 +744,8 @@ def test_core_timeout_resumes_frozen_smoke_without_new_agent_call(tmp_path: Path
             evaluator = workspace / ".bananloop_eval" / "evaluator.py"
             evaluator.parent.mkdir(parents=True, exist_ok=True)
             evaluator.write_text(
-                "import json\\n"
-                f"print(json.dumps({{'status':'ok','metrics':{{'quality':0.2}},'protocol_sha256':'{PROTOCOL_SHA256}'}}))\\n",
+                "import json\n"
+                f"print(json.dumps({{'status':'ok','metrics':{{'quality':0.2}},'protocol_sha256':'{PROTOCOL_SHA256}'}}))\n",
                 encoding="utf-8",
             )
             return _bootstrap_payload(status="ready", needs_input=[], summary="ready adapter")
