@@ -319,7 +319,7 @@ def cmd_start(args: argparse.Namespace) -> int:
                         repo=repo,
                         goal=args.goal,
                         paths=paths,
-                        agent_config=_agent_config(args),
+                        agent_config=getattr(args, "_bootstrap_agent_config", None) or _agent_config(args),
                         agent_timeout_seconds=args.bootstrap_timeout_seconds,
                         max_experiments=args.max_experiments,
                         max_attempts=args.max_attempts,
@@ -402,6 +402,149 @@ def cmd_run(args: argparse.Namespace, resume: bool = False) -> int:
     except CampaignLockError as exc:
         print(f"BananLoop error: {exc}", file=sys.stderr)
         return 2
+
+
+def cmd_continue(args: argparse.Namespace) -> int:
+    """Continue the active campaign, including bootstrap before a DB exists."""
+    repo = Path(args.repo).resolve()
+    paths = _selected_paths(args, create=False)
+    if paths.db.exists():
+        store = CampaignStore(paths.db)
+        try:
+            campaign = store.campaign()
+            actions = store.actions()
+        finally:
+            store.close()
+        status = campaign["status"]
+        print(f"[BananLoop] Existing campaign: {status}")
+        if status in {"GOAL_MET", "STOPPED"}:
+            print("Campaign is finished. Run 'bananloop' to create another goal.")
+            return 0
+        failed = [action for action in actions if action["status"] == "FAILED"]
+        running = [action for action in actions if action["status"] == "RUNNING"]
+        if running and not getattr(args, "retry_running_action", False):
+            print(
+                "A previous action is still marked RUNNING. Verify the old process "
+                "has exited, then use 'bananloop continue --retry-running-action'.",
+                file=sys.stderr,
+            )
+            return 3
+        retry_failed = bool(failed)
+        if failed:
+            last = failed[-1]
+            print(f"[BananLoop] Last failed action: {last['id']}")
+            print(f"[BananLoop] Failure: {str(last.get('error') or 'unknown')[:600]}")
+            if not getattr(args, "yes", False):
+                if not sys.stdin.isatty():
+                    print(
+                        "Retry requires confirmation. Use 'bananloop continue --yes' "
+                        "after reviewing the failed action.",
+                        file=sys.stderr,
+                    )
+                    return 3
+                answer = input("Retry the failed action without restarting the campaign? [y/N] ").strip().lower()
+                if answer not in {"y", "yes"}:
+                    print("Campaign unchanged.")
+                    return 3
+        run_args = argparse.Namespace(
+            repo=str(repo),
+            state_dir=str(paths.root),
+            campaign_id=None,
+            retry_failed_action=retry_failed,
+            retry_running_action=bool(getattr(args, "retry_running_action", False)),
+            agent_timeout_seconds=None,
+        )
+        print("[BananLoop] Reusing completed actions and saved evaluations.")
+        return cmd_run(run_args, resume=True)
+
+    plan_file = paths.root / "bootstrap-plan.json"
+    if not plan_file.is_file():
+        print(
+            "No campaign or saved bootstrap was found for this repository. "
+            "Run 'bananloop' to create one.",
+            file=sys.stderr,
+        )
+        return 2
+    record = json.loads(plan_file.read_text(encoding="utf-8"))
+    request = record.get("bootstrap_request") or {}
+    goal = request.get("goal")
+    if not isinstance(goal, str) or not goal.strip():
+        raise BootstrapError("saved bootstrap has no original goal; cannot recover safely")
+    if record.get("source_base_commit") != current_commit(repo):
+        raise BootstrapError(
+            "repository HEAD differs from the saved bootstrap snapshot. "
+            "Switch back to the original branch/commit to continue without rebuilding"
+        )
+    agent_payload = record.get("operator_agent_config") or request.get("agent")
+    if not isinstance(agent_payload, dict):
+        raise BootstrapError("saved bootstrap has no agent profile; cannot recover safely")
+    config = AgentConfig.model_validate(agent_payload)
+    start_args = parser().parse_args([
+        "start", "--repo", str(repo), "--state-dir", str(paths.root),
+        "--goal", goal, "--allow-dirty",
+    ])
+    start_args._bootstrap_agent_config = config
+    option_fields = {
+        "agent_timeout_seconds": "bootstrap_timeout_seconds",
+        "max_experiments": "max_experiments",
+        "max_attempts": "max_attempts",
+        "max_agent_calls": "max_agent_calls",
+        "max_evaluator_calls": "max_evaluator_calls",
+        "deadline_seconds": "deadline_seconds",
+        "plateau_experiments": "plateau",
+    }
+    for saved_name, argument_name in option_fields.items():
+        saved = (record.get("bootstrap_options") or {}).get(saved_name)
+        if isinstance(saved, int) and not isinstance(saved, bool) and saved > 0:
+            setattr(start_args, argument_name, saved)
+    print("[BananLoop] Continuing saved bootstrap; original goal and evaluator snapshot retained.")
+    return cmd_start(start_args)
+
+
+def cmd_home(args: argparse.Namespace) -> int:
+    """Human-first terminal entry point. Never create a campaign implicitly."""
+    if not sys.stdin.isatty():
+        print(
+            "Interactive mode needs a terminal. Use 'bananloop continue' to resume "
+            "or 'bananloop goal \"your goal\"' to start.",
+            file=sys.stderr,
+        )
+        return 2
+    repo = Path(args.repo).resolve()
+    registry = CampaignRegistry(repo)
+    entries = registry.list()
+    active = next((entry for entry, is_active in entries if is_active), None)
+    print(f"\\nBananLoop · {repo.name}")
+    if active:
+        paths = registry._validate_state_path(active.state_path, active.origin)
+        if (paths / "campaign.sqlite3").exists():
+            store = CampaignStore(paths / "campaign.sqlite3")
+            try:
+                status = store.campaign()["status"]
+            finally:
+                store.close()
+        else:
+            status = "BOOTSTRAP_PAUSED" if (paths / "bootstrap-plan.json").is_file() else "RESERVED"
+        print(f"Active: {active.goal_summary}")
+        print(f"State: {status}")
+        choice = input("[Enter] continue  [n] new goal  [q] quit: ").strip().lower()
+        if choice in {"", "c", "continue"}:
+            return cmd_continue(argparse.Namespace(
+                repo=str(repo), state_dir=None, campaign_id=active.campaign_id,
+                yes=False, retry_running_action=False,
+            ))
+        if choice in {"q", "quit"}:
+            return 0
+        if choice not in {"n", "new"}:
+            print("Unknown selection; no changes made.")
+            return 2
+    goal = input("What should BananLoop improve? ").strip()
+    if not goal:
+        print("No goal supplied; no campaign created.")
+        return 0
+    start_args = parser().parse_args(["goal", goal, "--repo", str(repo)])
+    print("[BananLoop] Preparing a reproducible campaign for this goal.")
+    return cmd_start(start_args)
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -507,6 +650,18 @@ def cmd_replay(args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bananloop")
     sub = p.add_subparsers(dest="command", required=True)
+
+    home = sub.add_parser("home", help="guided terminal interface for the active project")
+    home.add_argument("--repo", default=".")
+    home.set_defaults(func=cmd_home)
+
+    continue_cmd = sub.add_parser("continue", help="resume the active campaign or paused bootstrap without repeating the goal")
+    continue_cmd.add_argument("--repo", default=".")
+    continue_cmd.add_argument("--campaign-id")
+    continue_cmd.add_argument("--state-dir")
+    continue_cmd.add_argument("--yes", action="store_true", help="approve retry of known FAILED actions")
+    continue_cmd.add_argument("--retry-running-action", action="store_true", help="confirm an orphaned RUNNING action after verifying the old process has exited")
+    continue_cmd.set_defaults(func=cmd_continue)
 
     goal = sub.add_parser(
         "goal",
@@ -761,7 +916,7 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     try:
-        code = parser().parse_args()
+        code = parser().parse_args(["home"] if len(sys.argv) == 1 else None)
         raise SystemExit(code.func(code))
     except (BootstrapError, StoreError, WorkspaceError, EvaluationIntegrityError, RegistryError, CampaignLockError, ValueError) as exc:
         print(f"BananLoop error: {exc}", file=sys.stderr)
