@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -516,6 +517,46 @@ def test_continue_paused_campaign_reuses_existing_db(tmp_path, monkeypatch):
     assert received[0][1] is True
     assert received[0][0].state_dir == str(state)
     assert received[0][0].retry_failed_action is False
+
+
+def test_continue_can_extend_plateau_campaign_budget_without_changing_evaluator(tmp_path, monkeypatch):
+    from bananloop import cli
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    entry, state, _ = CampaignRegistry(repo).reserve("original goal")
+    store = CampaignStore(state / "campaign.sqlite3")
+    spec = _spec(repo, "original goal")
+    store.initialize(spec)
+    store.update_campaign(status="STOPPED", stop_reason="PLATEAU", non_improve_streak=3)
+    binding = spec.evaluator_binding_hash()
+    store.close()
+
+    received = []
+    monkeypatch.setattr(cli, "cmd_run", lambda args, resume=False: received.append((args, resume)) or 0)
+    assert cli.cmd_continue(parser().parse_args([
+        "continue", "--repo", str(repo), "--campaign-id", entry.campaign_id,
+        "--extend-budget", "4",
+    ])) == 0
+
+    store = CampaignStore(state / "campaign.sqlite3")
+    try:
+        updated = store.spec()
+        campaign = store.campaign()
+        events = store.events()
+    finally:
+        store.close()
+    assert campaign["status"] == "RUNNING"
+    assert campaign["stop_reason"] is None
+    extension_event = next(event for event in events if event["event_type"] == "PLATEAU_BUDGET_EXTENDED")
+    extended_budget = json.loads(extension_event["payload_json"])["effective_budget"]
+    assert extended_budget["max_attempts"] == spec.budget.max_attempts + 4
+    assert extended_budget["max_experiments"] == spec.budget.max_experiments + 4
+    assert extended_budget["plateau_experiments"] == spec.budget.plateau_experiments + 4
+    assert updated.evaluator_binding_hash() == binding
+    assert updated.approved_hash() == spec.approved_hash()
+    assert received[0][1] is True
 
 
 def test_continue_failed_action_requires_explicit_approval(tmp_path, monkeypatch):

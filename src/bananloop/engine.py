@@ -14,6 +14,7 @@ from .agents import AgentAdapter, AgentError, CodexAdapter, CommandAgentAdapter,
 from .budget import deadline_reached, pre_action_stop
 from .artifacts import retain_artifacts
 from .contracts import (
+    BudgetSpec,
     CampaignSpec,
     CampaignStatus,
     EvaluationResult,
@@ -91,6 +92,13 @@ class Engine:
         self._retry_failed_actions = False
         self._agent_timeout_seconds: int | None = None
         self.spec = store.spec()
+        self.budget = self.spec.budget
+        for event in reversed(store.events()):
+            if event.get("event_type") == "PLATEAU_BUDGET_EXTENDED":
+                payload = json.loads(event.get("payload_json") or "{}")
+                if payload.get("effective_budget"):
+                    self.budget = BudgetSpec.model_validate(payload["effective_budget"])
+                break
         self._evaluator_binding: EvaluatorBinding | None = None
         self.evaluator = CommandEvaluator(self.spec.evaluation_command)
         self.validation_evaluator = (
@@ -258,21 +266,21 @@ class Engine:
         campaign = self.store.campaign()
         if kind in {"evaluator", "final_evaluator", "regression"}:
             reserve = int(kind != "final_evaluator" and self.holdout_evaluator is not None)
-            if campaign["evaluator_calls"] + 1 + reserve > self.spec.budget.max_evaluator_calls:
+            if campaign["evaluator_calls"] + 1 + reserve > self.budget.max_evaluator_calls:
                 if kind == "final_evaluator":
                     raise EngineError("no reserved evaluator call for final holdout")
                 self._stop(StopReason.BUDGET_EXHAUSTED)
                 return True
-        if kind in {"evaluator", "final_evaluator"} and self.spec.budget.max_evaluation_units is not None:
+        if kind in {"evaluator", "final_evaluator"} and self.budget.max_evaluation_units is not None:
             calls = 1 + int(kind != "final_evaluator" and self.holdout_evaluator is not None)
-            if self.store.evaluation_work_reserved() + calls * self.spec.budget.evaluation_units_per_call > self.spec.budget.max_evaluation_units:
+            if self.store.evaluation_work_reserved() + calls * self.budget.evaluation_units_per_call > self.budget.max_evaluation_units:
                 if kind == "final_evaluator":
                     raise EngineError("no reserved work units for final holdout")
                 self._stop(StopReason.BUDGET_EXHAUSTED)
                 return True
         if kind == "final_evaluator":
             return False
-        reason = pre_action_stop(self.store.campaign(), self.spec.budget, kind)
+        reason = pre_action_stop(self.store.campaign(), self.budget, kind)
         if reason:
             self._stop(reason)
             return True
@@ -282,7 +290,7 @@ class Engine:
         campaign = self.store.campaign()
         if campaign.get("stop_requested"):
             return StopReason.USER_STOPPED.value
-        if deadline_reached(campaign["created_at"], self.spec.budget):
+        if deadline_reached(campaign["created_at"], self.budget):
             return StopReason.DEADLINE_REACHED.value
         return None
 
@@ -298,12 +306,12 @@ class Engine:
         if self.holdout_evaluator is not None:
             required += 1  # reserved final-only holdout slot
             measured_required += 1
-        if self.spec.budget.max_evaluation_units is not None:
-            if self.store.evaluation_work_reserved() + measured_required * self.spec.budget.evaluation_units_per_call > self.spec.budget.max_evaluation_units:
+        if self.budget.max_evaluation_units is not None:
+            if self.store.evaluation_work_reserved() + measured_required * self.budget.evaluation_units_per_call > self.budget.max_evaluation_units:
                 return False
         return (
             campaign["evaluator_calls"] + required
-            <= self.spec.budget.max_evaluator_calls
+            <= self.budget.max_evaluator_calls
         )
 
     def _action(
@@ -401,8 +409,8 @@ class Engine:
                     candidate_proof["changed_paths"],
                     ensure_ascii=False,
                 )
-            if self.spec.budget.evaluation_units_per_call is not None:
-                context["BANANLOOP_EVALUATION_UNIT_LIMIT"] = str(self.spec.budget.evaluation_units_per_call)
+            if self.budget.evaluation_units_per_call is not None:
+                context["BANANLOOP_EVALUATION_UNIT_LIMIT"] = str(self.budget.evaluation_units_per_call)
             for evaluator in (self.evaluator, self.validation_evaluator, self.holdout_evaluator):
                 if evaluator is not None:
                     evaluator.context = context
@@ -413,7 +421,7 @@ class Engine:
                 check_process_control()
             if kind not in {"agent", "regression"}:
                 result = EvaluationResult.model_validate(response)
-                ceiling = self.spec.budget.evaluation_units_per_call
+                ceiling = self.budget.evaluation_units_per_call
                 if ceiling is not None and (result.resource_units is None or result.resource_units > ceiling):
                     raise EvaluatorError("missing resource_units or reported work exceeds reserved limit")
                 retain_artifacts(result, output_dir, experiment_id, request["snapshot"])
@@ -1371,7 +1379,7 @@ class Engine:
             # or holdout evidence for adaptive research memory.
             stop_reason = pre_action_stop(
                 self.store.campaign(),
-                self.spec.budget,
+                self.budget,
                 "agent",
             )
             if stop_reason is None:
@@ -1647,10 +1655,10 @@ class Engine:
         if goal_met:
             self._stop(StopReason.GOAL_MET, CampaignStatus.GOAL_MET)
             return True
-        if campaign["non_improve_streak"] >= self.spec.budget.plateau_experiments:
+        if campaign["non_improve_streak"] >= self.budget.plateau_experiments:
             self._stop(StopReason.PLATEAU)
             return True
-        reason = pre_action_stop(campaign, self.spec.budget, "agent")
+        reason = pre_action_stop(campaign, self.budget, "agent")
         if reason and campaign["active_attempt_id"] is None:
             self._stop(reason)
             return True
@@ -1733,7 +1741,7 @@ class Engine:
             if campaign["status"] not in {CampaignStatus.RUNNING.value, CampaignStatus.READY.value}:
                 return campaign
             if campaign["active_attempt_id"] is None:
-                reason = pre_action_stop(campaign, self.spec.budget, "agent")
+                reason = pre_action_stop(campaign, self.budget, "agent")
                 if reason:
                     return self._stop(reason)
                 if not self._new_attempt_fits_evaluator_budget():

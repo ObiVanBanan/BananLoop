@@ -423,6 +423,33 @@ def cmd_continue(args: argparse.Namespace) -> int:
         store = CampaignStore(paths.db)
         try:
             campaign = store.campaign()
+            extension = max(0, int(getattr(args, "extend_budget", 0) or 0))
+            if extension:
+                if campaign["status"] != "STOPPED" or campaign.get("stop_reason") != "PLATEAU":
+                    raise ValueError("--extend-budget is only supported for campaigns stopped by PLATEAU")
+                old_spec = store.spec()
+                budget = old_spec.budget.model_copy(update={
+                    "max_attempts": old_spec.budget.max_attempts + extension,
+                    "max_experiments": old_spec.budget.max_experiments + extension,
+                    "max_agent_calls": old_spec.budget.max_agent_calls + extension * 2,
+                    "max_evaluator_calls": old_spec.budget.max_evaluator_calls + extension * 2,
+                    "plateau_experiments": old_spec.budget.plateau_experiments + extension,
+                })
+                now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+                with store.conn:
+                    store.conn.execute(
+                        "UPDATE campaigns SET status='RUNNING',stop_reason=NULL,updated_at=? WHERE id=1",
+                        (now,),
+                    )
+                    store.event("PLATEAU_BUDGET_EXTENDED", {
+                        "extension": extension,
+                        "previous_budget": old_spec.budget.model_dump(mode="json"),
+                        "new_budget": budget.model_dump(mode="json"),
+                        "effective_budget": budget.model_dump(mode="json"),
+                        "approved_spec_hash_unchanged": True,
+                        "evaluator_binding_hash_unchanged": True,
+                    })
+                campaign = store.campaign()
             if getattr(args, "migrate_pytest_validation", False):
                 old_spec = store.spec()
                 failed_validation = store.action("baseline:validation")
@@ -458,8 +485,11 @@ def cmd_continue(args: argparse.Namespace) -> int:
         status = campaign["status"]
         print(f"[BananLoop] Existing campaign: {status}")
         if status in {"GOAL_MET", "STOPPED"}:
-            print("Campaign is finished. Run 'bananloop' to create another goal.")
-            return 0
+            if status == "STOPPED" and campaign.get("stop_reason") == "PLATEAU" and getattr(args, "extend_budget", 0):
+                pass
+            else:
+                print("Campaign is finished. Run 'bananloop' to create another goal.")
+                return 0
         failed = [action for action in actions if action["status"] == "FAILED"]
         running = [action for action in actions if action["status"] == "RUNNING"]
         if running and not getattr(args, "retry_running_action", False):
@@ -702,6 +732,7 @@ def parser() -> argparse.ArgumentParser:
     continue_cmd.add_argument("--campaign-id")
     continue_cmd.add_argument("--state-dir")
     continue_cmd.add_argument("--yes", action="store_true", help="approve retry of known FAILED actions")
+    continue_cmd.add_argument("--extend-budget", type=int, default=0, metavar="N", help="resume a PLATEAU campaign with N more attempts, experiments, and plateau tolerance")
     continue_cmd.add_argument("--migrate-pytest-validation", action="store_true", help="move a failed pytest JSON validation command to an exit-code regression gate, preserving the completed baseline")
     continue_cmd.add_argument("--retry-running-action", action="store_true", help="confirm an orphaned RUNNING action after verifying the old process has exited")
     continue_cmd.set_defaults(func=cmd_continue)
