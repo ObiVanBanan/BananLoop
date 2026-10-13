@@ -332,32 +332,43 @@ def cmd_start(args: argparse.Namespace) -> int:
             print(f"BananLoop error: {exc}", file=sys.stderr)
             return 2
     if spec is None:
-        print(json.dumps({
-            "status": "PAUSED_NEEDS_INPUT",
-            "summary": plan.summary,
-            "needs_input": plan.needs_input,
-            "bootstrap_plan": str(paths.root / "bootstrap-plan.json"),
-        }, indent=2, ensure_ascii=False))
+        if getattr(args, "_human_output", False):
+            print(f"[BananLoop] Setup paused: {plan.summary}")
+            for need in plan.needs_input:
+                print(f"  - {need}")
+            print("[BananLoop] Progress saved. Use 'bananloop continue' when ready.")
+        else:
+            print(json.dumps({
+                "status": "PAUSED_NEEDS_INPUT",
+                "summary": plan.summary,
+                "needs_input": plan.needs_input,
+                "bootstrap_plan": str(paths.root / "bootstrap-plan.json"),
+            }, indent=2, ensure_ascii=False))
         return 3
 
     plan_file = paths.root / "bootstrap-plan.json"
     bootstrap_record = json.loads(plan_file.read_text(encoding="utf-8")) if plan_file.exists() else {"bootstrap_attempts": []}
     last_attempt = bootstrap_record["bootstrap_attempts"][-1] if bootstrap_record["bootstrap_attempts"] else {}
     readiness = last_attempt.get("readiness")
-    print(json.dumps({
-        "status": "READY",
-        "summary": plan.summary if plan else "Resuming reserved campaign",
-        "primary_metric": spec.primary_metric.model_dump(mode="json"),
-        "paired_comparison": spec.paired_comparison.model_dump(mode="json") if spec.paired_comparison else None,
-        "preparation": {
-            "attempts": len(bootstrap_record["bootstrap_attempts"]),
-            "snapshot": last_attempt.get("snapshot"),
-            "readiness": readiness,
-        },
-        "state": str(paths.root),
-        "campaign_id": getattr(args, "campaign_id", None),
-        "spec": spec.approved_hash(),
-    }, indent=2, ensure_ascii=False))
+    if getattr(args, "_human_output", False):
+        print("[BananLoop] Evaluator readiness verified. Campaign state saved.")
+        print(f"[BananLoop] Primary metric: {spec.primary_metric.name}")
+        print(f"[BananLoop] State: {paths.root}")
+    else:
+        print(json.dumps({
+            "status": "READY",
+            "summary": plan.summary if plan else "Resuming reserved campaign",
+            "primary_metric": spec.primary_metric.model_dump(mode="json"),
+            "paired_comparison": spec.paired_comparison.model_dump(mode="json") if spec.paired_comparison else None,
+            "preparation": {
+                "attempts": len(bootstrap_record["bootstrap_attempts"]),
+                "snapshot": last_attempt.get("snapshot"),
+                "readiness": readiness,
+            },
+            "state": str(paths.root),
+            "campaign_id": getattr(args, "campaign_id", None),
+            "spec": spec.approved_hash(),
+        }, indent=2, ensure_ascii=False))
     if args.prepare_only:
         return 0
     return cmd_run(args, resume=reused_campaign)
@@ -484,6 +495,7 @@ def cmd_continue(args: argparse.Namespace) -> int:
         "--goal", goal, "--allow-dirty",
     ])
     start_args._bootstrap_agent_config = config
+    start_args._human_output = True
     option_fields = {
         "agent_timeout_seconds": "bootstrap_timeout_seconds",
         "max_experiments": "max_experiments",
@@ -543,6 +555,7 @@ def cmd_home(args: argparse.Namespace) -> int:
         print("No goal supplied; no campaign created.")
         return 0
     start_args = parser().parse_args(["goal", goal, "--repo", str(repo)])
+    start_args._human_output = True
     print("[BananLoop] Preparing a reproducible campaign for this goal.")
     return cmd_start(start_args)
 
