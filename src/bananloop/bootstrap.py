@@ -253,9 +253,9 @@ def _agent_smoke_timeout_report(plan: BootstrapPlan) -> bool:
     if plan.status != "needs_input" or not plan.needs_input:
         return False
     explanation = " ".join([plan.summary, *plan.needs_input])
-    smoke = re.search(r"\\bsmoke\\b|смоук", explanation, re.IGNORECASE)
+    smoke = re.search(r"\bsmoke\b|смоук", explanation, re.IGNORECASE)
     timeout = re.search(
-        r"timed?\\s*out|time[ -]?out|\\b30\\s*(?:seconds?|секунд)|"
+        r"timed?\s*out|time[ -]?out|\b30\s*(?:seconds?|секунд)|"
         r"не заверш|не вернул результат|истекл[ои]|превысил.{0,40}(?:врем|лимит)",
         explanation,
         re.IGNORECASE,
@@ -267,7 +267,7 @@ def _agent_smoke_timeout_report(plan: BootstrapPlan) -> bool:
         if re.search(
             r"provide.{0,40}(?:key|token|secret|dataset)|"
             r"предостав.{0,40}(?:ключ|токен|секрет|датасет)|"
-            r"\\b[A-Z][A-Z0-9_]*(?:_API_KEY|_TOKEN|_SECRET)\\b",
+            r"\b[A-Z][A-Z0-9_]*(?:_API_KEY|_TOKEN|_SECRET)\b",
             item,
             re.IGNORECASE,
         ):
@@ -290,7 +290,7 @@ def _core_smoke_timed_out(readiness: dict[str, Any] | None) -> bool:
     if not isinstance(readiness, dict) or readiness.get("status") != "FAILED":
         return False
     return bool(re.search(
-        r"timed?\\s*out|time[ -]?out|превышен.{0,20}лимит",
+        r"timed?\s*out|time[ -]?out|превышен.{0,20}лимит",
         str(readiness.get("error") or ""),
         re.IGNORECASE,
     ))
