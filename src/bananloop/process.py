@@ -121,7 +121,19 @@ def run_process(
             **process_group_options(),
         )
     except OSError as exc:
-        raise ProcessError(f"cannot start process: {argv!r}: {exc}") from exc
+        hint = ""
+        if len(argv) == 1 and any(char.isspace() for char in argv[0]):
+            hint = (
+                " Command is a single argv element, not a shell command. "
+                "Use [\"python\", \"-m\", \"pytest\", \"-q\"] rather than "
+                "[\"python -m pytest -q\"]. "
+                "Do not use pytest as a JSON validation evaluator; "
+                "configure it as a regression check instead. "
+                "The campaign state is preserved; resume the existing campaign "
+                "after correcting the configuration (failed actions require "
+                "--retry-failed-action)."
+            )
+        raise ProcessError(f"cannot start process: {argv!r}: {exc}.{hint}") from exc
     deadline = time.monotonic() + timeout
     pending_input = input_text
     try:
