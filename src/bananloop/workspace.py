@@ -130,6 +130,10 @@ class WorkspaceManager:
         normalized = path.replace("\\", "/")
         for pattern in patterns:
             pattern = pattern.replace("\\", "/")
+            if pattern.endswith("/"):
+                prefix = pattern.rstrip("/")
+                if normalized == prefix or normalized.startswith(prefix + "/"):
+                    return True
             if pattern == "**" or fnmatch.fnmatch(normalized, pattern):
                 return True
             if pattern.endswith("/**"):

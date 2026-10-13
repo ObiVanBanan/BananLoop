@@ -6,7 +6,33 @@ import sys
 
 import pytest
 
-from bananloop.workspace import _remove_readonly
+from bananloop.workspace import WorkspaceManager, _remove_readonly
+
+
+def test_directory_scope_with_trailing_slash_matches_nested_files(tmp_path):
+    workspace = WorkspaceManager(tmp_path, tmp_path / "workspace")
+
+    valid, violations = workspace.verify_scope(
+        ["src/nomenclature_matcher/matcher.py", "src/nomenclature_matcher/nested/index.py"],
+        ["src/nomenclature_matcher/"],
+        [],
+    )
+
+    assert valid
+    assert violations == []
+
+
+def test_directory_scope_with_trailing_slash_does_not_match_sibling(tmp_path):
+    workspace = WorkspaceManager(tmp_path, tmp_path / "workspace")
+
+    valid, violations = workspace.verify_scope(
+        ["src/nomenclature_matcher_extra/matcher.py"],
+        ["src/nomenclature_matcher/"],
+        [],
+    )
+
+    assert not valid
+    assert violations == ["outside_scope:src/nomenclature_matcher_extra/matcher.py"]
 
 
 def test_remove_readonly_makes_path_writable_before_retry(tmp_path):
