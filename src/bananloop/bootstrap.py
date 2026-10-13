@@ -282,6 +282,17 @@ def _agent_smoke_timeout(plan: BootstrapPlan) -> bool:
     return True
 
 
+def _core_smoke_timed_out(readiness: dict[str, Any] | None) -> bool:
+    """Only retry a recorded infrastructure timeout; never bypass failed verdicts."""
+    if not isinstance(readiness, dict) or readiness.get("status") != "FAILED":
+        return False
+    return bool(re.search(
+        r"timed?\\s*out|time[ -]?out|превышен.{0,20}лимит",
+        str(readiness.get("error") or ""),
+        re.IGNORECASE,
+    ))
+
+
 def _bootstrap_path(path: str) -> bool:
     normalized = path.replace("\\", "/")
     return normalized == ".bananloop_eval" or normalized.startswith(".bananloop_eval/")
@@ -344,6 +355,7 @@ def bootstrap_campaign(
     plan: BootstrapPlan | None = None
     bootstrap_snapshot = source_base
     changed: list[str] = []
+    reuse_ready_plan: BootstrapPlan | None = None
 
     # A missing external prerequisite is a pause, not a discarded bootstrap.
     # Reuse the previously prepared evaluator snapshot on the next invocation.
@@ -356,7 +368,13 @@ def bootstrap_campaign(
             previous.get("source_base_commit") == source_base
             and previous_attempts
             and isinstance(previous_plan, dict)
-            and previous_plan.get("status") == "needs_input"
+            and (
+                previous_plan.get("status") == "needs_input"
+                or (
+                    previous_plan.get("status") == "ready"
+                    and _core_smoke_timed_out(previous_attempts[-1].get("readiness"))
+                )
+            )
         ):
             prior_snapshot = previous.get("bootstrap_snapshot", source_base)
             # Do not trust an arbitrary snapshot from a stale or foreign state.
@@ -369,24 +387,28 @@ def bootstrap_campaign(
                 raise BootstrapError("saved bootstrap snapshot modifies protected source paths")
             bootstrap_attempts = previous_attempts
             prior = BootstrapPlan.model_validate(previous_plan)
-            # Fail immediately for still-missing, explicitly named environment
-            # variables. Never persist their values in campaign state.
-            missing = _missing_named_credentials(prior.needs_input)
-            if missing:
-                return prior, None
-            task = {
-                **task,
-                "resume_bootstrap": {
-                    "previous_plan": previous_plan,
-                    "previous_snapshot": prior_snapshot,
-                    "instruction": (
-                        "Continue the existing evaluator setup; do not rebuild "
-                        "working .bananloop_eval assets. Recheck actual prerequisites; "
-                        "return ready when the evaluator command is configured. "
-                        "Do not run smoke yourself: the core owns the smoke verdict."
-                    ),
-                },
-            }
+            if prior.status == "ready":
+                # The core timed out, not the evaluator protocol. Replay the
+                # authoritative gate on the same snapshot without an agent call.
+                reuse_ready_plan = prior
+            else:
+                # Never persist or print credential values in campaign state.
+                missing = _missing_named_credentials(prior.needs_input)
+                if missing:
+                    return prior, None
+                task = {
+                    **task,
+                    "resume_bootstrap": {
+                        "previous_plan": previous_plan,
+                        "previous_snapshot": prior_snapshot,
+                        "instruction": (
+                            "Continue the existing evaluator setup; do not rebuild "
+                            "working .bananloop_eval assets. Recheck actual prerequisites; "
+                            "return ready when the evaluator command is configured. "
+                            "Do not run smoke yourself: the core owns the smoke verdict."
+                        ),
+                    },
+                }
 
     def persist_record() -> None:
         record = {
@@ -421,14 +443,19 @@ def bootstrap_campaign(
         )
 
     for attempt_index in range(3):
+        attempt_number = len(bootstrap_attempts) + 1
         try:
-            raw = adapter.execute(
-                task,
-                workspace.workspace,
-                timeout=agent_timeout_seconds,
-            )
-            raw = adapter.normalize_result(task, raw)
-            plan = BootstrapPlan.model_validate(raw)
+            if reuse_ready_plan is not None:
+                plan = reuse_ready_plan
+                reuse_ready_plan = None
+            else:
+                raw = adapter.execute(
+                    task,
+                    workspace.workspace,
+                    timeout=agent_timeout_seconds,
+                )
+                raw = adapter.normalize_result(task, raw)
+                plan = BootstrapPlan.model_validate(raw)
         except (AgentError, ValueError) as exc:
             failure = {
                 "category": "agent_call_failed" if isinstance(exc, AgentError) else "invalid_response",
@@ -449,7 +476,7 @@ def bootstrap_campaign(
                 )
                 failure["validation_errors"] = validation_errors
             bootstrap_attempts.append({
-                "attempt": attempt_index + 1,
+                "attempt": attempt_number,
                 "request": task,
                 "snapshot": bootstrap_snapshot,
                 "changed_paths": [],
@@ -488,7 +515,7 @@ def bootstrap_campaign(
             })
         contract_error = _bootstrap_contract_error(plan, task)
         bootstrap_snapshot = workspace.snapshot(
-            f"bananloop: bootstrap attempt {attempt_index + 1}"
+            f"bananloop: bootstrap attempt {attempt_number}"
         )
         changed = workspace.changed_paths(source_base, bootstrap_snapshot)
         violations = [path for path in changed if not _bootstrap_path(path)]
@@ -500,7 +527,7 @@ def bootstrap_campaign(
             )
 
         attempt_record: dict[str, Any] = {
-            "attempt": attempt_index + 1,
+            "attempt": attempt_number,
             "request": task,
             "plan": plan.model_dump(mode="json"),
             "snapshot": bootstrap_snapshot,
@@ -545,7 +572,7 @@ def bootstrap_campaign(
                 workspace=workspace.workspace,
                 snapshot=bootstrap_snapshot,
                 state_root=paths.root,
-                attempt=attempt_index + 1,
+                attempt=attempt_number,
             )
             attempt_record["readiness"] = readiness
             persist_record()
@@ -556,6 +583,18 @@ def bootstrap_campaign(
                 "error": str(exc),
             }
             persist_record()
+            if _core_smoke_timed_out(attempt_record["readiness"]):
+                # Preserve the committed evaluator and the failed receipt. The
+                # operator can run 'bananloop continue'; only smoke is retried.
+                workspace.checkout(source_base)
+                return plan.model_copy(update={
+                    "status": "needs_input",
+                    "summary": "Core smoke timed out; prepared evaluator preserved for retry.",
+                    "needs_input": [
+                        "Smoke timed out. Run 'bananloop continue' to retry the "
+                        "same snapshot without recreating the evaluator."
+                    ],
+                }), None
             if attempt_index < 2:
                 task = {
                     **task,
