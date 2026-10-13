@@ -179,6 +179,9 @@ def _bootstrap_task(
             "no_per_evaluation_llm_planning": True,
             "smoke_test_evaluator_before_ready": True,
             "core_owns_smoke_verdict": True,
+            "do_not_run_smoke_inside_bootstrap_agent": True,
+            "agent_smoke_timeout_is_not_missing_user_input": True,
+            "core_will_run_smoke_with_its_own_timeout": True,
             "provide_cheap_smoke_command_when_possible": True,
             "same_inputs_required_across_smoke_repeats": True,
             "aa_noise_must_be_below_min_improvement": True,
@@ -243,6 +246,40 @@ def _missing_named_credentials(needs_input: list[str]) -> list[str]:
         " ".join(needs_input),
     ))
     return sorted(name for name in names if not os.environ.get(name))
+
+
+def _agent_smoke_timeout(plan: BootstrapPlan) -> bool:
+    """Agent smoke time limits do not establish missing operator prerequisites.
+
+    Only promote a fully specified evaluator to the core-owned readiness gate.
+    Core validation still enforces snapshot/protocol identity, repeatability and
+    evaluation integrity; no quality gate is skipped.
+    """
+    if plan.status != "needs_input" or not plan.evaluation_command or not plan.smoke_command:
+        return False
+    if not plan.project_context.strip() or not plan.needs_input:
+        return False
+    explanation = " ".join([plan.summary, *plan.needs_input])
+    smoke = re.search(r"\\bsmoke\\b|смоук", explanation, re.IGNORECASE)
+    timeout = re.search(
+        r"timed?\\s*out|time[ -]?out|\\b30\\s*(?:seconds?|секунд)|"
+        r"не заверш|не вернул результат|истекл[ои]|превысил.{0,40}(?:врем|лимит)",
+        explanation,
+        re.IGNORECASE,
+    )
+    if not smoke or not timeout:
+        return False
+    # Never auto-resolve requests involving actual operator-only inputs.
+    for item in plan.needs_input:
+        if re.search(
+            r"provide.{0,40}(?:key|token|secret|dataset)|"
+            r"предостав.{0,40}(?:ключ|токен|секрет|датасет)|"
+            r"\\b[A-Z][A-Z0-9_]*(?:_API_KEY|_TOKEN|_SECRET)\\b",
+            item,
+            re.IGNORECASE,
+        ):
+            return False
+    return True
 
 
 def _bootstrap_path(path: str) -> bool:
@@ -344,8 +381,9 @@ def bootstrap_campaign(
                     "previous_snapshot": prior_snapshot,
                     "instruction": (
                         "Continue the existing evaluator setup; do not rebuild "
-                        "working .bananloop_eval assets. Recheck prerequisites "
-                        "and return ready only after successful smoke evaluation."
+                        "working .bananloop_eval assets. Recheck actual prerequisites; "
+                        "return ready when the evaluator command is configured. "
+                        "Do not run smoke yourself: the core owns the smoke verdict."
                     ),
                 },
             }
@@ -356,6 +394,16 @@ def bootstrap_campaign(
             "bootstrap_snapshot": bootstrap_snapshot,
             "changed_paths": changed,
             "bootstrap_request": bootstrap_attempts[0]["request"] if bootstrap_attempts else task,
+            "operator_agent_config": agent_config.model_dump(mode="json"),
+            "bootstrap_options": {
+                "agent_timeout_seconds": agent_timeout_seconds,
+                "max_experiments": max_experiments,
+                "max_attempts": max_attempts,
+                "max_agent_calls": max_agent_calls,
+                "max_evaluator_calls": max_evaluator_calls,
+                "deadline_seconds": deadline_seconds,
+                "plateau_experiments": plateau_experiments,
+            },
             "bootstrap_attempts": bootstrap_attempts,
             "agent_launch_profile": {
                 "role": "bootstrap",
@@ -429,6 +477,15 @@ def bootstrap_campaign(
             )
             raise BootstrapError(f"campaign bootstrap failed: {public_reason}") from exc
 
+        # A bootstrap agent can time out on a slow smoke probe without any
+        # missing user input. Let the core perform the authoritative smoke gate.
+        recovered_smoke_timeout = _agent_smoke_timeout(plan)
+        if recovered_smoke_timeout:
+            plan = BootstrapPlan.model_validate({
+                **plan.model_dump(mode="json"),
+                "status": "ready",
+                "needs_input": [],
+            })
         contract_error = _bootstrap_contract_error(plan, task)
         bootstrap_snapshot = workspace.snapshot(
             f"bananloop: bootstrap attempt {attempt_index + 1}"
@@ -449,6 +506,7 @@ def bootstrap_campaign(
             "snapshot": bootstrap_snapshot,
             "changed_paths": changed,
             "contract_error": contract_error,
+            "agent_smoke_timeout_delegated_to_core": recovered_smoke_timeout,
             "readiness": None,
         }
         bootstrap_attempts.append(attempt_record)
