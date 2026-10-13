@@ -56,3 +56,12 @@ def test_cancellation_stops_child_work(tmp_path: Path, reason):
     assert ready.exists()
     time.sleep(2.1)
     assert not escaped.exists(), "child kept running after its action was cancelled"
+
+
+def test_malformed_single_element_command_explains_recovery(tmp_path: Path):
+    with pytest.raises(ProcessError) as excinfo:
+        run_process(["python -m pytest -q"], cwd=tmp_path, timeout=5)
+    message = str(excinfo.value)
+    assert "single argv element" in message
+    assert "regression check" in message
+    assert "--retry-failed-action" in message
