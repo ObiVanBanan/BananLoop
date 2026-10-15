@@ -460,6 +460,7 @@ class RetrievalCaseTrace(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     case_id: str = Field(min_length=1, max_length=200)
+    repetition: int = Field(default=0, ge=0)
     input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     failure_stage: str = Field(min_length=1, max_length=80)
     failure_substage: str = Field(min_length=1, max_length=120)
@@ -505,11 +506,11 @@ class EvaluationResult(BaseModel):
         keys = [(c.case_id, c.repetition) for c in self.cases]
         if len(keys) != len(set(keys)):
             raise ValueError("duplicate case/repetition")
-        trace_keys = [trace.case_id for trace in self.retrieval_case_traces]
+        trace_keys = [(trace.case_id, trace.repetition) for trace in self.retrieval_case_traces]
         if len(trace_keys) != len(set(trace_keys)):
             raise ValueError("duplicate retrieval case trace")
         if self.retrieval_case_traces and not set(trace_keys).issubset(
-            {case.case_id for case in self.cases}
+            {(case.case_id, case.repetition) for case in self.cases}
         ):
             raise ValueError("retrieval case traces must match measured DEV cases")
         if self.cases and self.protocol_sha256 is None:

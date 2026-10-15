@@ -501,6 +501,7 @@ def _retrieval_case_evidence(
             cause = "UNRESOLVED"
         failed.append({
             "case_id": trace.get("case_id"),
+            "repetition": trace.get("repetition", 0),
             "input_sha256": trace.get("input_sha256"),
             "failure_stage": trace.get("failure_stage"),
             "failure_substage": trace.get("failure_substage"),
