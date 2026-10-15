@@ -1526,6 +1526,21 @@ def test_repeated_failure_requires_a_concrete_diagnostic_plan():
     assert Engine._hypothesis_grounding_error(hypothesis, task) is None
 
     hypothesis.diagnostic_plan = {
+        "mode": "diagnostic_only",
+        "question": "For failed cases, are relevant products missing or filtered from retrieval?",
+        "competing_causes": [
+            "Catalog coverage failure: no relevant candidate exists in the searchable catalog.",
+            "Qdrant/index candidate loss: a present candidate is absent from the retrieved pool.",
+        ],
+        "evidence_to_collect": "For each retrieval miss, inspect relevant catalog presence and retrieved candidate presence.",
+        "decision_rule": (
+            "Classify Catalog coverage failure only if no relevant item is in the catalog. "
+            "Classify Qdrant/index candidate loss only if a relevant catalog item is absent from retrieval."
+        ),
+    }
+    assert Engine._hypothesis_grounding_error(hypothesis, task) is None
+
+    hypothesis.diagnostic_plan = {
         "question": "What ranking metric can be improved next?",
         "evidence_to_collect": "Run another benchmark and inspect the aggregate score.",
         "decision_rule": "If score improves keep reranking, otherwise tune the reranker again.",

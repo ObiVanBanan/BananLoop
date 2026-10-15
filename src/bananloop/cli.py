@@ -426,15 +426,30 @@ def cmd_continue(args: argparse.Namespace) -> int:
             campaign = store.campaign()
             extension = max(0, int(getattr(args, "extend_budget", 0) or 0))
             if extension:
-                if campaign["status"] != "STOPPED" or campaign.get("stop_reason") not in {"PLATEAU", "BUDGET_EXHAUSTED"}:
-                    raise ValueError("--extend-budget is only supported for STOPPED campaigns (PLATEAU or BUDGET_EXHAUSTED)")
+                if campaign["status"] != "STOPPED" or campaign.get("stop_reason") not in {"PLATEAU", "BUDGET_EXHAUSTED", "ATTEMPT_LIMIT"}:
+                    raise ValueError("--extend-budget is only supported for STOPPED campaigns (PLATEAU, BUDGET_EXHAUSTED, or ATTEMPT_LIMIT)")
                 old_spec = store.spec()
-                budget = old_spec.budget.model_copy(update={
-                    "max_attempts": old_spec.budget.max_attempts + extension,
-                    "max_experiments": old_spec.budget.max_experiments + extension,
-                    "max_agent_calls": old_spec.budget.max_agent_calls + extension * 2,
-                    "max_evaluator_calls": old_spec.budget.max_evaluator_calls + extension * 2,
-                    "plateau_experiments": old_spec.budget.plateau_experiments + extension,
+                effective_budget = old_spec.budget
+                for event in store.events():
+                    if event.get("event_type") not in {"PLATEAU_BUDGET_EXTENDED", "CAMPAIGN_BUDGET_EXTENDED"}:
+                        continue
+                    payload = json.loads(event.get("payload_json") or "{}")
+                    if not payload.get("effective_budget"):
+                        continue
+                    prior = BudgetSpec.model_validate(payload["effective_budget"])
+                    effective_budget = effective_budget.model_copy(update={
+                        name: max(getattr(effective_budget, name), getattr(prior, name))
+                        for name in (
+                            "max_attempts", "max_experiments", "max_agent_calls",
+                            "max_evaluator_calls", "plateau_experiments",
+                        )
+                    })
+                budget = effective_budget.model_copy(update={
+                    "max_attempts": effective_budget.max_attempts + extension,
+                    "max_experiments": effective_budget.max_experiments + extension,
+                    "max_agent_calls": effective_budget.max_agent_calls + extension * 2,
+                    "max_evaluator_calls": effective_budget.max_evaluator_calls + extension * 2,
+                    "plateau_experiments": effective_budget.plateau_experiments + extension,
                 })
                 now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
                 with store.conn:
@@ -444,7 +459,7 @@ def cmd_continue(args: argparse.Namespace) -> int:
                     )
                     store.event("CAMPAIGN_BUDGET_EXTENDED", {
                         "extension": extension,
-                        "previous_budget": old_spec.budget.model_dump(mode="json"),
+                        "previous_budget": effective_budget.model_dump(mode="json"),
                         "new_budget": budget.model_dump(mode="json"),
                         "effective_budget": budget.model_dump(mode="json"),
                         "approved_spec_hash_unchanged": True,
@@ -486,7 +501,7 @@ def cmd_continue(args: argparse.Namespace) -> int:
         status = campaign["status"]
         print(f"[BananLoop] Existing campaign: {status}")
         if status in {"GOAL_MET", "STOPPED"}:
-            if status == "STOPPED" and campaign.get("stop_reason") in {"PLATEAU", "BUDGET_EXHAUSTED"} and getattr(args, "extend_budget", 0):
+            if status == "STOPPED" and campaign.get("stop_reason") in {"PLATEAU", "BUDGET_EXHAUSTED", "ATTEMPT_LIMIT"} and getattr(args, "extend_budget", 0):
                 pass
             else:
                 print("Campaign is finished. Run 'bananloop' to create another goal.")

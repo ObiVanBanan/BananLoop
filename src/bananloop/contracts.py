@@ -345,9 +345,10 @@ class DiagnosticPlan(BaseModel):
     def decision_rule_covers_causes(self):
         rule = self.decision_rule.casefold()
         causes = [cause.strip().casefold() for cause in self.competing_causes]
+        labels = [cause.split(":", 1)[0].strip() for cause in causes]
         if any(len(cause) < 8 for cause in causes):
             raise ValueError("competing causes must be concrete labels")
-        if len(set(causes)) < 2 or any(cause not in rule for cause in causes):
+        if len(set(labels)) < 2 or any(label not in rule for label in labels):
             raise ValueError("decision_rule must distinguish every competing cause by name")
         return self
 
