@@ -1549,6 +1549,55 @@ def test_repeated_failure_requires_a_concrete_diagnostic_plan():
     assert error and "diagnostic_only" in error
 
 
+def test_classified_catalog_evidence_allows_a_targeted_hypothesis_without_diagnostic_plan():
+    hypothesis = Hypothesis(
+        hypothesis="Add the missing DEV-relevant catalog records",
+        rationale="All 37 failed cases have no acceptable target in the catalog",
+        expected_effect="The affected targets become searchable",
+        files_or_area=["data/competitor_catalogs/"],
+        falsification_condition="Targets remain absent after the catalog update",
+        mechanism_key="catalog-coverage",
+    )
+    task = {
+        "research_state": {
+            "repeated_failure_diagnosis": {
+                "case_evidence": {
+                    "cause_counts": {"CATALOG_COVERAGE_GAP": 37},
+                    "unclassified_case_count": 0,
+                }
+            }
+        }
+    }
+
+    assert Engine._hypothesis_grounding_error(hypothesis, task) is None
+
+
+def test_retrieval_case_trace_contract_requires_matching_measured_dev_case():
+    payload = {
+        "metrics": {"quality": 0.3},
+        "protocol_sha256": "a" * 64,
+        "cases": [{
+            "case_id": "case-hash",
+            "input_sha256": "b" * 64,
+            "metrics": {"initial_recall": 0.0},
+        }],
+        "retrieval_case_traces": [{
+            "case_id": "case-hash",
+            "input_sha256": "b" * 64,
+            "failure_stage": "RETRIEVAL_MISS",
+            "failure_substage": "MODALITY_POOL_MISS",
+            "acceptable_present_in_catalog": True,
+            "acceptable_in_pretruncate_pool": False,
+            "acceptable_in_initial_retrieval": False,
+            "acceptable_in_rerank_candidates": False,
+            "acceptable_selected": False,
+        }],
+    }
+
+    result = EvaluationResult.model_validate(payload)
+    assert result.retrieval_case_traces[0].case_id == "case-hash"
+
+
 class MissingDiagnosticPlanProposer(AgentAdapter):
     def probe(self):
         return {"available": True}

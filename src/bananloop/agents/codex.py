@@ -290,10 +290,12 @@ class CodexAdapter(AgentAdapter):
         elif role == "propose":
             instruction = (
                 "Propose exactly one bounded, falsifiable hypothesis for this measurable campaign. "
-                "Use the supplied research_state and planning_mode. When repeated_failure_diagnosis is present, "
-                "include diagnostic_plan with mode=diagnostic_only, a concrete question, at least two competing_causes, "
-                "evidence_to_collect, and a decision_rule that names and distinguishes every cause. "
-                "The next experiment must distinguish the stated unknown causes before another ranking-only change. "
+                "Use the supplied research_state and planning_mode. When repeated_failure_diagnosis has missing or "
+                "unclassified case evidence, include diagnostic_plan with mode=diagnostic_only, a concrete question, "
+                "at least two competing_causes, evidence_to_collect, and a decision_rule distinguishing each cause. "
+                "When case_evidence.cause_counts establishes a cause, propose a bounded change addressing the dominant "
+                "cause and cite its evidence; for CATALOG_COVERAGE_GAP consider editable catalog scope, and for "
+                "QDRANT_OR_MODALITY_POOL_MISS inspect index/retriever candidate generation. "
                 "Avoid repeating a mechanism unless you explicitly mark the hypothesis as refine, retry, or supersede "
                 "and reference the prior experiment ordinal. Do not modify files. Return only the requested structured result.\n\n"
             )

@@ -455,6 +455,25 @@ class CaseMeasurement(BaseModel):
         return value
 
 
+class RetrievalCaseTrace(BaseModel):
+    """Hashed, DEV-only retrieval stage evidence with no product identities."""
+
+    model_config = ConfigDict(extra="forbid")
+    case_id: str = Field(min_length=1, max_length=200)
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    failure_stage: str = Field(min_length=1, max_length=80)
+    failure_substage: str = Field(min_length=1, max_length=120)
+    acceptable_present_in_catalog: bool
+    acceptable_in_pretruncate_pool: bool
+    acceptable_in_initial_retrieval: bool
+    acceptable_in_rerank_candidates: bool
+    acceptable_selected: bool
+    best_acceptable_pretruncate_rank: int | None = Field(default=None, ge=1)
+    best_acceptable_initial_rank: int | None = Field(default=None, ge=1)
+    best_acceptable_rerank_rank: int | None = Field(default=None, ge=1)
+    filter_failure_fields: list[str] = Field(default_factory=list, max_length=16)
+
+
 class ArtifactRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
     case_id: str
@@ -477,6 +496,7 @@ class EvaluationResult(BaseModel):
     artifacts: list[str] = Field(default_factory=list)  # legacy references
     protocol_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     cases: list[CaseMeasurement] = Field(default_factory=list, max_length=10000)
+    retrieval_case_traces: list[RetrievalCaseTrace] = Field(default_factory=list, max_length=10000)
     artifact_manifest: list[ArtifactRecord] = Field(default_factory=list, max_length=10000)
     resource_units: int | None = Field(default=None, ge=0)
 
@@ -485,6 +505,13 @@ class EvaluationResult(BaseModel):
         keys = [(c.case_id, c.repetition) for c in self.cases]
         if len(keys) != len(set(keys)):
             raise ValueError("duplicate case/repetition")
+        trace_keys = [trace.case_id for trace in self.retrieval_case_traces]
+        if len(trace_keys) != len(set(trace_keys)):
+            raise ValueError("duplicate retrieval case trace")
+        if self.retrieval_case_traces and not set(trace_keys).issubset(
+            {case.case_id for case in self.cases}
+        ):
+            raise ValueError("retrieval case traces must match measured DEV cases")
         if self.cases and self.protocol_sha256 is None:
             raise ValueError("cases require protocol_sha256")
         return self

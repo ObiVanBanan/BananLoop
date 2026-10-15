@@ -868,15 +868,21 @@ class Engine:
         if not hypothesis.files_or_area:
             return "hypothesis has no concrete files_or_area grounding"
         diagnosis = (task.get("research_state") or {}).get("repeated_failure_diagnosis")
-        if diagnosis:
+        case_evidence = (diagnosis or {}).get("case_evidence") or {}
+        cause_counts = case_evidence.get("cause_counts") or {}
+        needs_diagnostic_plan = bool(diagnosis) and (
+            not cause_counts
+            or bool(case_evidence.get("unclassified_case_count"))
+            or bool(cause_counts.get("UNRESOLVED"))
+        )
+        if needs_diagnostic_plan:
             try:
                 DiagnosticPlan.model_validate(hypothesis.diagnostic_plan)
             except ValidationError as exc:
                 return (
-                    "repeated retrieval failures require a valid diagnostic_plan in diagnostic_only mode "
-                    "with at least two "
-                    "competing causes and a decision_rule that distinguishes each cause: "
-                    + str(exc)
+                    "repeated retrieval failures without classified per-case causes require a valid "
+                    "diagnostic_plan in diagnostic_only mode with at least two competing causes and a "
+                    "decision_rule that distinguishes each cause: " + str(exc)
                 )
         supplied = {
             "research_state": bool(task.get("research_state")),
@@ -940,9 +946,9 @@ class Engine:
                     f"{', '.join(str(item['ordinal']) for item in diagnosis.get('evidence', []))}. "
                     f"The latest DEV result identifies {failed_count} failed cases but supplies only "
                     f"{trace_count} case-level retrieval traces ({missing} cases remain unclassified). "
-                    "No cause can be assigned between catalog coverage and Qdrant/index candidate loss. "
-                    "Provide evaluator-approved DEV failure_examples with per-case catalog-presence and "
-                    "retrieved-candidate trace fields before another experiment."
+                    "No cause can be assigned between catalog coverage and candidate-generation loss. "
+                    "Provide evaluator-approved DEV retrieval_case_traces with per-case catalog-presence "
+                    "and candidate-stage membership before another experiment."
                 )
                 self.store.update_experiment(
                     experiment_id,
@@ -956,7 +962,7 @@ class Engine:
                         "diagnosis": diagnosis,
                         "required_evidence": [
                             "DEV-safe per-case catalog membership",
-                            "Qdrant/index retrieved candidate identities or counts",
+                            "Qdrant/index candidate-stage membership booleans or counts, without product IDs",
                             "stage-level candidate loss trace",
                         ],
                         "message": message,

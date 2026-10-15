@@ -313,7 +313,7 @@ def test_repeated_retrieval_misses_create_evidence_brief_not_reranker_advice():
     assert diagnosis["kind"] == "repeated_retrieval_miss"
     assert [item["retrieval_miss"] for item in diagnosis["evidence"]] == [37, 37]
     assert "before reranking" in diagnosis["finding"]
-    assert "catalog coverage versus Qdrant/index retrieval loss" in diagnosis["unknowns"][1]
+    assert "catalog coverage versus candidate-generation loss" in diagnosis["unknowns"][1]
     assert "ranking-only" in diagnosis["required_next_step"]
     assert diagnosis["scope_constraints"]["catalogs_editable"] is False
     assert diagnosis["scope_constraints"]["operator_action_if_data_change_is_supported"] == (
@@ -336,7 +336,30 @@ def test_repeated_retrieval_brief_carries_hashed_failed_dev_cases_and_trace_gaps
                 {"case_id": "sha256:ok", "input_sha256": "b" * 64,
                  "metrics": {"initial_recall": 1.0, "rerank_recall": 1.0}},
             ],
-            "failure_examples": [{"pipeline_trace": {"stage": "rerank"}}],
+            "retrieval_case_traces": [
+                {
+                    "case_id": "sha256:failed",
+                    "input_sha256": "a" * 64,
+                    "failure_stage": "RETRIEVAL_MISS",
+                    "failure_substage": "MODALITY_POOL_MISS",
+                    "acceptable_present_in_catalog": False,
+                    "acceptable_in_pretruncate_pool": False,
+                    "acceptable_in_initial_retrieval": False,
+                    "acceptable_in_rerank_candidates": False,
+                    "acceptable_selected": False,
+                },
+                {
+                    "case_id": "sha256:ok",
+                    "input_sha256": "b" * 64,
+                    "failure_stage": "SUCCESS",
+                    "failure_substage": "SUCCESS",
+                    "acceptable_present_in_catalog": True,
+                    "acceptable_in_pretruncate_pool": True,
+                    "acceptable_in_initial_retrieval": True,
+                    "acceptable_in_rerank_candidates": True,
+                    "acceptable_selected": True,
+                },
+            ],
         }
         rows.append({
             "ordinal": ordinal,
@@ -348,18 +371,73 @@ def test_repeated_retrieval_brief_carries_hashed_failed_dev_cases_and_trace_gaps
         })
 
     diagnosis = build_research_state(s, campaign(), rows).repeated_failure_diagnosis
-    assert diagnosis["case_evidence"] == {
+    evidence = diagnosis["case_evidence"]
+    assert evidence == {
         "experiment_ordinal": 2,
         "failed_case_count": 1,
         "failed_cases": [{
             "case_id": "sha256:failed",
             "input_sha256": "a" * 64,
-            "initial_recall": 0.0,
-            "rerank_recall": 0.0,
+            "failure_stage": "RETRIEVAL_MISS",
+            "failure_substage": "MODALITY_POOL_MISS",
+            "cause": "CATALOG_COVERAGE_GAP",
+            "acceptable_present_in_catalog": False,
+            "acceptable_in_pretruncate_pool": False,
+            "acceptable_in_initial_retrieval": False,
+            "acceptable_in_rerank_candidates": False,
+            "acceptable_selected": False,
+            "best_acceptable_pretruncate_rank": None,
         }],
-        "trace_example_count": 1,
+        "trace_example_count": 2,
         "unclassified_case_count": 0,
+        "cause_counts": {"CATALOG_COVERAGE_GAP": 1},
     }
+    assert "Catalog coverage is directly implicated" in diagnosis["finding"]
+    assert "catalog coverage change" in diagnosis["required_next_step"]
+
+
+def test_37_catalog_coverage_failures_trigger_data_investigation_guidance():
+    s = spec(
+        agent_visible_metrics=["quality", "RETRIEVAL_MISS", "initial_recall"],
+        editable_scope=["data/competitor_catalogs/**"],
+    )
+    traces = []
+    for index in range(37):
+        traces.append({
+            "case_id": f"case-{index:02d}",
+            "input_sha256": f"{index + 1:064x}",
+            "failure_stage": "RETRIEVAL_MISS",
+            "failure_substage": "MODALITY_POOL_MISS",
+            "acceptable_present_in_catalog": False,
+            "acceptable_in_pretruncate_pool": False,
+            "acceptable_in_initial_retrieval": False,
+            "acceptable_in_rerank_candidates": False,
+            "acceptable_selected": False,
+            "best_acceptable_pretruncate_rank": None,
+        })
+    rows = []
+    for ordinal in (1, 2, 3):
+        rows.append({
+            "ordinal": ordinal,
+            "status": "REJECTED",
+            "failure_category": "PRIMARY_NOT_IMPROVED",
+            "hypothesis_json": json.dumps({"mechanism_key": f"ranking-{ordinal}"}),
+            "evaluation_json": json.dumps({
+                "metrics": {
+                    "RETRIEVAL_MISS": {"value": 37},
+                    "initial_recall": {"value": 0.63},
+                },
+                "retrieval_case_traces": traces,
+            }),
+            "decision_json": json.dumps({"accepted": False, "reasons": ["PRIMARY_NOT_IMPROVED"]}),
+        })
+
+    diagnosis = build_research_state(s, campaign(), rows).repeated_failure_diagnosis
+
+    assert diagnosis["case_evidence"]["failed_case_count"] == 37
+    assert diagnosis["case_evidence"]["cause_counts"] == {"CATALOG_COVERAGE_GAP": 37}
+    assert "catalog coverage change" in diagnosis["required_next_step"]
+    assert "Catalog coverage is directly implicated" in diagnosis["finding"]
 
 
 def test_research_state_reports_remaining_effective_call_budget():
