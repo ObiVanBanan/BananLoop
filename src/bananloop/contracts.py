@@ -470,11 +470,12 @@ class RetrievalCaseTrace(BaseModel):
     input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     failure_stage: str = Field(min_length=1, max_length=80)
     failure_substage: str = Field(min_length=1, max_length=120)
-    acceptable_present_in_catalog: bool
-    acceptable_in_pretruncate_pool: bool
-    acceptable_in_initial_retrieval: bool
-    acceptable_in_rerank_candidates: bool
-    acceptable_selected: bool
+    # None means the evaluator did not measure this stage. Never infer false.
+    acceptable_present_in_catalog: bool | None = None
+    acceptable_in_pretruncate_pool: bool | None = None
+    acceptable_in_initial_retrieval: bool | None = None
+    acceptable_in_rerank_candidates: bool | None = None
+    acceptable_selected: bool | None = None
     best_acceptable_pretruncate_rank: int | None = Field(default=None, ge=1)
     best_acceptable_initial_rank: int | None = Field(default=None, ge=1)
     best_acceptable_rerank_rank: int | None = Field(default=None, ge=1)

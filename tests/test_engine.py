@@ -1598,6 +1598,32 @@ def test_retrieval_case_trace_contract_requires_matching_measured_dev_case():
     assert result.retrieval_case_traces[0].case_id == "case-hash"
 
 
+def test_retrieval_case_trace_contract_preserves_unknown_measurements():
+    payload = {
+        "metrics": {"quality": 0.3},
+        "protocol_sha256": "a" * 64,
+        "cases": [{
+            "case_id": "case-hash",
+            "input_sha256": "b" * 64,
+            "metrics": {"initial_recall": 0.0},
+        }],
+        "retrieval_case_traces": [{
+            "case_id": "case-hash",
+            "input_sha256": "b" * 64,
+            "failure_stage": "RETRIEVAL_MISS",
+            "failure_substage": "MODALITY_POOL_MISS",
+            "acceptable_present_in_catalog": None,
+            "acceptable_in_pretruncate_pool": None,
+        }],
+    }
+
+    result = EvaluationResult.model_validate(payload)
+    trace = result.retrieval_case_traces[0]
+    assert trace.acceptable_present_in_catalog is None
+    assert trace.acceptable_in_pretruncate_pool is None
+    assert trace.acceptable_in_initial_retrieval is None
+
+
 class MissingDiagnosticPlanProposer(AgentAdapter):
     def probe(self):
         return {"available": True}

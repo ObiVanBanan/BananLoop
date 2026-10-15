@@ -426,7 +426,7 @@ def _repeated_retrieval_diagnosis(
             f"{cause_counts['QDRANT_OR_MODALITY_POOL_MISS']} failed DEV cases have acceptable catalog targets "
             "that never enter the pre-truncation candidate pool; investigate Qdrant/index and modality retrieval."
         )
-    elif case_evidence["failed_case_count"]:
+    elif case_evidence["failed_case_count"] and not case_evidence["unclassified_case_count"]:
         finding = "Per-case traces localize the remaining failures after candidate retrieval; see cause_counts."
     else:
         finding = (
@@ -487,15 +487,30 @@ def _retrieval_case_evidence(
     for trace in result.get("retrieval_case_traces") or []:
         if trace.get("failure_stage") == "SUCCESS":
             continue
-        if not trace.get("acceptable_present_in_catalog"):
+        catalog = trace.get("acceptable_present_in_catalog")
+        pretruncate = trace.get("acceptable_in_pretruncate_pool")
+        initial = trace.get("acceptable_in_initial_retrieval")
+        rerank = trace.get("acceptable_in_rerank_candidates")
+        selected = trace.get("acceptable_selected")
+        if catalog is None:
+            cause = "UNCLASSIFIED"
+        elif not catalog:
             cause = "CATALOG_COVERAGE_GAP"
-        elif not trace.get("acceptable_in_pretruncate_pool"):
+        elif pretruncate is None:
+            cause = "UNCLASSIFIED"
+        elif not pretruncate:
             cause = "QDRANT_OR_MODALITY_POOL_MISS"
-        elif not trace.get("acceptable_in_initial_retrieval"):
+        elif initial is None:
+            cause = "UNCLASSIFIED"
+        elif not initial:
             cause = "RRF_TRUNCATION"
-        elif not trace.get("acceptable_in_rerank_candidates"):
+        elif rerank is None:
+            cause = "UNCLASSIFIED"
+        elif not rerank:
             cause = "FILTER_DROP"
-        elif not trace.get("acceptable_selected"):
+        elif selected is None:
+            cause = "UNCLASSIFIED"
+        elif not selected:
             cause = "RERANK_SELECTION"
         else:
             cause = "UNRESOLVED"
@@ -522,7 +537,10 @@ def _retrieval_case_evidence(
         "failed_case_count": len(failed),
         "failed_cases": failed,
         "trace_example_count": trace_count,
-        "unclassified_case_count": max(0, len(failed) - trace_count),
+        "unclassified_case_count": max(
+            0,
+            len(failed) - trace_count,
+        ) + case_counts.get("UNCLASSIFIED", 0),
         "cause_counts": dict(sorted(case_counts.items())),
     }
 

@@ -441,6 +441,42 @@ def test_37_catalog_coverage_failures_trigger_data_investigation_guidance():
     assert "Catalog coverage is directly implicated" in diagnosis["finding"]
 
 
+def test_missing_retrieval_stage_signals_are_unclassified_not_catalog_gaps():
+    s = spec(agent_visible_metrics=["quality", "RETRIEVAL_MISS", "initial_recall"])
+    trace = {
+        "case_id": "case-hash",
+        "input_sha256": "a" * 64,
+        "failure_stage": "RETRIEVAL_MISS",
+        "failure_substage": "MODALITY_POOL_MISS",
+        "acceptable_present_in_catalog": None,
+        "acceptable_in_pretruncate_pool": None,
+        "acceptable_in_initial_retrieval": None,
+        "acceptable_in_rerank_candidates": None,
+        "acceptable_selected": None,
+    }
+    rows = [{
+        "ordinal": ordinal,
+        "status": "REJECTED",
+        "failure_category": "PRIMARY_NOT_IMPROVED",
+        "hypothesis_json": json.dumps({"mechanism_key": f"ranking-{ordinal}"}),
+        "evaluation_json": json.dumps({
+            "metrics": {
+                "RETRIEVAL_MISS": {"value": 1},
+                "initial_recall": {"value": 0.5},
+            },
+            "retrieval_case_traces": [trace],
+        }),
+        "decision_json": json.dumps({"accepted": False, "reasons": ["PRIMARY_NOT_IMPROVED"]}),
+    } for ordinal in (1, 2)]
+
+    diagnosis = build_research_state(s, campaign(), rows).repeated_failure_diagnosis
+
+    assert diagnosis["case_evidence"]["cause_counts"] == {"UNCLASSIFIED": 1}
+    assert diagnosis["case_evidence"]["unclassified_case_count"] == 1
+    assert "Do not claim a root cause" in diagnosis["required_next_step"]
+    assert "catalog coverage change" not in diagnosis["required_next_step"]
+
+
 def test_research_state_reports_remaining_effective_call_budget():
     s = spec()
     state = build_research_state(
