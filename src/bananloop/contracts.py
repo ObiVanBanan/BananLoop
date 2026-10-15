@@ -332,6 +332,26 @@ class CampaignSpec(BaseModel):
         return self.approved_hash()
 
 
+class DiagnosticPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["diagnostic_only"]
+    question: str = Field(min_length=20)
+    competing_causes: list[str] = Field(min_length=2, max_length=4)
+    evidence_to_collect: str = Field(min_length=20)
+    decision_rule: str = Field(min_length=20)
+
+    @model_validator(mode="after")
+    def decision_rule_covers_causes(self):
+        rule = self.decision_rule.casefold()
+        causes = [cause.strip().casefold() for cause in self.competing_causes]
+        if any(len(cause) < 8 for cause in causes):
+            raise ValueError("competing causes must be concrete labels")
+        if len(set(causes)) < 2 or any(cause not in rule for cause in causes):
+            raise ValueError("decision_rule must distinguish every competing cause by name")
+        return self
+
+
 class Hypothesis(BaseModel):
     hypothesis: str
     rationale: str
@@ -342,7 +362,7 @@ class Hypothesis(BaseModel):
     relation: Literal["new", "refine", "retry", "supersede"] = "new"
     prior_experiment_refs: list[int] = Field(default_factory=list)
     novelty_rationale: str = ""
-    diagnostic_plan: dict[str, str] = Field(default_factory=dict)
+    diagnostic_plan: dict[str, Any] = Field(default_factory=dict)
 
 
 class ImplementResult(BaseModel):

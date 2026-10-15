@@ -17,6 +17,7 @@ from .contracts import (
     BudgetSpec,
     CampaignSpec,
     CampaignStatus,
+    DiagnosticPlan,
     EvaluationResult,
     FailureAnalysisResult,
     Hypothesis,
@@ -868,12 +869,14 @@ class Engine:
             return "hypothesis has no concrete files_or_area grounding"
         diagnosis = (task.get("research_state") or {}).get("repeated_failure_diagnosis")
         if diagnosis:
-            plan = hypothesis.diagnostic_plan
-            required_plan = ("question", "evidence_to_collect", "decision_rule")
-            if any(len((plan.get(key) or "").strip()) < 20 for key in required_plan):
+            try:
+                DiagnosticPlan.model_validate(hypothesis.diagnostic_plan)
+            except ValidationError as exc:
                 return (
-                    "repeated retrieval failures require a concrete diagnostic_plan with a question, "
-                    "evidence_to_collect, and decision_rule before another experiment"
+                    "repeated retrieval failures require a valid diagnostic_plan in diagnostic_only mode "
+                    "with at least two "
+                    "competing causes and a decision_rule that distinguishes each cause: "
+                    + str(exc)
                 )
         supplied = {
             "research_state": bool(task.get("research_state")),

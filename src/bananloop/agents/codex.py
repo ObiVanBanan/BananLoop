@@ -119,11 +119,14 @@ HYPOTHESIS_SCHEMA = {
         "diagnostic_plan": {
             "type": "object",
             "properties": {
-                "question": {"type": "string"},
-                "evidence_to_collect": {"type": "string"},
-                "decision_rule": {"type": "string"},
+                "mode": {"type": "string", "enum": ["diagnostic_only"]},
+                "question": {"type": "string", "minLength": 20},
+                "competing_causes": {"type": "array", "minItems": 2, "maxItems": 4, "items": {"type": "string"}},
+                "evidence_to_collect": {"type": "string", "minLength": 20},
+                "decision_rule": {"type": "string", "minLength": 20},
             },
-            "additionalProperties": {"type": "string"},
+            "required": ["mode", "question", "competing_causes", "evidence_to_collect", "decision_rule"],
+            "additionalProperties": False,
         },
     },
     "required": [
@@ -287,8 +290,9 @@ class CodexAdapter(AgentAdapter):
             instruction = (
                 "Propose exactly one bounded, falsifiable hypothesis for this measurable campaign. "
                 "Use the supplied research_state and planning_mode. When repeated_failure_diagnosis is present, "
-                "include diagnostic_plan with a concrete question, evidence_to_collect, and decision_rule; "
-                "the next experiment must distinguish the stated unknown causes before another ranking-only change. "
+                "include diagnostic_plan with mode=diagnostic_only, a concrete question, at least two competing_causes, "
+                "evidence_to_collect, and a decision_rule that names and distinguishes every cause. "
+                "The next experiment must distinguish the stated unknown causes before another ranking-only change. "
                 "Avoid repeating a mechanism unless you explicitly mark the hypothesis as refine, retry, or supersede "
                 "and reference the prior experiment ordinal. Do not modify files. Return only the requested structured result.\n\n"
             )

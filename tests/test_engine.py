@@ -1515,11 +1515,23 @@ def test_repeated_failure_requires_a_concrete_diagnostic_plan():
     assert error and "diagnostic_plan" in error
 
     hypothesis.diagnostic_plan = {
+        "mode": "diagnostic_only",
         "question": "Are candidates absent from the catalog or lost by Qdrant retrieval?",
+        "competing_causes": ["catalog coverage gap", "Qdrant/index candidate loss"],
         "evidence_to_collect": "Trace candidate presence and stage counts for failed DEV cases.",
-        "decision_rule": "Catalog absence implies coverage work; indexed misses imply retrieval diagnostics.",
+        "decision_rule": (
+            "If catalog coverage gap then expand data; if Qdrant/index candidate loss then inspect retrieval flow."
+        ),
     }
     assert Engine._hypothesis_grounding_error(hypothesis, task) is None
+
+    hypothesis.diagnostic_plan = {
+        "question": "What ranking metric can be improved next?",
+        "evidence_to_collect": "Run another benchmark and inspect the aggregate score.",
+        "decision_rule": "If score improves keep reranking, otherwise tune the reranker again.",
+    }
+    error = Engine._hypothesis_grounding_error(hypothesis, task)
+    assert error and "diagnostic_only" in error
 
 
 class MissingDiagnosticPlanProposer(AgentAdapter):

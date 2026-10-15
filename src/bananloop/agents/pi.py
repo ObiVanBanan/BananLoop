@@ -265,7 +265,9 @@ class PiAdapter(AgentAdapter):
                 '{"hypothesis":"...","rationale":"...","expected_effect":"...",'
                 '"files_or_area":["..."],"falsification_condition":"...","mechanism_key":"...",'
                 '"relation":"new","prior_experiment_refs":[],"novelty_rationale":"...",'
-                '"diagnostic_plan":{"question":"...","evidence_to_collect":"...","decision_rule":"..."}}'
+                '"diagnostic_plan":{"mode":"diagnostic_only","question":"...",'
+                '"competing_causes":["cause one label","cause two label"],'
+                '"evidence_to_collect":"...","decision_rule":"If cause one label ...; if cause two label ..."}}'
             )
         elif role == "analyze":
             schema = (
