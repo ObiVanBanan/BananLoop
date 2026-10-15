@@ -1586,7 +1586,14 @@ def test_missing_retrieval_diagnosis_pauses_before_execution(tmp_path: Path, mon
 
         assert store.campaign()["status"] == "PAUSED_NEEDS_INPUT"
         assert store.attempt(attempt_id)["status"] == "COMPLETED"
-        assert store.experiment(experiment_id)["failure_category"] == "UNGROUNDED_HYPOTHESIS"
+        assert store.experiment(experiment_id)["failure_category"] == "RETRIEVAL_DIAGNOSIS_NEEDS_EVIDENCE"
+        assert store.action(f"exp:{experiment_id}:propose") is None
+        report = next(
+            json.loads(event["payload_json"])
+            for event in reversed(store.events())
+            if event["event_type"] == "RETRIEVAL_DIAGNOSIS_BLOCKED"
+        )
+        assert "catalog membership" in " ".join(report["required_evidence"])
         assert store.action(f"exp:{experiment_id}:evaluate") is None
     finally:
         store.close()

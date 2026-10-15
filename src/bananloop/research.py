@@ -417,6 +417,7 @@ def _repeated_retrieval_diagnosis(
     return {
         "kind": "repeated_retrieval_miss",
         "evidence": recent,
+        "case_evidence": _retrieval_case_evidence(experiments, recent),
         "scope_constraints": {
             "catalogs_editable": catalogs_editable,
             "editable_scope": list(spec.editable_scope),
@@ -437,6 +438,41 @@ def _repeated_retrieval_diagnosis(
             "catalog coverage from Qdrant/index candidate loss before another ranking-only experiment. If a data "
             "change is supported but catalog paths are outside editable_scope, request that scope be expanded."
         ),
+    }
+
+
+def _retrieval_case_evidence(
+    experiments: list[dict[str, Any]], recent: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Expose evaluator-owned, hashed DEV measurements without inventing causes."""
+    by_ordinal = {int(row["ordinal"]): row for row in experiments}
+    latest = by_ordinal.get(int(recent[-1]["ordinal"]), {}) if recent else {}
+    try:
+        result = json.loads(latest.get("evaluation_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        result = {}
+    cases = result.get("cases") or []
+    failed = []
+    for case in cases:
+        metrics = case.get("metrics") or {}
+        recall = metrics.get("initial_recall")
+        if isinstance(recall, (int, float)) and recall <= 0:
+            failed.append({
+                "case_id": case.get("case_id"),
+                "input_sha256": case.get("input_sha256"),
+                "initial_recall": recall,
+                "rerank_recall": metrics.get("rerank_recall"),
+            })
+    trace_examples = [
+        example for example in (result.get("failure_examples") or [])
+        if isinstance(example, dict) and example.get("pipeline_trace")
+    ]
+    return {
+        "experiment_ordinal": int(recent[-1]["ordinal"]) if recent else None,
+        "failed_case_count": len(failed),
+        "failed_cases": failed,
+        "trace_example_count": len(trace_examples),
+        "unclassified_case_count": max(0, len(failed) - len(trace_examples)),
     }
 
 

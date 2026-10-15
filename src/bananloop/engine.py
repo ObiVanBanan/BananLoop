@@ -928,6 +928,49 @@ class Engine:
     def _stage_propose(self, attempt_id: int, experiment_id: int) -> None:
         self.workspace.checkout(self.store.campaign()["champion_snapshot"])
         task = self._task_context("propose", experiment_id)
+        diagnosis = (task.get("research_state") or {}).get("repeated_failure_diagnosis")
+        if diagnosis:
+            case_evidence = diagnosis.get("case_evidence") or {}
+            failed_count = int(case_evidence.get("failed_case_count") or 0)
+            trace_count = int(case_evidence.get("trace_example_count") or 0)
+            if failed_count == 0 or trace_count < failed_count:
+                missing = max(0, failed_count - trace_count)
+                message = (
+                    f"Repeated retrieval failures detected across experiments "
+                    f"{', '.join(str(item['ordinal']) for item in diagnosis.get('evidence', []))}. "
+                    f"The latest DEV result identifies {failed_count} failed cases but supplies only "
+                    f"{trace_count} case-level retrieval traces ({missing} cases remain unclassified). "
+                    "No cause can be assigned between catalog coverage and Qdrant/index candidate loss. "
+                    "Provide evaluator-approved DEV failure_examples with per-case catalog-presence and "
+                    "retrieved-candidate trace fields before another experiment."
+                )
+                self.store.update_experiment(
+                    experiment_id,
+                    failure_category="RETRIEVAL_DIAGNOSIS_NEEDS_EVIDENCE",
+                    lesson=message[:1000],
+                )
+                self.store.event(
+                    "RETRIEVAL_DIAGNOSIS_BLOCKED",
+                    {
+                        "experiment_id": experiment_id,
+                        "diagnosis": diagnosis,
+                        "required_evidence": [
+                            "DEV-safe per-case catalog membership",
+                            "Qdrant/index retrieved candidate identities or counts",
+                            "stage-level candidate loss trace",
+                        ],
+                        "message": message,
+                    },
+                )
+                self.store.finish_attempt(
+                    attempt_id,
+                    experiment_id,
+                    status="NEEDS_RETRIEVAL_DIAGNOSIS_EVIDENCE",
+                    scientific=False,
+                    improved=False,
+                )
+                self._stop(StopReason.PAUSED_NEEDS_INPUT, CampaignStatus.PAUSED_NEEDS_INPUT)
+                return
         try:
             raw = self._action(
                 action_id=f"exp:{experiment_id}:propose",

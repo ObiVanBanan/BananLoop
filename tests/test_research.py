@@ -321,6 +321,47 @@ def test_repeated_retrieval_misses_create_evidence_brief_not_reranker_advice():
     )
 
 
+def test_repeated_retrieval_brief_carries_hashed_failed_dev_cases_and_trace_gaps():
+    s = spec(agent_visible_metrics=["quality", "RETRIEVAL_MISS", "initial_recall"])
+    rows = []
+    for ordinal in (1, 2):
+        evaluation = {
+            "metrics": {
+                "RETRIEVAL_MISS": {"value": 2},
+                "initial_recall": {"value": 0.5},
+            },
+            "cases": [
+                {"case_id": "sha256:failed", "input_sha256": "a" * 64,
+                 "metrics": {"initial_recall": 0.0, "rerank_recall": 0.0}},
+                {"case_id": "sha256:ok", "input_sha256": "b" * 64,
+                 "metrics": {"initial_recall": 1.0, "rerank_recall": 1.0}},
+            ],
+            "failure_examples": [{"pipeline_trace": {"stage": "rerank"}}],
+        }
+        rows.append({
+            "ordinal": ordinal,
+            "status": "REJECTED",
+            "failure_category": "PRIMARY_NOT_IMPROVED",
+            "hypothesis_json": json.dumps({"mechanism_key": f"mechanism-{ordinal}"}),
+            "evaluation_json": json.dumps(evaluation),
+            "decision_json": json.dumps({"accepted": False, "reasons": ["PRIMARY_NOT_IMPROVED"]}),
+        })
+
+    diagnosis = build_research_state(s, campaign(), rows).repeated_failure_diagnosis
+    assert diagnosis["case_evidence"] == {
+        "experiment_ordinal": 2,
+        "failed_case_count": 1,
+        "failed_cases": [{
+            "case_id": "sha256:failed",
+            "input_sha256": "a" * 64,
+            "initial_recall": 0.0,
+            "rerank_recall": 0.0,
+        }],
+        "trace_example_count": 1,
+        "unclassified_case_count": 0,
+    }
+
+
 def test_research_state_reports_remaining_effective_call_budget():
     s = spec()
     state = build_research_state(
