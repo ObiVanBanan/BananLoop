@@ -377,6 +377,7 @@ def test_repeated_retrieval_brief_carries_hashed_failed_dev_cases_and_trace_gaps
         "failed_case_count": 1,
         "failed_cases": [{
             "case_id": "sha256:failed",
+            "repetition": 0,
             "input_sha256": "a" * 64,
             "failure_stage": "RETRIEVAL_MISS",
             "failure_substage": "MODALITY_POOL_MISS",
