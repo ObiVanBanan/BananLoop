@@ -145,11 +145,13 @@ class PiAdapter(AgentAdapter):
             instruction = (
                 "You are the proposer inside BananLoop. Inspect the repository and propose exactly one "
                 "bounded, falsifiable hypothesis. Do not modify files during this role. "
-                "Use the supplied research_state and planning_mode. Avoid repeating a mechanism unless "
-                "you explicitly mark it as refine, retry, or supersede and reference the prior experiment ordinal. "
+                "Use the supplied research_state and planning_mode. When repeated_failure_diagnosis is present, "
+                "include diagnostic_plan with a concrete question, evidence_to_collect, and decision_rule; "
+                "distinguish the listed unknown causes before another ranking-only change. "
+                "Avoid repeating a mechanism unless you explicitly mark it as refine, retry, or supersede and reference the prior experiment ordinal. "
                 "Your final assistant message MUST be exactly one JSON object with these keys: "
                 "hypothesis, rationale, expected_effect, files_or_area, falsification_condition, mechanism_key, "
-                "relation, prior_experiment_refs, novelty_rationale. "
+                "relation, prior_experiment_refs, novelty_rationale, diagnostic_plan when required by the context. "
                 "If no useful hypothesis exists, return exactly {\"status\":\"NO_HYPOTHESIS\"}. "
                 "Do not use markdown fences and do not include prose outside the JSON object."
             )
@@ -262,7 +264,8 @@ class PiAdapter(AgentAdapter):
             schema = (
                 '{"hypothesis":"...","rationale":"...","expected_effect":"...",'
                 '"files_or_area":["..."],"falsification_condition":"...","mechanism_key":"...",'
-                '"relation":"new","prior_experiment_refs":[],"novelty_rationale":"..."}'
+                '"relation":"new","prior_experiment_refs":[],"novelty_rationale":"...",'
+                '"diagnostic_plan":{"question":"...","evidence_to_collect":"...","decision_rule":"..."}}'
             )
         elif role == "analyze":
             schema = (

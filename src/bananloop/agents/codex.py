@@ -116,6 +116,15 @@ HYPOTHESIS_SCHEMA = {
         "relation": {"type": "string", "enum": ["new", "refine", "retry", "supersede"]},
         "prior_experiment_refs": {"type": "array", "items": {"type": "integer"}},
         "novelty_rationale": {"type": "string"},
+        "diagnostic_plan": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string"},
+                "evidence_to_collect": {"type": "string"},
+                "decision_rule": {"type": "string"},
+            },
+            "additionalProperties": {"type": "string"},
+        },
     },
     "required": [
         "hypothesis",
@@ -277,9 +286,11 @@ class CodexAdapter(AgentAdapter):
         elif role == "propose":
             instruction = (
                 "Propose exactly one bounded, falsifiable hypothesis for this measurable campaign. "
-                "Use the supplied research_state and planning_mode. Avoid repeating a mechanism unless "
-                "you explicitly mark the hypothesis as refine, retry, or supersede and reference the prior "
-                "experiment ordinal. Do not modify files. Return only the requested structured result.\n\n"
+                "Use the supplied research_state and planning_mode. When repeated_failure_diagnosis is present, "
+                "include diagnostic_plan with a concrete question, evidence_to_collect, and decision_rule; "
+                "the next experiment must distinguish the stated unknown causes before another ranking-only change. "
+                "Avoid repeating a mechanism unless you explicitly mark the hypothesis as refine, retry, or supersede "
+                "and reference the prior experiment ordinal. Do not modify files. Return only the requested structured result.\n\n"
             )
         elif role == "analyze":
             instruction = (

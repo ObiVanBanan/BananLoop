@@ -1499,3 +1499,67 @@ def test_evaluation_request_records_candidate_materialization_proof(tmp_path: Pa
         assert report["experiments"][0]["candidate_proof"] == proof
     finally:
         store.close()
+
+
+def test_repeated_failure_requires_a_concrete_diagnostic_plan():
+    hypothesis = Hypothesis(
+        hypothesis="Inspect retrieval losses",
+        rationale="The repeated retrieval diagnosis remains unresolved",
+        expected_effect="identify the candidate loss stage",
+        files_or_area=["src/retrieval.py"],
+        falsification_condition="evidence shows no retrieval loss",
+        mechanism_key="retrieval-loss-diagnosis",
+    )
+    task = {"research_state": {"repeated_failure_diagnosis": {"kind": "repeated_retrieval_miss"}}}
+    error = Engine._hypothesis_grounding_error(hypothesis, task)
+    assert error and "diagnostic_plan" in error
+
+    hypothesis.diagnostic_plan = {
+        "question": "Are candidates absent from the catalog or lost by Qdrant retrieval?",
+        "evidence_to_collect": "Trace candidate presence and stage counts for failed DEV cases.",
+        "decision_rule": "Catalog absence implies coverage work; indexed misses imply retrieval diagnostics.",
+    }
+    assert Engine._hypothesis_grounding_error(hypothesis, task) is None
+
+
+class MissingDiagnosticPlanProposer(AgentAdapter):
+    def probe(self):
+        return {"available": True}
+
+    def execute(self, task, workspace, timeout):
+        return {
+            "hypothesis": "change retrieval ranking",
+            "rationale": "try another ranking change",
+            "expected_effect": "higher quality",
+            "files_or_area": ["value.txt"],
+            "falsification_condition": "quality unchanged",
+            "mechanism_key": "ranking-again",
+            "relation": "new",
+            "prior_experiment_refs": [],
+            "novelty_rationale": "new wording",
+        }
+
+
+def test_missing_retrieval_diagnosis_pauses_before_execution(tmp_path: Path, monkeypatch):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        monkeypatch.setattr(engine, "_task_context", lambda role, _id: {
+            "role": role,
+            "research_state": {
+                "repeated_failure_diagnosis": {"kind": "repeated_retrieval_miss"}
+            },
+        })
+        engine.agent = MissingDiagnosticPlanProposer()
+
+        engine._stage_propose(attempt_id, experiment_id)
+
+        assert store.campaign()["status"] == "PAUSED_NEEDS_INPUT"
+        assert store.attempt(attempt_id)["status"] == "COMPLETED"
+        assert store.experiment(experiment_id)["failure_category"] == "UNGROUNDED_HYPOTHESIS"
+        assert store.action(f"exp:{experiment_id}:evaluate") is None
+    finally:
+        store.close()

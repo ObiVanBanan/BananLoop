@@ -282,3 +282,59 @@ def test_failure_capsules_enter_history_and_research_state_without_raw_dev_signa
     state = build_research_state(s, campaign(), [row])
     assert state.recent_failure_capsules[0].affected_fields == ["dn"]
     assert "raw case-specific evidence" not in state.model_dump_json()
+
+
+def test_repeated_retrieval_misses_create_evidence_brief_not_reranker_advice():
+    s = spec(
+        agent_visible_metrics=["quality", "RETRIEVAL_MISS", "initial_recall", "rerank_recall"],
+        editable_scope=["src/nomenclature_matcher/"],
+        protected_paths=["data/competitor_catalogs/**"],
+    )
+    rows = []
+    for ordinal, mechanism in [(1, "query-expansion"), (2, "cross-encoder-rerank")]:
+        rows.append({
+            "ordinal": ordinal,
+            "status": "REJECTED",
+            "failure_category": "PRIMARY_NOT_IMPROVED",
+            "hypothesis_json": json.dumps({"mechanism_key": mechanism}),
+            "evaluation_json": json.dumps({
+                "status": "ok",
+                "metrics": {
+                    "quality": {"value": 0.3},
+                    "RETRIEVAL_MISS": {"value": 37},
+                    "initial_recall": {"value": 0.63},
+                    "rerank_recall": {"value": 0.63},
+                },
+            }),
+            "decision_json": json.dumps({"accepted": False, "reasons": ["PRIMARY_NOT_IMPROVED"]}),
+        })
+    state = build_research_state(s, campaign(), rows)
+    diagnosis = state.repeated_failure_diagnosis
+    assert diagnosis["kind"] == "repeated_retrieval_miss"
+    assert [item["retrieval_miss"] for item in diagnosis["evidence"]] == [37, 37]
+    assert "before reranking" in diagnosis["finding"]
+    assert "catalog coverage versus Qdrant/index retrieval loss" in diagnosis["unknowns"][1]
+    assert "ranking-only" in diagnosis["required_next_step"]
+    assert diagnosis["scope_constraints"]["catalogs_editable"] is False
+    assert diagnosis["scope_constraints"]["operator_action_if_data_change_is_supported"] == (
+        "expand editable_scope to the relevant catalog path"
+    )
+
+
+def test_research_state_reports_remaining_effective_call_budget():
+    s = spec()
+    state = build_research_state(
+        s,
+        campaign(experiment_count=4, attempt_count=5, agent_calls=7, evaluator_calls=8),
+        [],
+        budget=s.budget.model_copy(update={
+            "max_experiments": 9,
+            "max_attempts": 10,
+            "max_agent_calls": 12,
+            "max_evaluator_calls": 13,
+        }),
+    )
+    assert state.remaining_budget["experiments"] == 5
+    assert state.remaining_budget["attempts"] == 5
+    assert state.remaining_budget["agent_calls"] == 5
+    assert state.remaining_budget["evaluator_calls"] == 5

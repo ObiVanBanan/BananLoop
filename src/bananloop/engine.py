@@ -791,6 +791,8 @@ class Engine:
             self.spec,
             self.store.campaign(),
             self.store.experiments(),
+            budget=self.budget,
+            evaluation_units_reserved=self.store.evaluation_work_reserved(),
         )
         payload = state.model_dump(mode="json")
         self.store.set_research_state(payload)
@@ -807,6 +809,15 @@ class Engine:
             # originally approved input, not a newly generated planning context.
             return request
         research_state = self._refresh_research_state()
+        if action and action.get("kind") == "agent":
+            # Older/incomplete action rows may have no persisted request_json.
+            # Reconstruct the context from the pre-call budget so its request
+            # hash remains stable across retries of that already-reserved call.
+            limit = self.budget.max_agent_calls
+            research_state["remaining_budget"]["agent_calls"] = min(
+                limit,
+                research_state["remaining_budget"].get("agent_calls", 0) + 1,
+            )
         campaign = self.store.campaign()
         return {
             "schema_version": 1,
@@ -836,6 +847,10 @@ class Engine:
                 "exploit": "build on the strongest DEV-supported mechanism without duplicating prior work",
                 "explore": "test a materially different mechanism family from recent failed attempts",
                 "reframe": "challenge the current framing and choose a new mechanism family before plateau",
+                "repeated_failure_diagnosis": (
+                    (research_state.get("repeated_failure_diagnosis") or {}).get("required_next_step")
+                    if research_state.get("repeated_failure_diagnosis") else None
+                ),
                 "genealogy": (
                     "If reusing a mechanism_key, set relation to refine/retry/supersede "
                     "and cite a matching prior experiment ordinal."
@@ -851,6 +866,15 @@ class Engine:
     ) -> str | None:
         if not hypothesis.files_or_area:
             return "hypothesis has no concrete files_or_area grounding"
+        diagnosis = (task.get("research_state") or {}).get("repeated_failure_diagnosis")
+        if diagnosis:
+            plan = hypothesis.diagnostic_plan
+            required_plan = ("question", "evidence_to_collect", "decision_rule")
+            if any(len((plan.get(key) or "").strip()) < 20 for key in required_plan):
+                return (
+                    "repeated retrieval failures require a concrete diagnostic_plan with a question, "
+                    "evidence_to_collect, and decision_rule before another experiment"
+                )
         supplied = {
             "research_state": bool(task.get("research_state")),
             "planning_mode": bool((task.get("research_state") or {}).get("planning_mode")),
@@ -951,6 +975,11 @@ class Engine:
                 improved=False,
             )
             self._refresh_research_state()
+            if (task.get("research_state") or {}).get("repeated_failure_diagnosis") and "diagnostic_plan" in grounding_error:
+                self._stop(
+                    StopReason.PAUSED_NEEDS_INPUT,
+                    CampaignStatus.PAUSED_NEEDS_INPUT,
+                )
             return
 
         duplicate = redundancy_reason(

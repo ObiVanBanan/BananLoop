@@ -342,6 +342,7 @@ class Hypothesis(BaseModel):
     relation: Literal["new", "refine", "retry", "supersede"] = "new"
     prior_experiment_refs: list[int] = Field(default_factory=list)
     novelty_rationale: str = ""
+    diagnostic_plan: dict[str, str] = Field(default_factory=dict)
 
 
 class ImplementResult(BaseModel):
@@ -513,6 +514,7 @@ class ResearchState(BaseModel):
     recent_lessons: list[str] = Field(default_factory=list)
     recent_failure_capsules: list[FailureCapsule] = Field(default_factory=list, max_length=16)
     remaining_budget: dict[str, int] = Field(default_factory=dict)
+    repeated_failure_diagnosis: dict[str, Any] | None = None
 
 
 class RuntimePaths(BaseModel):

@@ -5,7 +5,8 @@ import math
 from collections import Counter
 from typing import Any
 
-from .contracts import CampaignSpec, FailureCapsule, Hypothesis, MechanismEvidence, ResearchState
+from .contracts import BudgetSpec, CampaignSpec, FailureCapsule, Hypothesis, MechanismEvidence, ResearchState
+from .workspace import WorkspaceManager
 
 
 def attempt_bucket(row: dict[str, Any]) -> str:
@@ -287,6 +288,9 @@ def build_research_state(
     spec: CampaignSpec,
     campaign: dict[str, Any],
     experiments: list[dict[str, Any]],
+    *,
+    budget: BudgetSpec | None = None,
+    evaluation_units_reserved: int = 0,
 ) -> ResearchState:
     mechanism_rows: dict[str, dict[str, Any]] = {}
     failure_counts: Counter[str] = Counter()
@@ -325,18 +329,26 @@ def build_research_state(
         else:
             dev_non_improve_streak += 1
 
+    active_budget = budget or spec.budget
     remaining = {
-        "experiments": max(0, spec.budget.max_experiments - int(campaign["experiment_count"])),
-        "attempts": max(0, spec.budget.max_attempts - int(campaign["attempt_count"])),
+        "experiments": max(0, active_budget.max_experiments - int(campaign["experiment_count"])),
+        "attempts": max(0, active_budget.max_attempts - int(campaign["attempt_count"])),
+        "agent_calls": max(0, active_budget.max_agent_calls - int(campaign["agent_calls"])),
+        "evaluator_calls": max(0, active_budget.max_evaluator_calls - int(campaign["evaluator_calls"])),
         "dev_experiments_until_reframe": max(
             0,
-            spec.budget.plateau_experiments - 1 - dev_non_improve_streak,
+            active_budget.plateau_experiments - 1 - dev_non_improve_streak,
         ),
     }
+    if active_budget.max_evaluation_units is not None:
+        remaining["evaluation_units"] = max(
+            0, active_budget.max_evaluation_units - evaluation_units_reserved
+        )
+    diagnosis = _repeated_retrieval_diagnosis(spec, experiments)
     return ResearchState(
         planning_mode=planning_mode(
             dev_non_improve_streak,
-            spec.budget.plateau_experiments,
+            active_budget.plateau_experiments,
         ),
         dev_non_improve_streak=dev_non_improve_streak,
         failure_counts=dict(sorted(failure_counts.items())),
@@ -347,7 +359,85 @@ def build_research_state(
         recent_lessons=lessons[-8:],
         recent_failure_capsules=failure_capsules[-16:],
         remaining_budget=remaining,
+        repeated_failure_diagnosis=diagnosis,
     )
+
+
+def _repeated_retrieval_diagnosis(
+    spec: CampaignSpec,
+    experiments: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Summarize repeated retrieval-stage failure using only visible DEV metrics."""
+    visible = set(spec.agent_visible_metrics)
+    if visible and not {"RETRIEVAL_MISS", "initial_recall"}.issubset(visible):
+        return None
+    eligible: list[dict[str, Any]] = []
+    for row in experiments:
+        if row.get("status") == "ACTIVE" or attempt_bucket(row) != "scientific_trials":
+            continue
+        if classify_dev_outcome(spec, row) == "DEV_IMPROVEMENT":
+            eligible = []
+            continue
+        evaluation = agent_evaluation_view(spec, row.get("evaluation_json")) or {}
+        metrics = evaluation.get("metrics") or {}
+        miss = metrics.get("RETRIEVAL_MISS")
+        recall = metrics.get("initial_recall")
+        if not isinstance(miss, dict) or not isinstance(recall, dict):
+            eligible = []
+            continue
+        miss_value, recall_value = miss.get("value"), recall.get("value")
+        if not isinstance(miss_value, (int, float)) or not isinstance(recall_value, (int, float)):
+            eligible = []
+            continue
+        # A success at the retrieval target or zero misses breaks the repeated
+        # failure run; unrelated missing measurements cannot be treated as evidence.
+        if miss_value <= 0:
+            eligible = []
+            continue
+        eligible.append({
+            "ordinal": int(row["ordinal"]),
+            "mechanism_key": (json.loads(row["hypothesis_json"] or "{}").get("mechanism_key", "unknown")),
+            "retrieval_miss": miss_value,
+            "initial_recall": recall_value,
+            "rerank_recall": (metrics.get("rerank_recall") or {}).get("value"),
+        })
+    recent = eligible[-3:]
+    if len(recent) < 2 or any(item["retrieval_miss"] <= 0 for item in recent):
+        return None
+    # This is a stage-local diagnosis, not a claim that the catalog is missing
+    # products: without case traces, catalog coverage and index loss remain hypotheses.
+    catalog_path = "data/competitor_catalogs/README.md"
+    catalogs_editable = any(
+        WorkspaceManager._matches(catalog_path, [pattern])
+        for pattern in spec.editable_scope
+    ) and not any(
+        WorkspaceManager._matches(catalog_path, [pattern])
+        for pattern in spec.protected_paths
+    )
+    return {
+        "kind": "repeated_retrieval_miss",
+        "evidence": recent,
+        "scope_constraints": {
+            "catalogs_editable": catalogs_editable,
+            "editable_scope": list(spec.editable_scope),
+            "operator_action_if_data_change_is_supported": (
+                None if catalogs_editable else "expand editable_scope to the relevant catalog path"
+            ),
+        },
+        "finding": (
+            "Relevant candidates are still lost before reranking in multiple failed DEV experiments. "
+            "A reranker-only change cannot recover candidates absent from its input pool."
+        ),
+        "unknowns": [
+            "case-level retrieval traces were not supplied by the evaluator",
+            "catalog coverage versus Qdrant/index retrieval loss is not yet distinguished",
+        ],
+        "required_next_step": (
+            "Do not claim a root cause from aggregate metrics. Propose a bounded diagnostic step that distinguishes "
+            "catalog coverage from Qdrant/index candidate loss before another ranking-only experiment. If a data "
+            "change is supported but catalog paths are outside editable_scope, request that scope be expanded."
+        ),
+    }
 
 
 def redundancy_reason(
