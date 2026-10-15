@@ -5,7 +5,8 @@ import math
 from collections import Counter
 from typing import Any
 
-from .contracts import CampaignSpec, FailureCapsule, Hypothesis, MechanismEvidence, ResearchState
+from .contracts import BudgetSpec, CampaignSpec, FailureCapsule, Hypothesis, MechanismEvidence, ResearchState
+from .workspace import WorkspaceManager
 
 
 def attempt_bucket(row: dict[str, Any]) -> str:
@@ -287,6 +288,9 @@ def build_research_state(
     spec: CampaignSpec,
     campaign: dict[str, Any],
     experiments: list[dict[str, Any]],
+    *,
+    budget: BudgetSpec | None = None,
+    evaluation_units_reserved: int = 0,
 ) -> ResearchState:
     mechanism_rows: dict[str, dict[str, Any]] = {}
     failure_counts: Counter[str] = Counter()
@@ -325,18 +329,26 @@ def build_research_state(
         else:
             dev_non_improve_streak += 1
 
+    active_budget = budget or spec.budget
     remaining = {
-        "experiments": max(0, spec.budget.max_experiments - int(campaign["experiment_count"])),
-        "attempts": max(0, spec.budget.max_attempts - int(campaign["attempt_count"])),
+        "experiments": max(0, active_budget.max_experiments - int(campaign["experiment_count"])),
+        "attempts": max(0, active_budget.max_attempts - int(campaign["attempt_count"])),
+        "agent_calls": max(0, active_budget.max_agent_calls - int(campaign["agent_calls"])),
+        "evaluator_calls": max(0, active_budget.max_evaluator_calls - int(campaign["evaluator_calls"])),
         "dev_experiments_until_reframe": max(
             0,
-            spec.budget.plateau_experiments - 1 - dev_non_improve_streak,
+            active_budget.plateau_experiments - 1 - dev_non_improve_streak,
         ),
     }
+    if active_budget.max_evaluation_units is not None:
+        remaining["evaluation_units"] = max(
+            0, active_budget.max_evaluation_units - evaluation_units_reserved
+        )
+    diagnosis = _repeated_retrieval_diagnosis(spec, experiments)
     return ResearchState(
         planning_mode=planning_mode(
             dev_non_improve_streak,
-            spec.budget.plateau_experiments,
+            active_budget.plateau_experiments,
         ),
         dev_non_improve_streak=dev_non_improve_streak,
         failure_counts=dict(sorted(failure_counts.items())),
@@ -347,7 +359,190 @@ def build_research_state(
         recent_lessons=lessons[-8:],
         recent_failure_capsules=failure_capsules[-16:],
         remaining_budget=remaining,
+        repeated_failure_diagnosis=diagnosis,
     )
+
+
+def _repeated_retrieval_diagnosis(
+    spec: CampaignSpec,
+    experiments: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Summarize repeated retrieval-stage failure using only visible DEV metrics."""
+    visible = set(spec.agent_visible_metrics)
+    if visible and not {"RETRIEVAL_MISS", "initial_recall"}.issubset(visible):
+        return None
+    eligible: list[dict[str, Any]] = []
+    for row in experiments:
+        if row.get("status") == "ACTIVE" or attempt_bucket(row) != "scientific_trials":
+            continue
+        if classify_dev_outcome(spec, row) == "DEV_IMPROVEMENT":
+            eligible = []
+            continue
+        evaluation = agent_evaluation_view(spec, row.get("evaluation_json")) or {}
+        metrics = evaluation.get("metrics") or {}
+        miss = metrics.get("RETRIEVAL_MISS")
+        recall = metrics.get("initial_recall")
+        if not isinstance(miss, dict) or not isinstance(recall, dict):
+            eligible = []
+            continue
+        miss_value, recall_value = miss.get("value"), recall.get("value")
+        if not isinstance(miss_value, (int, float)) or not isinstance(recall_value, (int, float)):
+            eligible = []
+            continue
+        # A success at the retrieval target or zero misses breaks the repeated
+        # failure run; unrelated missing measurements cannot be treated as evidence.
+        if miss_value <= 0:
+            eligible = []
+            continue
+        eligible.append({
+            "ordinal": int(row["ordinal"]),
+            "mechanism_key": (json.loads(row["hypothesis_json"] or "{}").get("mechanism_key", "unknown")),
+            "retrieval_miss": miss_value,
+            "initial_recall": recall_value,
+            "rerank_recall": (metrics.get("rerank_recall") or {}).get("value"),
+        })
+    recent = eligible[-3:]
+    if len(recent) < 2 or any(item["retrieval_miss"] <= 0 for item in recent):
+        return None
+    # Catalog, pre-truncation, initial, and rerank evidence below are all
+    # evaluator-owned DEV diagnostics. Aggregate misses alone stay unclassified.
+    catalog_path = "data/competitor_catalogs/README.md"
+    catalogs_editable = any(
+        WorkspaceManager._matches(catalog_path, [pattern])
+        for pattern in spec.editable_scope
+    ) and not any(
+        WorkspaceManager._matches(catalog_path, [pattern])
+        for pattern in spec.protected_paths
+    )
+    case_evidence = _retrieval_case_evidence(experiments, recent)
+    cause_counts = case_evidence["cause_counts"]
+    if cause_counts.get("CATALOG_COVERAGE_GAP", 0):
+        finding = (
+            f"{cause_counts['CATALOG_COVERAGE_GAP']} failed DEV cases have no acceptable target in the loaded catalog. "
+            "Catalog coverage is directly implicated by per-case evidence."
+        )
+    elif cause_counts.get("QDRANT_OR_MODALITY_POOL_MISS", 0):
+        finding = (
+            f"{cause_counts['QDRANT_OR_MODALITY_POOL_MISS']} failed DEV cases have acceptable catalog targets "
+            "that never enter the pre-truncation candidate pool; investigate Qdrant/index and modality retrieval."
+        )
+    elif case_evidence["failed_case_count"] and not case_evidence["unclassified_case_count"]:
+        finding = "Per-case traces localize the remaining failures after candidate retrieval; see cause_counts."
+    else:
+        finding = (
+            "Relevant candidates are still lost before reranking in multiple failed DEV experiments. "
+            "Per-case stage traces are needed to identify the cause."
+        )
+    if cause_counts.get("CATALOG_COVERAGE_GAP", 0) and catalogs_editable:
+        next_step = "Propose a bounded catalog coverage change and verify the missing DEV targets enter the catalog."
+    elif cause_counts.get("CATALOG_COVERAGE_GAP", 0):
+        next_step = "Request editable_scope for the relevant catalog before proposing a catalog coverage change."
+    elif cause_counts.get("QDRANT_OR_MODALITY_POOL_MISS", 0):
+        next_step = "Inspect Qdrant/index and modality candidate generation for the listed hashed DEV cases."
+    elif cause_counts.get("RRF_TRUNCATION", 0):
+        next_step = "Inspect the pre-truncation ranks and bounded candidate truncation for the listed DEV cases."
+    elif cause_counts.get("FILTER_DROP", 0):
+        next_step = "Inspect the recorded hard-filter fields for the listed DEV cases before changing ranking."
+    elif cause_counts.get("RERANK_SELECTION", 0):
+        next_step = "Investigate reranker selection for candidates already present in its candidate pool."
+    else:
+        next_step = (
+            "Do not claim a root cause from aggregate metrics. Supply per-case catalog-presence and "
+            "candidate-stage traces before another ranking-only experiment."
+        )
+    return {
+        "kind": "repeated_retrieval_miss",
+        "evidence": recent,
+        "case_evidence": case_evidence,
+        "scope_constraints": {
+            "catalogs_editable": catalogs_editable,
+            "editable_scope": list(spec.editable_scope),
+            "operator_action_if_data_change_is_supported": (
+                None if catalogs_editable else "expand editable_scope to the relevant catalog path"
+            ),
+        },
+        "finding": finding,
+        "unknowns": (
+            [] if case_evidence["failed_case_count"] and not case_evidence["unclassified_case_count"]
+            else [
+                "case-level retrieval traces are missing or incomplete",
+                "catalog coverage versus candidate-generation loss is not yet distinguished",
+            ]
+        ),
+        "required_next_step": next_step,
+    }
+
+
+def _retrieval_case_evidence(
+    experiments: list[dict[str, Any]], recent: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Classify hashed DEV traces by the first retrieval stage that lost a target."""
+    by_ordinal = {int(row["ordinal"]): row for row in experiments}
+    latest = by_ordinal.get(int(recent[-1]["ordinal"]), {}) if recent else {}
+    try:
+        result = json.loads(latest.get("evaluation_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        result = {}
+    failed = []
+    for trace in result.get("retrieval_case_traces") or []:
+        if trace.get("failure_stage") == "SUCCESS":
+            continue
+        catalog = trace.get("acceptable_present_in_catalog")
+        pretruncate = trace.get("acceptable_in_pretruncate_pool")
+        initial = trace.get("acceptable_in_initial_retrieval")
+        rerank = trace.get("acceptable_in_rerank_candidates")
+        selected = trace.get("acceptable_selected")
+        if catalog is None:
+            cause = "UNCLASSIFIED"
+        elif not catalog:
+            cause = "CATALOG_COVERAGE_GAP"
+        elif pretruncate is None:
+            cause = "UNCLASSIFIED"
+        elif not pretruncate:
+            cause = "QDRANT_OR_MODALITY_POOL_MISS"
+        elif initial is None:
+            cause = "UNCLASSIFIED"
+        elif not initial:
+            cause = "RRF_TRUNCATION"
+        elif rerank is None:
+            cause = "UNCLASSIFIED"
+        elif not rerank:
+            cause = "FILTER_DROP"
+        elif selected is None:
+            cause = "UNCLASSIFIED"
+        elif not selected:
+            cause = "RERANK_SELECTION"
+        else:
+            cause = "UNRESOLVED"
+        failed.append({
+            "case_id": trace.get("case_id"),
+            "repetition": trace.get("repetition", 0),
+            "input_sha256": trace.get("input_sha256"),
+            "failure_stage": trace.get("failure_stage"),
+            "failure_substage": trace.get("failure_substage"),
+            "cause": cause,
+            "acceptable_present_in_catalog": trace.get("acceptable_present_in_catalog"),
+            "acceptable_in_pretruncate_pool": trace.get("acceptable_in_pretruncate_pool"),
+            "acceptable_in_initial_retrieval": trace.get("acceptable_in_initial_retrieval"),
+            "acceptable_in_rerank_candidates": trace.get("acceptable_in_rerank_candidates"),
+            "acceptable_selected": trace.get("acceptable_selected"),
+            "best_acceptable_pretruncate_rank": trace.get("best_acceptable_pretruncate_rank"),
+        })
+    trace_count = len(result.get("retrieval_case_traces") or [])
+    case_counts: dict[str, int] = {}
+    for item in failed:
+        case_counts[item["cause"]] = case_counts.get(item["cause"], 0) + 1
+    return {
+        "experiment_ordinal": int(recent[-1]["ordinal"]) if recent else None,
+        "failed_case_count": len(failed),
+        "failed_cases": failed,
+        "trace_example_count": trace_count,
+        "unclassified_case_count": max(
+            0,
+            len(failed) - trace_count,
+        ) + case_counts.get("UNCLASSIFIED", 0),
+        "cause_counts": dict(sorted(case_counts.items())),
+    }
 
 
 def redundancy_reason(

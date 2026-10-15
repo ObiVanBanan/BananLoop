@@ -17,6 +17,7 @@ from .contracts import (
     BudgetSpec,
     CampaignSpec,
     CampaignStatus,
+    DiagnosticPlan,
     EvaluationResult,
     FailureAnalysisResult,
     Hypothesis,
@@ -97,7 +98,7 @@ class Engine:
         self.spec = store.spec()
         self.budget = self.spec.budget
         for event in reversed(store.events()):
-            if event.get("event_type") == "PLATEAU_BUDGET_EXTENDED":
+            if event.get("event_type") in {"PLATEAU_BUDGET_EXTENDED", "CAMPAIGN_BUDGET_EXTENDED"}:
                 payload = json.loads(event.get("payload_json") or "{}")
                 if payload.get("effective_budget"):
                     self.budget = BudgetSpec.model_validate(payload["effective_budget"])
@@ -791,6 +792,8 @@ class Engine:
             self.spec,
             self.store.campaign(),
             self.store.experiments(),
+            budget=self.budget,
+            evaluation_units_reserved=self.store.evaluation_work_reserved(),
         )
         payload = state.model_dump(mode="json")
         self.store.set_research_state(payload)
@@ -807,6 +810,15 @@ class Engine:
             # originally approved input, not a newly generated planning context.
             return request
         research_state = self._refresh_research_state()
+        if action and action.get("kind") == "agent":
+            # Older/incomplete action rows may have no persisted request_json.
+            # Reconstruct the context from the pre-call budget so its request
+            # hash remains stable across retries of that already-reserved call.
+            limit = self.budget.max_agent_calls
+            research_state["remaining_budget"]["agent_calls"] = min(
+                limit,
+                research_state["remaining_budget"].get("agent_calls", 0) + 1,
+            )
         campaign = self.store.campaign()
         return {
             "schema_version": 1,
@@ -836,6 +848,10 @@ class Engine:
                 "exploit": "build on the strongest DEV-supported mechanism without duplicating prior work",
                 "explore": "test a materially different mechanism family from recent failed attempts",
                 "reframe": "challenge the current framing and choose a new mechanism family before plateau",
+                "repeated_failure_diagnosis": (
+                    (research_state.get("repeated_failure_diagnosis") or {}).get("required_next_step")
+                    if research_state.get("repeated_failure_diagnosis") else None
+                ),
                 "genealogy": (
                     "If reusing a mechanism_key, set relation to refine/retry/supersede "
                     "and cite a matching prior experiment ordinal."
@@ -851,6 +867,23 @@ class Engine:
     ) -> str | None:
         if not hypothesis.files_or_area:
             return "hypothesis has no concrete files_or_area grounding"
+        diagnosis = (task.get("research_state") or {}).get("repeated_failure_diagnosis")
+        case_evidence = (diagnosis or {}).get("case_evidence") or {}
+        cause_counts = case_evidence.get("cause_counts") or {}
+        needs_diagnostic_plan = bool(diagnosis) and (
+            not cause_counts
+            or bool(case_evidence.get("unclassified_case_count"))
+            or bool(cause_counts.get("UNRESOLVED"))
+        )
+        if needs_diagnostic_plan:
+            try:
+                DiagnosticPlan.model_validate(hypothesis.diagnostic_plan)
+            except ValidationError as exc:
+                return (
+                    "repeated retrieval failures without classified per-case causes require a valid "
+                    "diagnostic_plan in diagnostic_only mode with at least two competing causes and a "
+                    "decision_rule that distinguishes each cause: " + str(exc)
+                )
         supplied = {
             "research_state": bool(task.get("research_state")),
             "planning_mode": bool((task.get("research_state") or {}).get("planning_mode")),
@@ -901,6 +934,49 @@ class Engine:
     def _stage_propose(self, attempt_id: int, experiment_id: int) -> None:
         self.workspace.checkout(self.store.campaign()["champion_snapshot"])
         task = self._task_context("propose", experiment_id)
+        diagnosis = (task.get("research_state") or {}).get("repeated_failure_diagnosis")
+        if diagnosis:
+            case_evidence = diagnosis.get("case_evidence") or {}
+            failed_count = int(case_evidence.get("failed_case_count") or 0)
+            trace_count = int(case_evidence.get("trace_example_count") or 0)
+            if failed_count == 0 or trace_count < failed_count:
+                missing = max(0, failed_count - trace_count)
+                message = (
+                    f"Repeated retrieval failures detected across experiments "
+                    f"{', '.join(str(item['ordinal']) for item in diagnosis.get('evidence', []))}. "
+                    f"The latest DEV result identifies {failed_count} failed cases but supplies only "
+                    f"{trace_count} case-level retrieval traces ({missing} cases remain unclassified). "
+                    "No cause can be assigned between catalog coverage and candidate-generation loss. "
+                    "Provide evaluator-approved DEV retrieval_case_traces with per-case catalog-presence "
+                    "and candidate-stage membership before another experiment."
+                )
+                self.store.update_experiment(
+                    experiment_id,
+                    failure_category="RETRIEVAL_DIAGNOSIS_NEEDS_EVIDENCE",
+                    lesson=message[:1000],
+                )
+                self.store.event(
+                    "RETRIEVAL_DIAGNOSIS_BLOCKED",
+                    {
+                        "experiment_id": experiment_id,
+                        "diagnosis": diagnosis,
+                        "required_evidence": [
+                            "DEV-safe per-case catalog membership",
+                            "Qdrant/index candidate-stage membership booleans or counts, without product IDs",
+                            "stage-level candidate loss trace",
+                        ],
+                        "message": message,
+                    },
+                )
+                self.store.finish_attempt(
+                    attempt_id,
+                    experiment_id,
+                    status="NEEDS_RETRIEVAL_DIAGNOSIS_EVIDENCE",
+                    scientific=False,
+                    improved=False,
+                )
+                self._stop(StopReason.PAUSED_NEEDS_INPUT, CampaignStatus.PAUSED_NEEDS_INPUT)
+                return
         try:
             raw = self._action(
                 action_id=f"exp:{experiment_id}:propose",
@@ -951,6 +1027,11 @@ class Engine:
                 improved=False,
             )
             self._refresh_research_state()
+            if (task.get("research_state") or {}).get("repeated_failure_diagnosis") and "diagnostic_plan" in grounding_error:
+                self._stop(
+                    StopReason.PAUSED_NEEDS_INPUT,
+                    CampaignStatus.PAUSED_NEEDS_INPUT,
+                )
             return
 
         duplicate = redundancy_reason(

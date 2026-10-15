@@ -3,7 +3,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from bananloop.agents.codex import CodexAdapter
+from bananloop.agents.codex import CodexAdapter, HYPOTHESIS_SCHEMA
+
+
+def test_codex_hypothesis_schema_is_strict_api_compatible():
+    properties = HYPOTHESIS_SCHEMA["properties"]
+    assert set(HYPOTHESIS_SCHEMA["required"]) == set(properties)
+    assert HYPOTHESIS_SCHEMA["additionalProperties"] is False
+    assert properties["diagnostic_plan"]["type"] == ["object", "null"]
+    assert set(properties["diagnostic_plan"]["required"]) == set(
+        properties["diagnostic_plan"]["properties"]
+    )
 
 
 def test_codex_exec_sends_large_task_via_stdin_not_argv(tmp_path: Path, monkeypatch):
@@ -33,6 +43,7 @@ def test_codex_exec_sends_large_task_via_stdin_not_argv(tmp_path: Path, monkeypa
                     "relation": "new",
                     "prior_experiment_refs": [],
                     "novelty_rationale": "new fixture",
+                    "diagnostic_plan": None,
                 }
             ),
             encoding="utf-8",

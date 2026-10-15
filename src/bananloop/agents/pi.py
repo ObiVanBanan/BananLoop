@@ -145,11 +145,16 @@ class PiAdapter(AgentAdapter):
             instruction = (
                 "You are the proposer inside BananLoop. Inspect the repository and propose exactly one "
                 "bounded, falsifiable hypothesis. Do not modify files during this role. "
-                "Use the supplied research_state and planning_mode. Avoid repeating a mechanism unless "
-                "you explicitly mark it as refine, retry, or supersede and reference the prior experiment ordinal. "
+                "Use the supplied research_state and planning_mode. When repeated_failure_diagnosis has missing or "
+                "unclassified case evidence, include diagnostic_plan with a concrete question, evidence_to_collect, "
+                "and decision_rule to distinguish the unknown causes. When case_evidence.cause_counts establishes a "
+                "cause, propose a bounded change addressing the dominant cause and cite its evidence; for "
+                "CATALOG_COVERAGE_GAP consider editable catalog scope, and for QDRANT_OR_MODALITY_POOL_MISS inspect "
+                "index/retriever candidate generation. "
+                "Avoid repeating a mechanism unless you explicitly mark it as refine, retry, or supersede and reference the prior experiment ordinal. "
                 "Your final assistant message MUST be exactly one JSON object with these keys: "
                 "hypothesis, rationale, expected_effect, files_or_area, falsification_condition, mechanism_key, "
-                "relation, prior_experiment_refs, novelty_rationale. "
+                "relation, prior_experiment_refs, novelty_rationale, diagnostic_plan when required by the context. "
                 "If no useful hypothesis exists, return exactly {\"status\":\"NO_HYPOTHESIS\"}. "
                 "Do not use markdown fences and do not include prose outside the JSON object."
             )
@@ -262,7 +267,10 @@ class PiAdapter(AgentAdapter):
             schema = (
                 '{"hypothesis":"...","rationale":"...","expected_effect":"...",'
                 '"files_or_area":["..."],"falsification_condition":"...","mechanism_key":"...",'
-                '"relation":"new","prior_experiment_refs":[],"novelty_rationale":"..."}'
+                '"relation":"new","prior_experiment_refs":[],"novelty_rationale":"...",'
+                '"diagnostic_plan":{"mode":"diagnostic_only","question":"...",'
+                '"competing_causes":["cause one label","cause two label"],'
+                '"evidence_to_collect":"...","decision_rule":"If cause one label ...; if cause two label ..."}}'
             )
         elif role == "analyze":
             schema = (

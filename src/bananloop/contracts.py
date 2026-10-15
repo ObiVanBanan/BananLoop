@@ -121,7 +121,13 @@ class EvaluationEvidence(BaseModel):
     runtime: dict[str, Any] = Field(default_factory=dict)
     runtime_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     metric_tolerances: dict[str, float] = Field(default_factory=dict)
+    metric_relative_tolerances: dict[str, float] = Field(default_factory=dict)
     readiness_receipt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    reference_manifest_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    reference_approved_by: str | None = None
+    reference_receipt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    reference_receipt_path: str | None = None
+    independently_validated_tiers: list[str] = Field(default_factory=list)
     verified_invariants: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
 
@@ -332,6 +338,27 @@ class CampaignSpec(BaseModel):
         return self.approved_hash()
 
 
+class DiagnosticPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["diagnostic_only"]
+    question: str = Field(min_length=20)
+    competing_causes: list[str] = Field(min_length=2, max_length=4)
+    evidence_to_collect: str = Field(min_length=20)
+    decision_rule: str = Field(min_length=20)
+
+    @model_validator(mode="after")
+    def decision_rule_covers_causes(self):
+        rule = self.decision_rule.casefold()
+        causes = [cause.strip().casefold() for cause in self.competing_causes]
+        labels = [cause.split(":", 1)[0].strip() for cause in causes]
+        if any(len(cause) < 8 for cause in causes):
+            raise ValueError("competing causes must be concrete labels")
+        if len(set(labels)) < 2 or any(label not in rule for label in labels):
+            raise ValueError("decision_rule must distinguish every competing cause by name")
+        return self
+
+
 class Hypothesis(BaseModel):
     hypothesis: str
     rationale: str
@@ -342,6 +369,7 @@ class Hypothesis(BaseModel):
     relation: Literal["new", "refine", "retry", "supersede"] = "new"
     prior_experiment_refs: list[int] = Field(default_factory=list)
     novelty_rationale: str = ""
+    diagnostic_plan: dict[str, Any] | None = None
 
 
 class ImplementResult(BaseModel):
@@ -433,6 +461,27 @@ class CaseMeasurement(BaseModel):
         return value
 
 
+class RetrievalCaseTrace(BaseModel):
+    """Hashed, DEV-only retrieval stage evidence with no product identities."""
+
+    model_config = ConfigDict(extra="forbid")
+    case_id: str = Field(min_length=1, max_length=200)
+    repetition: int = Field(default=0, ge=0)
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    failure_stage: str = Field(min_length=1, max_length=80)
+    failure_substage: str = Field(min_length=1, max_length=120)
+    # None means the evaluator did not measure this stage. Never infer false.
+    acceptable_present_in_catalog: bool | None = None
+    acceptable_in_pretruncate_pool: bool | None = None
+    acceptable_in_initial_retrieval: bool | None = None
+    acceptable_in_rerank_candidates: bool | None = None
+    acceptable_selected: bool | None = None
+    best_acceptable_pretruncate_rank: int | None = Field(default=None, ge=1)
+    best_acceptable_initial_rank: int | None = Field(default=None, ge=1)
+    best_acceptable_rerank_rank: int | None = Field(default=None, ge=1)
+    filter_failure_fields: list[str] = Field(default_factory=list, max_length=16)
+
+
 class ArtifactRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
     case_id: str
@@ -455,6 +504,7 @@ class EvaluationResult(BaseModel):
     artifacts: list[str] = Field(default_factory=list)  # legacy references
     protocol_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     cases: list[CaseMeasurement] = Field(default_factory=list, max_length=10000)
+    retrieval_case_traces: list[RetrievalCaseTrace] = Field(default_factory=list, max_length=10000)
     artifact_manifest: list[ArtifactRecord] = Field(default_factory=list, max_length=10000)
     resource_units: int | None = Field(default=None, ge=0)
 
@@ -463,6 +513,13 @@ class EvaluationResult(BaseModel):
         keys = [(c.case_id, c.repetition) for c in self.cases]
         if len(keys) != len(set(keys)):
             raise ValueError("duplicate case/repetition")
+        trace_keys = [(trace.case_id, trace.repetition) for trace in self.retrieval_case_traces]
+        if len(trace_keys) != len(set(trace_keys)):
+            raise ValueError("duplicate retrieval case trace")
+        if self.retrieval_case_traces and not set(trace_keys).issubset(
+            {(case.case_id, case.repetition) for case in self.cases}
+        ):
+            raise ValueError("retrieval case traces must match measured DEV cases")
         if self.cases and self.protocol_sha256 is None:
             raise ValueError("cases require protocol_sha256")
         return self
@@ -513,6 +570,7 @@ class ResearchState(BaseModel):
     recent_lessons: list[str] = Field(default_factory=list)
     recent_failure_capsules: list[FailureCapsule] = Field(default_factory=list, max_length=16)
     remaining_budget: dict[str, int] = Field(default_factory=dict)
+    repeated_failure_diagnosis: dict[str, Any] | None = None
 
 
 class RuntimePaths(BaseModel):

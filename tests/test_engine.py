@@ -1499,3 +1499,176 @@ def test_evaluation_request_records_candidate_materialization_proof(tmp_path: Pa
         assert report["experiments"][0]["candidate_proof"] == proof
     finally:
         store.close()
+
+
+def test_repeated_failure_requires_a_concrete_diagnostic_plan():
+    hypothesis = Hypothesis(
+        hypothesis="Inspect retrieval losses",
+        rationale="The repeated retrieval diagnosis remains unresolved",
+        expected_effect="identify the candidate loss stage",
+        files_or_area=["src/retrieval.py"],
+        falsification_condition="evidence shows no retrieval loss",
+        mechanism_key="retrieval-loss-diagnosis",
+    )
+    task = {"research_state": {"repeated_failure_diagnosis": {"kind": "repeated_retrieval_miss"}}}
+    error = Engine._hypothesis_grounding_error(hypothesis, task)
+    assert error and "diagnostic_plan" in error
+
+    hypothesis.diagnostic_plan = {
+        "mode": "diagnostic_only",
+        "question": "Are candidates absent from the catalog or lost by Qdrant retrieval?",
+        "competing_causes": ["catalog coverage gap", "Qdrant/index candidate loss"],
+        "evidence_to_collect": "Trace candidate presence and stage counts for failed DEV cases.",
+        "decision_rule": (
+            "If catalog coverage gap then expand data; if Qdrant/index candidate loss then inspect retrieval flow."
+        ),
+    }
+    assert Engine._hypothesis_grounding_error(hypothesis, task) is None
+
+    hypothesis.diagnostic_plan = {
+        "mode": "diagnostic_only",
+        "question": "For failed cases, are relevant products missing or filtered from retrieval?",
+        "competing_causes": [
+            "Catalog coverage failure: no relevant candidate exists in the searchable catalog.",
+            "Qdrant/index candidate loss: a present candidate is absent from the retrieved pool.",
+        ],
+        "evidence_to_collect": "For each retrieval miss, inspect relevant catalog presence and retrieved candidate presence.",
+        "decision_rule": (
+            "Classify Catalog coverage failure only if no relevant item is in the catalog. "
+            "Classify Qdrant/index candidate loss only if a relevant catalog item is absent from retrieval."
+        ),
+    }
+    assert Engine._hypothesis_grounding_error(hypothesis, task) is None
+
+    hypothesis.diagnostic_plan = {
+        "question": "What ranking metric can be improved next?",
+        "evidence_to_collect": "Run another benchmark and inspect the aggregate score.",
+        "decision_rule": "If score improves keep reranking, otherwise tune the reranker again.",
+    }
+    error = Engine._hypothesis_grounding_error(hypothesis, task)
+    assert error and "diagnostic_only" in error
+
+
+def test_classified_catalog_evidence_allows_a_targeted_hypothesis_without_diagnostic_plan():
+    hypothesis = Hypothesis(
+        hypothesis="Add the missing DEV-relevant catalog records",
+        rationale="All 37 failed cases have no acceptable target in the catalog",
+        expected_effect="The affected targets become searchable",
+        files_or_area=["data/competitor_catalogs/"],
+        falsification_condition="Targets remain absent after the catalog update",
+        mechanism_key="catalog-coverage",
+    )
+    task = {
+        "research_state": {
+            "repeated_failure_diagnosis": {
+                "case_evidence": {
+                    "cause_counts": {"CATALOG_COVERAGE_GAP": 37},
+                    "unclassified_case_count": 0,
+                }
+            }
+        }
+    }
+
+    assert Engine._hypothesis_grounding_error(hypothesis, task) is None
+
+
+def test_retrieval_case_trace_contract_requires_matching_measured_dev_case():
+    payload = {
+        "metrics": {"quality": 0.3},
+        "protocol_sha256": "a" * 64,
+        "cases": [{
+            "case_id": "case-hash",
+            "input_sha256": "b" * 64,
+            "metrics": {"initial_recall": 0.0},
+        }],
+        "retrieval_case_traces": [{
+            "case_id": "case-hash",
+            "input_sha256": "b" * 64,
+            "failure_stage": "RETRIEVAL_MISS",
+            "failure_substage": "MODALITY_POOL_MISS",
+            "acceptable_present_in_catalog": True,
+            "acceptable_in_pretruncate_pool": False,
+            "acceptable_in_initial_retrieval": False,
+            "acceptable_in_rerank_candidates": False,
+            "acceptable_selected": False,
+        }],
+    }
+
+    result = EvaluationResult.model_validate(payload)
+    assert result.retrieval_case_traces[0].case_id == "case-hash"
+
+
+def test_retrieval_case_trace_contract_preserves_unknown_measurements():
+    payload = {
+        "metrics": {"quality": 0.3},
+        "protocol_sha256": "a" * 64,
+        "cases": [{
+            "case_id": "case-hash",
+            "input_sha256": "b" * 64,
+            "metrics": {"initial_recall": 0.0},
+        }],
+        "retrieval_case_traces": [{
+            "case_id": "case-hash",
+            "input_sha256": "b" * 64,
+            "failure_stage": "RETRIEVAL_MISS",
+            "failure_substage": "MODALITY_POOL_MISS",
+            "acceptable_present_in_catalog": None,
+            "acceptable_in_pretruncate_pool": None,
+        }],
+    }
+
+    result = EvaluationResult.model_validate(payload)
+    trace = result.retrieval_case_traces[0]
+    assert trace.acceptable_present_in_catalog is None
+    assert trace.acceptable_in_pretruncate_pool is None
+    assert trace.acceptable_in_initial_retrieval is None
+
+
+class MissingDiagnosticPlanProposer(AgentAdapter):
+    def probe(self):
+        return {"available": True}
+
+    def execute(self, task, workspace, timeout):
+        return {
+            "hypothesis": "change retrieval ranking",
+            "rationale": "try another ranking change",
+            "expected_effect": "higher quality",
+            "files_or_area": ["value.txt"],
+            "falsification_condition": "quality unchanged",
+            "mechanism_key": "ranking-again",
+            "relation": "new",
+            "prior_experiment_refs": [],
+            "novelty_rationale": "new wording",
+        }
+
+
+def test_missing_retrieval_diagnosis_pauses_before_execution(tmp_path: Path, monkeypatch):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        monkeypatch.setattr(engine, "_task_context", lambda role, _id: {
+            "role": role,
+            "research_state": {
+                "repeated_failure_diagnosis": {"kind": "repeated_retrieval_miss"}
+            },
+        })
+        engine.agent = MissingDiagnosticPlanProposer()
+
+        engine._stage_propose(attempt_id, experiment_id)
+
+        assert store.campaign()["status"] == "PAUSED_NEEDS_INPUT"
+        assert store.attempt(attempt_id)["status"] == "COMPLETED"
+        assert store.experiment(experiment_id)["failure_category"] == "RETRIEVAL_DIAGNOSIS_NEEDS_EVIDENCE"
+        assert store.action(f"exp:{experiment_id}:propose") is None
+        report = next(
+            json.loads(event["payload_json"])
+            for event in reversed(store.events())
+            if event["event_type"] == "RETRIEVAL_DIAGNOSIS_BLOCKED"
+        )
+        assert "catalog membership" in " ".join(report["required_evidence"])
+        assert store.action(f"exp:{experiment_id}:evaluate") is None
+    finally:
+        store.close()

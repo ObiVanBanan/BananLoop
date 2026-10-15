@@ -519,7 +519,7 @@ def test_continue_paused_campaign_reuses_existing_db(tmp_path, monkeypatch):
     assert received[0][0].retry_failed_action is False
 
 
-def test_continue_can_extend_plateau_campaign_budget_without_changing_evaluator(tmp_path, monkeypatch):
+def test_continue_can_extend_attempt_limited_campaign_budget_without_changing_evaluator(tmp_path, monkeypatch):
     from bananloop import cli
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
@@ -529,7 +529,24 @@ def test_continue_can_extend_plateau_campaign_budget_without_changing_evaluator(
     store = CampaignStore(state / "campaign.sqlite3")
     spec = _spec(repo, "original goal")
     store.initialize(spec)
-    store.update_campaign(status="STOPPED", stop_reason="PLATEAU", non_improve_streak=3)
+    prior_budget = spec.budget.model_copy(update={
+        "max_attempts": spec.budget.max_attempts + 2,
+        "max_experiments": spec.budget.max_experiments + 2,
+        "max_agent_calls": spec.budget.max_agent_calls + 4,
+        "max_evaluator_calls": spec.budget.max_evaluator_calls + 4,
+        "plateau_experiments": spec.budget.plateau_experiments + 2,
+    })
+    store.event("CAMPAIGN_BUDGET_EXTENDED", {"effective_budget": prior_budget.model_dump(mode="json")})
+    # Older broken extensions could accidentally shrink a previously extended limit.
+    regressed_budget = spec.budget.model_copy(update={
+        "max_attempts": spec.budget.max_attempts + 1,
+        "max_experiments": spec.budget.max_experiments + 1,
+        "max_agent_calls": spec.budget.max_agent_calls + 2,
+        "max_evaluator_calls": spec.budget.max_evaluator_calls + 2,
+        "plateau_experiments": spec.budget.plateau_experiments + 1,
+    })
+    store.event("CAMPAIGN_BUDGET_EXTENDED", {"effective_budget": regressed_budget.model_dump(mode="json")})
+    store.update_campaign(status="STOPPED", stop_reason="ATTEMPT_LIMIT", non_improve_streak=1)
     binding = spec.evaluator_binding_hash()
     store.close()
 
@@ -549,11 +566,11 @@ def test_continue_can_extend_plateau_campaign_budget_without_changing_evaluator(
         store.close()
     assert campaign["status"] == "RUNNING"
     assert campaign["stop_reason"] is None
-    extension_event = next(event for event in events if event["event_type"] == "PLATEAU_BUDGET_EXTENDED")
+    extension_event = next(event for event in reversed(events) if event["event_type"] == "CAMPAIGN_BUDGET_EXTENDED")
     extended_budget = json.loads(extension_event["payload_json"])["effective_budget"]
-    assert extended_budget["max_attempts"] == spec.budget.max_attempts + 4
-    assert extended_budget["max_experiments"] == spec.budget.max_experiments + 4
-    assert extended_budget["plateau_experiments"] == spec.budget.plateau_experiments + 4
+    assert extended_budget["max_attempts"] == spec.budget.max_attempts + 6
+    assert extended_budget["max_experiments"] == spec.budget.max_experiments + 6
+    assert extended_budget["plateau_experiments"] == spec.budget.plateau_experiments + 6
     assert updated.evaluator_binding_hash() == binding
     assert updated.approved_hash() == spec.approved_hash()
     assert received[0][1] is True
