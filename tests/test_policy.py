@@ -1,5 +1,5 @@
 from bananloop.contracts import CampaignSpec, Direction, EvaluationResult, GuardrailSpec, MetricSpec, NonRegressionSpec
-from bananloop.policy import decide, target_met
+from bananloop.policy import InvalidEvaluation, decide, target_met, validate_evaluation
 
 
 def spec() -> CampaignSpec:
@@ -29,6 +29,18 @@ def test_guardrail_rejects_even_when_primary_improves():
     d = decide(spec(), result(1), result(2, regressions=1))
     assert not d.accepted
     assert "GUARDRAIL_FAILED:regressions" in d.reasons
+
+
+def test_invalid_status_cannot_be_accepted_as_campaign_baseline():
+    invalid = result(0)
+    invalid.status = "invalid"
+
+    try:
+        validate_evaluation(spec(), invalid)
+    except InvalidEvaluation as exc:
+        assert "evaluation status is invalid" in str(exc)
+    else:
+        raise AssertionError("invalid baseline status was accepted")
 
 
 
