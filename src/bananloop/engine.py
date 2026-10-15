@@ -98,7 +98,7 @@ class Engine:
         self.spec = store.spec()
         self.budget = self.spec.budget
         for event in reversed(store.events()):
-            if event.get("event_type") == "PLATEAU_BUDGET_EXTENDED":
+            if event.get("event_type") in {"PLATEAU_BUDGET_EXTENDED", "CAMPAIGN_BUDGET_EXTENDED"}:
                 payload = json.loads(event.get("payload_json") or "{}")
                 if payload.get("effective_budget"):
                     self.budget = BudgetSpec.model_validate(payload["effective_budget"])

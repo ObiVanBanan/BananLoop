@@ -362,7 +362,7 @@ class Hypothesis(BaseModel):
     relation: Literal["new", "refine", "retry", "supersede"] = "new"
     prior_experiment_refs: list[int] = Field(default_factory=list)
     novelty_rationale: str = ""
-    diagnostic_plan: dict[str, Any] = Field(default_factory=dict)
+    diagnostic_plan: dict[str, Any] | None = None
 
 
 class ImplementResult(BaseModel):

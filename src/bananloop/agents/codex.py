@@ -117,7 +117,7 @@ HYPOTHESIS_SCHEMA = {
         "prior_experiment_refs": {"type": "array", "items": {"type": "integer"}},
         "novelty_rationale": {"type": "string"},
         "diagnostic_plan": {
-            "type": "object",
+            "type": ["object", "null"],
             "properties": {
                 "mode": {"type": "string", "enum": ["diagnostic_only"]},
                 "question": {"type": "string", "minLength": 20},
@@ -139,6 +139,7 @@ HYPOTHESIS_SCHEMA = {
         "relation",
         "prior_experiment_refs",
         "novelty_rationale",
+        "diagnostic_plan",
     ],
     "additionalProperties": False,
 }

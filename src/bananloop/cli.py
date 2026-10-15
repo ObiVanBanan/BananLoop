@@ -426,8 +426,8 @@ def cmd_continue(args: argparse.Namespace) -> int:
             campaign = store.campaign()
             extension = max(0, int(getattr(args, "extend_budget", 0) or 0))
             if extension:
-                if campaign["status"] != "STOPPED" or campaign.get("stop_reason") != "PLATEAU":
-                    raise ValueError("--extend-budget is only supported for campaigns stopped by PLATEAU")
+                if campaign["status"] != "STOPPED" or campaign.get("stop_reason") not in {"PLATEAU", "BUDGET_EXHAUSTED"}:
+                    raise ValueError("--extend-budget is only supported for STOPPED campaigns (PLATEAU or BUDGET_EXHAUSTED)")
                 old_spec = store.spec()
                 budget = old_spec.budget.model_copy(update={
                     "max_attempts": old_spec.budget.max_attempts + extension,
@@ -442,7 +442,7 @@ def cmd_continue(args: argparse.Namespace) -> int:
                         "UPDATE campaigns SET status='RUNNING',stop_reason=NULL,updated_at=? WHERE id=1",
                         (now,),
                     )
-                    store.event("PLATEAU_BUDGET_EXTENDED", {
+                    store.event("CAMPAIGN_BUDGET_EXTENDED", {
                         "extension": extension,
                         "previous_budget": old_spec.budget.model_dump(mode="json"),
                         "new_budget": budget.model_dump(mode="json"),
@@ -486,7 +486,7 @@ def cmd_continue(args: argparse.Namespace) -> int:
         status = campaign["status"]
         print(f"[BananLoop] Existing campaign: {status}")
         if status in {"GOAL_MET", "STOPPED"}:
-            if status == "STOPPED" and campaign.get("stop_reason") == "PLATEAU" and getattr(args, "extend_budget", 0):
+            if status == "STOPPED" and campaign.get("stop_reason") in {"PLATEAU", "BUDGET_EXHAUSTED"} and getattr(args, "extend_budget", 0):
                 pass
             else:
                 print("Campaign is finished. Run 'bananloop' to create another goal.")
@@ -734,7 +734,7 @@ def parser() -> argparse.ArgumentParser:
     continue_cmd.add_argument("--campaign-id")
     continue_cmd.add_argument("--state-dir")
     continue_cmd.add_argument("--yes", action="store_true", help="approve retry of known FAILED actions")
-    continue_cmd.add_argument("--extend-budget", type=int, default=0, metavar="N", help="resume a PLATEAU campaign with N more attempts, experiments, and plateau tolerance")
+    continue_cmd.add_argument("--extend-budget", type=int, default=0, metavar="N", help="resume a stopped campaign with N more attempts, experiments, and plateau tolerance")
     continue_cmd.add_argument("--accept-runtime-env-drift", action="store_true", help="accept a PATH-only runtime hash change when Python, packages, and resolved evaluator commands exactly match the frozen binding")
     continue_cmd.add_argument("--migrate-pytest-validation", action="store_true", help="move a failed pytest JSON validation command to an exit-code regression gate, preserving the completed baseline")
     continue_cmd.add_argument("--retry-running-action", action="store_true", help="confirm an orphaned RUNNING action after verifying the old process has exited")
