@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 22745)
+Total output lines: 1952
+
 from __future__ import annotations
 
 import hashlib
@@ -20,6 +23,7 @@ from .contracts import (
     FailureAnalysisResult,
     Hypothesis,
     ImplementResult,
+    ResearchState,
     StopReason,
 )
 from .envfiles import project_environment
@@ -40,6 +44,8 @@ from .research import (
     build_research_state,
     classify_dev_outcome,
     redundancy_reason,
+    normalize_portfolio,
+    select_candidate,
 )
 from .store import CampaignStore
 from .workspace import WorkspaceError, WorkspaceManager
@@ -780,10 +786,18 @@ class Engine:
         return build_history(self.spec, self.store.experiments(), limit=8)
 
     def _refresh_research_state(self) -> dict[str, Any]:
+        remaining_work_units = None
+        if self.spec.budget.max_evaluation_units is not None:
+            remaining_work_units = max(
+                0,
+                self.spec.budget.max_evaluation_units - self.store.evaluation_work_reserved(),
+            )
         state = build_research_state(
             self.spec,
             self.store.campaign(),
             self.store.experiments(),
+            self.store.events(),
+            remaining_work_units,
         )
         payload = state.model_dump(mode="json")
         self.store.set_research_state(payload)
@@ -826,198 +840,25 @@ class Engine:
             "history": self._history(),
             "research_state": research_state,
             "planning_mode": research_state["planning_mode"],
+            "portfolio_contract": {
+                "max_candidates": 4,
+                "candidate_fields": [
+                    "candidate_id", "hypothesis", "evidence_refs", "suspected_failure_mode",
+                    "predicted_observable", "discriminating_test", "scope_eligibility",
+                    "estimated_agent_calls", "estimated_evaluator_calls", "estimated_work_units",
+                    "rationale", "uncertainty", "inference=agent_inference",
+                ],
+                "evidence_ref_format": "exp:<DEV ordinal>, signal:<allowlisted DEV signal_key>, capsule:<1-based generalized capsule index>, or INSUFFICIENT_EVIDENCE",
+                "costs": "Estimate remaining implementation/evaluation calls after this proposal action, and optional work units; do not count this proposal twice or invent USD. Core enforces actual approved budgets.",
+                "legacy_fallback": "A single existing Hypothesis JSON object remains valid.",
+            },
             "planning_requirements": {
                 "exploit": "build on the strongest DEV-supported mechanism without duplicating prior work",
                 "explore": "test a materially different mechanism family from recent failed attempts",
                 "reframe": "challenge the current framing and choose a new mechanism family before plateau",
                 "genealogy": (
                     "If reusing a mechanism_key, set relation to refine/retry/supersede "
-                    "and cite a matching prior experiment ordinal."
-                ),
-                "causal_link": (
-                    "When research_state.failure_signals is nonempty, choose one "
-                    "signal_key as target_failure_signal and explain its causal "
-                    "failure_mechanism. When experiment_evidence exists, cite at "
-                    "least one prior ordinal in prior_experiment_refs and explain "
-                    "in novelty_rationale how its result changes this proposal."
-                ),
-            },
-            "experiment_id": experiment_id,
-        }
-
-    @staticmethod
-    def _hypothesis_grounding_error(
-        hypothesis: Hypothesis,
-        task: dict[str, Any],
-    ) -> str | None:
-        if not hypothesis.files_or_area:
-            return "hypothesis has no concrete files_or_area grounding"
-        signals = (task.get("research_state") or {}).get("failure_signals") or []
-        if signals:
-            allowed = {item.get("signal_key") for item in signals}
-            if hypothesis.target_failure_signal not in allowed:
-                return "hypothesis must target one supplied DEV failure signal"
-            if not hypothesis.failure_mechanism.strip():
-                return "hypothesis must explain the causal failure mechanism"
-            evidence = (task.get("research_state") or {}).get("experiment_evidence") or []
-            if evidence:
-                prior_ordinals = {item.get("ordinal") for item in evidence}
-                if not prior_ordinals.intersection(hypothesis.prior_experiment_refs):
-                    return "hypothesis must cite a prior DEV experiment ordinal"
-                if not hypothesis.novelty_rationale.strip():
-                    return "hypothesis must explain how prior DEV evidence changes the proposal"
-        supplied = {
-            "research_state": bool(task.get("research_state")),
-            "planning_mode": bool((task.get("research_state") or {}).get("planning_mode")),
-            "project_context": bool(task.get("project_context")),
-        }
-        text = " ".join(
-            [
-                hypothesis.hypothesis,
-                hypothesis.rationale,
-                hypothesis.expected_effect,
-                hypothesis.novelty_rationale,
-            ]
-        ).lower()
-        patterns = (
-            ("research_state", r"(research_state|research state).{0,100}(missing|not provided|unavailable|absent|not supplied)"),
-            ("research_state", r"(missing|not provided|unavailable|absent|not supplied).{0,100}(research_state|research state)"),
-            ("planning_mode", r"(planning_mode|planning mode).{0,100}(missing|not provided|unavailable|absent|not supplied)"),
-            ("planning_mode", r"(missing|not provided|unavailable|absent|not supplied).{0,100}(planning_mode|planning mode)"),
-            ("project_context", r"(project_context|project context|campaign context).{0,100}(missing|not provided|unavailable|absent|not supplied|insufficient)"),
-            ("project_context", r"(missing|not provided|unavailable|absent|not supplied|insufficient).{0,100}(project_context|project context|campaign context)"),
-        )
-        for key, pattern in patterns:
-            if supplied[key] and re.search(pattern, text):
-                return f"hypothesis falsely claims supplied {key} is missing"
-        return None
-
-    def _candidate_materialization_proof(
-        self,
-        experiment_id: int,
-        *,
-        require_changes: bool = True,
-    ) -> dict[str, Any]:
-        exp = self.store.experiment(experiment_id)
-        candidate = exp.get("candidate_snapshot")
-        parent = exp.get("parent_snapshot")
-        if not candidate or not parent:
-            raise WorkspaceError(
-                f"experiment {experiment_id} is missing parent/candidate snapshot"
-            )
-        self.workspace.checkout(candidate)
-        proof = self.workspace.snapshot_proof(parent, candidate)
-        if require_changes and not proof["changed_paths"]:
-            raise WorkspaceError(
-                f"candidate snapshot {candidate} has no diff from parent {parent}"
-            )
-        return proof
-
-    def _stage_propose(self, attempt_id: int, experiment_id: int) -> None:
-        self.workspace.checkout(self.store.campaign()["champion_snapshot"])
-        task = self._task_context("propose", experiment_id)
-        try:
-            raw = self._action(
-                action_id=f"exp:{experiment_id}:propose",
-                experiment_id=experiment_id,
-                stage="PROPOSE",
-                kind="agent",
-                request=task,
-                invoke=lambda: self._invoke_agent(
-                    task,
-                    timeout=self._agent_timeout(900),
-                    apply_changes=False,
-                ),
-            )
-            raw = self.agent.normalize_result(task, raw)
-            if raw.get("status") == "NO_HYPOTHESIS":
-                self.store.update_experiment(experiment_id, failure_category="NO_HYPOTHESIS", lesson="Agent proposed no further hypothesis")
-                self.store.finish_attempt(attempt_id, experiment_id, status="NO_HYPOTHESIS", scientific=False, improved=False)
-                self._refresh_research_state()
-                self._stop(StopReason.NO_HYPOTHESIS)
-                return
-            hypothesis = Hypothesis.model_validate(raw)
-        except (AgentError, ValidationError, UnknownActionOutcome, WorkspaceError) as exc:
-            self.store.update_experiment(experiment_id, failure_category="AGENT_PROTOCOL_ERROR", lesson=str(exc)[:1000])
-            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
-            raise EngineError(f"propose failed: {exc}") from exc
-
-        grounding_error = self._hypothesis_grounding_error(hypothesis, task)
-        if grounding_error:
-            self.store.update_experiment(
-                experiment_id,
-                hypothesis_json=hypothesis.model_dump_json(),
-                failure_category="UNGROUNDED_HYPOTHESIS",
-                lesson=grounding_error[:1000],
-            )
-            self.store.event(
-                "UNGROUNDED_HYPOTHESIS_REJECTED",
-                {
-                    "experiment_id": experiment_id,
-                    "ordinal": self.store.experiment(experiment_id)["ordinal"],
-                    "reason": grounding_error[:1000],
-                },
-            )
-            self.store.finish_attempt(
-                attempt_id,
-                experiment_id,
-                status="UNGROUNDED",
-                scientific=False,
-                improved=False,
-            )
-            self._refresh_research_state()
-            return
-
-        duplicate = redundancy_reason(
-            hypothesis,
-            [row for row in self.store.experiments() if row["id"] != experiment_id],
-        )
-        if duplicate:
-            self.store.update_experiment(
-                experiment_id,
-                hypothesis_json=hypothesis.model_dump_json(),
-                failure_category="REDUNDANT_HYPOTHESIS",
-                lesson=duplicate[:1000],
-            )
-            self.store.event(
-                "REDUNDANT_HYPOTHESIS_REJECTED",
-                {
-                    "experiment_id": experiment_id,
-                    "ordinal": self.store.experiment(experiment_id)["ordinal"],
-                    "mechanism_key": hypothesis.mechanism_key,
-                    "reason": duplicate[:1000],
-                },
-            )
-            self.store.finish_attempt(
-                attempt_id,
-                experiment_id,
-                status="REDUNDANT",
-                scientific=False,
-                improved=False,
-            )
-            self._refresh_research_state()
-            return
-
-        self.store.update_experiment(
-            experiment_id,
-            hypothesis_json=hypothesis.model_dump_json(),
-            failure_category=None,
-            lesson=None,
-        )
-        self._progress(
-            f"experiment {self.store.experiment(experiment_id)['ordinal']} hypothesis: "
-            f"{hypothesis.hypothesis}"
-        )
-        if hypothesis.files_or_area:
-            self._progress("target area: " + ", ".join(hypothesis.files_or_area[:8]))
-        self.store.set_stage(attempt_id, "EXECUTE")
-        self._checkpoint("EXECUTE")
-
-    def _stage_execute(self, attempt_id: int, experiment_id: int) -> None:
-        campaign = self.store.campaign()
-        action_id = f"exp:{experiment_id}:implement"
-        existing_action = self.store.action(action_id)
-        if not (existing_action and existing_action["status"] == "COMPLETED"):
+                    …2745 tokens truncated…== "COMPLETED"):
             self.workspace.checkout(campaign["champion_snapshot"])
         exp = self.store.experiment(experiment_id)
         task = self._task_context("implement", experiment_id)
@@ -1723,6 +1564,41 @@ class Engine:
             self._stop(StopReason.GOAL_MET, CampaignStatus.GOAL_MET)
             return True
         if campaign["non_improve_streak"] >= self.spec.budget.plateau_experiments:
+            state = ResearchState.model_validate(self._refresh_research_state())
+            last_progress = max(
+                (int(row["ordinal"]) for row in self.store.experiments()
+                 if attempt_bucket(row) == "scientific_trials"
+                 and classify_dev_outcome(self.spec, row)
+                 in {"DEV_IMPROVEMENT", "DEV_PARTIAL_IMPROVEMENT"}),
+                default=0,
+            )
+            experiments_by_ordinal = {
+                int(row["ordinal"]): row for row in self.store.experiments()
+            }
+            reframe_used = any(
+                item.strategy == "reframe" and item.selected_candidate_id is not None
+                and item.experiment_ordinal > last_progress
+                and item.experiment_ordinal in experiments_by_ordinal
+                and attempt_bucket(experiments_by_ordinal[item.experiment_ordinal]) == "scientific_trials"
+                for item in state.portfolios
+            )
+            if not reframe_used:
+                budget_reason = pre_action_stop(campaign, self.spec.budget, "agent")
+                evaluator_fits = self._new_attempt_fits_evaluator_budget()
+                if budget_reason is None and evaluator_fits:
+                    self.store.event("PLATEAU_REFRAME_ALLOWED", {
+                        "non_improve_streak": campaign["non_improve_streak"],
+                        "trigger_experiment_ordinal": max((int(row["ordinal"]) for row in self.store.experiments()), default=0),
+                        "remaining_agent_calls": max(0, self.spec.budget.max_agent_calls - campaign["agent_calls"]),
+                    })
+                    self.store.conn.commit()
+                    return False
+                reason = str(budget_reason or StopReason.BUDGET_EXHAUSTED)
+                self.store.event("PLATEAU_REFRAME_BLOCKED", {
+                    "reason": f"Plateau reached; no budget remains for one bounded reframe: {reason}"
+                })
+                self.store.conn.commit()
+                self._refresh_research_state()
             self._stop(StopReason.PLATEAU)
             return True
         reason = pre_action_stop(campaign, self.spec.budget, "agent")
@@ -1847,3 +1723,4 @@ class Engine:
                     return self.store.campaign()
             else:
                 raise EngineError(f"unknown stage {stage}")
+

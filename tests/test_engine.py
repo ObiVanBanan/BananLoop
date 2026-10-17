@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from bananloop.agents.base import AgentAdapter
-from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, EvaluationResult, GuardrailSpec, Hypothesis, MetricSpec, RuntimePaths
+from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, CandidateDecision, Direction, EvaluationAsset, EvaluationResult, GuardrailSpec, Hypothesis, HypothesisCandidate, MetricSpec, PortfolioRecord, RuntimePaths
 from bananloop.engine import ControlledInterruption, Engine, EngineError, UnknownActionOutcome, _hash_payload
 from bananloop.evaluator_binding import EvaluatorBinding, canonical_hash, make_binding, runtime_descriptor
 from bananloop.integrity import sha256_evaluation_asset
@@ -50,7 +50,12 @@ def make_repo(tmp_path: Path) -> Path:
         "import json,sys\nfrom pathlib import Path\n"
         "r=json.load(sys.stdin); idx=len(r.get('history',[]))+1\n"
         "if r['role']=='propose':\n"
-        " print(json.dumps({'hypothesis':f'step {idx}','rationale':'fixture','expected_effect':'up','files_or_area':['value.txt','guard.txt'],'falsification_condition':'no improvement','mechanism_key':f'step-{idx}'}))\n"
+        " last=r['research_state'].get('experiment_evidence',[])\n"
+        " refs=[f\"exp:{last[-1]['ordinal']}\"] if last else ['INSUFFICIENT_EVIDENCE']\n"
+        " def candidate(cid,key,evcalls):\n"
+        "  hyp={'hypothesis':f'step {idx}','rationale':'fixture','expected_effect':'up','files_or_area':['value.txt','guard.txt'],'falsification_condition':'no improvement','mechanism_key':key,'prior_experiment_refs':[last[-1]['ordinal']] if last else [],'novelty_rationale':'latest DEV result motivates a new bounded step' if last else ''}\n"
+        "  return {'candidate_id':cid,'hypothesis':hyp,'evidence_refs':refs,'suspected_failure_mode':'','predicted_observable':'quality metric','discriminating_test':'same frozen fixture produces measured delta','scope_eligibility':True,'estimated_agent_calls':1,'estimated_evaluator_calls':evcalls,'estimated_work_units':None,'rationale':'fixture alternative','uncertainty':'toy measurement only','inference':'agent_inference'}\n"
+        " print(json.dumps({'candidates':[candidate(f'step-{idx}',f'step-{idx}',1),candidate(f'alt-{idx}',f'alt-{idx}',2)]}))\n"
         "else:\n"
         " k=r['hypothesis']['mechanism_key']\n"
         " if k=='step-1': Path('value.txt').write_text('1\\n'); Path('guard.txt').write_text('0\\n')\n"
@@ -177,6 +182,19 @@ def test_end_to_end_accept_reject_accept_and_source_unchanged(tmp_path: Path):
         experiments = store.experiments()
         assert [e["status"] for e in experiments] == ["ACCEPTED", "REJECTED", "ACCEPTED"]
         assert json.loads(out["champion_json"])["metrics"]["quality"]["value"] == 3
+        portfolio_events = [
+            json.loads(event["payload_json"])
+            for event in store.events()
+            if event["event_type"] == "PORTFOLIO_DECISION"
+        ]
+        assert [item["selected_candidate_id"] for item in portfolio_events] == ["step-1", "step-2", "step-3"]
+        assert all(len(item["candidates"]) == 2 for item in portfolio_events)
+        report = build_report(store)
+        assert len(report["research_state"]["portfolios"]) == 3
+        markdown = render_markdown(report)
+        assert "Planning portfolios" in markdown
+        assert "DEV lessons" in markdown
+        assert "estimated cost 1 agent calls + 1 evaluator calls" in markdown
         assert git(["rev-parse", "HEAD"], repo) == base
         assert git(["status", "--porcelain"], repo) == ""
     finally:
@@ -239,7 +257,7 @@ def test_replayed_agent_result_is_normalized_without_second_call(tmp_path: Path)
         ).hexdigest()
 
         action_id = f"exp:{experiment_id}:implement"
-        store.start_action(action_id, experiment_id, "EXECUTE", "agent", request_hash)
+        store.start_action(action_id, experiment_id, "EXECUTE", "agent", request_hash, task)
         store.finish_action(
             action_id,
             {
@@ -858,6 +876,70 @@ def test_partial_dev_gain_does_not_trigger_plateau_or_promote(tmp_path: Path):
         assert store.campaign()["champion_json"] == champion
         assert store.campaign()["non_improve_streak"] == 0
         assert engine._post_iteration_stop() is False
+    finally:
+        store.close()
+
+
+def test_plateau_allows_one_budgeted_reframe_then_stops(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        store.update_campaign(non_improve_streak=engine.spec.budget.plateau_experiments)
+        assert engine._post_iteration_stop() is False
+        assert any(event["event_type"] == "PLATEAU_REFRAME_ALLOWED" for event in store.events())
+
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        hypothesis = Hypothesis(
+            hypothesis="bounded reframe", rationale="different mechanism",
+            expected_effect="quality changes", files_or_area=["value.txt"],
+            falsification_condition="quality remains unchanged", mechanism_key="bounded-reframe",
+        )
+        result = EvaluationResult(metrics={"quality": 0, "regressions": 0}, checks={"tests": True})
+        store.update_experiment(
+            experiment_id,
+            hypothesis_json=hypothesis.model_dump_json(),
+            evaluation_json=result.model_dump_json(),
+            dev_decision_json=json.dumps({"accepted": False, "primary_value": 0, "champion_value": 0,
+                                          "delta": 0, "reasons": ["NO_IMPROVEMENT"]}),
+            decision_json=json.dumps({"accepted": False, "primary_value": 0, "champion_value": 0,
+                                      "delta": 0, "reasons": ["NO_IMPROVEMENT"]}),
+        )
+        store.finish_attempt(attempt_id, experiment_id, status="REJECTED", scientific=True, improved=False)
+        candidate = HypothesisCandidate(
+            candidate_id="bounded-reframe", hypothesis=hypothesis, evidence_refs=["INSUFFICIENT_EVIDENCE"],
+            predicted_observable="quality metric", discriminating_test="same fixture", scope_eligibility=True,
+            estimated_agent_calls=1, estimated_evaluator_calls=1, rationale="bounded", uncertainty="toy",
+        )
+        portfolio = PortfolioRecord(
+            experiment_ordinal=store.experiment(experiment_id)["ordinal"], action_id=f"exp:{experiment_id}:propose",
+            strategy="reframe", candidates=[candidate],
+            decisions=[CandidateDecision(candidate_id="bounded-reframe", admissible=True)],
+            selected_candidate_id="bounded-reframe",
+        )
+        store.event("PORTFOLIO_DECISION", portfolio.model_dump(mode="json"))
+        store.conn.commit()
+        assert engine._post_iteration_stop() is True
+        assert store.campaign()["stop_reason"] == "PLATEAU"
+    finally:
+        store.close()
+
+
+def test_plateau_does_not_bypass_exhausted_agent_budget(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        store.update_campaign(
+            non_improve_streak=engine.spec.budget.plateau_experiments,
+            agent_calls=engine.spec.budget.max_agent_calls,
+        )
+        assert engine._post_iteration_stop() is True
+        assert store.campaign()["stop_reason"] == "PLATEAU"
+        state = store.research_state()
+        assert "no budget remains" in state["stop_explanation"]
+        assert any(event["event_type"] == "PLATEAU_REFRAME_BLOCKED" for event in store.events())
     finally:
         store.close()
 
@@ -1546,3 +1628,4 @@ def test_evaluation_request_records_candidate_materialization_proof(tmp_path: Pa
         assert report["experiments"][0]["candidate_proof"] == proof
     finally:
         store.close()
+

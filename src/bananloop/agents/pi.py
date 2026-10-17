@@ -147,17 +147,26 @@ class PiAdapter(AgentAdapter):
             )
         elif role == "propose":
             instruction = (
-                "You are the proposer inside BananLoop. Inspect the repository and propose exactly one "
-                "bounded, falsifiable hypothesis. Do not modify files during this role. "
+                "You are the proposer inside BananLoop. Inspect the repository and propose a portfolio of 2-3 "
+                "materially different, bounded, falsifiable hypotheses (maximum 4). Do not modify files during this role. "
                 "Use the supplied research_state, aggregate failure_signals, experiment_evidence, "
                 "and planning_mode. When failure_signals exist, choose one supplied signal_key as "
                 "target_failure_signal and explain the causal failure_mechanism; use empty strings "
                 "for both fields otherwise. Distinguish partial DEV gains from failed mechanisms. "
                 "When experiment_evidence exists, cite a prior ordinal and explain how its result "
                 "changes this proposal in novelty_rationale. "
+                "Each portfolio candidate must contain candidate_id, nested hypothesis (existing Hypothesis fields), "
+                "evidence_refs, suspected_failure_mode, predicted_observable, discriminating_test, scope_eligibility, "
+                "estimated_agent_calls, estimated_evaluator_calls, estimated_work_units (or null), rationale, "
+                "uncertainty, and inference=agent_inference. Candidate IDs must be stable mechanism slugs. "
+                "Estimate only remaining implementation/evaluation calls after this proposal call. "
+                "Use supplied DEV evidence references only or "
+                "INSUFFICIENT_EVIDENCE; separate observed evidence from inference. Do not invent gains, causes, "
+                "USD costs, or evidence. The core chooses one and enforces scope and budgets. "
                 "Avoid repeating a mechanism unless "
                 "you explicitly mark it as refine, retry, or supersede and reference the prior experiment ordinal. "
-                "Your final assistant message MUST be exactly one JSON object with these keys: "
+                "Your final assistant message MUST be exactly one JSON object with key candidates containing "
+                "1-4 candidate objects, or a legacy single Hypothesis object with keys "
                 "hypothesis, rationale, expected_effect, files_or_area, falsification_condition, mechanism_key, "
                 "relation, prior_experiment_refs, novelty_rationale, target_failure_signal, failure_mechanism. "
                 "If no useful hypothesis exists, return exactly {\"status\":\"NO_HYPOTHESIS\"}. "
@@ -524,3 +533,4 @@ class PiAdapter(AgentAdapter):
         except subprocess.TimeoutExpired:
             self._terminate(proc)
         return {"action_id": action_id, "status": "cancelled"}
+

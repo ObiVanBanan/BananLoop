@@ -355,6 +355,76 @@ class Hypothesis(BaseModel):
     failure_mechanism: str = ""
 
 
+class HypothesisCandidate(BaseModel):
+    """One bounded adviser proposal; only the core decides admissibility."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str = Field(min_length=1, max_length=80)
+    hypothesis: Hypothesis
+    evidence_refs: list[str] = Field(default_factory=list, max_length=8)
+    suspected_failure_mode: str = Field(default="", max_length=300)
+    predicted_observable: str = Field(min_length=1, max_length=500)
+    discriminating_test: str = Field(min_length=1, max_length=500)
+    scope_eligibility: bool
+    estimated_agent_calls: int = Field(default=1, ge=0, le=4)
+    estimated_evaluator_calls: int = Field(default=1, ge=0, le=4)
+    estimated_work_units: float | None = Field(default=None, ge=0, le=1000000)
+    rationale: str = Field(min_length=1, max_length=1000)
+    uncertainty: str = Field(min_length=1, max_length=500)
+    inference: Literal["agent_inference"] = "agent_inference"
+
+    @field_validator("candidate_id")
+    @classmethod
+    def candidate_id_is_stable_slug(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", value):
+            raise ValueError("candidate_id must be a stable lowercase slug")
+        return value
+
+
+class HypothesisPortfolio(BaseModel):
+    """At most four alternatives from one bounded proposal action."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidates: list[HypothesisCandidate] = Field(default_factory=list, max_length=4)
+    malformed_candidates: list[dict[str, str]] = Field(default_factory=list, max_length=4)
+
+
+class CandidateDecision(BaseModel):
+    candidate_id: str
+    admissible: bool
+    rejection_reasons: list[str] = Field(default_factory=list)
+    criterion_scores: dict[str, int] = Field(default_factory=dict)
+    selection_reason: str = ""
+
+
+class PortfolioRecord(BaseModel):
+    """Durable, bounded operator-facing record of a planning decision."""
+
+    experiment_ordinal: int
+    action_id: str
+    strategy: Literal["exploit", "explore", "reframe"]
+    trigger_evidence: list[str] = Field(default_factory=list)
+    candidates: list[HypothesisCandidate] = Field(default_factory=list, max_length=4)
+    decisions: list[CandidateDecision] = Field(default_factory=list, max_length=8)
+    invalid_candidates: list[CandidateDecision] = Field(default_factory=list, max_length=4)
+    selected_candidate_id: str | None = None
+    stop_reason: str = ""
+
+
+class DevResearchLesson(BaseModel):
+    """Observed outcome separated from inference and next discriminator."""
+
+    experiment_ordinal: int
+    mechanism_key: str
+    observation: str
+    interpretation: Literal["supported", "refuted", "unknown"]
+    inference: str = ""
+    next_discriminator: str = ""
+    evidence_refs: list[str] = Field(default_factory=list, max_length=8)
+
+
 class ImplementResult(BaseModel):
     summary: str
     changed_paths: list[str] = Field(default_factory=list)
@@ -548,6 +618,9 @@ class ResearchState(BaseModel):
     failure_signals: list[DevFailureSummary] = Field(default_factory=list, max_length=8)
     experiment_evidence: list[DevExperimentEvidence] = Field(default_factory=list, max_length=8)
     remaining_budget: dict[str, int] = Field(default_factory=dict)
+    portfolios: list[PortfolioRecord] = Field(default_factory=list, max_length=16)
+    dev_lessons: list[DevResearchLesson] = Field(default_factory=list, max_length=16)
+    stop_explanation: str = ""
 
 
 class RuntimePaths(BaseModel):
@@ -581,3 +654,4 @@ class RuntimePaths(BaseModel):
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+

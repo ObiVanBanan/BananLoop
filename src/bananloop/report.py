@@ -124,6 +124,28 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
         final_assessment = "DEV_ONLY"
 
     resource_summary = store.resource_summary()
+    call_stage_labels = {
+        "PROPOSE": "planning", "ANALYZE": "analyze", "EXECUTE": "implement",
+        "EVALUATE": "evaluate", "VALIDATE": "evaluate", "FINAL_HOLDOUT": "evaluate",
+        "BASELINE": "evaluate", "BOOTSTRAP": "planning",
+    }
+    action_stages = {
+        row["id"]: row["stage"]
+        for row in store.conn.execute("SELECT id,stage FROM actions")
+    }
+    calls_by_stage: dict[str, dict[str, int]] = {
+        name: {"agent_calls": 0, "evaluator_calls": 0, "unknown_outcomes": 0}
+        for name in ("planning", "analyze", "implement", "evaluate", "other")
+    }
+    for reservation in store.reservations():
+        if reservation["resource"] not in {"agent_call", "evaluator_call"}:
+            continue
+        label = call_stage_labels.get(action_stages.get(reservation["action_id"], ""), "other")
+        resource_name = "agent_calls" if reservation["resource"] == "agent_call" else "evaluator_calls"
+        calls_by_stage[label][resource_name] += int(float(reservation["amount"]))
+        if reservation["status"] == "UNKNOWN":
+            calls_by_stage[label]["unknown_outcomes"] += 1
+    resource_summary["calls_by_stage"] = calls_by_stage
     research_state = store.research_state()
     binding_row = store.evaluator_binding()
     receipt_by_action = {}
@@ -369,6 +391,41 @@ def render_markdown(report: dict[str, Any]) -> str:
                     f"  - [{capsule['failure_class']}] {capsule['title']}: "
                     f"{capsule['general_rule']}"
                 )
+        if research.get("portfolios"):
+            lines += ["", "### Planning portfolios", ""]
+            for portfolio in research["portfolios"]:
+                lines.append(
+                    f"- Experiment {portfolio['experiment_ordinal']} ({portfolio['strategy']}), "
+                    f"selected `{portfolio.get('selected_candidate_id') or 'none'}`; "
+                    f"trigger: {'; '.join(portfolio.get('trigger_evidence', []))}"
+                )
+                for candidate, decision in zip(portfolio["candidates"], portfolio["decisions"]):
+                    status = "selected" if candidate["candidate_id"] == portfolio.get("selected_candidate_id") else (
+                        "admissible" if decision["admissible"] else "rejected"
+                    )
+                    lines.append(
+                        f"  - `{candidate['candidate_id']}` ({candidate['hypothesis']['mechanism_key']}): "
+                        f"{status}; {decision.get('selection_reason') or decision.get('rejection_reasons', [])}; "
+                        f"estimated cost {candidate['estimated_agent_calls']} agent calls + "
+                        f"{candidate['estimated_evaluator_calls']} evaluator calls + "
+                        f"{candidate.get('estimated_work_units') if candidate.get('estimated_work_units') is not None else 'unknown'} work units"
+                    )
+                for decision in portfolio.get("invalid_candidates", []):
+                    lines.append(
+                        f"  - `{decision['candidate_id']}`: rejected malformed candidate; "
+                        f"{decision['selection_reason']}"
+                    )
+        if research.get("dev_lessons"):
+            lines += ["", "### DEV lessons", ""]
+            for lesson in research["dev_lessons"]:
+                lines.append(
+                    f"- Experiment {lesson['experiment_ordinal']} / `{lesson['mechanism_key']}`: "
+                    f"{lesson['observation']} Interpretation `{lesson['interpretation']}`; "
+                    f"{lesson['inference']} Next discriminator: {lesson['next_discriminator']} "
+                    f"(evidence: {', '.join(lesson['evidence_refs'])})."
+                )
+        if research.get("stop_explanation"):
+            lines.append(f"- Stop explanation: {research['stop_explanation']}")
 
     r = report["resources"]
     lines += [
@@ -385,4 +442,14 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Unknown action outcomes: {r['unknown_outcomes']}",
         "",
     ]
+    if r.get("calls_by_stage"):
+        lines += ["", "### Calls by stage", ""]
+        for stage, counts in r["calls_by_stage"].items():
+            if counts["agent_calls"] or counts["evaluator_calls"] or counts["unknown_outcomes"]:
+                lines.append(
+                    f"- {stage}: {counts['agent_calls']} agent calls, "
+                    f"{counts['evaluator_calls']} evaluator calls, "
+                    f"{counts['unknown_outcomes']} unknown outcomes"
+                )
     return "\n".join(lines)
+

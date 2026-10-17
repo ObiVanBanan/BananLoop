@@ -323,15 +323,23 @@ class CodexAdapter(AgentAdapter):
             )
         elif role == "propose":
             instruction = (
-                "Propose exactly one bounded, falsifiable hypothesis for this measurable campaign. "
+                "Propose a bounded portfolio of 2-3 materially different, falsifiable hypotheses (never more than 4) for this measurable campaign. "
                 "Use the supplied research_state, its aggregate failure_signals and experiment_evidence, "
                 "and planning_mode. If failure_signals exist, target one supplied signal_key and explain "
                 "the causal failure_mechanism; use empty strings for both fields otherwise. "
                 "When experiment_evidence exists, cite a prior ordinal and explain in novelty_rationale "
                 "what its measured result changes. Distinguish a partial DEV gain from a failed mechanism. "
+                "For each candidate return candidate_id, nested hypothesis (the existing Hypothesis fields), evidence_refs, "
+                "suspected_failure_mode, predicted_observable, discriminating_test, scope_eligibility, "
+                "estimated_agent_calls, estimated_evaluator_calls, estimated_work_units (or null), rationale, "
+                "uncertainty, and inference=agent_inference. Candidate IDs must be stable mechanism slugs. "
+                "Estimate only remaining implementation/evaluation calls after the current proposal call. "
+                "Use only supplied DEV evidence references or "
+                "INSUFFICIENT_EVIDENCE; distinguish observed facts from your inference. Do not invent gains, causes, "
+                "USD costs, or evidence. The core selects one candidate and enforces all budgets and scope. "
                 "Avoid repeating a mechanism unless "
                 "you explicitly mark the hypothesis as refine, retry, or supersede and reference the prior "
-                "experiment ordinal. Do not modify files. Return only the requested structured result.\n\n"
+                "experiment ordinal. Do not modify files. Return {candidates:[...]} or legacy single Hypothesis JSON.\n\n"
             )
         elif role == "analyze":
             instruction = (
@@ -403,3 +411,4 @@ class CodexAdapter(AgentAdapter):
                 return data
             except (ProcessError, json.JSONDecodeError) as exc:
                 raise AgentError(str(exc)) from exc
+
