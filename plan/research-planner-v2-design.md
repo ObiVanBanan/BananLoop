@@ -49,4 +49,3 @@ Issue #42 extends the existing campaign supervisor. Planning must remain advisor
 ## Verification boundary
 
 CPU-only stub tests exercise malformed/duplicate/blocked portfolios, repeated no-effect, evidence gaps, resume identity, validation/holdout canaries, integrity rejection, legacy responses and two generic fixture domains. A frozen-fixture A/B comparison reports call/trial/mechanism/stop trade-offs without claiming universal quality gain. A local BananLoop end-to-end fixture exercises the operator CLI; no external model or real RAG evaluation is required.
-

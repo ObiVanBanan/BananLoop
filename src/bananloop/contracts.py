@@ -654,4 +654,3 @@ class RuntimePaths(BaseModel):
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-

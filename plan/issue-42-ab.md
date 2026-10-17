@@ -12,4 +12,3 @@ The replay command is `python examples/issue42/compare.py`. Seed, two prior no-e
 These are deterministic policy replays with synthetic fixed evaluator outcome mappings, not independent benchmark runs or a universal quality claim. They show that the portfolio selector rejects the repeated mechanism before implementation and can spend one bounded trial on a different mechanism under the same ceilings. The real CLI engine path is exercised separately by [the offline dogfood](../examples/issue42/README.md).
 
 Strategy state was `reframe` in both rows of each pair. The portfolio policy records the selected reframe candidate; the legacy policy had no portfolio selection event. No separate numerical strategy-switch count is inferred.
-

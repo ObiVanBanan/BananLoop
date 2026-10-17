@@ -16,4 +16,3 @@ python -m bananloop.cli status --repo .tmp-issue42-cli/project --state-dir .tmp-
 ```
 
 Expected terminal status is `GOAL_MET`, with `z-direct-fix` selected from two considered candidates, one scientific trial, two agent calls (proposal and implementation), and two evaluator calls (baseline and candidate). The agent/evaluator use standard local Python only.
-

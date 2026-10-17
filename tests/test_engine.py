@@ -1628,4 +1628,3 @@ def test_evaluation_request_records_candidate_materialization_proof(tmp_path: Pa
         assert report["experiments"][0]["candidate_proof"] == proof
     finally:
         store.close()
-

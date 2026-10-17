@@ -533,4 +533,3 @@ class PiAdapter(AgentAdapter):
         except subprocess.TimeoutExpired:
             self._terminate(proc)
         return {"action_id": action_id, "status": "cancelled"}
-

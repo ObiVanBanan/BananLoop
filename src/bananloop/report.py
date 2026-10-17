@@ -452,4 +452,3 @@ def render_markdown(report: dict[str, Any]) -> str:
                     f"{counts['unknown_outcomes']} unknown outcomes"
                 )
     return "\n".join(lines)
-

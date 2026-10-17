@@ -31,4 +31,3 @@ Architecture: [research-planner-v2-design.md](research-planner-v2-design.md)
 - Review diffs for compatibility, budgets, unsafe path handling and DEV/validation/holdout leakage.
 - Create a draft PR referencing #42 and #28 with the audit, design choice, tests, dogfood and A/B evidence. Do not merge or deploy.
 - Preserve pre-existing untracked files and worktrees.
-

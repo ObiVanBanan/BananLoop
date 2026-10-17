@@ -36,4 +36,3 @@ Date: 2026-10-16
 - GitHub Issue #42 and its comment list, fetched 2026-10-16.
 - GitHub open PR search, fetched 2026-10-16.
 - The file/function references above in the audited checkout.
-
