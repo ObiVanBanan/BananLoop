@@ -165,4 +165,3 @@ def test_codex_uses_role_scoped_sandbox(tmp_path: Path, monkeypatch):
     assert seen[0][seen[0].index("--sandbox") + 1] == "workspace-write"
     assert seen[1][seen[1].index("--sandbox") + 1] == "read-only"
     assert all("--ephemeral" in argv for argv in seen)
-
