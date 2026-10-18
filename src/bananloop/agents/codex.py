@@ -447,4 +447,3 @@ class CodexAdapter(AgentAdapter):
                 return data
             except (ProcessError, json.JSONDecodeError) as exc:
                 raise AgentError(str(exc)) from exc
-
