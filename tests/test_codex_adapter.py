@@ -34,11 +34,34 @@ def test_codex_propose_schema_accepts_portfolio_and_legacy_hypothesis(tmp_path: 
     out = adapter.execute({"role": "propose"}, tmp_path, timeout=30)
 
     assert captured["schema"] == HYPOTHESIS_SCHEMA
-    portfolio_schema, legacy_schema = captured["schema"]["oneOf"]
-    assert portfolio_schema["required"] == ["candidates"]
-    assert "estimated_evaluator_calls" in portfolio_schema["properties"]["candidates"]["items"]["required"]
-    assert "hypothesis" in legacy_schema["required"]
+    assert captured["schema"]["type"] == "object"
+    assert "oneOf" not in captured["schema"]
+    assert captured["schema"]["properties"]["candidates"]["type"] == ["array", "null"]
+    assert "estimated_evaluator_calls" in captured["schema"]["properties"]["candidates"]["items"]["required"]
+    assert set(captured["schema"]["required"]) == set(captured["schema"]["properties"])
     assert out == {"candidates": []}
+
+
+def test_codex_strict_schema_legacy_null_slots_normalize_as_legacy_hypothesis():
+    from bananloop.research import normalize_portfolio
+
+    payload = {
+        "candidates": None,
+        "hypothesis": "preserve blank lines",
+        "rationale": "current formatter collapses them",
+        "expected_effect": "blank-line count is preserved",
+        "files_or_area": ["formatter.py"],
+        "falsification_condition": "blank-line count still changes",
+        "mechanism_key": "newline-handling",
+        "relation": "new",
+        "prior_experiment_refs": [],
+        "novelty_rationale": "new mechanism",
+        "target_failure_signal": "",
+        "failure_mechanism": "",
+    }
+    portfolio = normalize_portfolio(payload)
+    assert len(portfolio.candidates) == 1
+    assert portfolio.candidates[0].hypothesis.mechanism_key == "newline-handling"
 
 
 def test_codex_exec_sends_large_task_via_stdin_not_argv(tmp_path: Path, monkeypatch):
