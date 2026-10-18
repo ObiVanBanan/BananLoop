@@ -7,6 +7,7 @@ from bananloop.contracts import (
     CampaignSpec,
     DevExperimentEvidence,
     Direction,
+    FailureCapsule,
     Hypothesis,
     HypothesisCandidate,
     HypothesisPortfolio,
@@ -17,6 +18,7 @@ from bananloop.research import (
     agent_evaluation_view,
     build_history,
     build_research_state,
+    capsule_evidence_ref,
     planning_mode,
     redundancy_reason,
     normalize_portfolio,
@@ -299,6 +301,45 @@ def test_portfolio_selector_blocks_unknown_evidence_scope_and_unaffordable_candi
     assert result.stop_reason
 
 
+def test_portfolio_budget_gates_reject_zero_and_reserve_actual_staged_costs():
+    candidate = _portfolio_candidate(
+        "understated", "understated", estimated_agent_calls=0,
+        estimated_evaluator_calls=0,
+    )
+    configured = spec(validation_command=["validate"], holdout_command=["holdout"])
+    state = _selection_state(remaining_budget={
+        "experiments": 1, "attempts": 1, "agent_calls": 1, "evaluator_calls": 2,
+        "work_units": 2,
+    })
+    result = select_candidate(HypothesisPortfolio(candidates=[candidate]), spec=configured,
+                              state=state, experiments=[], experiment_ordinal=1,
+                              action_id="exp:1:propose")
+    reasons = result.decisions[0].rejection_reasons
+    assert "ESTIMATED_AGENT_COST_BELOW_MINIMUM" in reasons
+    assert "ESTIMATED_EVALUATOR_COST_BELOW_MINIMUM" in reasons
+    assert "INSUFFICIENT_EVALUATOR_BUDGET" in reasons
+    assert "INSUFFICIENT_EVALUATION_WORK_UNITS" in reasons
+
+
+def test_capsule_evidence_reference_is_content_stable_across_window_reordering():
+    capsule = FailureCapsule(
+        title="stale cache", failure_class="wrong result", stage="selection",
+        affected_fields=["cache_key"], observation="same input gave different result",
+        likely_mechanism="stale entry", general_rule="include identity in key",
+        suggested_regression="vary identity with same value", confidence=0.8,
+    )
+    other = capsule.model_copy(update={"title": "other"})
+    original_ref = capsule_evidence_ref(capsule)
+    assert original_ref.startswith("capsule:")
+    assert capsule_evidence_ref(capsule) == original_ref
+    assert [capsule_evidence_ref(item) for item in [other, capsule]][1] == original_ref
+    assert original_ref != capsule_evidence_ref(other)
+    normalized = normalize_portfolio({"candidates": [
+        _portfolio_candidate("stable", "stable", evidence_refs=[original_ref]).model_dump(mode="json")
+    ]})
+    assert normalized.candidates[0].evidence_refs == [original_ref]
+
+
 def test_portfolio_parser_records_malformed_candidate_fields_without_leaking_values():
     valid = _portfolio_candidate("good", "good-mechanism").model_dump(mode="json")
     malformed = {**valid, "candidate_id": "bad", "predicted_observable": "", "private_payload": "HOLDOUT_CANARY"}
@@ -481,3 +522,4 @@ def test_dogfood_partial_gain_preserves_dev_failure_mechanism_evidence():
     assert "private_failure_count" not in rendered
     assert "private case identity" not in rendered
     assert "hidden tier" not in rendered
+
