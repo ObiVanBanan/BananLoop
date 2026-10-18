@@ -16,3 +16,13 @@ python -m bananloop.cli status --repo .tmp-issue42-cli/project --state-dir .tmp-
 ```
 
 Expected terminal status is `GOAL_MET`, with `z-direct-fix` selected from two considered candidates, one scientific trial, two agent calls (proposal and implementation), and two evaluator calls (baseline and candidate). The agent/evaluator use standard local Python only.
+
+## Classifier-quality fixture
+
+Run a second, materially different project class (synthetic binary classification) through the same public CLI and campaign engine:
+
+```powershell
+python examples/issue42/run_classifier_dogfood.py --work-dir .tmp-issue42-classifier
+```
+
+The runner generates a fresh local Git fixture, uses a deterministic command agent and a CPU-only evaluator, and hides/protects the frozen evaluation split. It makes no hosted-model, Ollama, network, or rag_tender calls. It prints baseline and champion metrics, selected portfolio candidate, campaign state, and call counts. The directory must be new or empty.
