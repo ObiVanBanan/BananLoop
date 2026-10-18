@@ -522,4 +522,3 @@ def test_dogfood_partial_gain_preserves_dev_failure_mechanism_evidence():
     assert "private_failure_count" not in rendered
     assert "private case identity" not in rendered
     assert "hidden tier" not in rendered
-
