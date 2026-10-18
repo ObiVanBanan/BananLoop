@@ -21,6 +21,7 @@ from .contracts import (
     FailureAnalysisResult,
     Hypothesis,
     ImplementResult,
+    PortfolioRecord,
     ResearchState,
     StopReason,
 )
