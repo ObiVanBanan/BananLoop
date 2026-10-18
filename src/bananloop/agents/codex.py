@@ -185,9 +185,31 @@ PORTFOLIO_SCHEMA = {
     "additionalProperties": False,
 }
 
-# Codex structured output supports oneOf, allowing the portfolio protocol while
-# keeping previously configured single-hypothesis agents wire-compatible.
-HYPOTHESIS_SCHEMA = {"oneOf": [PORTFOLIO_SCHEMA, LEGACY_HYPOTHESIS_SCHEMA]}
+# Codex structured output requires an object schema without top-level unions.
+# Keep both wire shapes in one strict object: portfolio output sets the legacy
+# fields to null; legacy output sets candidates to null.
+def _nullable_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    result = dict(schema)
+    schema_type = result["type"]
+    result["type"] = [schema_type, "null"]
+    if "enum" in result:
+        result["enum"] = [*result["enum"], None]
+    return result
+
+
+HYPOTHESIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "candidates": {
+            **PORTFOLIO_SCHEMA["properties"]["candidates"],
+            "type": ["array", "null"],
+        },
+        **{name: _nullable_schema(schema)
+           for name, schema in LEGACY_HYPOTHESIS_SCHEMA["properties"].items()},
+    },
+    "required": ["candidates", *LEGACY_HYPOTHESIS_SCHEMA["required"]],
+    "additionalProperties": False,
+}
 FAILURE_ANALYSIS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -373,6 +395,7 @@ class CodexAdapter(AgentAdapter):
                 "Use only supplied DEV evidence references or "
                 "INSUFFICIENT_EVIDENCE; distinguish observed facts from your inference. Do not invent gains, causes, "
                 "USD costs, or evidence. The core selects one candidate and enforces all budgets and scope. "
+                "For a portfolio, set every legacy top-level Hypothesis field to null. For the legacy single-Hypothesis fallback, set candidates to null. "
                 "Avoid repeating a mechanism unless "
                 "you explicitly mark the hypothesis as refine, retry, or supersede and reference the prior "
                 "experiment ordinal. Do not modify files. Return {candidates:[...]} or legacy single Hypothesis JSON.\n\n"
