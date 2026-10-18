@@ -766,4 +766,3 @@ def redundancy_reason(
         f"mechanism_key {hypothesis.mechanism_key!r} already appeared in experiments "
         f"{same_mechanism}; use relation=refine|retry|supersede and reference a prior ordinal"
     )
-
