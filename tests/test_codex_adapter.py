@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from bananloop.agents.codex import BOOTSTRAP_SCHEMA, CodexAdapter
+from bananloop.agents.codex import BOOTSTRAP_SCHEMA, HYPOTHESIS_SCHEMA, CodexAdapter
 
 
 def test_bootstrap_protocol_manifest_schema_is_strict_and_total():
@@ -13,6 +13,32 @@ def test_bootstrap_protocol_manifest_schema_is_strict_and_total():
     manifest_schema = properties["protocol_manifest_commands"]
     assert manifest_schema["required"] == ["dev", "validation", "holdout"]
     assert manifest_schema["additionalProperties"] is False
+
+
+def test_codex_propose_schema_accepts_portfolio_and_legacy_hypothesis(tmp_path: Path, monkeypatch):
+    adapter = CodexAdapter()
+    monkeypatch.setattr(adapter, "_resolved_command", lambda: ["codex"])
+    captured = {}
+
+    class Result:
+        stdout = ""
+        stderr = ""
+        returncode = 0
+
+    def fake_run_process(argv, *, cwd, timeout, check=True, input_text=None, **kwargs):
+        captured["schema"] = json.loads(Path(argv[argv.index("--output-schema") + 1]).read_text(encoding="utf-8"))
+        Path(argv[argv.index("-o") + 1]).write_text('{"candidates":[]}', encoding="utf-8")
+        return Result()
+
+    monkeypatch.setattr("bananloop.agents.codex.run_process", fake_run_process)
+    out = adapter.execute({"role": "propose"}, tmp_path, timeout=30)
+
+    assert captured["schema"] == HYPOTHESIS_SCHEMA
+    portfolio_schema, legacy_schema = captured["schema"]["oneOf"]
+    assert portfolio_schema["required"] == ["candidates"]
+    assert "estimated_evaluator_calls" in portfolio_schema["properties"]["candidates"]["items"]["required"]
+    assert "hypothesis" in legacy_schema["required"]
+    assert out == {"candidates": []}
 
 
 def test_codex_exec_sends_large_task_via_stdin_not_argv(tmp_path: Path, monkeypatch):
@@ -139,3 +165,4 @@ def test_codex_uses_role_scoped_sandbox(tmp_path: Path, monkeypatch):
     assert seen[0][seen[0].index("--sandbox") + 1] == "workspace-write"
     assert seen[1][seen[1].index("--sandbox") + 1] == "read-only"
     assert all("--ephemeral" in argv for argv in seen)
+
