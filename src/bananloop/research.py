@@ -84,6 +84,12 @@ def planning_mode(non_improve_streak: int, plateau_experiments: int) -> str:
     return "explore"
 
 
+def capsule_evidence_ref(capsule: FailureCapsule) -> str:
+    """Return a content-addressed ref that survives sliding-window reordering."""
+    payload = json.dumps(capsule.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return "capsule:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
 def normalize_portfolio(payload: dict[str, Any]) -> HypothesisPortfolio:
     """Normalize a v2 portfolio or a legacy single-Hypothesis response."""
     if "candidates" in payload:
@@ -103,7 +109,7 @@ def normalize_portfolio(payload: dict[str, Any]) -> HypothesisPortfolio:
                 for ref in parsed.evidence_refs:
                     if ref == "INSUFFICIENT_EVIDENCE" or re.fullmatch(r"exp:[1-9][0-9]{0,8}", ref) \
                             or re.fullmatch(r"signal:[A-Za-z0-9_.:-]{1,120}", ref) \
-                            or re.fullmatch(r"capsule:[1-9][0-9]{0,2}", ref):
+                            or re.fullmatch(r"capsule:(?:[1-9][0-9]{0,2}|[a-f0-9]{16})", ref):
                         safe_refs.append(ref)
                     else:
                         safe_refs.append("<invalid>")
@@ -158,6 +164,8 @@ def candidate_rejection_reasons(
 
     evidence_ids = {f"exp:{item.ordinal}" for item in state.experiment_evidence}
     evidence_ids.update(f"signal:{item.signal_key}" for item in state.failure_signals)
+    evidence_ids.update(capsule_evidence_ref(item) for item in state.recent_failure_capsules)
+    # Accept numeric refs in already persisted proposal actions during recovery.
     evidence_ids.update(f"capsule:{i}" for i, _ in enumerate(state.recent_failure_capsules, start=1))
     for ref in candidate.evidence_refs:
         if ref != "INSUFFICIENT_EVIDENCE" and ref not in evidence_ids:
@@ -167,13 +175,29 @@ def candidate_rejection_reasons(
         reasons.append("MISSING_EVIDENCE_OR_INSUFFICIENT_EVIDENCE_MARKER")
     if redundancy_reason(hypothesis, experiments):
         reasons.append("REDUNDANT_MECHANISM")
-    if candidate.estimated_agent_calls > state.remaining_budget.get("agent_calls", 0):
+    # One implementation call and the configured staged evaluator calls are
+    # unavoidable regardless of an adviser's optimistic cost estimate.
+    min_agent_calls = 1
+    min_evaluator_calls = 1 + int(bool(spec.validation_command)) + int(bool(spec.holdout_command))
+    if candidate.estimated_agent_calls == 0:
+        reasons.append("ESTIMATED_AGENT_COST_BELOW_MINIMUM")
+    if candidate.estimated_evaluator_calls == 0:
+        reasons.append("ESTIMATED_EVALUATOR_COST_BELOW_MINIMUM")
+    required_agent_calls = max(candidate.estimated_agent_calls, min_agent_calls)
+    required_evaluator_calls = max(
+        candidate.estimated_evaluator_calls,
+        1 + int(bool(spec.validation_command)),
+    ) + int(bool(spec.holdout_command))
+    if required_agent_calls > state.remaining_budget.get("agent_calls", 0):
         reasons.append("INSUFFICIENT_AGENT_BUDGET")
-    if candidate.estimated_evaluator_calls > state.remaining_budget.get("evaluator_calls", 0):
+    if required_evaluator_calls > state.remaining_budget.get("evaluator_calls", 0):
         reasons.append("INSUFFICIENT_EVALUATOR_BUDGET")
     remaining_units = state.remaining_budget.get("work_units")
-    if (candidate.estimated_work_units is not None and remaining_units is not None
-            and candidate.estimated_work_units > remaining_units):
+    required_units = max(
+        candidate.estimated_work_units or 0,
+        min_evaluator_calls * (spec.budget.evaluation_units_per_call or 1),
+    )
+    if remaining_units is not None and required_units > remaining_units:
         reasons.append("INSUFFICIENT_EVALUATION_WORK_UNITS")
     if state.remaining_budget.get("experiments", 0) < 1 or state.remaining_budget.get("attempts", 0) < 1:
         reasons.append("INSUFFICIENT_EXPERIMENT_BUDGET")
@@ -742,3 +766,4 @@ def redundancy_reason(
         f"mechanism_key {hypothesis.mechanism_key!r} already appeared in experiments "
         f"{same_mechanism}; use relation=refine|retry|supersede and reference a prior ordinal"
     )
+
