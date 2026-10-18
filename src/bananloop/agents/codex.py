@@ -122,7 +122,7 @@ BOOTSTRAP_SCHEMA = {
     "additionalProperties": False
 }
 
-HYPOTHESIS_SCHEMA = {
+LEGACY_HYPOTHESIS_SCHEMA = {
     "type": "object",
     "properties": {
         "hypothesis": {"type": "string"},
@@ -152,6 +152,42 @@ HYPOTHESIS_SCHEMA = {
     ],
     "additionalProperties": False,
 }
+
+HYPOTHESIS_CANDIDATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "candidate_id": {"type": "string", "minLength": 1, "maxLength": 80, "pattern": "^[a-z0-9][a-z0-9_-]{0,79}$"},
+        "hypothesis": LEGACY_HYPOTHESIS_SCHEMA,
+        "evidence_refs": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
+        "suspected_failure_mode": {"type": "string", "maxLength": 300},
+        "predicted_observable": {"type": "string", "minLength": 1, "maxLength": 500},
+        "discriminating_test": {"type": "string", "minLength": 1, "maxLength": 500},
+        "scope_eligibility": {"type": "boolean"},
+        "estimated_agent_calls": {"type": "integer", "minimum": 0, "maximum": 4},
+        "estimated_evaluator_calls": {"type": "integer", "minimum": 0, "maximum": 4},
+        "estimated_work_units": {"type": ["number", "null"], "minimum": 0, "maximum": 1000000},
+        "rationale": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "uncertainty": {"type": "string", "minLength": 1, "maxLength": 500},
+        "inference": {"type": "string", "enum": ["agent_inference"]},
+    },
+    "required": ["candidate_id", "hypothesis", "evidence_refs", "suspected_failure_mode",
+                 "predicted_observable", "discriminating_test", "scope_eligibility",
+                 "estimated_agent_calls", "estimated_evaluator_calls", "estimated_work_units",
+                 "rationale", "uncertainty", "inference"],
+    "additionalProperties": False,
+}
+
+PORTFOLIO_SCHEMA = {
+    "type": "object",
+    "properties": {"candidates": {"type": "array", "minItems": 1, "maxItems": 4,
+                                    "items": HYPOTHESIS_CANDIDATE_SCHEMA}},
+    "required": ["candidates"],
+    "additionalProperties": False,
+}
+
+# Codex structured output supports oneOf, allowing the portfolio protocol while
+# keeping previously configured single-hypothesis agents wire-compatible.
+HYPOTHESIS_SCHEMA = {"oneOf": [PORTFOLIO_SCHEMA, LEGACY_HYPOTHESIS_SCHEMA]}
 FAILURE_ANALYSIS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -411,3 +447,4 @@ class CodexAdapter(AgentAdapter):
                 return data
             except (ProcessError, json.JSONDecodeError) as exc:
                 raise AgentError(str(exc)) from exc
+
