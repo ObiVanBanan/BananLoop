@@ -92,8 +92,10 @@ def capsule_evidence_ref(capsule: FailureCapsule) -> str:
 
 def normalize_portfolio(payload: dict[str, Any]) -> HypothesisPortfolio:
     """Normalize a v2 portfolio or a legacy single-Hypothesis response."""
-    if "candidates" in payload:
+    if isinstance(payload.get("candidates"), list):
         raw_candidates = payload["candidates"]
+        if any(value is not None for key, value in payload.items() if key != "candidates"):
+            raise ValueError("portfolio response cannot mix legacy hypothesis fields")
         if not isinstance(raw_candidates, list):
             raise ValueError("portfolio candidates must be a JSON list")
         valid: list[HypothesisCandidate] = []
@@ -122,7 +124,10 @@ def normalize_portfolio(payload: dict[str, Any]) -> HypothesisPortfolio:
                 "rejection_reason": f"PORTFOLIO_EXCEEDS_MAX_4:{len(raw_candidates) - 4} additional candidate(s) rejected",
             })
         return HypothesisPortfolio(candidates=valid, malformed_candidates=malformed[:4])
-    hypothesis = Hypothesis.model_validate(payload)
+    # Codex strict-output fallback includes a null candidates slot and null
+    # values for unused fields. Remove those wire-only nulls before validation.
+    hypothesis = Hypothesis.model_validate({key: value for key, value in payload.items()
+                                            if key != "candidates" and value is not None})
     digest = hashlib.sha256(
         json.dumps(hypothesis.model_dump(mode="json"), sort_keys=True).encode()
     ).hexdigest()[:16]
