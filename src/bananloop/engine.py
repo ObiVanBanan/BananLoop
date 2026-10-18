@@ -20,6 +20,7 @@ from .contracts import (
     FailureCapsule,
     FailureAnalysisResult,
     Hypothesis,
+    HypothesisPortfolio,
     ImplementResult,
     PortfolioRecord,
     ResearchState,
