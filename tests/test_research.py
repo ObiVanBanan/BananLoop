@@ -19,6 +19,7 @@ from bananloop.research import (
     build_history,
     build_research_state,
     capsule_evidence_ref,
+    classify_dev_outcome,
     planning_mode,
     redundancy_reason,
     normalize_portfolio,
@@ -604,3 +605,81 @@ def test_changed_allowlisted_dev_error_metric_prevents_false_stagnation():
     )
     assert state.stagnant_mechanisms == []
     assert state.planning_mode == "reframe"  # Ordinary two-trial DEV plateau.
+
+def test_dev_noise_band_is_symmetric_for_small_gains_and_losses():
+    s = spec(agent_visible_metrics=["quality"])
+    def row(ordinal: int, delta: float):
+        return {
+            "ordinal": ordinal,
+            "status": "REJECTED",
+            "hypothesis_json": json.dumps({"mechanism_key": f"family-{ordinal}"}),
+            "evaluation_json": json.dumps({"metrics": {"quality": 0.70 + delta}}),
+            "dev_decision_json": json.dumps({
+                "accepted": False, "primary_value": 0.70 + delta,
+                "champion_value": 0.70, "delta": delta,
+                "reasons": ["PRIMARY_NOT_IMPROVED"],
+            }),
+            "decision_json": json.dumps({
+                "accepted": False, "reasons": ["PRIMARY_NOT_IMPROVED"],
+            }),
+        }
+    # min_improvement=0.01: tiny deviations do not constitute science progress
+    # or evidence of a significant regression, irrespective of sign.
+    assert classify_dev_outcome(s, row(1, +0.004)) == "DEV_NO_EFFECT"
+    assert classify_dev_outcome(s, row(2, -0.006)) == "DEV_NO_EFFECT"
+    assert classify_dev_outcome(s, row(3, +0.014)) == "DEV_PARTIAL_IMPROVEMENT"
+    assert classify_dev_outcome(s, row(4, -0.014)) == "DEV_REGRESSION"
+
+    state = build_research_state(
+        s, campaign(experiment_count=2, attempt_count=2),
+        [row(1, +0.004), row(2, -0.006)],
+    )
+    assert state.failure_counts == {"DEV_NO_EFFECT": 2}
+    assert state.dev_non_improve_streak == 2
+    assert state.planning_mode == "reframe"
+
+
+def test_stagnation_recognizes_small_bidirectional_dev_drift_without_leakage():
+    s = spec(
+        agent_visible_metrics=["quality", "error_count"],
+        agent_visible_diagnostics=["retrieval_miss"],
+    )
+    rows = []
+    for ordinal, delta, private_holdout in ((1, +0.004, "SEALED_ONE"),
+                                            (2, -0.006, "SEALED_TWO")):
+        rows.append({
+            "ordinal": ordinal,
+            "status": "REJECTED",
+            "failure_category": "VALIDATION_REJECTED",
+            "hypothesis_json": json.dumps({"mechanism_key": "weight-tuning"}),
+            "evaluation_json": json.dumps({
+                "metrics": {
+                    "quality": 0.70 + delta,
+                    "error_count": 6,
+                    "secret_label": "SHOULD_NOT_BE_VISIBLE",
+                },
+                "diagnostics": {"retrieval_miss": 2, "secret": 9},
+            }),
+            "dev_decision_json": json.dumps({
+                "accepted": False, "primary_value": 0.70 + delta,
+                "champion_value": 0.70, "delta": delta,
+                "reasons": ["PRIMARY_NOT_IMPROVED"],
+            }),
+            "decision_json": json.dumps({
+                "accepted": False,
+                "reasons": ["VALIDATION_REJECTED"],
+                "validation": {"holdout_key": private_holdout},
+            }),
+        })
+
+    state = build_research_state(
+        s, campaign(experiment_count=2, attempt_count=2), rows,
+    )
+    assert state.stagnant_mechanisms == ["weight-tuning"]
+    assert state.planning_mode == "reframe"
+    assert state.dev_non_improve_streak == 2
+    visible = state.model_dump_json()
+    assert "SEALED" not in visible
+    assert "SHOULD_NOT_BE_VISIBLE" not in visible
+    assert "secret" not in visible
+    assert "holdout_key" not in visible
