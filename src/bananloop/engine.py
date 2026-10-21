@@ -126,10 +126,10 @@ class Engine:
         return self._agent_timeout_seconds or default
 
     def _agent_hidden_paths(self) -> list[str]:
-        visible_training = set(self.spec.agent_visible_training_paths)
+        visible_paths = set(self.spec.agent_visible_training_paths) | set(self.spec.agent_visible_context_paths)
         frozen = [
             asset.path for asset in self.spec.evaluation_assets
-            if asset.path not in visible_training
+            if asset.path not in visible_paths
         ]
         return list(dict.fromkeys([*self.spec.agent_hidden_paths, *frozen]))
 
@@ -655,7 +655,7 @@ class Engine:
             ).model_dump(mode="json"),
         )
         result = EvaluationResult.model_validate(raw)
-        validate_evaluation(self.spec, result)
+        validate_evaluation(self.spec, result, tier="holdout")
         self.store.record_evaluation(
             None,
             snapshot,
@@ -841,6 +841,7 @@ class Engine:
             "editable_scope": self.spec.editable_scope,
             "protected_paths": self._agent_protected_paths(),
             "agent_visible_training_paths": self.spec.agent_visible_training_paths,
+            "agent_visible_context_paths": self.spec.agent_visible_context_paths,
             "baseline": self._agent_evaluation_view(campaign["baseline_json"]),
             "champion": self._agent_evaluation_view(campaign["champion_json"]),
             "champion_snapshot": campaign["champion_snapshot"],

@@ -480,7 +480,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         data["campaign_id"] = _display_campaign_id(args, paths)
         data["initialized"] = True
         data["resources"] = store.resource_summary()
-        data["evaluations"] = build_report(store)["measurements"]
+        data["evaluations"] = _status_evaluation_summary(build_report(store)["measurements"])
         research = store.research_state()
         if research:
             data["planning_mode"] = research.get("planning_mode")
@@ -488,6 +488,26 @@ def cmd_status(args: argparse.Namespace) -> int:
     finally:
         store.close()
     return 0
+
+
+def _status_evaluation_summary(measurements: list[dict]) -> list[dict]:
+    """Keep status output aggregate-only; full reports have a separate command."""
+    summary = []
+    for item in measurements:
+        result = item.get("result") or {}
+        summary.append({
+            "experiment_id": item.get("experiment_id"),
+            "tier": item.get("tier"),
+            "metrics": {
+                name: metric.get("value")
+                for name, metric in (result.get("metrics") or {}).items()
+            },
+            "checks": {
+                name: check.get("passed")
+                for name, check in (result.get("checks") or {}).items()
+            },
+        })
+    return summary
 
 
 def cmd_stop(args: argparse.Namespace) -> int:

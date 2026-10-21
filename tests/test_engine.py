@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import bananloop.engine as engine_module
 from bananloop.agents.base import AgentAdapter
 from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, CandidateDecision, Direction, EvaluationAsset, EvaluationResult, GuardrailSpec, Hypothesis, HypothesisCandidate, MetricSpec, PortfolioRecord, RuntimePaths
 from bananloop.engine import ControlledInterruption, Engine, EngineError, UnknownActionOutcome, _hash_payload
@@ -751,8 +752,19 @@ def test_successful_retry_clears_stale_agent_failure_metadata(tmp_path: Path):
 
 
 
-def test_staged_validation_gates_promotion_and_final_holdout_runs_once(tmp_path: Path):
+def test_staged_validation_gates_promotion_and_final_holdout_runs_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     store, engine, _, _ = make_staged_engine(tmp_path)
+    final_holdout_tiers: list[str] = []
+    original_validate = engine_module.validate_evaluation
+
+    def capture_holdout_tier(spec, result, *, tier="dev"):
+        if store.campaign()["stage"] == "FINAL_HOLDOUT":
+            final_holdout_tiers.append(tier)
+        return original_validate(spec, result, tier=tier)
+
+    monkeypatch.setattr(engine_module, "validate_evaluation", capture_holdout_tier)
     try:
         out = engine.run()
 
@@ -767,6 +779,7 @@ def test_staged_validation_gates_promotion_and_final_holdout_runs_once(tmp_path:
         assert [row["tier"] for row in evaluations].count("dev") == 4
         assert [row["tier"] for row in evaluations].count("validation") == 3
         assert [row["tier"] for row in evaluations].count("holdout") == 1
+        assert final_holdout_tiers == ["holdout", "holdout"]
 
         first = store.experiments()[0]
         first_decision = json.loads(first["decision_json"])

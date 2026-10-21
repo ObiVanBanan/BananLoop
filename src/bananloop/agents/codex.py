@@ -31,6 +31,7 @@ BOOTSTRAP_SCHEMA = {
             "additionalProperties": False,
         },
         "agent_visible_training_paths": {"type": "array", "items": {"type": "string"}},
+        "agent_visible_context_paths": {"type": "array", "items": {"type": "string"}},
         "validation_command": {"type": "array", "items": {"type": "string"}},
         "holdout_command": {"type": "array", "items": {"type": "string"}},
         "primary_metric": {
@@ -114,7 +115,7 @@ BOOTSTRAP_SCHEMA = {
     },
     "required": [
         "status", "summary", "project_context", "needs_input",
-        "evaluation_command", "smoke_command", "protocol_manifest_commands", "agent_visible_training_paths", "validation_command", "holdout_command",
+        "evaluation_command", "smoke_command", "protocol_manifest_commands", "agent_visible_training_paths", "agent_visible_context_paths", "validation_command", "holdout_command",
         "primary_metric", "guardrails", "non_regression", "mandatory_checks",
         "editable_scope", "protected_paths", "agent_visible_metrics",
         "agent_visible_diagnostics", "paired_comparison", "signal_sanity", "evaluator_timeout_seconds"
@@ -367,6 +368,9 @@ class CodexAdapter(AgentAdapter):
                 "If discovery found training resources that implementation should use, list only those paths in "
                 "agent_visible_training_paths. Core permits only discovered paths clearly named as training data; "
                 "never include evaluation, test, validation, holdout, GOLD, or reference resources. "
+                "If the operator explicitly requests a discovered read-only project resource as context (such as a catalog), "
+                "list it in agent_visible_context_paths, not agent_visible_training_paths. Never include queries, labels, "
+                "answers, expected outputs, or evaluation/reference resources there. Operator-hidden paths stay hidden. "
                 "Never encode shell environment assignments as the executable name; BananLoop can normalize leading "
                 "NAME=value argv tokens, but prefer a plain executable argv and read runtime values from the process environment. "
                 "Use stable case IDs/input fingerprints, and avoid per-evaluation "

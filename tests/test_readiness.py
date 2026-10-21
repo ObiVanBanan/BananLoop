@@ -12,8 +12,8 @@ import pytest
 
 from bananloop.bootstrap import BootstrapPairedPlan, BootstrapPlan
 from bananloop import readiness
-from bananloop.contracts import ProtocolCase, ProtocolManifest
-from bananloop.readiness import ReadinessError, run_bootstrap_readiness
+from bananloop.contracts import EvaluationResult, ProtocolCase, ProtocolManifest
+from bananloop.readiness import ReadinessError, _validate_result, run_bootstrap_readiness
 
 
 
@@ -128,6 +128,31 @@ def test_readiness_runs_three_times_and_records_stable_inputs(tmp_path: Path):
         "paired_noise_gate_passed": True,
     }
     assert receipt["runs"][0]["case_count"] == 1
+
+
+def test_identity_only_cases_are_allowed_only_without_paired_metric_requirement():
+    input_hash = hashlib.sha256(b"identity-only-input").hexdigest()
+    protocol_hash = hashlib.sha256(b"identity-only-protocol").hexdigest()
+    result = EvaluationResult.model_validate(
+        {
+            "status": "ok",
+            "metrics": {"quality": 0.5},
+            "checks": {"tests": True},
+            "protocol_sha256": protocol_hash,
+            "cases": [
+                {
+                    "case_id": "one",
+                    "repetition": 0,
+                    "input_sha256": input_hash,
+                }
+            ],
+        }
+    )
+
+    _validate_result(plan([sys.executable, "unused.py"]), result)
+
+    with pytest.raises(ReadinessError, match="missing metric 'quality'"):
+        _validate_result(plan([sys.executable, "unused.py"], paired=True), result)
 
 
 def test_readiness_freezes_full_manifest_while_smoke_scores_a_subset(tmp_path: Path):

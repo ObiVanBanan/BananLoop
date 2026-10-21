@@ -215,6 +215,27 @@ def test_status_of_reserved_campaign_does_not_create_campaign_db(tmp_path, capsy
     assert not paths.db.exists()
 
 
+def test_status_evaluation_summary_omits_case_level_records():
+    from bananloop.cli import _status_evaluation_summary
+
+    result = _status_evaluation_summary([{
+        "experiment_id": 3,
+        "tier": "holdout",
+        "result": {
+            "metrics": {"accuracy": {"value": 0.75}},
+            "checks": {"complete": {"passed": True}},
+            "cases": [{"case_id": "hidden-case", "metrics": {"label": 1}}],
+            "diagnostics": {"private": "detail"},
+        },
+    }])
+
+    assert result == [{
+        "experiment_id": 3,
+        "tier": "holdout",
+        "metrics": {"accuracy": 0.75},
+        "checks": {"complete": True},
+    }]
+
 def test_prepare_alias_enables_preflight_without_running_experiments():
     args = parser().parse_args(["prepare", "--repo", ".", "--goal", "Improve PR-AUC"])
     assert args.prepare_only is True
