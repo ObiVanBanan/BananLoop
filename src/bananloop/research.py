@@ -305,7 +305,7 @@ def derive_dev_lesson(row: dict[str, Any], spec: CampaignSpec) -> DevResearchLes
     hypothesis = json.loads(row.get("hypothesis_json") or "{}")
     outcome = classify_dev_outcome(spec, row)
     interpretation = ("supported" if outcome in {"DEV_IMPROVEMENT", "DEV_PARTIAL_IMPROVEMENT"}
-                      else "refuted" if outcome == "DEV_NO_IMPROVEMENT" else "unknown")
+                      else "refuted" if outcome in {"DEV_REGRESSION", "DEV_GUARD_REJECT"} else "unknown")
     decision = json.loads(row.get("dev_decision_json") or "{}")
     delta = decision.get("delta")
     return DevResearchLesson(
@@ -450,13 +450,23 @@ def classify_dev_outcome(
     if row.get("evaluation_json") and decision is not None:
         if decision.get("accepted"):
             return "DEV_IMPROVEMENT"
-        # A promotion threshold or guard can reject a candidate that still
-        # yielded a useful DEV improvement. Keep that signal for planning.
+        # A/A readiness calibrates noise below min_improvement. Tiny positive
+        # AND negative DEV deltas are inconclusive, not scientific progress or
+        # evidence that the underlying mechanism regressed.
         delta = decision.get("delta")
-        if isinstance(delta, (int, float)) and math.isfinite(delta) and delta > 0:
-            return "DEV_PARTIAL_IMPROVEMENT"
+        threshold = float(spec.primary_metric.min_improvement)
         reasons = decision.get("reasons") or []
-        if "PRIMARY_NOT_IMPROVED" in reasons:
+        if isinstance(delta, (int, float)) and math.isfinite(delta):
+            if delta >= threshold:
+                # A meaningful primary gain can still violate another guard.
+                return "DEV_PARTIAL_IMPROVEMENT"
+            if delta <= -threshold:
+                return "DEV_REGRESSION"
+            if any(
+                reason.startswith(("GUARDRAIL_FAILED:", "REGRESSION:", "CHECK_FAILED:"))
+                for reason in reasons
+            ):
+                return "DEV_GUARD_REJECT"
             return "DEV_NO_EFFECT"
         if any(
             reason.startswith(("GUARDRAIL_FAILED:", "REGRESSION:", "CHECK_FAILED:"))
@@ -481,7 +491,8 @@ def _lesson_for(outcome: str, mechanism: str) -> str:
     messages = {
         "DEV_IMPROVEMENT": "DEV evidence showed a measurable improvement signal.",
         "DEV_PARTIAL_IMPROVEMENT": "DEV primary quality improved, but promotion thresholds or guards were not met.",
-        "DEV_NO_EFFECT": "DEV evidence did not meet the required minimum improvement.",
+        "DEV_NO_EFFECT": "The DEV primary change is below the configured minimum meaningful change, in either direction; treat it as inconclusive noise.",
+        "DEV_REGRESSION": "DEV primary quality regressed by at least the configured minimum meaningful change.",
         "DEV_GUARD_REJECT": "DEV evidence violated an approved guardrail or mandatory check.",
         "DEV_REJECTED": "DEV evidence rejected the candidate without a visible causal category.",
         "PRE_EVAL_REJECT": "The candidate was rejected before DEV measurement by deterministic policy.",
@@ -629,11 +640,13 @@ def stagnant_dev_mechanisms(
     *,
     tolerance: float = 1e-6,
 ) -> list[str]:
-    """Find mechanisms whose last two scientific DEV trials have identical evidence.
+    """Find mechanisms whose last two scientific DEV trials are indistinguishable.
 
-    Compare only the DEV decision and agent-allowlisted DEV aggregate measurements.
-    Do not inspect validation/holdout outcomes, status rejection reasons, or case rows.
-    This is a conservative stagnation signal, not proof of a causal failure.
+    The primary metric uses the *configured minimum meaningful improvement* as
+    a conservative noise band (readiness requires A/A variation below it).
+    Other allowlisted metric/diagnostic values require near-exact equality:
+    unlike the primary metric, they have no configured noise calibration.
+    Do not inspect validation/holdout outcomes, status rejection reasons, or cases.
     """
     observations: dict[str, list[tuple[str, float, dict[str, float]]]] = {}
     for row in experiments:
@@ -656,9 +669,12 @@ def stagnant_dev_mechanisms(
         if len(trials) < 2:
             continue
         before, after = trials[-2:]
-        if before[0] != after[0] or not math.isclose(
-            before[1], after[1], rel_tol=0.0, abs_tol=tolerance,
-        ):
+        minimum_effect = float(spec.primary_metric.min_improvement)
+        both_inconclusive = all(abs(trial[1]) < minimum_effect for trial in (before, after))
+        nearly_equal = math.isclose(
+            before[1], after[1], rel_tol=0.0, abs_tol=max(tolerance, minimum_effect),
+        )
+        if before[0] != after[0] or not (both_inconclusive or nearly_equal):
             continue
         prior_metrics, current_metrics = before[2], after[2]
         if prior_metrics.keys() != current_metrics.keys():
