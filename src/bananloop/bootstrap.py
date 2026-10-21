@@ -197,6 +197,8 @@ def _bootstrap_task(
             "use_detected_environment_variable_names_without_requesting_secret_values": True,
             "report_resource_paths_and_availability_before_requesting_missing_inputs": True,
             "goal_is_authoritative": True,
+            "validation_only_policy_metrics_use_validation_prefix": True,
+            "bare_policy_metrics_apply_to_current_evaluation_tier": True,
             "do_not_request_goal_file_when_goal_is_present": True,
             "resolve_conflicting_evaluators_by_goal_semantics": True,
             "use_detected_runtimes_before_requesting_python_environment": True,

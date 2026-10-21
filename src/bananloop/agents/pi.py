@@ -114,6 +114,9 @@ class PiAdapter(AgentAdapter):
             instruction = (
                 "You are the campaign bootstrapper inside BananLoop. Inspect the repository and human goal and "
                 "build an executable measurement contract. The top-level goal field is authoritative human intent. "
+                "Keep policy metrics tier-correct: a guardrail or non-regression bound that applies only to validation "
+                "must use a validation-prefixed metric such as validation_pr_auc (or validation.pr_auc). A bare metric "
+                "is evaluated on the current tier, usually DEV; never compare a validation-derived bound against DEV. "
                 "Never request a repository-side goal/fix/brief file just to confirm that intent; do not require "
                 ".hermes/fix.md when goal is present. If evaluators conflict, choose the one whose semantics best "
                 "match the explicit goal. Use repository.detected_python_runtimes and probe those executables before "

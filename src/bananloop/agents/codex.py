@@ -308,6 +308,9 @@ class CodexAdapter(AgentAdapter):
             instruction = (
                 "You are the campaign bootstrapper for BananLoop. Inspect the repository and the human goal, "
                 "then turn them into an executable measurement contract with minimal operator work. "
+                "Keep policy metrics tier-correct: a guardrail or non-regression bound that applies only to validation "
+                "must use a validation-prefixed metric such as validation_pr_auc (or validation.pr_auc). A bare metric "
+                "is evaluated on the current tier, usually DEV; never compare a validation-derived bound against DEV. "
                 "The top-level goal field is the authoritative human intent. Never request a repository-side "
                 "goal/fix/brief file merely to confirm or choose that intent; in particular, do not require files "
                 "such as .hermes/fix.md when goal is already present. If multiple existing evaluators conflict, "
