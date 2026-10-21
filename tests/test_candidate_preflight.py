@@ -71,6 +71,49 @@ def test_api_preflight_catches_removed_ohe_sparse_using_evaluator_python(tmp_pat
     assert not (tmp_path / "__pycache__").exists()
 
 
+def test_api_preflight_preserves_windows_python_launcher_runtime(tmp_path: Path, monkeypatch):
+    path = tmp_path / "model.py"
+    path.write_text(
+        "from sklearn.preprocessing import OneHotEncoder as OHE\n"
+        "encoder = OHE(sparse=False)\n",
+        encoding="utf-8",
+    )
+    probes = []
+
+    def fake_probe(command, **kwargs):
+        probes.append(command)
+        return SimpleNamespace(returncode=0, stdout="1.4.0\n", stderr="")
+
+    monkeypatch.setattr(preflight.subprocess, "run", fake_probe, raising=False)
+    errors = python_api_compatibility_errors(
+        tmp_path, ["model.py"],
+        evaluator_command=["C:\\Windows\\py.exe", "-3.12", "evaluate.py"],
+    )
+    assert errors and "sparse_output=" in errors[0]
+    assert probes[0][:3] == ["C:\\Windows\\py.exe", "-3.12", "-I"]
+
+
+def test_api_preflight_accepts_windows_python_executable_path(tmp_path: Path, monkeypatch):
+    (tmp_path / "model.py").write_text(
+        "from sklearn.preprocessing import OneHotEncoder as OHE\n"
+        "encoder = OHE(sparse=False)\n",
+        encoding="utf-8",
+    )
+    probes = []
+
+    def fake_probe(command, **kwargs):
+        probes.append(command)
+        return SimpleNamespace(returncode=0, stdout="1.4.0\n", stderr="")
+
+    monkeypatch.setattr(preflight.subprocess, "run", fake_probe, raising=False)
+    errors = python_api_compatibility_errors(
+        tmp_path, ["model.py"],
+        evaluator_command=["C:\\Python312\\python.exe", "evaluate.py"],
+    )
+    assert errors and "sparse_output=" in errors[0]
+    assert probes[0][0] == "C:\\Python312\\python.exe"
+
+
 def test_api_preflight_does_not_guess_from_unrelated_or_unknown_runtimes(tmp_path: Path, monkeypatch):
     (tmp_path / "model.py").write_text(
         "def OneHotEncoder(**kwargs): return kwargs\n"

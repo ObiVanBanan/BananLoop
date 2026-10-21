@@ -123,15 +123,32 @@ def python_api_compatibility_errors(
     # When the evaluator uses a wrapper (uv, bash, etc.), skip this gate.
     interpreter = str(evaluator_command[0])
     name = interpreter.replace("\\", "/").rsplit("/", 1)[-1]
-    if not re.fullmatch(
-        r"(?:pythonw?|py)(?:[0-9]+(?:\.[0-9]+)*)?(?:\.exe)?",
+    launcher_match = re.fullmatch(
+        r"py([0-9]+(?:\.[0-9]+)*)?(?:\.exe)?", name, flags=re.IGNORECASE,
+    )
+    direct_python = re.fullmatch(
+        r"pythonw?(?:[0-9]+(?:\.[0-9]+)*)?(?:\.exe)?",
         name, flags=re.IGNORECASE,
-    ):
+    )
+    if not launcher_match and not direct_python:
         return []
+
+    probe_command = [interpreter]
+    if launcher_match:
+        # Preserve an explicit Windows Python Launcher selector. Probing plain
+        # `py` without `-3.12` can inspect a different runtime than the evaluator.
+        selector = launcher_match.group(1)
+        if selector:
+            probe_command.append(f"-{selector}")
+        elif len(evaluator_command) > 1 and re.fullmatch(
+            r"-(?:[0-9]+(?:\.[0-9]+)*(?:-(?:32|64))?|V:.+)",
+            str(evaluator_command[1]), flags=re.IGNORECASE,
+        ):
+            probe_command.append(str(evaluator_command[1]))
     try:
         result = subprocess.run(
             [
-                interpreter, "-I", "-c",
+                *probe_command, "-I", "-c",
                 "import importlib.metadata as m; print(m.version('scikit-learn'))",
             ],
             cwd=workspace,
