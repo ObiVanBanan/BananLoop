@@ -9,6 +9,9 @@ jobs:
   pytest:
     runs-on: ${{ matrix.os }}
     strategy:
+      # Keep collecting independent OS/Python results when one hosted runner
+      # fails before it can start the job.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest]
         python-version: ["3.11", "3.12", "3.13"]
