@@ -1705,3 +1705,102 @@ def test_public_dev_examples_without_signals_trigger_failure_analysis(tmp_path: 
         assert json.loads(store.experiment(experiment_id)["failure_analysis_json"])["capsules"]
     finally:
         store.close()
+
+
+def test_failure_capsule_and_repeated_dev_failure_reach_different_next_hypothesis(tmp_path: Path):
+    from bananloop.contracts import FailureCapsule, HypothesisCandidate, HypothesisPortfolio, ResearchState
+    from bananloop.research import select_candidate
+
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        capsule = FailureCapsule(
+            title="Stale hard constraint",
+            failure_class="STALE_CONSTRAINT_AFTER_ENRICHMENT",
+            stage="enrichment",
+            affected_fields=["dn"],
+            observation="The reconciled value changes but filtering keeps the earlier value.",
+            likely_mechanism="Hard constraints are materialized before evidence reconciliation.",
+            general_rule="Reconcile source conflicts before hard filtering.",
+            suggested_regression="Add conflicting evidence and assert the reconciled value is used.",
+            confidence=0.9,
+        )
+        for ordinal in (1, 2):
+            campaign = store.campaign()
+            experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+            hypothesis = Hypothesis(
+                hypothesis="adjust weights",
+                rationale="test repeated mechanism",
+                expected_effect="quality improves",
+                files_or_area=["value.txt"],
+                falsification_condition="quality unchanged",
+                mechanism_key="weight-tuning",
+            )
+            evaluation = EvaluationResult(
+                metrics={"quality": 0.0, "regressions": 0.0},
+                checks={"tests": True},
+            )
+            decision = {
+                "accepted": False,
+                "primary_value": 0.0,
+                "champion_value": 0.0,
+                "delta": 0.0,
+                "predicates": {},
+                "reasons": ["PRIMARY_NOT_IMPROVED"],
+            }
+            store.update_experiment(
+                experiment_id,
+                hypothesis_json=hypothesis.model_dump_json(),
+                candidate_snapshot=campaign["champion_snapshot"],
+                evaluation_json=evaluation.model_dump_json(),
+                dev_decision_json=json.dumps(decision),
+                decision_json=json.dumps(decision),
+                failure_analysis_json=json.dumps(
+                    {"capsules": [capsule.model_dump(mode="json")]} if ordinal == 1 else {"capsules": []}
+                ),
+            )
+            store.finish_attempt(
+                attempt_id, experiment_id, status="REJECTED", scientific=True, improved=False
+            )
+
+        campaign = store.campaign()
+        next_experiment_id, _ = store.create_attempt(campaign["champion_snapshot"])
+        proposal_task = engine._task_context("propose", next_experiment_id)
+        state = proposal_task["research_state"]
+        assert state["planning_mode"] == "reframe"
+        assert "weight-tuning" in state["stagnant_mechanisms"]
+        assert state["recent_failure_capsules"][0]["likely_mechanism"] == capsule.likely_mechanism
+        assert proposal_task["history"][0]["failure_capsules"][0]["general_rule"] == capsule.general_rule
+
+        def candidate(candidate_id: str, mechanism: str) -> HypothesisCandidate:
+            return HypothesisCandidate(
+                candidate_id=candidate_id,
+                hypothesis=Hypothesis(
+                    hypothesis=f"test {mechanism}", rationale="prior failure evidence",
+                    expected_effect="quality improves", files_or_area=["value.txt"],
+                    falsification_condition="quality unchanged", mechanism_key=mechanism,
+                    prior_experiment_refs=[2], novelty_rationale="same DEV failure rejects weight tuning",
+                ),
+                evidence_refs=["exp:2"], suspected_failure_mode="stale constraint after enrichment",
+                predicted_observable="quality", discriminating_test="conflicting evidence uses resolved value",
+                scope_eligibility=True, estimated_agent_calls=1, estimated_evaluator_calls=1,
+                rationale="test a distinct mechanism", uncertainty="synthetic integration fixture",
+            )
+
+        selected = select_candidate(
+            HypothesisPortfolio(candidates=[
+                candidate("weights-again", "weight-tuning"),
+                candidate("reconcile-first", "evidence-reconciliation"),
+            ]),
+            spec=engine.spec,
+            state=ResearchState.model_validate(engine._refresh_research_state()),
+            experiments=store.experiments(),
+            experiment_ordinal=3,
+            action_id=f"exp:{next_experiment_id}:propose",
+        )
+        assert selected.selected_candidate_id == "reconcile-first"
+        rejected = next(item for item in selected.decisions if item.candidate_id == "weights-again")
+        assert "STAGNANT_DEV_MECHANISM_CHANGE_FAMILY" in rejected.rejection_reasons
+    finally:
+        store.close()
