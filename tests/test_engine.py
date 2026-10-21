@@ -1804,3 +1804,42 @@ def test_failure_capsule_and_repeated_dev_failure_reach_different_next_hypothesi
         assert "STAGNANT_DEV_MECHANISM_CHANGE_FAMILY" in rejected.rejection_reasons
     finally:
         store.close()
+
+
+
+def test_api_preflight_rejects_unsupported_sklearn_before_dev_budget(tmp_path: Path, monkeypatch):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.spec.editable_scope.append("src/model.py")
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        file = engine.workspace.workspace / "src" / "model.py"
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(
+            "from sklearn.preprocessing import OneHotEncoder\n"
+            "encoder = OneHotEncoder(sparse=False)\n",
+            encoding="utf-8",
+        )
+        snapshot = engine.workspace.snapshot("candidate using removed encoder kwarg")
+        store.update_experiment(experiment_id, candidate_snapshot=snapshot)
+        store.set_stage(attempt_id, "VERIFY")
+        before = store.campaign()["evaluator_calls"]
+
+        monkeypatch.setattr(
+            engine_module, "python_api_compatibility_errors",
+            lambda workspace, changed_paths, *, evaluator_command: [
+                "src/model.py: OneHotEncoder(sparse=...) unsupported"
+            ],
+        )
+        engine._stage_verify(attempt_id, experiment_id)
+        assert store.attempt(attempt_id)["stage"] == "REJECT"
+        assert store.experiment(experiment_id)["failure_category"] == "IMPLEMENTATION_BLOCKED"
+        assert "OneHotEncoder" in store.experiment(experiment_id)["lesson"]
+        assert store.campaign()["evaluator_calls"] == before
+        decision = json.loads(store.experiment(experiment_id)["decision_json"])
+        assert "CANDIDATE_PREFLIGHT_FAILED" in decision["reasons"]
+        assert decision["predicates"]["candidate_python_api_compatibility"] is False
+    finally:
+        store.close()
