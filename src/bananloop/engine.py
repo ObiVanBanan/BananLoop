@@ -11,6 +11,7 @@ from typing import Any, Callable
 from pydantic import ValidationError
 
 from .agents import AgentAdapter, AgentError, CodexAdapter, CommandAgentAdapter, PiAdapter
+from .candidate_preflight import python_syntax_errors
 from .budget import deadline_reached, pre_action_stop
 from .artifacts import retain_artifacts
 from .contracts import (
@@ -1315,6 +1316,30 @@ class Engine:
                 self.store.set_stage(attempt_id, "EVALUATE")
         else:
             self.store.set_stage(attempt_id, "EVALUATE")
+        if self.store.attempt(attempt_id)["stage"] == "EVALUATE":
+            syntax_errors = python_syntax_errors(self.workspace.workspace, changed)
+            if syntax_errors:
+                decision = {
+                    "accepted": False,
+                    "primary_value": None,
+                    "champion_value": None,
+                    "delta": None,
+                    "predicates": {"candidate_python_syntax": False},
+                    "reasons": ["CANDIDATE_PREFLIGHT_FAILED"],
+                }
+                self.store.update_experiment(
+                    experiment_id,
+                    decision_json=json.dumps(decision),
+                    failure_category="IMPLEMENTATION_BLOCKED",
+                    lesson="Python candidate syntax preflight: " + "; ".join(syntax_errors)[:800],
+                )
+                self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
+                self.store.event(
+                    "CANDIDATE_PREFLIGHT_FAILED",
+                    {"experiment_id": experiment_id, "errors": syntax_errors[:8]},
+                )
+                self.store.conn.commit()
+                self.store.set_stage(attempt_id, "REJECT")
         self._checkpoint(self.store.attempt(attempt_id)["stage"])
 
     def _stage_evaluate(self, attempt_id: int, experiment_id: int) -> None:
