@@ -147,6 +147,10 @@ def candidate_rejection_reasons(
 ) -> list[str]:
     reasons: list[str] = []
     hypothesis = candidate.hypothesis
+    # Only frozen DEV evidence is used to blacklist a stagnant mechanism;
+    # validation and holdout results must never guide adaptive proposals.
+    if hypothesis.mechanism_key.casefold().strip() in state.stagnant_mechanisms:
+        reasons.append("STAGNANT_DEV_MECHANISM_CHANGE_FAMILY")
     if not candidate.scope_eligibility:
         reasons.append("AGENT_SCOPE_INELIGIBLE")
     scopes = spec.editable_scope or ["**"]
@@ -619,6 +623,52 @@ def summarize_dev_failures(
     return summaries, evidence
 
 
+def stagnant_dev_mechanisms(
+    spec: CampaignSpec,
+    experiments: list[dict[str, Any]],
+    *,
+    tolerance: float = 1e-6,
+) -> list[str]:
+    """Find mechanisms whose last two scientific DEV trials have identical evidence.
+
+    Compare only the DEV decision and agent-allowlisted DEV aggregate measurements.
+    Do not inspect validation/holdout outcomes, status rejection reasons, or case rows.
+    This is a conservative stagnation signal, not proof of a causal failure.
+    """
+    observations: dict[str, list[tuple[str, float, dict[str, float]]]] = {}
+    for row in experiments:
+        if (attempt_bucket(row) != "scientific_trials"
+                or not row.get("hypothesis_json") or not row.get("evaluation_json")):
+            continue
+        mechanism = str(json.loads(row["hypothesis_json"]).get("mechanism_key") or "").strip().casefold()
+        decision = agent_decision_view(spec, _dev_decision_from_row(row)) or {}
+        delta = decision.get("delta")
+        if not mechanism or not isinstance(delta, (int, float)) or not math.isfinite(delta):
+            continue
+        observations.setdefault(mechanism, []).append((
+            classify_dev_outcome(spec, row),
+            float(delta),
+            _visible_numbers(spec, row["evaluation_json"]),
+        ))
+
+    stagnant: list[str] = []
+    for mechanism, trials in observations.items():
+        if len(trials) < 2:
+            continue
+        before, after = trials[-2:]
+        if before[0] != after[0] or not math.isclose(
+            before[1], after[1], rel_tol=0.0, abs_tol=tolerance,
+        ):
+            continue
+        prior_metrics, current_metrics = before[2], after[2]
+        if prior_metrics.keys() != current_metrics.keys():
+            continue
+        if all(math.isclose(prior_metrics[key], current_metrics[key],
+                            rel_tol=0.0, abs_tol=tolerance) for key in prior_metrics):
+            stagnant.append(mechanism)
+    return sorted(stagnant)[:16]
+
+
 def build_history(
     spec: CampaignSpec,
     experiments: list[dict[str, Any]],
@@ -725,11 +775,18 @@ def build_research_state(
         except (KeyError, ValueError, TypeError):
             continue
     dev_lessons = [lesson for row in experiments if (lesson := derive_dev_lesson(row, spec)) is not None]
+    stagnant = stagnant_dev_mechanisms(spec, experiments)
+    latest_mechanism = next((
+        str(json.loads(row["hypothesis_json"]).get("mechanism_key") or "").strip().casefold()
+        for row in reversed(experiments)
+        if attempt_bucket(row) == "scientific_trials" and row.get("hypothesis_json")
+    ), "")
     return ResearchState(
-        planning_mode=planning_mode(
+        planning_mode=("reframe" if latest_mechanism in stagnant else planning_mode(
             dev_non_improve_streak,
             spec.budget.plateau_experiments,
-        ),
+        )),
+        stagnant_mechanisms=stagnant,
         dev_non_improve_streak=dev_non_improve_streak,
         failure_counts=dict(sorted(failure_counts.items())),
         mechanisms=[
