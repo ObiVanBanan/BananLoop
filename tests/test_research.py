@@ -20,6 +20,7 @@ from bananloop.research import (
     build_research_state,
     capsule_evidence_ref,
     classify_dev_outcome,
+    derive_dev_lesson,
     planning_mode,
     redundancy_reason,
     normalize_portfolio,
@@ -683,3 +684,101 @@ def test_stagnation_recognizes_small_bidirectional_dev_drift_without_leakage():
     assert "SHOULD_NOT_BE_VISIBLE" not in visible
     assert "secret" not in visible
     assert "holdout_key" not in visible
+
+
+
+def test_reflection_memory_uses_generalized_dev_capsules_to_suggest_next_test():
+    s = spec(agent_visible_metrics=["quality"])
+    capsule = FailureCapsule(
+        title="ranking score ordering", failure_class="RANK_INVERSION",
+        observation="aggregate public DEV ranks worsen",
+        likely_mechanism="feature representation obscures positive ordering",
+        general_rule="compare score ordering rather than the decision cutoff",
+        suggested_regression="compare public DEV average precision on identical frozen inputs",
+        confidence=0.4,
+    )
+    row = {
+        "ordinal": 1, "status": "REJECTED",
+        "hypothesis_json": json.dumps({
+            "mechanism_key": "threshold-tuning", "mechanism_family": "threshold",
+            "falsification_condition": "ranking metric does not change",
+        }),
+        "evaluation_json": json.dumps({"metrics": {"quality": 0.6}}),
+        "dev_decision_json": json.dumps({
+            "accepted": False, "delta": 0,
+            "reasons": ["PRIMARY_NOT_IMPROVED"],
+        }),
+        "decision_json": json.dumps({
+            "validation": {"private_label": "SEALED_NOT_VISIBLE"},
+            "reasons": ["VALIDATION_REJECTED"],
+        }),
+        "failure_analysis_json": json.dumps({"capsules": [capsule.model_dump(mode="json")]}),
+    }
+    lesson = derive_dev_lesson(row, s)
+    assert lesson is not None
+    assert lesson.interpretation == "unknown"
+    assert "unverified causal proposal" in lesson.inference
+    assert "feature representation" in lesson.inference
+    assert lesson.next_discriminator == (
+        "compare public DEV average precision on identical frozen inputs"
+    )
+    state = build_research_state(s, campaign(), [row])
+    assert state.dev_lessons[0].next_discriminator == lesson.next_discriminator
+    assert "SEALED_NOT_VISIBLE" not in state.model_dump_json()
+
+
+def test_reframe_rejects_renamed_model_variants_in_same_failed_family():
+    s = spec(agent_visible_metrics=["quality"])
+    rows = []
+    for ordinal, key, delta in ((1, "weight-c1", -0.03), (2, "weight-c05", 0.0)):
+        rows.append({
+            "ordinal": ordinal,
+            "status": "REJECTED",
+            "hypothesis_json": json.dumps({
+                "mechanism_key": key,
+                "mechanism_family": "linear-weighting",
+            }),
+            "evaluation_json": json.dumps({"metrics": {"quality": 0.7 + delta}}),
+            "dev_decision_json": json.dumps({
+                "accepted": False, "delta": delta,
+                "reasons": ["PRIMARY_NOT_IMPROVED"],
+            }),
+            "decision_json": json.dumps({
+                "accepted": False, "reasons": ["PRIMARY_NOT_IMPROVED"],
+            }),
+        })
+    state = build_research_state(
+        s, campaign(experiment_count=2, attempt_count=2), rows,
+    )
+    assert state.planning_mode == "reframe"
+    assert state.failed_dev_families == ["linear-weighting"]
+    repeated = _portfolio_candidate(
+        "weight-c01", "weight-c01", evidence_refs=["exp:2"],
+        hypothesis=Hypothesis(
+            hypothesis="retune linear weighting", rationale="try another C",
+            expected_effect="higher quality", files_or_area=["src"],
+            falsification_condition="no quality delta", mechanism_key="weight-c01",
+            mechanism_family="linear-weighting",
+            prior_experiment_refs=[1, 2],
+            novelty_rationale="another regularization strength",
+        ),
+    )
+    distinct = _portfolio_candidate(
+        "nonlinear-tree", "nonlinear-tree", evidence_refs=["exp:2"],
+        hypothesis=Hypothesis(
+            hypothesis="model nonlinear interactions", rationale="prior linear attempts failed",
+            expected_effect="higher quality", files_or_area=["src"],
+            falsification_condition="no DEV PR-AUC delta",
+            mechanism_key="nonlinear-tree", mechanism_family="nonlinear-interactions",
+            prior_experiment_refs=[1, 2],
+            novelty_rationale="different score-generation mechanism",
+        ),
+    )
+    decision = select_candidate(
+        HypothesisPortfolio(candidates=[repeated, distinct]),
+        spec=s, state=state, experiments=rows,
+        experiment_ordinal=3, action_id="exp:3:propose",
+    )
+    assert decision.selected_candidate_id == "nonlinear-tree"
+    blocked = next(item for item in decision.decisions if item.candidate_id == "weight-c01")
+    assert "REFRAME_REUSES_FAILED_DEV_FAMILY" in blocked.rejection_reasons
