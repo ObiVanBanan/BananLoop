@@ -130,6 +130,13 @@ class WorkspaceManager:
         normalized = path.replace("\\", "/")
         for pattern in patterns:
             pattern = pattern.replace("\\", "/")
+            # A trailing slash denotes a directory, not a filename glob.
+            # Use a component boundary so "src/foo/" never matches "src/foobar".
+            if pattern.endswith("/"):
+                prefix = pattern.rstrip("/")
+                if prefix and (normalized == prefix or normalized.startswith(prefix + "/")):
+                    return True
+                continue
             if pattern == "**" or fnmatch.fnmatch(normalized, pattern):
                 return True
             if pattern.endswith("/**"):
