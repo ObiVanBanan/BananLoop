@@ -861,6 +861,15 @@ class Engine:
                 "legacy_fallback": "A single existing Hypothesis JSON object remains valid.",
             },
             "planning_requirements": {
+                "failure_reflection": (
+                    "Review prior DEV failure capsules, DEV experiment evidence, and falsification tests. "
+                    "Explain which observation supports the next causal theory; do not memorize public DEV examples. "
+                    "Do not infer or request validation/holdout examples, labels, or measurements."
+                ),
+                "stagnation": (
+                    "If research_state.stagnant_mechanisms contains a mechanism, change its mechanism family. "
+                    "Those mechanisms repeated the same aggregate frozen DEV outcome; a renamed retry is not a new test."
+                ),
                 "exploit": "build on the strongest DEV-supported mechanism without duplicating prior work",
                 "explore": "test a materially different mechanism family from recent failed attempts",
                 "reframe": "challenge the current framing and choose a new mechanism family before plateau",
@@ -1477,6 +1486,9 @@ class Engine:
             "may_use_exact_expected_answers_for_diagnosis": True,
             "do_not_copy_case_specific_answers_into_capsules": True,
             "prefer_invariants_and_provenance": True,
+            "explain_failed_hypothesis_against_dev_evidence": True,
+            "suggest_a_discriminating_regression_test": True,
+            "do_not_infer_causes_from_aggregate_scores_alone": True,
         }
         return task
 
@@ -1570,7 +1582,7 @@ class Engine:
                 )
         if changed_metrics:
             self._progress("metrics: " + "; ".join(changed_metrics[:8]))
-        if candidate.failure_signals:
+        if candidate.failure_signals or candidate.failure_examples:
             # Failure analysis is DEV-only and optional. Never consume validation
             # or holdout evidence for adaptive research memory.
             stop_reason = pre_action_stop(
@@ -1604,7 +1616,7 @@ class Engine:
         exp = self.store.experiment(experiment_id)
         candidate = EvaluationResult.model_validate_json(exp["evaluation_json"])
         decision = json.loads(exp["dev_decision_json"])
-        if not candidate.failure_signals:
+        if not candidate.failure_signals and not candidate.failure_examples:
             self._route_after_dev_analysis(attempt_id, decision)
             return
 
