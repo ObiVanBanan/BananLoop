@@ -643,6 +643,36 @@ def parser() -> argparse.ArgumentParser:
     )
     start.set_defaults(func=cmd_start)
 
+    prepare = sub.add_parser(
+        "prepare",
+        help="prepare a repository, verify its evaluator, and stop before experiments",
+    )
+    prepare.add_argument("--repo", default=".")
+    prepare.add_argument("--goal", required=True)
+    prepare.add_argument("--state-dir")
+    prepare.add_argument("--agent-profiles", help="optional agent settings TOML")
+    prepare.add_argument("--request-id", help="idempotency key for preparation")
+    prepare.set_defaults(
+        func=cmd_start,
+        prepare_only=True,
+        agent=None,
+        agent_cmd=None,
+        model=None,
+        provider=None,
+        thinking=None,
+        codex_arg=None,
+        pi_arg=None,
+        bootstrap_timeout_seconds=1200,
+        agent_timeout_seconds=None,
+        max_experiments=4,
+        max_attempts=7,
+        max_agent_calls=18,
+        max_evaluator_calls=16,
+        deadline_seconds=14400,
+        plateau=3,
+        allow_dirty=False,
+    )
+
     init = sub.add_parser("init", help="approve and persist a campaign specification")
     init.add_argument("--repo", default=".")
     init.add_argument("--state-dir")
