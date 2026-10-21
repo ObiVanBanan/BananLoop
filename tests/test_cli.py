@@ -213,3 +213,11 @@ def test_status_of_reserved_campaign_does_not_create_campaign_db(tmp_path, capsy
     assert payload["campaign_id"] == entry.campaign_id
     assert payload["initialized"] is False
     assert not paths.db.exists()
+
+
+def test_prepare_alias_enables_preflight_without_running_experiments():
+    args = parser().parse_args(["prepare", "--repo", ".", "--goal", "Improve PR-AUC"])
+    assert args.prepare_only is True
+    assert args.goal == "Improve PR-AUC"
+    assert args.max_experiments == 4
+    assert args.agent is None
