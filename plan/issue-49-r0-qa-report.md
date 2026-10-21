@@ -15,17 +15,19 @@
 | API preflight edge cases | `tests/test_candidate_preflight.py`; includes aliased `OneHotEncoder`, wrapper runtime safe-skip, Windows `python.exe`, and `py.exe -3.12` selector preservation. | Passed in full suite |
 | Focused research/preflight suite | `python -m pytest tests/test_candidate_preflight.py tests/test_research.py -q --basetemp .pytest-issue49-edge-cc33021`. | 27 passed, 1 skipped |
 
-The full run was performed after the runtime probe changes and before this report was added. The separate CI configuration commit `cc3302185bff88cbecf562d59ea1bf42d2d23ac9` sets matrix `fail-fast: false`, so one startup failure no longer hides the independent job outcomes.
+The full run was performed after the runtime probe changes; the report-only edits do not affect tested code. The separate CI configuration commit `cc3302185bff88cbecf562d59ea1bf42d2d23ac9` sets matrix `fail-fast: false`, so one startup failure no longer hides the independent job outcomes.
 
 ## GitHub Actions
 
-Run [39647659677](https://github.com/ObiVanBanan/BananLoop/actions/runs/39647659677), revision `cc3302185bff88cbecf562d59ea1bf42d2d23ac9`, reports all four matrix jobs failed. The GitHub Actions API shows each job completed in about two seconds with `runner_id=0`, an empty `runner_name`, and `steps=[]`. The failure occurred before runner assignment and before checkout/setup/pytest. Earlier attempts showed the same pattern. Log downloads return `BlobNotFound`.
+Latest run [39649047084](https://github.com/ObiVanBanan/BananLoop/actions/runs/39649047084), revision `ef3d5193015ac22bd6323352452085eac003ddb4`, reports all four matrix jobs failed. The GitHub Actions API shows each job completed in about two seconds with `runner_id=0`, an empty `runner_name`, and `steps=[]`. The failure occurred before runner assignment and before checkout/setup/pytest. The prior fail-fast-disabled run [39647659677](https://github.com/ObiVanBanan/BananLoop/actions/runs/39647659677) showed the same pattern. Log downloads return `BlobNotFound`.
 
 **Conclusion:** the Linux/Windows CI gate is not green and cannot be counted as executed. Available evidence points to hosted-runner startup failure rather than a test failure; a runner-assigned rerun is required to establish CI results.
 
 ## R0 requirements still open
 
-- No Bank Marketing campaign was run, so there are no genuine experiment receipts, baseline metrics, or a complete DEV → failure capsule → different hypothesis family → DEV chain with retry/resume evidence. The PR branch currently contains no Bank Marketing fixture. Per the operator's standing preference, campaign execution remains separate from preparation.
+- Existing tracked QA reports document real Bank Marketing campaigns and baseline metrics; campaign execution was **not** performed in this turn. `qa/real-project-autonomous-qa-2026-10-21.md` reports one campaign with five scientific experiments and another with four total experiments (their scientific/operational breakdown is not given). `qa/failure-to-hypothesis-current-project-2026-10-21.md` reports a two-experiment diagnostic campaign with a DEV failure-capsule → distinct hypothesis family → DEV test sequence. The first related run had two scientific experiments before an implementation-blocked third attempt.
+- The underlying campaign databases/receipts and isolated Bank Marketing snapshots cited by those reports are not present in this worktree, so their experiment counts and lineage cannot be independently replayed here. No tracked report documents a Bank Marketing retry/resume of that chain. Therefore the full R0 end-to-end acceptance remains unverified despite the historical report evidence.
+- Campaign execution was not performed in this turn; the operator's standing preference keeps campaign execution separate from preparation.
 - No cross-platform GitHub Actions run has reached a runner; local Windows results do not substitute for the requested Linux and hosted Windows matrix.
 - The final R0 QA decision and review of PR #47 must wait for those two evidence streams.
 
