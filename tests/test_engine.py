@@ -1843,3 +1843,43 @@ def test_api_preflight_rejects_unsupported_sklearn_before_dev_budget(tmp_path: P
         assert decision["predicates"]["candidate_python_api_compatibility"] is False
     finally:
         store.close()
+
+
+
+def test_pr_auc_analyzer_task_gets_target_metric_guidance_without_hidden_evidence(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        engine.spec.primary_metric = MetricSpec(
+            name="pr_auc", direction=Direction.MAXIMIZE,
+            target=1.0, min_improvement=0.01,
+        )
+        proposer = engine._task_context("propose", 991)
+        guidance = proposer["primary_metric_failure_guidance"]
+        assert guidance["kind"] == "ranking_average_precision"
+        assert guidance["threshold_invariant"] is True
+        assert proposer["research_state"]["dev_lessons"] == []
+        rendered = json.dumps(proposer, sort_keys=True)
+        assert "validation_command" not in rendered
+        assert "holdout_command" not in rendered
+
+        campaign = store.campaign()
+        experiment_id, _ = store.create_attempt(campaign["champion_snapshot"])
+        store.update_experiment(
+            experiment_id,
+            hypothesis_json=Hypothesis(
+                hypothesis="change score ranking", rationale="DEV ranking",
+                expected_effect="higher pr_auc", files_or_area=["value.txt"],
+                falsification_condition="no AP change",
+                mechanism_key="ranking-probe",
+            ).model_dump_json(),
+        )
+        candidate = EvaluationResult(metrics={"pr_auc": 0.7}, checks={})
+        task = engine._dev_failure_analysis_task(experiment_id, candidate)
+        assert task["analysis_requirements"]["primary_metric_semantics"]["kind"] == (
+            "ranking_average_precision"
+        )
+        assert task["dev_failure_examples"] == []
+    finally:
+        store.close()
