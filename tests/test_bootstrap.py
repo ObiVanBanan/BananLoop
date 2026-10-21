@@ -627,3 +627,171 @@ def test_noisy_readiness_diagnostics_reach_bounded_repair_and_exhaust_without_ca
     assert first["calibration"]["noise_gate_passed"] is False
     assert "readiness_receipt" in record["bootstrap_attempts"][1]["request"]["repair"]
     assert not paths.db.exists()
+
+
+def test_agent_smoke_timeout_is_core_owned_not_user_input():
+    from bananloop.bootstrap import BootstrapPlan, _agent_smoke_timeout
+
+    payload = _bootstrap_payload(
+        status="needs_input",
+        needs_input=[
+            "Нужен успешно завершившийся запуск smoke-команды; "
+            "текущий запуск не вернул результат за 30 секунд."
+        ],
+        summary="Smoke вызов не завершился в отведённые 30 секунд.",
+    )
+    payload["project_context"] = "trusted existing adapter with fixed DEV sampling"
+    payload["evaluation_command"] = [sys.executable, ".bananloop_eval/evaluator.py"]
+    payload["smoke_command"] = [sys.executable, ".bananloop_eval/evaluator.py", "--smoke"]
+    plan = BootstrapPlan.model_validate(payload)
+    assert _agent_smoke_timeout(plan)
+    promoted = BootstrapPlan.model_validate({
+        **plan.model_dump(mode="json"), "status": "ready", "needs_input": [],
+    })
+    assert promoted.status == "ready"
+    assert promoted.smoke_command == payload["smoke_command"]
+
+
+def test_agent_smoke_timeout_cannot_hide_missing_credentials():
+    from bananloop.bootstrap import BootstrapPlan, _agent_smoke_timeout
+
+    payload = _bootstrap_payload(
+        status="needs_input",
+        needs_input=["Smoke timed out; provide DEEPSEEK_API_KEY for the evaluator."],
+        summary="Smoke timeout",
+    )
+    payload["project_context"] = "existing adapter"
+    payload["evaluation_command"] = [sys.executable, "evaluator.py"]
+    payload["smoke_command"] = [sys.executable, "evaluator.py", "--smoke"]
+    assert not _agent_smoke_timeout(BootstrapPlan.model_validate(payload))
+
+
+def test_bootstrap_delegates_agent_smoke_timeout_to_core(tmp_path: Path, monkeypatch):
+    import bananloop.bootstrap as bootstrap_module
+
+    repo, source_base = make_repo(tmp_path)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "delegated-smoke")
+    invocations = []
+
+    class Agent:
+        def probe(self):
+            return {"available": True, "kind": "fixture", "version": "1"}
+
+        def normalize_result(self, task, result):
+            return result
+
+        def execute(self, task, workspace, timeout):
+            invocations.append(task)
+            evaluator = workspace / ".bananloop_eval" / "evaluator.py"
+            evaluator.parent.mkdir(parents=True, exist_ok=True)
+            evaluator.write_text(
+                "import json\n"
+                f"print(json.dumps({{'status':'ok','metrics':{{'quality':0.2}},'protocol_sha256':'{PROTOCOL_SHA256}'}}))\n",
+                encoding="utf-8",
+            )
+            payload = _bootstrap_payload(
+                status="needs_input",
+                needs_input=["Smoke not completed: timed out after 30 seconds."],
+                summary="Smoke timeout, environment otherwise ready.",
+            )
+            payload["project_context"] = "existing evaluator"
+            payload["evaluation_command"] = [sys.executable, ".bananloop_eval/evaluator.py"]
+            payload["smoke_command"] = [sys.executable, ".bananloop_eval/evaluator.py"]
+            payload["primary_metric"] = _bootstrap_payload(
+                status="ready", needs_input=[], summary="valid metric",
+            )["primary_metric"]
+            payload["editable_scope"] = ["value.txt"]
+            payload["agent_visible_metrics"] = ["quality"]
+            return payload
+
+    monkeypatch.setattr(bootstrap_module, "_agent", lambda _config: Agent())
+    plan, spec = bootstrap_campaign(
+        repo=repo,
+        goal="improve fixture",
+        paths=paths,
+        agent_config=AgentConfig(kind="codex"),
+        max_experiments=1,
+        max_attempts=1,
+        max_agent_calls=1,
+        max_evaluator_calls=1,
+        deadline_seconds=120,
+    )
+    assert plan.status == "ready"
+    assert spec is not None
+    assert len(invocations) == 1
+    record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
+    assert record["bootstrap_attempts"][0]["agent_smoke_timeout_delegated_to_core"]
+    assert record["bootstrap_attempts"][0]["readiness"]["status"] == "PASSED"
+    assert record["bootstrap_options"]["max_experiments"] == 1
+    assert record["operator_agent_config"]["kind"] == "codex"
+    assert git(["rev-parse", "HEAD"], repo) == source_base
+
+
+def test_core_timeout_resumes_frozen_smoke_without_new_agent_call(tmp_path: Path, monkeypatch):
+    import bananloop.bootstrap as bootstrap_module
+    from bananloop.readiness import ReadinessError
+
+    repo, _ = make_repo(tmp_path)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "core-timeout-state")
+    calls = []
+    original_readiness = bootstrap_module.run_bootstrap_readiness
+    readiness_calls = []
+
+    class Agent:
+        def probe(self):
+            return {"available": True, "kind": "fixture", "version": "1"}
+
+        def normalize_result(self, task, result):
+            return result
+
+        def execute(self, task, workspace, timeout):
+            calls.append(task)
+            evaluator = workspace / ".bananloop_eval" / "evaluator.py"
+            evaluator.parent.mkdir(parents=True, exist_ok=True)
+            evaluator.write_text(
+                "import json\n"
+                f"print(json.dumps({{'status':'ok','metrics':{{'quality':0.2}},'protocol_sha256':'{PROTOCOL_SHA256}'}}))\n",
+                encoding="utf-8",
+            )
+            return _bootstrap_payload(status="ready", needs_input=[], summary="ready adapter")
+
+    def one_timeout_then_real(*, plan, workspace, snapshot, state_root, attempt):
+        readiness_calls.append((snapshot, attempt))
+        if len(readiness_calls) == 1:
+            raise ReadinessError("process timed out after 300s", {
+                "status": "FAILED", "error": "process timed out after 300s",
+            })
+        return original_readiness(
+            plan=plan, workspace=workspace, snapshot=snapshot,
+            state_root=state_root, attempt=attempt,
+        )
+
+    monkeypatch.setattr(bootstrap_module, "_agent", lambda _config: Agent())
+    monkeypatch.setattr(bootstrap_module, "run_bootstrap_readiness", one_timeout_then_real)
+    opts = dict(
+        repo=repo,
+        goal="improve fixture",
+        paths=paths,
+        agent_config=AgentConfig(kind="codex"),
+        max_experiments=1, max_attempts=1, max_agent_calls=1,
+        max_evaluator_calls=1, deadline_seconds=120,
+    )
+    paused, spec = bootstrap_campaign(**opts)
+    assert paused.status == "needs_input"
+    assert spec is None
+    first_record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
+    assert first_record["plan"]["status"] == "ready"
+    first_snapshot = first_record["bootstrap_snapshot"]
+    assert not paths.db.exists()
+
+    ready, spec = bootstrap_campaign(**opts)
+    assert ready.status == "ready"
+    assert spec is not None
+    assert len(calls) == 1
+    assert len(readiness_calls) == 2
+    assert readiness_calls[0][0] == readiness_calls[1][0] == first_snapshot
+    assert readiness_calls[0][1] == 1
+    assert readiness_calls[1][1] == 2
+    record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
+    assert record["bootstrap_attempts"][0]["readiness"]["status"] == "FAILED"
+    assert record["bootstrap_attempts"][1]["readiness"]["status"] == "PASSED"

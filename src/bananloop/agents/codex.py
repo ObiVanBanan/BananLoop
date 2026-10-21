@@ -21,6 +21,7 @@ BOOTSTRAP_SCHEMA = {
         "evaluation_command": {"type": "array", "items": {"type": "string"}},
         "smoke_command": {"type": "array", "items": {"type": "string"}},
         "validation_command": {"type": "array", "items": {"type": "string"}},
+        "regression_command": {"type": "array", "items": {"type": "string"}},
         "holdout_command": {"type": "array", "items": {"type": "string"}},
         "primary_metric": {
             "type": "object",
@@ -95,7 +96,7 @@ BOOTSTRAP_SCHEMA = {
     },
     "required": [
         "status", "summary", "project_context", "needs_input",
-        "evaluation_command", "smoke_command", "validation_command", "holdout_command",
+        "evaluation_command", "smoke_command", "validation_command", "regression_command", "holdout_command",
         "primary_metric", "guardrails", "non_regression", "mandatory_checks",
         "editable_scope", "protected_paths", "agent_visible_metrics",
         "agent_visible_diagnostics", "paired_comparison", "signal_sanity", "evaluator_timeout_seconds"
@@ -257,9 +258,17 @@ class CodexAdapter(AgentAdapter):
                 "The evaluator must compare the same frozen inputs/settings for baseline and candidates, emit the "
                 "BananLoop JSON evaluation contract, use stable case IDs/input fingerprints, and avoid per-evaluation "
                 "LLM planning or other avoidable nondeterminism. For stochastic generation, freeze cases and seeds and "
-                "use paired case-level measurements. Do not invent missing reference data or credentials: when an "
+                "use paired case-level measurements. Put ordinary test-suite commands in regression_command; "
+                "validation_command is an additional BananLoop JSON evaluator and must emit the evaluation contract. "
+                "Do not use pytest as validation_command. Do not invent missing reference data or credentials: when an "
                 "essential input is absent, return status=needs_input with a short exact list of what the operator must "
-                "provide. Keep evaluator/scoring files separate from editable production scope. project_context must "
+                "provide. Do not infer that a runtime service is unavailable from a connectivity probe made inside "
+                "your own sandbox: local services such as Qdrant may be reachable by the BananLoop core evaluator "
+                "but intentionally blocked from the bootstrap agent. When the repository already configures the "
+                "service and required credentials are present, return a ready plan and let the core-owned readiness "
+                "run determine whether the evaluator can reach it. Request operator input for service access only "
+                "when the core-owned readiness run itself fails and its diagnostics identify a missing external "
+                "prerequisite. Keep evaluator/scoring files separate from editable production scope. project_context must "
                 "summarize architecture, execution entrypoints, output path, and plausible improvement levers so later "
                 "proposers can act without rediscovering the project. If repair.validation_errors is present, "
                 "correct the prior plan to satisfy those schema requirements without asking the operator. "

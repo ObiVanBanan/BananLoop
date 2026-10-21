@@ -51,6 +51,64 @@ uv sync --extra test
 uv run pytest
 ```
 
+## Guided entry point and recovery (operator UX v1)
+
+Run from the repository you want to improve:
+
+```bash
+bananloop
+```
+
+An interactive terminal shows the active campaign, its status, and choices
+to **continue** or start a **new goal**. The terminal UI does not silently
+modify evaluation contracts. Expert commands remain available.
+
+To continue without reopening an interactive terminal or retyping a long goal:
+
+```bash
+bananloop continue
+# Or explicitly select a campaign:
+bananloop continue --campaign-id c-<id>
+```
+
+`continue` resolves the original campaign state using the project registry.
+For a paused bootstrap it restores the complete original goal, bootstrap
+configuration, agent profile and evaluator snapshot. It does **not** reserve a
+new campaign or require a new request ID. If the source HEAD changed, it refuses
+to recreate a campaign on an unrelated revision.
+
+When the **bootstrap agent** times out on a self-run smoke check but has already
+supplied a complete evaluation command, BananLoop delegates the real smoke
+verdict to the **core-owned readiness gate** (on the pinned snapshot). A core
+smoke timeout saves the receipt and snapshot; `bananloop continue` retries
+that frozen readiness stage **without invoking a fresh bootstrap agent**.
+Missing credentials, absent reference data and failed evaluation integrity
+checks are not converted into success.
+
+For a paused main campaign, completed actions are reused. Retrying a known
+FAILED action requires terminal confirmation. In automation, opt in explicitly:
+
+```bash
+bananloop continue --yes
+```
+
+This flag approves **re-execution**, not changes to the approved CampaignSpec,
+metrics, frozen evaluator, GOLD data or acceptance policy. An orphaned RUNNING
+action still requires `--retry-running-action` after verifying its original
+process is gone. Genuine missing prerequisites and protected protocol changes
+are still operator decisions.
+
+If recovery stops only because the hashed launch environment changed, an
+operator may opt in to `--accept-runtime-env-drift`. BananLoop still requires
+the Python executable and version, installed distributions, operating system,
+architecture, and resolved evaluator commands to match the frozen binding; in
+the current process only `PATH` may be present among tracked environment
+selectors. The immutable binding is retained, and each new evaluation receipt
+records the observed runtime fingerprint alongside it.
+
+This is a terminal and recovery MVP, **not** a general autonomous repair agent
+or a full-screen TUI. The long-form CLI is maintained for scripting.
+
 ## Autopilot MVP: repo + goal
 
 The shortest product path is intentionally goal-shaped:

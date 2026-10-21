@@ -200,6 +200,8 @@ class CampaignSpec(BaseModel):
     evaluator_timeout_seconds: int = Field(default=900, ge=1)
     validation_command: list[str] = Field(default_factory=list)
     validation_timeout_seconds: int | None = Field(default=None, ge=1)
+    regression_command: list[str] = Field(default_factory=list)
+    regression_timeout_seconds: int | None = Field(default=None, ge=1)
     holdout_command: list[str] = Field(default_factory=list)
     holdout_timeout_seconds: int | None = Field(default=None, ge=1)
     evaluation_assets: list[EvaluationAsset] = Field(default_factory=list)
@@ -245,16 +247,22 @@ class CampaignSpec(BaseModel):
             raise ValueError("signal sanity status and receipt digest must be set together")
         if self.validation_timeout_seconds is not None and not self.validation_command:
             raise ValueError("validation_timeout_seconds requires validation_command")
+        if self.regression_timeout_seconds is not None and not self.regression_command:
+            raise ValueError("regression_timeout_seconds requires regression_command")
         if self.holdout_timeout_seconds is not None and not self.holdout_command:
             raise ValueError("holdout_timeout_seconds requires holdout_command")
-        minimum_calls = 1 + int(bool(self.validation_command)) + int(bool(self.holdout_command))
+        minimum_calls = (
+            1 + int(bool(self.validation_command)) + int(bool(self.regression_command))
+            + int(bool(self.holdout_command))
+        )
         if self.budget.max_evaluator_calls < minimum_calls:
             raise ValueError(
                 "max_evaluator_calls is too small for baseline staged evaluation; "
                 f"need at least {minimum_calls}"
             )
         if self.budget.max_evaluation_units is not None:
-            if self.budget.max_evaluation_units < minimum_calls * self.budget.evaluation_units_per_call:
+            measured_calls = 1 + int(bool(self.validation_command)) + int(bool(self.holdout_command))
+            if self.budget.max_evaluation_units < measured_calls * self.budget.evaluation_units_per_call:
                 raise ValueError("evaluation work budget too small for baseline staged evaluation")
         return self
 
@@ -280,6 +288,11 @@ class CampaignSpec(BaseModel):
             data.pop("validation_command", None)
         if self.validation_timeout_seconds is None:
             data.pop("validation_timeout_seconds", None)
+        # Empty regression fields were absent from older campaign documents.
+        if not self.regression_command:
+            data.pop("regression_command", None)
+        if self.regression_timeout_seconds is None:
+            data.pop("regression_timeout_seconds", None)
         if not self.holdout_command:
             data.pop("holdout_command", None)
         if self.holdout_timeout_seconds is None:
@@ -305,6 +318,18 @@ class CampaignSpec(BaseModel):
             data.pop("forbidden_diff_patterns", None)
         payload = json.dumps(data, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode()).hexdigest()
+
+    def evaluator_binding_hash(self) -> str:
+        """Hash only the evaluator protocol; regression gates do not measure."""
+        if self.regression_command and not self.validation_command:
+            legacy = self.model_copy(update={
+                "validation_command": self.regression_command,
+                "validation_timeout_seconds": self.regression_timeout_seconds,
+                "regression_command": [],
+                "regression_timeout_seconds": None,
+            })
+            return legacy.approved_hash()
+        return self.approved_hash()
 
 
 class Hypothesis(BaseModel):

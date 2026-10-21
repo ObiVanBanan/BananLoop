@@ -121,7 +121,9 @@ class PiAdapter(AgentAdapter):
                 ".bananloop_eval/. Never modify production code, tests, reference assets, or user configuration. "
                 "Prefer an existing trustworthy evaluator; otherwise create a thin evaluator adapter. Freeze cases "
                 "and randomness where possible, avoid per-evaluation LLM planning, and use paired case-level "
-                "measurements for stochastic outputs. The core runs three A/A smoke measurements on one snapshot, "
+                "measurements for stochastic outputs. Put ordinary test-suite commands in regression_command; "
+                "validation_command is an additional BananLoop JSON evaluator and must emit the evaluation contract. "
+                "Do not use pytest as validation_command. The core runs three A/A smoke measurements on one snapshot, "
                 "requires stable case/input and protocol identity, and compares empirical noise with min_improvement; "
                 "emit a stable protocol_sha256 in every evaluation result. "
                 "Also include signal_sanity. Configure it only from defensible repository-backed positive and negative "
@@ -132,7 +134,7 @@ class PiAdapter(AgentAdapter):
                 "The core checks directed separation in every A/A smoke run. Do not invent missing references or "
                 "credentials; if essential inputs are missing, set status to needs_input and list exactly what the operator must provide. "
                 "Your final assistant message MUST be exactly one JSON object with keys: status, summary, "
-                "project_context, needs_input, evaluation_command, smoke_command, validation_command, holdout_command, "
+                "project_context, needs_input, evaluation_command, smoke_command, validation_command, regression_command, holdout_command, "
                 "primary_metric, guardrails, non_regression, mandatory_checks, editable_scope, protected_paths, "
                 "agent_visible_metrics, agent_visible_diagnostics, paired_comparison, signal_sanity, evaluator_timeout_seconds. "
                 "primary_metric must contain name, direction, target, min_improvement. paired_comparison must "
@@ -245,7 +247,7 @@ class PiAdapter(AgentAdapter):
                 '{"status":"ready","summary":"...","project_context":"...","needs_input":[],'
                 '"evaluation_command":["python",".bananloop_eval/evaluator.py"],'
                 '"smoke_command":["python",".bananloop_eval/evaluator.py","--smoke"],'
-                '"validation_command":[],"holdout_command":[],'
+                '"validation_command":[],"regression_command":[],"holdout_command":[],'
                 '"primary_metric":{"name":"quality","direction":"maximize","target":1.0,"min_improvement":0.01},'
                 '"guardrails":[],"non_regression":[],"mandatory_checks":[],"editable_scope":["**"],'
                 '"protected_paths":[".bananloop_eval/**"],"agent_visible_metrics":["quality"],'
