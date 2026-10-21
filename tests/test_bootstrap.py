@@ -359,6 +359,9 @@ def test_bootstrap_task_makes_cli_goal_authoritative(tmp_path: Path):
 
     assert task["goal"] == "improve similarity to reference images"
     assert task["requirements"]["goal_is_authoritative"] is True
+    assert task["requirements"]["signal_sanity"][
+        "configured_known_examples_require_per_case_primary_metric_receipts"
+    ] is True
     assert task["requirements"]["validation_only_policy_metrics_use_validation_prefix"] is True
     assert task["requirements"]["bare_policy_metrics_apply_to_current_evaluation_tier"] is True
     assert task["requirements"]["do_not_request_goal_file_when_goal_is_present"] is True

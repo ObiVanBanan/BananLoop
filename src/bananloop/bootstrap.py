@@ -252,6 +252,7 @@ def _bootstrap_task(
                 "never_invent_labels": True,
                 "mark_unavailable_with_reason_when_no_defensible_evidence": True,
                 "configured_metric_must_be_primary_metric": True,
+                "configured_known_examples_require_per_case_primary_metric_receipts": True,
             },
             "emit_bananloop_evaluation_contract": True,
             "do_not_invent_missing_reference_data": True,
