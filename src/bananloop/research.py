@@ -151,6 +151,9 @@ def candidate_rejection_reasons(
     # validation and holdout results must never guide adaptive proposals.
     if hypothesis.mechanism_key.casefold().strip() in state.stagnant_mechanisms:
         reasons.append("STAGNANT_DEV_MECHANISM_CHANGE_FAMILY")
+    family = (hypothesis.mechanism_family or hypothesis.mechanism_key).casefold().strip()
+    if state.planning_mode == "reframe" and family in state.failed_dev_families:
+        reasons.append("REFRAME_REUSES_FAILED_DEV_FAMILY")
     if not candidate.scope_eligibility:
         reasons.append("AGENT_SCOPE_INELIGIBLE")
     scopes = spec.editable_scope or ["**"]
@@ -306,16 +309,23 @@ def derive_dev_lesson(row: dict[str, Any], spec: CampaignSpec) -> DevResearchLes
     outcome = classify_dev_outcome(spec, row)
     interpretation = ("supported" if outcome in {"DEV_IMPROVEMENT", "DEV_PARTIAL_IMPROVEMENT"}
                       else "refuted" if outcome in {"DEV_REGRESSION", "DEV_GUARD_REJECT"} else "unknown")
-    decision = json.loads(row.get("dev_decision_json") or "{}")
+    decision = _dev_decision_from_row(row) or {}
     delta = decision.get("delta")
+    capsules = _failure_capsules_from_row(row)
+    # These are proposals from an LLM analyst, not established causal facts.
+    causal_inference = "; ".join(c.likely_mechanism for c in capsules[:2] if c.likely_mechanism)
+    discriminators = [c.suggested_regression for c in capsules[:2] if c.suggested_regression]
+    next_discriminator = "; ".join(discriminators) or hypothesis.get("falsification_condition", "")
     return DevResearchLesson(
         experiment_ordinal=int(row["ordinal"]), mechanism_key=hypothesis.get("mechanism_key", "unknown"),
         observation=f"DEV outcome {outcome}; primary delta {delta if delta is not None else 'unknown'}.",
         interpretation=interpretation,
-        inference=("The result is consistent with the stated mechanism." if interpretation == "supported" else
-                   "The result weighs against this mechanism under the recorded DEV protocol." if interpretation == "refuted" else
-                   "Available DEV evidence does not determine this mechanism."),
-        next_discriminator=hypothesis.get("falsification_condition", ""),
+        inference=(
+            ("DEV analyst's unverified causal proposal: " + causal_inference)
+            if causal_inference else
+            "DEV score alone cannot establish the cause of the observed change."
+        ),
+        next_discriminator=next_discriminator,
         evidence_refs=[f"exp:{row['ordinal']}"],
     )
 
@@ -794,6 +804,18 @@ def build_research_state(
             continue
     dev_lessons = [lesson for row in experiments if (lesson := derive_dev_lesson(row, spec)) is not None]
     stagnant = stagnant_dev_mechanisms(spec, experiments)
+    # The last unsuccessful DEV trials constrain the next reframe. Do not use
+    # validation rejection status as evidence that a DEV mechanism failed.
+    failed_families: list[str] = []
+    for row in experiments[-8:]:
+        if attempt_bucket(row) != "scientific_trials" or not row.get("hypothesis_json"):
+            continue
+        if classify_dev_outcome(spec, row) not in {"DEV_NO_EFFECT", "DEV_REGRESSION", "DEV_GUARD_REJECT"}:
+            continue
+        hypothesis = json.loads(row["hypothesis_json"])
+        family = str(hypothesis.get("mechanism_family") or hypothesis.get("mechanism_key") or "").strip().casefold()
+        if family and family not in failed_families:
+            failed_families.append(family)
     latest_mechanism = next((
         str(json.loads(row["hypothesis_json"]).get("mechanism_key") or "").strip().casefold()
         for row in reversed(experiments)
@@ -805,6 +827,7 @@ def build_research_state(
             spec.budget.plateau_experiments,
         )),
         stagnant_mechanisms=stagnant,
+        failed_dev_families=failed_families[-16:],
         dev_non_improve_streak=dev_non_improve_streak,
         failure_counts=dict(sorted(failure_counts.items())),
         mechanisms=[
