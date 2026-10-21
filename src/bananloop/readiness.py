@@ -49,7 +49,7 @@ def _staged_script_errors(plan: Any, workspace: Path) -> list[str]:
         if not command:
             continue
         executable = str(command[0]).replace("\\", "/").rsplit("/", 1)[-1].lower()
-        if not re.fullmatch(r"(?:pythonw?(?:[0-9]+(?:\\.[0-9]+)*)?(?:\\.exe)?|py(?:\\.exe)?)", executable):
+        if not re.fullmatch(r"(?:pythonw?(?:[0-9]+(?:\.[0-9]+)*)?(?:\.exe)?|py(?:\.exe)?)", executable):
             continue
         args = [str(token) for token in command[1:]]
         if "-m" in args or "-c" in args or "-" in args:
