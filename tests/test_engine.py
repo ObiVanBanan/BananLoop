@@ -845,11 +845,22 @@ def test_agent_history_and_research_state_use_only_dev_evidence(tmp_path: Path):
 
         task = engine._task_context("propose", 999)
         rendered_task = json.dumps(task).upper()
-        assert "VALIDATION_REJECTED" not in rendered_task
-        assert "INVALID_VALIDATION" not in rendered_task
-        assert "HOLDOUT" not in rendered_task
-        assert "validation_command" not in json.dumps(task)
-        assert "holdout_command" not in json.dumps(task)
+        # Explicit policy text may name hidden tiers to forbid access to
+        # them. Test the actual adaptive evidence rather than a word match
+        # against the complete instruction payload.
+        adaptive_evidence = json.dumps(
+            {
+                key: task[key]
+                for key in ("history", "research_state", "baseline", "champion")
+            },
+            sort_keys=True,
+        ).upper()
+        assert "VALIDATION_REJECTED" not in adaptive_evidence
+        assert "INVALID_VALIDATION" not in adaptive_evidence
+        assert "HOLDOUT" not in adaptive_evidence
+        assert "VALIDATION:" not in adaptive_evidence
+        assert "validation_command" not in task
+        assert "holdout_command" not in task
         assert task["research_state"]["planning_mode"] in {"exploit", "explore", "reframe"}
         assert "remaining_budget" in task["research_state"]
     finally:
