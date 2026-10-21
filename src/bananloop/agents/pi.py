@@ -152,8 +152,11 @@ class PiAdapter(AgentAdapter):
             instruction = (
                 "You are the proposer inside BananLoop. Inspect the repository and propose a portfolio of 2-3 "
                 "materially different, bounded, falsifiable hypotheses (maximum 4). Do not modify files during this role. "
-                "Use the supplied research_state, aggregate failure_signals, experiment_evidence, "
-                "and planning_mode. When failure_signals exist, choose one supplied signal_key as "
+                "Use the supplied research_state, aggregate failure_signals, generalized failure capsules, "
+                "stagnant_mechanisms, experiment_evidence, and planning_mode. When mechanisms stagnate "
+                "on repeated DEV outcomes, propose a materially different mechanism family instead of a renamed retry. "
+                "Ground the new hypothesis in observed DEV errors and separate observation from inference. "
+                "When failure_signals exist, choose one supplied signal_key as "
                 "target_failure_signal and explain the causal failure_mechanism; use empty strings "
                 "for both fields otherwise. Distinguish partial DEV gains from failed mechanisms. "
                 "When experiment_evidence exists, cite a prior ordinal and explain how its result "
@@ -177,12 +180,14 @@ class PiAdapter(AgentAdapter):
             )
         elif role == "analyze":
             instruction = (
-                "You are the DEV failure analyst inside BananLoop. Analyze the supplied DEV failure signals, "
-                "public DEV teacher examples, and the current candidate repository. Do not modify files. "
+                "You are the DEV failure analyst inside BananLoop. Analyze the supplied DEV failure signals "
+                "and/or public DEV teacher examples against the current candidate repository. "
+                "Contrast the intended mechanism with actual DEV errors. Do not modify files. "
                 "Use the exact public DEV expected answers to diagnose the root cause, then distill causal, "
                 "reusable lessons rather than memorizing benchmark cases. Do not copy case IDs, product IDs, "
                 "exact expected answers, or case-specific constants into the resulting capsules. Focus on stage attribution, "
-                "state/provenance conflicts, violated invariants, and generic regression tests. If evidence is "
+                "state/provenance conflicts, violated invariants, and discriminating regression tests for a new theory. "
+                "Do not use validation or holdout evidence. If evidence is "
                 "insufficient, lower confidence instead of inventing a cause. Your final assistant message MUST "
                 "be exactly one JSON object with key capsules. Each capsule must contain title, failure_class, "
                 "stage, affected_fields, observation, likely_mechanism, general_rule, suggested_regression, "
