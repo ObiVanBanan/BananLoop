@@ -505,9 +505,17 @@ falsifiable causal hypothesis. Case identities/expected answers must not appear
 in those durable capsules or in subsequent proposal prompts.
 
 The core also detects **stagnant mechanisms**: when the two most recent
-scientific DEV trials for a mechanism have the same DEV outcome, primary delta,
-and permitted aggregate metrics, it selects `reframe` and rejects another
-proposal with that exact `mechanism_key`. The report shows the stuck mechanisms
+scientific DEV trials for a mechanism have the same DEV outcome, primary deltas
+that differ by less than the configured `min_improvement` (or both lie within
+the symmetric no-effect band), and unchanged other allowlisted aggregate metrics,
+it selects `reframe` and rejects another proposal with that exact
+`mechanism_key`. A small DEV gain **or loss** below `min_improvement` is
+`DEV_NO_EFFECT`: it is inconclusive, cannot reset the no-progress streak, and
+cannot promote a champion. A decrease of at least that threshold is
+`DEV_REGRESSION`. The threshold is a conservative decision rule rather than
+proof of statistical insignificance; readiness separately checks that A/A
+noise is smaller than this threshold. Do not assume different units/diagnostics
+share the primary metric's noise calibration. The report shows the stuck mechanisms
 and the failure analyst's observation, inference, and next DEV test. This
 does not identify semantically identical mechanisms renamed by an agent, and
 it cannot diagnose specific failures unless the project evaluator supplies DEV
