@@ -522,3 +522,85 @@ def test_dogfood_partial_gain_preserves_dev_failure_mechanism_evidence():
     assert "private_failure_count" not in rendered
     assert "private case identity" not in rendered
     assert "hidden tier" not in rendered
+
+def test_repeated_identical_dev_evidence_forces_new_mechanism_without_validation_leak():
+    s = spec(agent_visible_metrics=["quality", "error_count"], agent_visible_diagnostics=["retrieval_miss"])
+    rows = []
+    for ordinal in (1, 2):
+        rows.append({
+            "ordinal": ordinal,
+            "status": "REJECTED",
+            "failure_category": "VALIDATION_REJECTED",
+            "hypothesis_json": json.dumps({"mechanism_key": "weight-tune"}),
+            "evaluation_json": json.dumps({
+                "metrics": {"quality": 0.72, "error_count": 4, "private_label": 999},
+                "diagnostics": {"retrieval_miss": 2, "private_case": 888},
+            }),
+            # The independent DEV verdict and values are the only feedback available to research.
+            "dev_decision_json": json.dumps({
+                "accepted": True, "primary_value": 0.72, "champion_value": 0.70,
+                "delta": 0.02, "reasons": ["ACCEPTED"],
+            }),
+            "decision_json": json.dumps({
+                "accepted": False, "validation": {"secret_label": f"HIDDEN_{ordinal}"},
+                "reasons": ["VALIDATION_REJECTED"],
+            }),
+        })
+    state = build_research_state(
+        s, campaign(experiment_count=2, attempt_count=2), rows,
+    )
+    assert state.stagnant_mechanisms == ["weight-tune"]
+    assert state.planning_mode == "reframe"
+    state_dump = state.model_dump_json()
+    assert "HIDDEN_" not in state_dump
+    assert "VALIDATION_REJECTED" not in state_dump
+    assert "private_label" not in state_dump
+    assert "private_case" not in state_dump
+
+    repeated = _portfolio_candidate(
+        "retune-weights", "weight-tune",
+        evidence_refs=["exp:2"],
+        hypothesis=Hypothesis(
+            hypothesis="retune weights again", rationale="same family",
+            expected_effect="higher quality", files_or_area=["src"],
+            falsification_condition="no change", mechanism_key="weight-tune",
+            relation="refine", prior_experiment_refs=[1, 2],
+            novelty_rationale="a second attempt",
+        ),
+    )
+    alternative = _portfolio_candidate(
+        "change-retrieval", "new-retrieval", evidence_refs=["exp:2"],
+    )
+    record = select_candidate(
+        HypothesisPortfolio(candidates=[repeated, alternative]),
+        spec=s, state=state, experiments=rows,
+        experiment_ordinal=3, action_id="exp:3:propose",
+    )
+    assert record.selected_candidate_id == "change-retrieval"
+    rejected = next(d for d in record.decisions if d.candidate_id == "retune-weights")
+    assert "STAGNANT_DEV_MECHANISM_CHANGE_FAMILY" in rejected.rejection_reasons
+
+
+def test_changed_allowlisted_dev_error_metric_prevents_false_stagnation():
+    s = spec(agent_visible_metrics=["quality", "error_count"])
+    rows = [
+        {
+            "ordinal": ordinal,
+            "status": "REJECTED",
+            "hypothesis_json": json.dumps({"mechanism_key": "ranking-weights"}),
+            "evaluation_json": json.dumps({
+                "metrics": {"quality": 0.70, "error_count": errors},
+            }),
+            "dev_decision_json": json.dumps({
+                "accepted": False, "delta": 0.0,
+                "reasons": ["PRIMARY_NOT_IMPROVED"],
+            }),
+            "decision_json": json.dumps({"accepted": False, "reasons": ["PRIMARY_NOT_IMPROVED"]}),
+        }
+        for ordinal, errors in ((1, 5), (2, 4))
+    ]
+    state = build_research_state(
+        s, campaign(experiment_count=2, attempt_count=2), rows,
+    )
+    assert state.stagnant_mechanisms == []
+    assert state.planning_mode == "reframe"  # Ordinary two-trial DEV plateau.
