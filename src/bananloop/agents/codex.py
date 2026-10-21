@@ -386,8 +386,12 @@ class CodexAdapter(AgentAdapter):
         elif role == "propose":
             instruction = (
                 "Propose a bounded portfolio of 2-3 materially different, falsifiable hypotheses (never more than 4) for this measurable campaign. "
-                "Use the supplied research_state, its aggregate failure_signals and experiment_evidence, "
-                "and planning_mode. If failure_signals exist, target one supplied signal_key and explain "
+                "Use the supplied research_state, its aggregate failure_signals, failure capsules, "
+                "stagnant_mechanisms, and experiment_evidence, and planning_mode. "
+                "When a mechanism has repeated the same DEV outcome, propose a materially different mechanism "
+                "family rather than a renamed weighting or tuning variant. Ground the new hypothesis in "
+                "the observed DEV errors and distinguish observation from conjecture. "
+                "If failure_signals exist, target one supplied signal_key and explain "
                 "the causal failure_mechanism; use empty strings for both fields otherwise. "
                 "When experiment_evidence exists, cite a prior ordinal and explain in novelty_rationale "
                 "what its measured result changes. Distinguish a partial DEV gain from a failed mechanism. "
@@ -406,12 +410,14 @@ class CodexAdapter(AgentAdapter):
             )
         elif role == "analyze":
             instruction = (
-                "Analyze the supplied DEV-only failure signals and public DEV teacher examples against the candidate implementation. "
-                "Do not modify files. Use the exact public DEV expected answers to diagnose the root cause, then "
+                "Analyze the supplied DEV-only failure signals and/or public DEV teacher examples against the candidate implementation. "
+                "Compare the intended mechanism and predicted effect to observed DEV errors. "
+                "Do not modify files. Use exact public DEV expected answers only for diagnosis, then "
                 "distill causal, reusable lessons rather than memorizing individual benchmark cases. Do not copy "
                 "case IDs, product IDs, exact expected answers, or case-specific constants into the resulting "
                 "capsules. Focus on stage attribution, conflicting "
-                "state/provenance, violated invariants, and general regression tests. Return only the requested "
+                "state/provenance, violated invariants, and discriminating regression tests for a new causal theory. "
+                "Never use validation or holdout evidence for hypothesis selection. Return only the requested "
                 "structured failure capsules. If evidence is insufficient, use a low confidence value rather "
                 "than fabricating a cause.\n\n"
             )
