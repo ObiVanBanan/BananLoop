@@ -17,9 +17,13 @@ from .contracts import (
     CampaignSpec,
     CampaignStatus,
     EvaluationResult,
+    FailureCapsule,
     FailureAnalysisResult,
     Hypothesis,
+    HypothesisPortfolio,
     ImplementResult,
+    PortfolioRecord,
+    ResearchState,
     StopReason,
 )
 from .envfiles import project_environment
@@ -38,8 +42,11 @@ from .research import (
     agent_evaluation_view,
     build_history,
     build_research_state,
+    capsule_evidence_ref,
     classify_dev_outcome,
     redundancy_reason,
+    normalize_portfolio,
+    select_candidate,
 )
 from .store import CampaignStore
 from .workspace import WorkspaceError, WorkspaceManager
@@ -780,10 +787,18 @@ class Engine:
         return build_history(self.spec, self.store.experiments(), limit=8)
 
     def _refresh_research_state(self) -> dict[str, Any]:
+        remaining_work_units = None
+        if self.spec.budget.max_evaluation_units is not None:
+            remaining_work_units = max(
+                0,
+                self.spec.budget.max_evaluation_units - self.store.evaluation_work_reserved(),
+            )
         state = build_research_state(
             self.spec,
             self.store.campaign(),
             self.store.experiments(),
+            self.store.events(),
+            remaining_work_units,
         )
         payload = state.model_dump(mode="json")
         self.store.set_research_state(payload)
@@ -800,6 +815,11 @@ class Engine:
             # originally approved input, not a newly generated planning context.
             return request
         research_state = self._refresh_research_state()
+        research_state = dict(research_state)
+        research_state["recent_failure_capsules"] = [
+            {**capsule, "evidence_id": capsule_evidence_ref(FailureCapsule.model_validate(capsule))}
+            for capsule in research_state.get("recent_failure_capsules", [])
+        ]
         campaign = self.store.campaign()
         return {
             "schema_version": 1,
@@ -826,6 +846,18 @@ class Engine:
             "history": self._history(),
             "research_state": research_state,
             "planning_mode": research_state["planning_mode"],
+            "portfolio_contract": {
+                "max_candidates": 4,
+                "candidate_fields": [
+                    "candidate_id", "hypothesis", "evidence_refs", "suspected_failure_mode",
+                    "predicted_observable", "discriminating_test", "scope_eligibility",
+                    "estimated_agent_calls", "estimated_evaluator_calls", "estimated_work_units",
+                    "rationale", "uncertainty", "inference=agent_inference",
+                ],
+                "evidence_ref_format": "exp:<DEV ordinal>, signal:<allowlisted DEV signal_key>, capsule:<stable 16-character content hash from the supplied capsule evidence_id>, or INSUFFICIENT_EVIDENCE",
+                "costs": "Estimate remaining implementation/evaluation calls after this proposal action, and optional work units; do not count this proposal twice or invent USD. Core enforces actual approved budgets.",
+                "legacy_fallback": "A single existing Hypothesis JSON object remains valid.",
+            },
             "planning_requirements": {
                 "exploit": "build on the strongest DEV-supported mechanism without duplicating prior work",
                 "explore": "test a materially different mechanism family from recent failed attempts",
@@ -936,11 +968,63 @@ class Engine:
                 self._refresh_research_state()
                 self._stop(StopReason.NO_HYPOTHESIS)
                 return
-            hypothesis = Hypothesis.model_validate(raw)
-        except (AgentError, ValidationError, UnknownActionOutcome, WorkspaceError) as exc:
+            portfolio = normalize_portfolio(raw)
+        except (AgentError, ValidationError, ValueError, UnknownActionOutcome, WorkspaceError) as exc:
             self.store.update_experiment(experiment_id, failure_category="AGENT_PROTOCOL_ERROR", lesson=str(exc)[:1000])
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(f"propose failed: {exc}") from exc
+
+        action_id = f"exp:{experiment_id}:propose"
+        saved_event = next((
+            event for event in self.store.events()
+            if event.get("event_type") == "PORTFOLIO_DECISION"
+            and json.loads(event["payload_json"]).get("action_id") == action_id
+        ), None)
+        if saved_event is not None:
+            # The adviser response and selected decision were durably committed
+            # together. Resume from that decision instead of recomputing against
+            # a possibly newer research window.
+            record = PortfolioRecord.model_validate(json.loads(saved_event["payload_json"]))
+            portfolio = HypothesisPortfolio(candidates=record.candidates)
+        else:
+            current_state = self._refresh_research_state()
+            record = select_candidate(
+                portfolio,
+                spec=self.spec,
+                state=ResearchState.model_validate(current_state),
+                experiments=[row for row in self.store.experiments() if row["id"] != experiment_id],
+                experiment_ordinal=int(self.store.experiment(experiment_id)["ordinal"]),
+                action_id=action_id,
+                task=task,
+                grounding_check=self._hypothesis_grounding_error,
+            )
+            self.store.event("PORTFOLIO_DECISION", record.model_dump(mode="json"))
+            self.store.conn.commit()
+            self._checkpoint("PORTFOLIO_SAVED")
+        if record.selected_candidate_id is None:
+            ungrounded = next((
+                reason.removeprefix("UNGROUNDED_EVIDENCE: ")
+                for decision in record.decisions
+                for reason in decision.rejection_reasons
+                if reason.startswith("UNGROUNDED_EVIDENCE: ")
+            ), None)
+            failure_category = "UNGROUNDED_HYPOTHESIS" if ungrounded else "NO_ADMISSIBLE_HYPOTHESIS"
+            attempt_status = "UNGROUNDED" if ungrounded else "NO_ADMISSIBLE_HYPOTHESIS"
+            self.store.update_experiment(
+                experiment_id,
+                failure_category=failure_category,
+                lesson=(ungrounded or record.stop_reason)[:1000],
+            )
+            self.store.finish_attempt(
+                attempt_id, experiment_id, status=attempt_status,
+                scientific=False, improved=False,
+            )
+            self._refresh_research_state()
+            self._stop(StopReason.NO_HYPOTHESIS)
+            return
+        selected = next(item for item in portfolio.candidates if item.candidate_id == record.selected_candidate_id)
+        hypothesis = selected.hypothesis
+        self._refresh_research_state()
 
         grounding_error = self._hypothesis_grounding_error(hypothesis, task)
         if grounding_error:
@@ -1723,6 +1807,41 @@ class Engine:
             self._stop(StopReason.GOAL_MET, CampaignStatus.GOAL_MET)
             return True
         if campaign["non_improve_streak"] >= self.spec.budget.plateau_experiments:
+            state = ResearchState.model_validate(self._refresh_research_state())
+            last_progress = max(
+                (int(row["ordinal"]) for row in self.store.experiments()
+                 if attempt_bucket(row) == "scientific_trials"
+                 and classify_dev_outcome(self.spec, row)
+                 in {"DEV_IMPROVEMENT", "DEV_PARTIAL_IMPROVEMENT"}),
+                default=0,
+            )
+            experiments_by_ordinal = {
+                int(row["ordinal"]): row for row in self.store.experiments()
+            }
+            reframe_used = any(
+                item.strategy == "reframe" and item.selected_candidate_id is not None
+                and item.experiment_ordinal > last_progress
+                and item.experiment_ordinal in experiments_by_ordinal
+                and attempt_bucket(experiments_by_ordinal[item.experiment_ordinal]) == "scientific_trials"
+                for item in state.portfolios
+            )
+            if not reframe_used:
+                budget_reason = pre_action_stop(campaign, self.spec.budget, "agent")
+                evaluator_fits = self._new_attempt_fits_evaluator_budget()
+                if budget_reason is None and evaluator_fits:
+                    self.store.event("PLATEAU_REFRAME_ALLOWED", {
+                        "non_improve_streak": campaign["non_improve_streak"],
+                        "trigger_experiment_ordinal": max((int(row["ordinal"]) for row in self.store.experiments()), default=0),
+                        "remaining_agent_calls": max(0, self.spec.budget.max_agent_calls - campaign["agent_calls"]),
+                    })
+                    self.store.conn.commit()
+                    return False
+                reason = str(budget_reason or StopReason.BUDGET_EXHAUSTED)
+                self.store.event("PLATEAU_REFRAME_BLOCKED", {
+                    "reason": f"Plateau reached; no budget remains for one bounded reframe: {reason}"
+                })
+                self.store.conn.commit()
+                self._refresh_research_state()
             self._stop(StopReason.PLATEAU)
             return True
         reason = pre_action_stop(campaign, self.spec.budget, "agent")

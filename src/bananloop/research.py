@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import json
 import math
+import fnmatch
+import hashlib
 import re
 from collections import Counter
-from typing import Any
+from typing import Any, Callable
+from pydantic import ValidationError
 
 from .contracts import (
-    CampaignSpec, DevExperimentEvidence, DevFailureSummary, FailureCapsule,
-    Hypothesis, MechanismEvidence, ResearchState,
+    CampaignSpec, CandidateDecision, DevExperimentEvidence, DevFailureSummary,
+    DevResearchLesson, FailureCapsule, Hypothesis, HypothesisCandidate,
+    HypothesisPortfolio, MechanismEvidence, PortfolioRecord, ResearchState,
 )
 
 
@@ -78,6 +82,238 @@ def planning_mode(non_improve_streak: int, plateau_experiments: int) -> str:
     if non_improve_streak >= max(1, plateau_experiments - 1):
         return "reframe"
     return "explore"
+
+
+def capsule_evidence_ref(capsule: FailureCapsule) -> str:
+    """Return a content-addressed ref that survives sliding-window reordering."""
+    payload = json.dumps(capsule.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return "capsule:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def normalize_portfolio(payload: dict[str, Any]) -> HypothesisPortfolio:
+    """Normalize a v2 portfolio or a legacy single-Hypothesis response."""
+    if isinstance(payload.get("candidates"), list):
+        raw_candidates = payload["candidates"]
+        if any(value is not None for key, value in payload.items() if key != "candidates"):
+            raise ValueError("portfolio response cannot mix legacy hypothesis fields")
+        if not isinstance(raw_candidates, list):
+            raise ValueError("portfolio candidates must be a JSON list")
+        valid: list[HypothesisCandidate] = []
+        malformed: list[dict[str, str]] = []
+        for index, raw in enumerate(raw_candidates[:4], start=1):
+            candidate_id = raw.get("candidate_id") if isinstance(raw, dict) else None
+            safe_id = (candidate_id if isinstance(candidate_id, str)
+                       and re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,79}", candidate_id)
+                       else f"invalid-{index}")
+            try:
+                parsed = HypothesisCandidate.model_validate(raw)
+                safe_refs = []
+                for ref in parsed.evidence_refs:
+                    if ref == "INSUFFICIENT_EVIDENCE" or re.fullmatch(r"exp:[1-9][0-9]{0,8}", ref) \
+                            or re.fullmatch(r"signal:[A-Za-z0-9_.:-]{1,120}", ref) \
+                            or re.fullmatch(r"capsule:(?:[1-9][0-9]{0,2}|[a-f0-9]{16})", ref):
+                        safe_refs.append(ref)
+                    else:
+                        safe_refs.append("<invalid>")
+                valid.append(parsed.model_copy(update={"evidence_refs": safe_refs}))
+            except ValidationError as exc:
+                malformed.append({"candidate_id": safe_id, "rejection_reason": "MALFORMED_CANDIDATE_SCHEMA"})
+        if len(raw_candidates) > 4:
+            malformed.append({
+                "candidate_id": "overflow",
+                "rejection_reason": f"PORTFOLIO_EXCEEDS_MAX_4:{len(raw_candidates) - 4} additional candidate(s) rejected",
+            })
+        return HypothesisPortfolio(candidates=valid, malformed_candidates=malformed[:4])
+    # Codex strict-output fallback includes a null candidates slot and null
+    # values for unused fields. Remove those wire-only nulls before validation.
+    hypothesis = Hypothesis.model_validate({key: value for key, value in payload.items()
+                                            if key != "candidates" and value is not None})
+    digest = hashlib.sha256(
+        json.dumps(hypothesis.model_dump(mode="json"), sort_keys=True).encode()
+    ).hexdigest()[:16]
+    return HypothesisPortfolio(candidates=[HypothesisCandidate(
+        candidate_id=f"legacy-{digest}", hypothesis=hypothesis,
+        evidence_refs=["INSUFFICIENT_EVIDENCE"],
+        predicted_observable=hypothesis.expected_effect,
+        discriminating_test=hypothesis.falsification_condition,
+        scope_eligibility=True, rationale=hypothesis.rationale,
+        uncertainty="Legacy single-hypothesis adapter did not report uncertainty.",
+    )])
+
+
+def candidate_rejection_reasons(
+    candidate: HypothesisCandidate, *, spec: CampaignSpec, state: ResearchState,
+    experiments: list[dict[str, Any]],
+) -> list[str]:
+    reasons: list[str] = []
+    hypothesis = candidate.hypothesis
+    if not candidate.scope_eligibility:
+        reasons.append("AGENT_SCOPE_INELIGIBLE")
+    scopes = spec.editable_scope or ["**"]
+    for area in hypothesis.files_or_area:
+        normalized = area.replace("\\", "/").strip()
+        if not normalized or normalized.startswith("/") or ".." in normalized.split("/"):
+            reasons.append("UNSAFE_OR_UNGROUNDED_AREA")
+            break
+        if not any(
+            pattern == "**" or fnmatch.fnmatchcase(normalized, pattern)
+            or (pattern.endswith("/**") and normalized == pattern[:-3])
+            for pattern in scopes
+        ):
+            reasons.append("OUT_OF_SCOPE")
+            break
+    if not hypothesis.files_or_area:
+        reasons.append("UNTESTABLE_NO_AFFECTED_AREA")
+    if not candidate.predicted_observable.strip() or not candidate.discriminating_test.strip():
+        reasons.append("UNTESTABLE_NO_OBSERVABLE_OR_DISCRIMINATOR")
+
+    evidence_ids = {f"exp:{item.ordinal}" for item in state.experiment_evidence}
+    evidence_ids.update(f"signal:{item.signal_key}" for item in state.failure_signals)
+    evidence_ids.update(capsule_evidence_ref(item) for item in state.recent_failure_capsules)
+    # Accept numeric refs in already persisted proposal actions during recovery.
+    evidence_ids.update(f"capsule:{i}" for i, _ in enumerate(state.recent_failure_capsules, start=1))
+    for ref in candidate.evidence_refs:
+        if ref != "INSUFFICIENT_EVIDENCE" and ref not in evidence_ids:
+            reasons.append("UNKNOWN_EVIDENCE_REFERENCE")
+            break
+    if not candidate.evidence_refs:
+        reasons.append("MISSING_EVIDENCE_OR_INSUFFICIENT_EVIDENCE_MARKER")
+    if redundancy_reason(hypothesis, experiments):
+        reasons.append("REDUNDANT_MECHANISM")
+    # One implementation call and the configured staged evaluator calls are
+    # unavoidable regardless of an adviser's optimistic cost estimate.
+    min_agent_calls = 1
+    min_evaluator_calls = 1 + int(bool(spec.validation_command)) + int(bool(spec.holdout_command))
+    if candidate.estimated_agent_calls == 0:
+        reasons.append("ESTIMATED_AGENT_COST_BELOW_MINIMUM")
+    if candidate.estimated_evaluator_calls == 0:
+        reasons.append("ESTIMATED_EVALUATOR_COST_BELOW_MINIMUM")
+    required_agent_calls = max(candidate.estimated_agent_calls, min_agent_calls)
+    required_evaluator_calls = max(
+        candidate.estimated_evaluator_calls,
+        1 + int(bool(spec.validation_command)),
+    ) + int(bool(spec.holdout_command))
+    if required_agent_calls > state.remaining_budget.get("agent_calls", 0):
+        reasons.append("INSUFFICIENT_AGENT_BUDGET")
+    if required_evaluator_calls > state.remaining_budget.get("evaluator_calls", 0):
+        reasons.append("INSUFFICIENT_EVALUATOR_BUDGET")
+    remaining_units = state.remaining_budget.get("work_units")
+    required_units = max(
+        candidate.estimated_work_units or 0,
+        min_evaluator_calls * (spec.budget.evaluation_units_per_call or 1),
+    )
+    if remaining_units is not None and required_units > remaining_units:
+        reasons.append("INSUFFICIENT_EVALUATION_WORK_UNITS")
+    if state.remaining_budget.get("experiments", 0) < 1 or state.remaining_budget.get("attempts", 0) < 1:
+        reasons.append("INSUFFICIENT_EXPERIMENT_BUDGET")
+
+    target = hypothesis.mechanism_key.casefold().strip()
+    repeated = [row for row in experiments if row.get("hypothesis_json") and
+                json.loads(row["hypothesis_json"]).get("mechanism_key", "").casefold().strip() == target]
+    if repeated:
+        fresh = set(candidate.evidence_refs) - {"INSUFFICIENT_EVIDENCE"}
+        previously_cited: set[str] = set()
+        for row in repeated:
+            previous_hypothesis = json.loads(row["hypothesis_json"])
+            previously_cited.update(f"exp:{ordinal}" for ordinal in previous_hypothesis.get("prior_experiment_refs", []))
+            if previous_hypothesis.get("target_failure_signal"):
+                previously_cited.add(f"signal:{previous_hypothesis['target_failure_signal']}")
+        if not fresh or not (fresh - previously_cited):
+            reasons.append("REPEAT_WITHOUT_NEW_DISCRIMINATING_EVIDENCE")
+    return list(dict.fromkeys(reasons))
+
+
+def select_candidate(
+    portfolio: HypothesisPortfolio, *, spec: CampaignSpec, state: ResearchState,
+    experiments: list[dict[str, Any]], experiment_ordinal: int, action_id: str,
+    task: dict[str, Any] | None = None,
+    grounding_check: Callable[[Hypothesis, dict[str, Any]], str | None] | None = None,
+) -> PortfolioRecord:
+    """Apply deterministic, explainable core gates and select one candidate."""
+    ids = [item.candidate_id for item in portfolio.candidates]
+    duplicate_ids = {item for item in ids if ids.count(item) > 1}
+    known = {item.mechanism_key for item in state.mechanisms}
+    decisions: list[CandidateDecision] = []
+    invalid_decisions = [CandidateDecision(
+        candidate_id=item["candidate_id"], admissible=False,
+        rejection_reasons=[item["rejection_reason"]],
+        selection_reason=item["rejection_reason"],
+    ) for item in portfolio.malformed_candidates]
+    eligible: list[tuple[tuple[int, int, int, int, int, str], HypothesisCandidate]] = []
+    for candidate in portfolio.candidates:
+        reasons = candidate_rejection_reasons(candidate, spec=spec, state=state, experiments=experiments)
+        if grounding_check and task is not None:
+            grounding_error = grounding_check(candidate.hypothesis, task)
+            if grounding_error:
+                reasons.append("UNGROUNDED_EVIDENCE: " + grounding_error)
+        if candidate.candidate_id in duplicate_ids:
+            reasons.append("DUPLICATE_CANDIDATE_ID")
+        relevant_refs = set(candidate.evidence_refs).intersection(
+            {f"exp:{ordinal}" for ordinal in candidate.hypothesis.prior_experiment_refs}
+            | ({f"signal:{candidate.hypothesis.target_failure_signal}"}
+               if candidate.hypothesis.target_failure_signal else set())
+        )
+        evidence_score = min(3, len(relevant_refs))
+        novelty = int(candidate.hypothesis.mechanism_key not in known)
+        strategy_priority = -novelty if state.planning_mode == "exploit" else novelty
+        scores = {"dev_evidence": evidence_score, "mechanism_novelty": int(novelty),
+                  "falsifiability": int(bool(candidate.discriminating_test.strip())),
+                  "budget_feasibility": int(not reasons),
+                  "lower_estimated_cost": -(candidate.estimated_agent_calls + candidate.estimated_evaluator_calls)}
+        if reasons:
+            decisions.append(CandidateDecision(candidate_id=candidate.candidate_id, admissible=False,
+                rejection_reasons=list(dict.fromkeys(reasons)), criterion_scores=scores,
+                selection_reason="; ".join(dict.fromkeys(reasons))))
+        else:
+            eligible.append(((strategy_priority, evidence_score, scores["falsifiability"], 1,
+                              scores["lower_estimated_cost"], candidate.candidate_id), candidate))
+            decisions.append(CandidateDecision(candidate_id=candidate.candidate_id, admissible=True,
+                                                criterion_scores=scores))
+    trigger = [f"DEV non-improve streak={state.dev_non_improve_streak}"]
+    if state.experiment_evidence:
+        latest = state.experiment_evidence[-1]
+        trigger.append(f"DEV experiment {latest.ordinal}: {latest.dev_outcome}")
+    selected = None
+    stop_reason = ""
+    if eligible:
+        _, winner = max(eligible, key=lambda item: item[0])
+        selected = winner.candidate_id
+        for decision in decisions:
+            if decision.candidate_id == selected:
+                decision.selection_reason = (
+                    "Selected by deterministic ordering: strategy-aware mechanism novelty, DEV evidence, "
+                    "falsifiability, budget feasibility, estimated cost, stable candidate ID."
+                )
+            elif decision.admissible:
+                decision.selection_reason = "Ranked below selected candidate by the recorded deterministic criteria."
+    else:
+        stop_reason = "No candidate passed the core evidence, scope, falsifiability, redundancy, and remaining-budget gates."
+    return PortfolioRecord(experiment_ordinal=experiment_ordinal, action_id=action_id,
+        strategy=state.planning_mode, trigger_evidence=trigger, candidates=portfolio.candidates,
+        decisions=decisions, invalid_candidates=invalid_decisions,
+        selected_candidate_id=selected, stop_reason=stop_reason)
+
+
+def derive_dev_lesson(row: dict[str, Any], spec: CampaignSpec) -> DevResearchLesson | None:
+    """Summarize one scientific DEV measurement, excluding operational failures."""
+    if attempt_bucket(row) != "scientific_trials":
+        return None
+    hypothesis = json.loads(row.get("hypothesis_json") or "{}")
+    outcome = classify_dev_outcome(spec, row)
+    interpretation = ("supported" if outcome in {"DEV_IMPROVEMENT", "DEV_PARTIAL_IMPROVEMENT"}
+                      else "refuted" if outcome == "DEV_NO_IMPROVEMENT" else "unknown")
+    decision = json.loads(row.get("dev_decision_json") or "{}")
+    delta = decision.get("delta")
+    return DevResearchLesson(
+        experiment_ordinal=int(row["ordinal"]), mechanism_key=hypothesis.get("mechanism_key", "unknown"),
+        observation=f"DEV outcome {outcome}; primary delta {delta if delta is not None else 'unknown'}.",
+        interpretation=interpretation,
+        inference=("The result is consistent with the stated mechanism." if interpretation == "supported" else
+                   "The result weighs against this mechanism under the recorded DEV protocol." if interpretation == "refuted" else
+                   "Available DEV evidence does not determine this mechanism."),
+        next_discriminator=hypothesis.get("falsification_condition", ""),
+        evidence_refs=[f"exp:{row['ordinal']}"],
+    )
 
 
 def agent_evaluation_view(
@@ -419,6 +655,8 @@ def build_research_state(
     spec: CampaignSpec,
     campaign: dict[str, Any],
     experiments: list[dict[str, Any]],
+    events: list[dict[str, Any]] | None = None,
+    remaining_work_units: int | None = None,
 ) -> ResearchState:
     mechanism_rows: dict[str, dict[str, Any]] = {}
     failure_counts: Counter[str] = Counter()
@@ -460,14 +698,33 @@ def build_research_state(
     remaining = {
         "experiments": max(0, spec.budget.max_experiments - int(campaign["experiment_count"])),
         "attempts": max(0, spec.budget.max_attempts - int(campaign["attempt_count"])),
+        "agent_calls": max(0, spec.budget.max_agent_calls - int(campaign["agent_calls"])),
+        "evaluator_calls": max(0, spec.budget.max_evaluator_calls - int(campaign["evaluator_calls"])),
         "dev_experiments_until_reframe": max(
             0,
             spec.budget.plateau_experiments - 1 - dev_non_improve_streak,
         ),
     }
+    if remaining_work_units is not None:
+        remaining["work_units"] = max(0, remaining_work_units)
     failure_signals, experiment_evidence = summarize_dev_failures(
         spec, campaign, experiments,
     )
+    portfolios: list[PortfolioRecord] = []
+    blocked_stop = ""
+    for event in events or []:
+        if event.get("event_type") != "PORTFOLIO_DECISION":
+            if event.get("event_type") == "PLATEAU_REFRAME_BLOCKED":
+                try:
+                    blocked_stop = str(json.loads(event["payload_json"]).get("reason", ""))
+                except (KeyError, ValueError, TypeError):
+                    pass
+            continue
+        try:
+            portfolios.append(PortfolioRecord.model_validate(json.loads(event["payload_json"])))
+        except (KeyError, ValueError, TypeError):
+            continue
+    dev_lessons = [lesson for row in experiments if (lesson := derive_dev_lesson(row, spec)) is not None]
     return ResearchState(
         planning_mode=planning_mode(
             dev_non_improve_streak,
@@ -484,6 +741,9 @@ def build_research_state(
         failure_signals=failure_signals,
         experiment_evidence=experiment_evidence,
         remaining_budget=remaining,
+        portfolios=portfolios[-16:],
+        dev_lessons=dev_lessons[-16:],
+        stop_explanation=(blocked_stop or (portfolios[-1].stop_reason if portfolios and portfolios[-1].stop_reason else "")),
     )
 
 

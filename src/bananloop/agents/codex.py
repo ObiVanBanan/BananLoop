@@ -122,7 +122,7 @@ BOOTSTRAP_SCHEMA = {
     "additionalProperties": False
 }
 
-HYPOTHESIS_SCHEMA = {
+LEGACY_HYPOTHESIS_SCHEMA = {
     "type": "object",
     "properties": {
         "hypothesis": {"type": "string"},
@@ -150,6 +150,64 @@ HYPOTHESIS_SCHEMA = {
         "target_failure_signal",
         "failure_mechanism",
     ],
+    "additionalProperties": False,
+}
+
+HYPOTHESIS_CANDIDATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "candidate_id": {"type": "string", "minLength": 1, "maxLength": 80, "pattern": "^[a-z0-9][a-z0-9_-]{0,79}$"},
+        "hypothesis": LEGACY_HYPOTHESIS_SCHEMA,
+        "evidence_refs": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
+        "suspected_failure_mode": {"type": "string", "maxLength": 300},
+        "predicted_observable": {"type": "string", "minLength": 1, "maxLength": 500},
+        "discriminating_test": {"type": "string", "minLength": 1, "maxLength": 500},
+        "scope_eligibility": {"type": "boolean"},
+        "estimated_agent_calls": {"type": "integer", "minimum": 0, "maximum": 4},
+        "estimated_evaluator_calls": {"type": "integer", "minimum": 0, "maximum": 4},
+        "estimated_work_units": {"type": ["number", "null"], "minimum": 0, "maximum": 1000000},
+        "rationale": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "uncertainty": {"type": "string", "minLength": 1, "maxLength": 500},
+        "inference": {"type": "string", "enum": ["agent_inference"]},
+    },
+    "required": ["candidate_id", "hypothesis", "evidence_refs", "suspected_failure_mode",
+                 "predicted_observable", "discriminating_test", "scope_eligibility",
+                 "estimated_agent_calls", "estimated_evaluator_calls", "estimated_work_units",
+                 "rationale", "uncertainty", "inference"],
+    "additionalProperties": False,
+}
+
+PORTFOLIO_SCHEMA = {
+    "type": "object",
+    "properties": {"candidates": {"type": "array", "minItems": 1, "maxItems": 4,
+                                    "items": HYPOTHESIS_CANDIDATE_SCHEMA}},
+    "required": ["candidates"],
+    "additionalProperties": False,
+}
+
+# Codex structured output requires an object schema without top-level unions.
+# Keep both wire shapes in one strict object: portfolio output sets the legacy
+# fields to null; legacy output sets candidates to null.
+def _nullable_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    result = dict(schema)
+    schema_type = result["type"]
+    result["type"] = [schema_type, "null"]
+    if "enum" in result:
+        result["enum"] = [*result["enum"], None]
+    return result
+
+
+HYPOTHESIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "candidates": {
+            **PORTFOLIO_SCHEMA["properties"]["candidates"],
+            "type": ["array", "null"],
+        },
+        **{name: _nullable_schema(schema)
+           for name, schema in LEGACY_HYPOTHESIS_SCHEMA["properties"].items()},
+    },
+    "required": ["candidates", *LEGACY_HYPOTHESIS_SCHEMA["required"]],
     "additionalProperties": False,
 }
 FAILURE_ANALYSIS_SCHEMA = {
@@ -323,15 +381,24 @@ class CodexAdapter(AgentAdapter):
             )
         elif role == "propose":
             instruction = (
-                "Propose exactly one bounded, falsifiable hypothesis for this measurable campaign. "
+                "Propose a bounded portfolio of 2-3 materially different, falsifiable hypotheses (never more than 4) for this measurable campaign. "
                 "Use the supplied research_state, its aggregate failure_signals and experiment_evidence, "
                 "and planning_mode. If failure_signals exist, target one supplied signal_key and explain "
                 "the causal failure_mechanism; use empty strings for both fields otherwise. "
                 "When experiment_evidence exists, cite a prior ordinal and explain in novelty_rationale "
                 "what its measured result changes. Distinguish a partial DEV gain from a failed mechanism. "
+                "For each candidate return candidate_id, nested hypothesis (the existing Hypothesis fields), evidence_refs, "
+                "suspected_failure_mode, predicted_observable, discriminating_test, scope_eligibility, "
+                "estimated_agent_calls, estimated_evaluator_calls, estimated_work_units (or null), rationale, "
+                "uncertainty, and inference=agent_inference. Candidate IDs must be stable mechanism slugs. "
+                "Estimate only remaining implementation/evaluation calls after the current proposal call. "
+                "Use only supplied DEV evidence references or "
+                "INSUFFICIENT_EVIDENCE; distinguish observed facts from your inference. Do not invent gains, causes, "
+                "USD costs, or evidence. The core selects one candidate and enforces all budgets and scope. "
+                "For a portfolio, set every legacy top-level Hypothesis field to null. For the legacy single-Hypothesis fallback, set candidates to null. "
                 "Avoid repeating a mechanism unless "
                 "you explicitly mark the hypothesis as refine, retry, or supersede and reference the prior "
-                "experiment ordinal. Do not modify files. Return only the requested structured result.\n\n"
+                "experiment ordinal. Do not modify files. Return {candidates:[...]} or legacy single Hypothesis JSON.\n\n"
             )
         elif role == "analyze":
             instruction = (
