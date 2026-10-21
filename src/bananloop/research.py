@@ -676,7 +676,9 @@ def stagnant_dev_mechanisms(
         )
         if before[0] != after[0] or not (both_inconclusive or nearly_equal):
             continue
-        prior_metrics, current_metrics = before[2], after[2]
+        primary_key = f"metric:{spec.primary_metric.name}"
+        prior_metrics = {k: v for k, v in before[2].items() if k != primary_key}
+        current_metrics = {k: v for k, v in after[2].items() if k != primary_key}
         if prior_metrics.keys() != current_metrics.keys():
             continue
         if all(math.isclose(prior_metrics[key], current_metrics[key],
