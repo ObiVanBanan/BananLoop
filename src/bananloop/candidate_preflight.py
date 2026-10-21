@@ -33,3 +33,124 @@ def python_syntax_errors(workspace: Path, changed_paths: list[str]) -> list[str]
                 detail = type(exc).__name__
             errors.append(f"{relative}: {detail}")
     return errors
+
+
+def _legacy_one_hot_encoder_lines(source: str) -> list[int]:
+    """Locate direct scikit-learn OneHotEncoder(sparse=...) calls via AST.
+
+    Do not flag local functions named OneHotEncoder or execute candidate imports.
+    This is intentionally a narrow, high-confidence check.
+    """
+    import ast
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []  # The existing Python syntax gate handles this.
+
+    direct: set[str] = set()
+    module_prefixes: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "sklearn.preprocessing":
+                direct.update(
+                    alias.asname or alias.name
+                    for alias in node.names if alias.name == "OneHotEncoder"
+                )
+            elif node.module == "sklearn":
+                module_prefixes.update(
+                    (alias.asname or alias.name) + ".OneHotEncoder"
+                    for alias in node.names if alias.name == "preprocessing"
+                )
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "sklearn.preprocessing":
+                    module_prefixes.add(
+                        (alias.asname + ".OneHotEncoder") if alias.asname
+                        else "sklearn.preprocessing.OneHotEncoder"
+                    )
+
+    lines: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not any(
+            kw.arg == "sparse" for kw in node.keywords
+        ):
+            continue
+        if isinstance(node.func, ast.Name):
+            matched = node.func.id in direct
+        else:
+            matched = ast.unparse(node.func) in module_prefixes
+        if matched:
+            lines.append(node.lineno)
+    return sorted(set(lines))
+
+
+def python_api_compatibility_errors(
+    workspace: Path,
+    changed_paths: list[str],
+    *,
+    evaluator_command: list[str],
+) -> list[str]:
+    """Reject known unsupported API calls against the *evaluator* interpreter.
+
+    The dependency probe runs isolated Python metadata discovery, not candidate
+    code, modules, imports, tests or scoring. Unknown runtime => no hard reject.
+    This is a narrow preflight, not a substitute for integration smoke tests.
+    """
+    import re
+    import subprocess
+
+    root = workspace.resolve()
+    locations: list[tuple[str, int]] = []
+    for relative in sorted(set(changed_paths)):
+        if not relative.endswith(".py"):
+            continue
+        file = (workspace / relative).resolve()
+        if not file.is_relative_to(root) or not file.is_file():
+            continue
+        try:
+            with tokenize.open(file) as handle:
+                locations.extend(
+                    (relative, line)
+                    for line in _legacy_one_hot_encoder_lines(handle.read())
+                )
+        except (OSError, UnicodeError, ValueError):
+            continue
+    if not locations or not evaluator_command:
+        return []
+
+    # Never infer the runtime version from the BananLoop supervisor Python.
+    # When the evaluator uses a wrapper (uv, bash, etc.), skip this gate.
+    interpreter = str(evaluator_command[0])
+    name = interpreter.replace("\\", "/").rsplit("/", 1)[-1]
+    if not re.fullmatch(
+        r"(?:pythonw?|py)(?:[0-9]+(?:\.[0-9]+)*)?(?:\.exe)?",
+        name, flags=re.IGNORECASE,
+    ):
+        return []
+    try:
+        result = subprocess.run(
+            [
+                interpreter, "-I", "-c",
+                "import importlib.metadata as m; print(m.version('scikit-learn'))",
+            ],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode:
+        return []
+    match = re.match(r"^(\d+)\.(\d+)", result.stdout.strip())
+    if not match or (int(match.group(1)), int(match.group(2))) < (1, 4):
+        return []
+
+    version = result.stdout.strip()
+    return [
+        f"{relative}: OneHotEncoder(sparse=...) at line {line} is unsupported "
+        f"by evaluator scikit-learn {version}; use sparse_output= instead"
+        for relative, line in locations
+    ]
