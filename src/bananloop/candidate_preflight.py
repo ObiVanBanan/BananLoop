@@ -7,6 +7,7 @@ or the frozen evaluator, and it never writes to the candidate workspace.
 from __future__ import annotations
 
 import tokenize
+import subprocess
 from pathlib import Path
 
 
@@ -98,7 +99,6 @@ def python_api_compatibility_errors(
     This is a narrow preflight, not a substitute for integration smoke tests.
     """
     import re
-    import subprocess
 
     root = workspace.resolve()
     locations: list[tuple[str, int]] = []
