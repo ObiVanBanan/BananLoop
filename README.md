@@ -492,3 +492,29 @@ quality gains from the terminal status alone.
 Directory scope entries ending with a slash (such as
 `src/nomenclature_matcher/`) are treated recursively. Sibling paths
 (`src/nomenclature_matcher_extra/`) are not implicitly editable.
+
+## DEV error reflection and new hypothesis selection
+
+When the DEV evaluator exposes `failure_signals` **or** public
+`failure_examples`, BananLoop runs its budget-bounded, read-only `ANALYZE`
+stage. The analyst can inspect those DEV mistakes and the candidate checkout.
+It records generalized failure capsules: observation, likely mechanism,
+regression test, and confidence. The next proposer receives the sanitized
+capsules, the DEV experiment history, and guidance to build a different,
+falsifiable causal hypothesis. Case identities/expected answers must not appear
+in those durable capsules or in subsequent proposal prompts.
+
+The core also detects **stagnant mechanisms**: when the two most recent
+scientific DEV trials for a mechanism have the same DEV outcome, primary delta,
+and permitted aggregate metrics, it selects `reframe` and rejects another
+proposal with that exact `mechanism_key`. The report shows the stuck mechanisms
+and the failure analyst's observation, inference, and next DEV test. This
+does not identify semantically identical mechanisms renamed by an agent, and
+it cannot diagnose specific failures unless the project evaluator supplies DEV
+signals or examples. Only frozen, allowlisted DEV evidence drives the rule;
+validation/holdout results remain unavailable to the planner.
+
+The `ANALYZE` stage uses an agent call if budget is available, so allow some
+agent budget beyond proposal+implementation calls when testing failure
+reflection. Missing diagnostic evidence is not a reason to hallucinate a
+root cause.
