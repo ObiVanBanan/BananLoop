@@ -457,3 +457,38 @@ environment. Do not put secrets in this file.
 Not in v0.1: parallel experiments, DAG orchestration, model routing, autonomous invention of a trustworthy evaluation objective from no evidence, vector memory, SaaS/web UI, auto push/merge, generic LLM judges, distributed workers, or a full security sandbox.
 
 See `design/adr.md`, `standalone_harness_proposal.md`, and `examples/rag_tender/README.md` for rationale and integration guidance.
+
+
+## Project preparation and inexpensive candidate preflight
+
+For a new project, start with readiness instead of spending experiment calls:
+
+```bash
+bananloop prepare --repo . --goal "Improve the DEV metric without regressing validation"
+bananloop run --repo .
+bananloop report --repo .
+```
+
+`prepare` uses the existing repo+goal bootstrap, discovers the environment,
+builds and freezes the evaluator contract, and runs the bootstrap readiness checks
+without beginning scientific candidate trials. It is equivalent to the expert
+`bananloop start --prepare-only --repo . --goal "..."` path; it does **not**
+magically establish the evaluator's scientific validity. Inspect the readiness
+receipt and signal-sanity trust status before relying on numerical improvements.
+If the bootstrap needs independent reference data, provide it instead of
+relaxing scoring checks.
+
+The candidate VERIFY stage now statically compiles changed Python sources
+**without executing or importing candidate code**. Syntax failures are recorded
+as `IMPLEMENTATION_BLOCKED / CANDIDATE_PREFLIGHT_FAILED` and rejected before
+spending a DEV evaluator call. This is not a replacement for version-specific
+sklearn/API checks, runtime tests, dependency checks, or integration smoke tests.
+
+A terminal `GOAL_MET` may mean the *baseline* already met the configured
+target. The report therefore separates `BASELINE_ALREADY_MET_TARGET` from
+`CHAMPION_IMPROVED` and `NO_VALIDATED_IMPROVEMENT`; do not infer genuine
+quality gains from the terminal status alone.
+
+Directory scope entries ending with a slash (such as
+`src/nomenclature_matcher/`) are treated recursively. Sibling paths
+(`src/nomenclature_matcher_extra/`) are not implicitly editable.
