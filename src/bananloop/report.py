@@ -402,6 +402,11 @@ def render_markdown(report: dict[str, Any]) -> str:
                 "- Repeated identical DEV mechanisms (reframe required): "
                 + ", ".join(f"`{key}`" for key in research["stagnant_mechanisms"])
             )
+        if research.get("failed_dev_families"):
+            lines.append(
+                "- DEV families with non-improving results (avoid during reframe): "
+                + ", ".join(f"`{key}`" for key in research["failed_dev_families"])
+            )
         if research.get("recent_lessons"):
             lines.append("- Recent lessons:")
             lines.extend(f"  - {lesson}" for lesson in research["recent_lessons"])
