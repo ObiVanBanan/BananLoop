@@ -14,8 +14,11 @@
 | Process cancellation regression | `tests/test_completion.py::test_stop_cli_cancels_running_agent_and_preserves_source`; fixed in `0e484e133451e4781f2a2357cd4f01ae86c66cde`. | Passed in full suite |
 | API preflight edge cases | `tests/test_candidate_preflight.py`; includes aliased `OneHotEncoder`, wrapper runtime safe-skip, Windows `python.exe`, and `py.exe -3.12` selector preservation. | Passed in full suite |
 | Focused research/preflight suite | `python -m pytest tests/test_candidate_preflight.py tests/test_research.py -q --basetemp .pytest-issue49-edge-cc33021`. | 27 passed, 1 skipped |
+| Logic Gold v0.3 | `run_gold.py --json`, with `PYTHONPATH` set to this worktree's `src`. Imported modules and Git revision were verified by `--env`. | 51 passed, 0 failed on `f5f7101071cbcb68d281fa54adea72b96d0ab111` |
 
 The full run was performed after the runtime probe changes; the report-only edits do not affect tested code. The separate CI configuration commit `cc3302185bff88cbecf562d59ea1bf42d2d23ac9` sets matrix `fail-fast: false`, so one startup failure no longer hides the independent job outcomes.
+
+Gold v0.3 confirmed all 51 curated policy/research vectors and its four source-contract checks (`validation_tier_scoping`, `numeric_diagnostics_for_guardrails`, `symmetric_dev_noise_band`, `failed_dev_families_in_research_state`) against the current PR head. It is a synthetic deterministic oracle: its 18 campaign E2E journeys are specifications, not tests run here, and it does not prove agent behavior or Bank Marketing campaign effectiveness.
 
 ## GitHub Actions
 
