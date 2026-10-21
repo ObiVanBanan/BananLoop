@@ -526,3 +526,36 @@ The `ANALYZE` stage uses an agent call if budget is available, so allow some
 agent budget beyond proposal+implementation calls when testing failure
 reflection. Missing diagnostic evidence is not a reason to hallucinate a
 root cause.
+
+### Metric-aware reflection, family-level reframe and dependency preflight
+
+The DEV analyst/proposer now receive `primary_metric_failure_guidance`. For
+PR-AUC and ROC-AUC, a false negative at a fixed decision cutoff does **not**
+by itself explain the ranking metric, and modifying only the cutoff cannot
+improve average precision or ROC-AUC while continuous scores remain fixed.
+Ask the trusted DEV evaluator for public score-order / precision-recall
+diagnostics if available; never invent such evidence or use hidden-tier labels.
+
+Each new hypothesis may specify `mechanism_family` (default: `mechanism_key`
+for previously saved campaigns). Families group variations of the *same
+causal intervention*, e.g. multiple regularization strengths. On `reframe`
+the core excludes `failed_dev_families` derived exclusively from recent
+unsuccessful DEV trials, even if an agent renames the mechanism key. DEV
+failure capsules and suggested discriminating regression tests are retained
+in `dev_lessons` across recovery. Family names are declared by the agent;
+this is not semantic-equivalence proof, and deliberately avoids leaking
+validation/holdout results into adaptation.
+
+After syntax and scope checks, candidate VERIFY runs a bounded static AST
+check for direct scikit-learn `OneHotEncoder(sparse=...)` calls. It queries
+**only package metadata** in the evaluator's isolated Python interpreter;
+for scikit-learn 1.4 or later, incompatible candidates are rejected as
+`IMPLEMENTATION_BLOCKED/CANDIDATE_PREFLIGHT_FAILED` without spending a
+DEV evaluator call. Wrapper commands and unknown runtimes skip this check,
+and other APIs are still subject to normal evaluator smoke/integration tests.
+This check does not execute candidate code or import it.
+
+Recommended dogfood: use `plateau_experiments=3` and sufficient budget for
+three distinguishable scientific trials. Verify the report contains past
+DEV theories, next discriminating tests, and failed mechanism families before
+judging whether the third hypothesis is genuinely different.
