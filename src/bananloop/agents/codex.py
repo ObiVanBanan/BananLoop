@@ -132,6 +132,7 @@ LEGACY_HYPOTHESIS_SCHEMA = {
         "files_or_area": {"type": "array", "items": {"type": "string"}},
         "falsification_condition": {"type": "string"},
         "mechanism_key": {"type": "string"},
+        "mechanism_family": {"type": "string"},
         "relation": {"type": "string", "enum": ["new", "refine", "retry", "supersede"]},
         "prior_experiment_refs": {"type": "array", "items": {"type": "integer"}},
         "novelty_rationale": {"type": "string"},
@@ -145,6 +146,7 @@ LEGACY_HYPOTHESIS_SCHEMA = {
         "files_or_area",
         "falsification_condition",
         "mechanism_key",
+        "mechanism_family",
         "relation",
         "prior_experiment_refs",
         "novelty_rationale",
@@ -363,6 +365,9 @@ class CodexAdapter(AgentAdapter):
                 "The evaluator must compare the same frozen inputs/settings for baseline and candidates, emit the "
                 "BananLoop JSON evaluation contract as one top-level object with status, metrics, checks, "
                 "protocol_sha256 when cases are emitted, and optional cases; metrics may be numbers or {value: number}. "
+                "For ranking metrics (PR-AUC/ROC-AUC), prefer DEV-only score-order or precision-recall "
+                "diagnostics already supported by the frozen evaluator; cutoff confusion counts alone "
+                "cannot establish the reason for ranking-metric changes. Never invent diagnostics. "
                 "If the DEV teacher labels are explicitly public, optionally emit up to five DEV-only failure_examples "
                 "with query, verdict, expected, actual, pipeline_trace, and up to eight identity-free failure_signals. "
                 "These are inspected only by the isolated DEV failure analyst; never expose hidden expected answers, "
@@ -398,7 +403,14 @@ class CodexAdapter(AgentAdapter):
             instruction = (
                 "Propose a bounded portfolio of 2-3 materially different, falsifiable hypotheses (never more than 4) for this measurable campaign. "
                 "Use the supplied research_state, its aggregate failure_signals, failure capsules, "
-                "stagnant_mechanisms, and experiment_evidence, and planning_mode. "
+                "stagnant_mechanisms, failed_dev_families, dev_lessons and experiment_evidence, and planning_mode. "
+                "Set hypothesis.mechanism_family to a stable causal category broader than mechanism_key; "
+                "two C-value or weighting variations of the same modeling idea must share a family. "
+                "In reframe mode never retest a family listed in failed_dev_families under a new name. "
+                "Discuss prior DEV falsifications or inconclusive results and choose a discriminating test "
+                "for a genuinely different causal mechanism. "
+                "Use primary_metric_failure_guidance to distinguish errors of the optimized metric "
+                "from auxiliary errors; in PR-AUC, a cutoff-only change cannot improve ranking AP. "
                 "When a mechanism has repeated the same DEV outcome, propose a materially different mechanism "
                 "family rather than a renamed weighting or tuning variant. Ground the new hypothesis in "
                 "the observed DEV errors and distinguish observation from conjecture. "
@@ -423,6 +435,10 @@ class CodexAdapter(AgentAdapter):
             instruction = (
                 "Analyze the supplied DEV-only failure signals and/or public DEV teacher examples against the candidate implementation. "
                 "Compare the intended mechanism and predicted effect to observed DEV errors. "
+                "Obey analysis_requirements.primary_metric_semantics and explain whether each error "
+                "can actually change the optimized metric. For PR-AUC, do not confuse fixed-threshold "
+                "false negatives with ranking loss; threshold-only changes preserve average precision. "
+                "Where DEV score-order evidence is missing, record that limitation and reduce confidence. "
                 "Do not modify files. Use exact public DEV expected answers only for diagnosis, then "
                 "distill causal, reusable lessons rather than memorizing individual benchmark cases. Do not copy "
                 "case IDs, product IDs, exact expected answers, or case-specific constants into the resulting "
