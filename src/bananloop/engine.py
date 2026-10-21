@@ -35,6 +35,7 @@ from .evaluator_binding import (
     make_receipt, runtime_descriptor, validate_receipt_linkage,
 )
 from .leakage import scan_forbidden_diff_patterns
+from .metric_semantics import metric_failure_guidance
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
 from .process import ProcessCancelled, check_process_control, process_control
 from .research import (
@@ -828,6 +829,7 @@ class Engine:
             "goal": self.spec.goal,
             "project_context": self.spec.project_context,
             "primary_metric": self.spec.primary_metric.model_dump(mode="json"),
+            "primary_metric_failure_guidance": metric_failure_guidance(self.spec.primary_metric.name),
             "guardrails": [
                 g.model_dump(mode="json")
                 for g in self.spec.guardrails
@@ -862,7 +864,9 @@ class Engine:
             },
             "planning_requirements": {
                 "failure_reflection": (
-                    "Review prior DEV failure capsules, DEV experiment evidence, and falsification tests. "
+                    "Review prior DEV failure capsules, DEV experiment evidence, falsified or inconclusive "
+                    "hypotheses, and their next discriminating tests. Explain why the previous mechanism failed "
+                    "to produce a meaningful DEV gain before proposing a new causal mechanism. "
                     "Explain which observation supports the next causal theory; do not memorize public DEV examples. "
                     "Do not infer or request validation/holdout examples, labels, or measurements."
                 ),
@@ -872,7 +876,7 @@ class Engine:
                 ),
                 "exploit": "build on the strongest DEV-supported mechanism without duplicating prior work",
                 "explore": "test a materially different mechanism family from recent failed attempts",
-                "reframe": "challenge the current framing and choose a new mechanism family before plateau",
+                "reframe": "challenge the current framing, avoid families of recent unsuccessful DEV trials, and choose a new mechanism before plateau",
                 "genealogy": (
                     "If reusing a mechanism_key, set relation to refine/retry/supersede "
                     "and cite a matching prior experiment ordinal."
@@ -1489,6 +1493,8 @@ class Engine:
             "explain_failed_hypothesis_against_dev_evidence": True,
             "suggest_a_discriminating_regression_test": True,
             "do_not_infer_causes_from_aggregate_scores_alone": True,
+            "primary_metric_semantics": metric_failure_guidance(self.spec.primary_metric.name),
+            "explain_target_metric_not_just_auxiliary_cutoff_errors": True,
         }
         return task
 
