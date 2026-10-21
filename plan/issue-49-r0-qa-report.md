@@ -19,7 +19,7 @@ The full run was performed after the runtime probe changes; the report-only edit
 
 ## GitHub Actions
 
-Latest run [39649047084](https://github.com/ObiVanBanan/BananLoop/actions/runs/39649047084), revision `ef3d5193015ac22bd6323352452085eac003ddb4`, reports all four matrix jobs failed. The GitHub Actions API shows each job completed in about two seconds with `runner_id=0`, an empty `runner_name`, and `steps=[]`. The failure occurred before runner assignment and before checkout/setup/pytest. The prior fail-fast-disabled run [39647659677](https://github.com/ObiVanBanan/BananLoop/actions/runs/39647659677) showed the same pattern. Log downloads return `BlobNotFound`.
+Runs [39649047084](https://github.com/ObiVanBanan/BananLoop/actions/runs/39649047084) and [39649477862](https://github.com/ObiVanBanan/BananLoop/actions/runs/39649477862), revisions `ef3d519` and `1fb34e4`, each report all four matrix jobs failed. The GitHub Actions API shows every job completed in about two seconds with `runner_id=0`, an empty `runner_name`, and `steps=[]`. The failure occurred before runner assignment and before checkout/setup/pytest. The prior fail-fast-disabled run [39647659677](https://github.com/ObiVanBanan/BananLoop/actions/runs/39647659677) showed the same pattern. Log downloads return `BlobNotFound`.
 
 **Conclusion:** the Linux/Windows CI gate is not green and cannot be counted as executed. Available evidence points to hosted-runner startup failure rather than a test failure; a runner-assigned rerun is required to establish CI results.
 
