@@ -867,7 +867,7 @@ def test_agent_history_and_research_state_use_only_dev_evidence(tmp_path: Path):
         store.close()
 
 
-def test_partial_dev_gain_does_not_trigger_plateau_or_promote(tmp_path: Path):
+def test_subthreshold_dev_gain_counts_as_no_progress_without_promotion(tmp_path: Path):
     store, engine, _, _ = make_engine(tmp_path)
     try:
         engine.workspace.ensure(engine.spec.base_commit)
@@ -902,8 +902,10 @@ def test_partial_dev_gain_does_not_trigger_plateau_or_promote(tmp_path: Path):
         engine._stage_record(attempt_id, experiment_id)
         assert store.experiment(experiment_id)["status"] == "REJECTED"
         assert store.campaign()["champion_json"] == champion
-        assert store.campaign()["non_improve_streak"] == 0
-        assert engine._post_iteration_stop() is False
+        # The +0.1 gain is smaller than min_improvement=0.5. It is
+        # inconclusive noise, not scientific progress that resets the streak.
+        assert store.campaign()["non_improve_streak"] == 3
+        assert engine._post_iteration_stop() is False  # One bounded reframe remains.
     finally:
         store.close()
 
