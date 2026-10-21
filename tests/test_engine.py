@@ -1645,3 +1645,50 @@ def test_evaluation_request_records_candidate_materialization_proof(tmp_path: Pa
         assert report["experiments"][0]["candidate_proof"] == proof
     finally:
         store.close()
+
+def test_public_dev_examples_without_signals_trigger_failure_analysis(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        hypothesis = Hypothesis(
+            hypothesis="fix candidate matching",
+            rationale="DEV teacher evidence",
+            expected_effect="fewer mistakes",
+            files_or_area=["value.txt"],
+            falsification_condition="no DEV improvement",
+            mechanism_key="matching-reconcile",
+        )
+        candidate = EvaluationResult.model_validate({
+            "status": "ok",
+            "metrics": {"quality": 0.0, "regressions": 0.0},
+            "checks": {"tests": True},
+            "failure_examples": [{
+                "query": "item EX-123",
+                "verdict": "FAIL_WRONG_RESULT",
+                "expected": {"result": "correct"},
+                "actual": {"result": "incorrect"},
+                "pipeline_trace": {"stage": "rerank"},
+            }],
+        })
+        store.update_experiment(
+            experiment_id,
+            hypothesis_json=hypothesis.model_dump_json(),
+            candidate_snapshot=campaign["champion_snapshot"],
+            evaluation_json=candidate.model_dump_json(),
+        )
+        engine._stage_decide(attempt_id, experiment_id)
+        assert store.attempt(attempt_id)["stage"] == "ANALYZE"
+
+        analyzer = CapturingFailureAnalyzer()
+        engine.agent = analyzer
+        engine._stage_analyze(attempt_id, experiment_id)
+        assert analyzer.task is not None
+        assert analyzer.task["dev_failure_signals"] == []
+        assert analyzer.task["dev_failure_examples"][0]["query"] == "item EX-123"
+        assert store.attempt(attempt_id)["stage"] == "REJECT"
+        assert json.loads(store.experiment(experiment_id)["failure_analysis_json"])["capsules"]
+    finally:
+        store.close()
