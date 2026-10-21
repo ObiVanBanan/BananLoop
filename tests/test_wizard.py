@@ -33,6 +33,28 @@ def test_discovery_reports_common_tests_and_installed_agents(tmp_path: Path, mon
     assert found["agents"] == ["pi"]
 
 
+def test_discovery_lists_project_resources_without_reading_env_values(tmp_path: Path):
+    (tmp_path / ".env").write_text("QDRANT_API_KEY=never-print-this\n", encoding="utf-8")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "catalog.csv").write_text("id,name\n", encoding="utf-8")
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "benchmark.py").write_text("", encoding="utf-8")
+    (tmp_path / "EXPERIMENT_HISTORY.md").write_text("E06 seed 53", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "benchmark-leak.py").write_text("", encoding="utf-8")
+
+    found = discover_project(tmp_path)
+
+    assert found["resources"]["env_files"] == [".env"]
+    assert found["resources"]["env_keys"] == ["QDRANT_API_KEY"]
+    assert found["resources"]["csv_files"] == ["data/catalog.csv"]
+    assert found["resources"]["compose_files"] == ["docker-compose.yml"]
+    assert found["resources"]["benchmark_files"] == ["scripts/benchmark.py"]
+    assert found["resources"]["history_files"] == ["EXPERIMENT_HISTORY.md"]
+    assert "never-print-this" not in repr(found)
+
+
 def test_init_wizard_collects_minimum_campaign_fields(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(wizard.shutil, "which", lambda name: None)
     answers = iter([
@@ -92,3 +114,25 @@ def test_resume_parser_accepts_failed_action_retry():
 def test_resume_parser_accepts_agent_timeout_override():
     args = parser().parse_args(["resume", "--agent-timeout-seconds", "3600"])
     assert args.agent_timeout_seconds == 3600
+
+def test_discovery_prefers_project_local_python(tmp_path: Path, monkeypatch):
+    project_python = tmp_path / ".venv" / "bin" / "python"
+    project_python.parent.mkdir(parents=True)
+    project_python.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(
+        wizard,
+        "_python_version",
+        lambda executable: "3.12.9",
+    )
+    monkeypatch.setattr(
+        wizard.shutil,
+        "which",
+        lambda name: "/usr/bin/python3" if name in {"python", "python3"} else None,
+    )
+
+    found = discover_project(tmp_path)
+
+    assert found["python_runtimes"][0]["executable"] == str(project_python.resolve())
+    assert found["python_runtimes"][0]["source"] == "project"
+    assert found["preferred_python_runtime"]["executable"] == str(project_python.resolve())

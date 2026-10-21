@@ -1,0 +1,939 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from bananloop.bootstrap import BootstrapError, BootstrapPlan, BootstrapSignalSanity, _bind_plan_runtime, _bootstrap_contract_error, _bootstrap_path, _bootstrap_task, _validate_agent_visible_training_paths, bootstrap_campaign
+from bananloop.contracts import AgentConfig, RuntimePaths
+from bananloop.store import CampaignStore
+from bananloop.wizard import _parse_py_launcher_paths, discover_project
+
+
+PROTOCOL_SHA256 = "a" * 64
+
+
+def test_agent_visible_training_paths_are_limited_to_discovered_training_resources():
+    assert _validate_agent_visible_training_paths(
+        ["data/train.csv"],
+        ["data/train.csv", "data/eval.csv"],
+    ) == ["data/train.csv"]
+
+    for path in (
+        "data/eval.csv",
+        "data/test.csv",
+        "data/train_eval.csv",
+        "../train.csv",
+        "outside/train.csv",
+    ):
+        with pytest.raises(BootstrapError, match="discovered training resources"):
+            _validate_agent_visible_training_paths(
+                [path],
+                ["data/train.csv", "data/eval.csv"],
+            )
+
+
+def test_signal_sanity_contract_rejects_fabricated_or_incomplete_labels():
+    with pytest.raises(ValueError, match="explicit reason"):
+        BootstrapSignalSanity.model_validate({"status": "unavailable"})
+    with pytest.raises(ValueError, match="positive and negative case IDs"):
+        BootstrapSignalSanity.model_validate({
+            "status": "configured", "evidence_kind": "known_examples", "metric": "quality",
+            "positive_case_ids": ["good"], "negative_case_ids": [],
+        })
+    with pytest.raises(ValueError, match="cannot claim labeled case IDs"):
+        BootstrapSignalSanity.model_validate({
+            "status": "unavailable", "reason": "No examples.",
+            "positive_case_ids": ["good"],
+        })
+    with pytest.raises(ValueError, match="unique within each group"):
+        BootstrapSignalSanity.model_validate({
+            "status": "configured", "evidence_kind": "known_examples", "metric": "quality",
+            "positive_case_ids": ["good", "good"], "negative_case_ids": ["bad"],
+        })
+
+
+def git(args: list[str], cwd: Path) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+
+
+def make_repo(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "project"
+    repo.mkdir()
+    (repo / "value.txt").write_text("0\n", encoding="utf-8")
+    (repo / "bootstrap_agent.py").write_text(
+        "import json\n"
+        "from pathlib import Path\n"
+        "root=Path('.bananloop_eval')\n"
+        "root.mkdir(exist_ok=True)\n"
+        "(root/'evaluator.py').write_text("
+        f"\"import json\\nprint(json.dumps({{'status':'ok','metrics':{{'quality':0.0}},'protocol_sha256':'{PROTOCOL_SHA256}'}}))\\n\""
+        ")\n"
+        "print(json.dumps({"
+        "'status':'ready',"
+        "'summary':'fixture campaign',"
+        "'project_context':'value.txt is the production lever; evaluator.py scores it',"
+        "'needs_input':[],"
+        "'evaluation_command':[" + repr(sys.executable) + ",'.bananloop_eval/evaluator.py'],"
+        "'validation_command':[],"
+        "'holdout_command':[],"
+        "'primary_metric':{'name':'quality','direction':'maximize','target':1.0,'min_improvement':0.1},"
+        "'guardrails':[],"
+        "'non_regression':[],"
+        "'mandatory_checks':[],"
+        "'editable_scope':['value.txt'],"
+        "'protected_paths':[],"
+        "'agent_visible_metrics':['quality'],"
+        "'agent_visible_diagnostics':[],"
+        "'paired_comparison':{'enabled':False,'case_count':1,'repetitions':1,'metric':'quality','direction':'maximize','min_wins':1,'worst_case_tolerance':0.0},"
+        "'evaluator_timeout_seconds':60"
+        "}))\n",
+        encoding="utf-8",
+    )
+    git(["init"], repo)
+    git(["config", "user.email", "test@example.com"], repo)
+    git(["config", "user.name", "Test"], repo)
+    git(["add", "."], repo)
+    git(["commit", "-m", "baseline"], repo)
+    return repo, git(["rev-parse", "HEAD"], repo)
+
+
+def test_bootstrap_plan_rejects_ambiguous_needs_input():
+    payload = {
+        "status": "needs_input",
+        "summary": "missing refs",
+        "project_context": "",
+        "needs_input": [],
+        "evaluation_command": [],
+        "validation_command": [],
+        "holdout_command": [],
+        "primary_metric": {
+            "name": "quality",
+            "direction": "maximize",
+            "target": 1.0,
+            "min_improvement": 0.1,
+        },
+        "guardrails": [],
+        "non_regression": [],
+        "mandatory_checks": [],
+        "editable_scope": ["**"],
+        "protected_paths": [],
+        "agent_visible_metrics": [],
+        "agent_visible_diagnostics": [],
+        "paired_comparison": {
+            "enabled": False,
+            "case_count": 1,
+            "repetitions": 1,
+            "metric": "quality",
+            "direction": "maximize",
+            "min_wins": 1,
+            "worst_case_tolerance": 0.0,
+        },
+        "evaluator_timeout_seconds": 60,
+    }
+    try:
+        BootstrapPlan.model_validate(payload)
+    except ValueError as exc:
+        assert "must explain what input is missing" in str(exc)
+    else:
+        raise AssertionError("needs_input without actionable input must fail")
+
+
+def test_bootstrap_plan_accepts_empty_manifest_command_tiers():
+    payload = _bootstrap_payload(status="ready", needs_input=[], summary="ready fixture")
+    payload["protocol_manifest_commands"] = {
+        "dev": [], "validation": [], "holdout": []
+    }
+    plan = BootstrapPlan.model_validate(payload)
+    assert plan.protocol_manifest_commands == {
+        "dev": [], "validation": [], "holdout": []
+    }
+
+
+def test_bootstrap_path_is_restricted_to_private_evaluator_area():
+    assert _bootstrap_path(".bananloop_eval/evaluator.py")
+    assert _bootstrap_path(".bananloop_eval/config/cases.json")
+    assert not _bootstrap_path("src/product.py")
+    assert not _bootstrap_path("tests/test_product.py")
+
+
+def test_repo_goal_bootstrap_creates_campaign_without_touching_source(tmp_path: Path):
+    repo, source_base = make_repo(tmp_path)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "state")
+
+    plan, spec = bootstrap_campaign(
+        repo=repo,
+        goal="improve fixture quality",
+        paths=paths,
+        agent_config=AgentConfig(
+            kind="command",
+            command=[sys.executable, "bootstrap_agent.py"],
+        ),
+        max_experiments=2,
+        max_attempts=3,
+        max_agent_calls=6,
+        max_evaluator_calls=4,
+        deadline_seconds=600,
+    )
+
+    assert plan.status == "ready"
+    assert spec is not None
+    assert spec.project_context.startswith("value.txt")
+    assert spec.base_commit != source_base
+    assert ".bananloop_eval/evaluator.py" in {
+        asset.path for asset in spec.evaluation_assets
+    }
+    assert ".bananloop_eval/**" in spec.protected_paths
+    assert ".bananloop_eval/**" in spec.agent_hidden_paths
+
+    assert git(["rev-parse", "HEAD"], repo) == source_base
+    assert git(["status", "--porcelain"], repo) == ""
+    assert not (repo / ".bananloop_eval").exists()
+
+    store = CampaignStore(paths.db)
+    try:
+        persisted = store.spec()
+        assert persisted.approved_hash() == spec.approved_hash()
+        assert persisted.primary_metric.name == "quality"
+    finally:
+        store.close()
+
+    record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
+    assert record["source_base_commit"] == source_base
+    assert record["changed_paths"] == [".bananloop_eval/evaluator.py"]
+    assert record["bootstrap_attempts"][-1]["readiness"]["signal_sanity"]["status"] == "UNAVAILABLE"
+    assert record["bootstrap_attempts"][-1]["readiness"]["signal_sanity"]["reason"]
+    assert record["bootstrap_request"]["goal"] == "improve fixture quality"
+    assert record["bootstrap_request"]["repository"]["detected_python_runtimes"]
+
+
+def test_bootstrap_persists_core_frozen_protocol_manifest(tmp_path: Path):
+    repo = tmp_path / "project"
+    repo.mkdir()
+    (repo / "value.txt").write_text("0\n", encoding="utf-8")
+    (repo / "bootstrap_agent.py").write_text(
+        "import json,sys\n"
+        "from pathlib import Path\n"
+        "root=Path('.bananloop_eval'); root.mkdir(exist_ok=True)\n"
+        "(root/'manifest.py').write_text(\"import json\\n"
+        f"print(json.dumps({{'protocol_sha256':'{'a' * 64}','cases':["
+        f"{{'case_id':'case-a','repetition':0,'input_sha256':'{'b' * 64}'}},"
+        f"{{'case_id':'case-b','repetition':0,'input_sha256':'{'c' * 64}'}}]}}))\\n\")\n"
+        "(root/'evaluator.py').write_text(\"import json,os\\n"
+        "m=json.load(open(os.environ['BANANLOOP_PROTOCOL_MANIFEST']))\\n"
+        "cases=[dict(c,metrics={'quality':0.5}) for c in m['cases']]\\n"
+        "print(json.dumps({'status':'ok','metrics':{'quality':0.5},'checks':{},"
+        "'protocol_sha256':m['protocol_sha256'],'cases':cases}))\\n\")\n"
+        "print(json.dumps({"
+        "'status':'ready','summary':'fixed protocol fixture','project_context':'value.txt is production',"
+        "'needs_input':[],'evaluation_command':[sys.executable,'.bananloop_eval/evaluator.py'],"
+        "'smoke_command':[sys.executable,'.bananloop_eval/evaluator.py'],"
+        "'protocol_manifest_commands':{'dev':[sys.executable,'.bananloop_eval/manifest.py']},"
+        "'validation_command':[],'holdout_command':[],"
+        "'primary_metric':{'name':'quality','direction':'maximize','target':1.0,'min_improvement':0.1},"
+        "'guardrails':[],'non_regression':[],'mandatory_checks':[],'editable_scope':['value.txt'],"
+        "'protected_paths':['.bananloop_eval/**'],'agent_visible_metrics':['quality'],"
+        "'agent_visible_diagnostics':[],'paired_comparison':{'enabled':False,'case_count':1,"
+        "'repetitions':1,'metric':'quality','direction':'maximize','min_wins':1,'worst_case_tolerance':0.0},"
+        "'evaluator_timeout_seconds':60}))\n",
+        encoding="utf-8",
+    )
+    git(["init"], repo)
+    git(["config", "user.email", "test@example.com"], repo)
+    git(["config", "user.name", "Test"], repo)
+    git(["add", "."], repo)
+    git(["commit", "-m", "baseline"], repo)
+    source_base = git(["rev-parse", "HEAD"], repo)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "state")
+
+    _, spec = bootstrap_campaign(
+        repo=repo,
+        goal="improve quality on fixed inputs",
+        paths=paths,
+        agent_config=AgentConfig(kind="command", command=[sys.executable, "bootstrap_agent.py"]),
+        max_experiments=1,
+        max_attempts=1,
+        max_agent_calls=2,
+        max_evaluator_calls=3,
+        deadline_seconds=600,
+    )
+
+    assert spec is not None
+    assert len(spec.protocol_manifests["dev"].cases) == 2
+    assert "protocol_manifests" in json.loads(spec.model_dump_json())
+    assert git(["rev-parse", "HEAD"], repo) == source_base
+    store = CampaignStore(paths.db)
+    try:
+        persisted = store.spec()
+        assert persisted.protocol_manifests["dev"] == spec.protocol_manifests["dev"]
+        assert persisted.approved_hash() == spec.approved_hash()
+    finally:
+        store.close()
+
+
+def test_bootstrap_agent_failure_persists_sanitized_attempt_receipt(tmp_path, monkeypatch):
+    import bananloop.bootstrap as bootstrap_module
+    from bananloop.agents.base import AgentError
+
+    repo, _ = make_repo(tmp_path)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "state")
+
+    class FailingAgent:
+        def probe(self):
+            return {"available": True, "kind": "fixture", "version": "1"}
+
+        def execute(self, task, workspace, timeout):
+            raise AgentError("provider failure with secret=must-not-persist")
+
+    monkeypatch.setattr(bootstrap_module, "_agent", lambda _config: FailingAgent())
+    with pytest.raises(BootstrapError, match="agent call failed") as exc_info:
+        bootstrap_campaign(
+            repo=repo,
+            goal="fix the fixture",
+            paths=paths,
+            agent_config=AgentConfig(kind="codex"),
+        )
+
+    record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
+    failure = record["bootstrap_attempts"][0]["failure"]
+    assert failure == {"category": "agent_call_failed", "error_type": "AgentError"}
+    assert "must-not-persist" not in json.dumps(record)
+    assert "must-not-persist" not in str(exc_info.value)
+    assert not paths.db.exists()
+
+
+
+def test_py_launcher_output_discovers_windows_python_paths():
+    output = """ -V:3.13 *        C:\\Python313\\python.exe
+ -V:3.12          C:\\Users\\test\\AppData\\Local\\Programs\\Python\\Python312\\python.exe
+"""
+    assert _parse_py_launcher_paths(output) == [
+        r"C:\Python313\python.exe",
+        r"C:\Users\test\AppData\Local\Programs\Python\Python312\python.exe",
+    ]
+
+
+def test_project_discovery_always_reports_current_python(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    discovery = discover_project(repo)
+
+    assert any(
+        runtime["executable"] == sys.executable
+        for runtime in discovery["python_runtimes"]
+    )
+    assert all(runtime["version"] for runtime in discovery["python_runtimes"])
+
+
+def test_bootstrap_task_makes_cli_goal_authoritative(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    task = _bootstrap_task(
+        repo,
+        "improve similarity to reference images",
+        "deadbeef",
+        AgentConfig(kind="codex"),
+    )
+
+    assert task["goal"] == "improve similarity to reference images"
+    assert task["requirements"]["goal_is_authoritative"] is True
+    assert task["requirements"]["do_not_request_goal_file_when_goal_is_present"] is True
+    assert task["requirements"]["resolve_conflicting_evaluators_by_goal_semantics"] is True
+    assert task["requirements"]["use_detected_runtimes_before_requesting_python_environment"] is True
+    assert task["requirements"]["reuse_discovered_project_resources"] is True
+    assert task["requirements"]["never_request_a_path_already_present_in_detected_resources"] is True
+    assert task["requirements"]["do_not_open_secret_env_files_or_echo_secret_values"] is True
+    assert task["requirements"]["use_detected_environment_variable_names_without_requesting_secret_values"] is True
+    assert task["requirements"]["primary_metric_measures_goal_outcome"] is True
+    assert task["requirements"]["include_goal_specific_behavioral_probes"] is True
+    assert task["requirements"]["tests_are_secondary_regression_checks"] is True
+    assert task["requirements"]["mandatory_checks_are_evaluator_check_keys_only"] is True
+    assert task["requirements"]["mandatory_checks_must_not_contain_prose_commands_or_metrics"] is True
+    assert task["requirements"]["use_empty_mandatory_checks_when_no_applicable_check_key_is_known"] is True
+    assert task["requirements"]["bootstrap_smoke_must_return_nonempty_manifest_member_case_identities"] is True
+    assert task["requirements"]["bootstrap_smoke_protocol_sha256_must_match_manifest"] is True
+    assert task["requirements"]["bootstrap_smoke_subset_must_preserve_primary_metric_semantics"] is True
+    assert task["requirements"]["use_full_manifest_when_no_valid_semantic_smoke_subset_exists"] is True
+    assert task["requirements"]["candidate_evaluation_uses_candidate_snapshot"] is True
+    assert task["requirements"]["do_not_import_or_execute_host_checkout"] is True
+    assert task["requirements"]["test_temp_files_use_os_tempdir"] is True
+    assert task["requirements"]["do_not_redirect_test_temp_to_artifact_dir"] is True
+    assert task["requirements"]["keep_windows_temp_paths_short"] is True
+    assert task["requirements"]["fixed_input_identity_is_independent_of_paired_acceptance"] is True
+    assert task["requirements"]["do_not_enable_paired_comparison_solely_for_a_fixed_input_manifest"] is True
+    assert task["requirements"]["require_a_scientific_reason_for_paired_comparison"] is True
+    assert task["requirements"]["freeze_case_identities_before_full_scoring"] is True
+    assert task["requirements"]["protocol_manifest_command_must_enumerate_without_scoring"] is True
+    assert task["requirements"]["full_evaluator_must_read_and_honor_bananloop_protocol_manifest"] is True
+    assert task["requirements"]["protocol_manifests_are_separate_per_configured_tier"] is True
+    assert task["repository"]["detected_python_runtimes"]
+
+
+def test_fixed_input_manifest_does_not_imply_paired_acceptance(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    task = _bootstrap_task(
+        repo,
+        "Improve quality on the same fixed evaluation inputs",
+        "deadbeef",
+        AgentConfig(kind="codex"),
+    )
+
+    requirements = task["requirements"]
+    assert requirements["fixed_input_identity_is_independent_of_paired_acceptance"] is True
+    assert requirements["do_not_enable_paired_comparison_solely_for_a_fixed_input_manifest"] is True
+    assert requirements["require_a_scientific_reason_for_paired_comparison"] is True
+
+
+
+def _bootstrap_payload(*, status: str, needs_input: list[str], summary: str) -> dict:
+    return {
+        "status": status,
+        "summary": summary,
+        "project_context": "fixture context" if status == "ready" else "",
+        "needs_input": needs_input,
+        "evaluation_command": [sys.executable, ".bananloop_eval/evaluator.py"] if status == "ready" else [],
+        "validation_command": [],
+        "holdout_command": [],
+        "primary_metric": {
+            "name": "quality" if status == "ready" else "",
+            "direction": "maximize",
+            "target": 1.0 if status == "ready" else 0.0,
+            "min_improvement": 0.1,
+        },
+        "guardrails": [],
+        "non_regression": [],
+        "mandatory_checks": [],
+        "editable_scope": ["value.txt"] if status == "ready" else [],
+        "protected_paths": [],
+        "agent_visible_metrics": ["quality"] if status == "ready" else [],
+        "agent_visible_diagnostics": [],
+        "paired_comparison": {
+            "enabled": False,
+            "case_count": 1,
+            "repetitions": 1,
+            "metric": "quality" if status == "ready" else "",
+            "direction": "maximize",
+            "min_wins": 1,
+            "worst_case_tolerance": 0.0,
+        },
+        "evaluator_timeout_seconds": 60,
+    }
+
+
+def test_bootstrap_repairs_schema_invalid_plan_without_persisting_untrusted_keys(
+    tmp_path: Path, monkeypatch
+):
+    import bananloop.bootstrap as bootstrap_module
+
+    repo, _ = make_repo(tmp_path)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "schema-repair-state")
+    secret = "INVALID_RESPONSE_SECRET_SENTINEL"
+    requests: list[dict] = []
+
+    class RepairingAgent:
+        def probe(self):
+            return {"available": True, "kind": "fixture", "version": "1"}
+
+        def normalize_result(self, task, result):
+            return result
+
+        def execute(self, task, workspace, timeout):
+            requests.append(task)
+            if len(requests) == 1:
+                return {"status": "ready", f"untrusted_{secret}": secret}
+            evaluator = workspace / ".bananloop_eval" / "evaluator.py"
+            evaluator.parent.mkdir(parents=True, exist_ok=True)
+            evaluator.write_text(
+                "import json\n"
+                f"print(json.dumps({{'status':'ok','metrics':{{'quality':0.0}},'protocol_sha256':'{PROTOCOL_SHA256}'}}))\n",
+                encoding="utf-8",
+            )
+            return _bootstrap_payload(
+                status="ready", needs_input=[], summary="repaired structured plan"
+            )
+
+    monkeypatch.setattr(bootstrap_module, "_agent", lambda _config: RepairingAgent())
+    plan, spec = bootstrap_campaign(
+        repo=repo,
+        goal="improve fixture quality",
+        paths=paths,
+        agent_config=AgentConfig(kind="codex"),
+        max_experiments=1,
+        max_attempts=1,
+        max_agent_calls=1,
+        max_evaluator_calls=1,
+        deadline_seconds=120,
+    )
+
+    record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
+    first_failure = record["bootstrap_attempts"][0]["failure"]
+    assert plan.status == "ready"
+    assert spec is not None
+    assert len(requests) == 2
+    assert requests[1]["repair"]["validation_errors"]
+    assert first_failure["category"] == "invalid_response"
+    assert first_failure["validation_errors"] == requests[1]["repair"]["validation_errors"]
+    assert secret not in json.dumps(record)
+    assert secret not in json.dumps(requests[1])
+
+
+def test_bootstrap_contract_rejects_request_to_repeat_supplied_goal(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    task = _bootstrap_task(
+        repo,
+        "improve similarity to reference images",
+        "deadbeef",
+        AgentConfig(kind="codex"),
+    )
+    plan = BootstrapPlan.model_validate(
+        _bootstrap_payload(
+            status="needs_input",
+            needs_input=["Provide the authoritative human goal text."],
+            summary="The human goal is not present.",
+        )
+    )
+
+    error = _bootstrap_contract_error(plan, task)
+
+    assert error is not None
+    assert "goal" in error
+
+
+@pytest.mark.parametrize(
+    "filename,message_text,resource_kind",
+    [
+        ("catalog.csv", "Provide the path to the CSV catalog.", "csv_files"),
+        (".env", "Provide the path to the .env file.", "env_files"),
+    ],
+)
+def test_bootstrap_contract_repairs_request_for_discovered_resource(
+    tmp_path: Path, filename: str, message_text: str, resource_kind: str,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / filename).write_text("", encoding="utf-8")
+    task = _bootstrap_task(repo, "Improve quality", "deadbeef", AgentConfig(kind="codex"))
+    plan = BootstrapPlan.model_validate(
+        _bootstrap_payload(status="needs_input", needs_input=[message_text], summary=message_text)
+    )
+
+    error = _bootstrap_contract_error(plan, task)
+
+    assert error is not None
+    assert resource_kind in error
+
+
+def test_bootstrap_contract_still_requests_missing_secret_even_when_env_file_exists(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".env").write_text("", encoding="utf-8")
+    (repo / "benchmark.py").write_text("", encoding="utf-8")
+    (repo / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    task = _bootstrap_task(repo, "Improve quality", "deadbeef", AgentConfig(kind="codex"))
+    plan = BootstrapPlan.model_validate(
+        _bootstrap_payload(
+            status="needs_input",
+            needs_input=["Provide the missing Qdrant API key."],
+            summary="The benchmark is ready, but a credential is absent.",
+        )
+    )
+
+    assert _bootstrap_contract_error(plan, task) is None
+
+
+@pytest.mark.parametrize(
+    "message_text",
+    [
+        "Provide a Python interpreter path.",
+        "The Python runtime is unavailable.",
+        "Укажите путь к интерпретатору Python.",
+    ],
+)
+def test_bootstrap_contract_repairs_request_for_detected_runtime(tmp_path: Path, message_text: str):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    task = _bootstrap_task(repo, "Improve quality", "deadbeef", AgentConfig(kind="codex"))
+    task["repository"]["detected_python_runtimes"] = [
+        {"executable": "C:/Python313/python.exe", "version": "3.13.1"}
+    ]
+    plan = BootstrapPlan.model_validate(
+        _bootstrap_payload(status="needs_input", needs_input=[message_text], summary=message_text)
+    )
+
+    assert _bootstrap_contract_error(plan, task) is not None
+
+
+@pytest.mark.parametrize(
+    "message_text",
+    [
+        "Install the missing package pillow.",
+        "Provide the API token.",
+        "Provide the missing reference images.",
+        "Require Python >=3.14 for this project.",
+    ],
+)
+def test_bootstrap_contract_preserves_real_prerequisites(tmp_path: Path, message_text: str):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    task = _bootstrap_task(repo, "Improve quality", "deadbeef", AgentConfig(kind="codex"))
+    task["repository"]["detected_python_runtimes"] = [
+        {"executable": "C:/Python313/python.exe", "version": "3.13.1"}
+    ]
+    plan = BootstrapPlan.model_validate(
+        _bootstrap_payload(status="needs_input", needs_input=[message_text], summary=message_text)
+    )
+
+    assert _bootstrap_contract_error(plan, task) is None
+
+
+def test_bootstrap_auto_repairs_false_goal_request(tmp_path: Path):
+    repo, source_base = make_repo(tmp_path)
+    (repo / "repair_agent.py").write_text(
+        "import json\n"
+        "from pathlib import Path\n"
+        "marker=Path('.bananloop_eval/repair_seen.txt')\n"
+        "marker.parent.mkdir(exist_ok=True)\n"
+        "if not marker.exists():\n"
+        " marker.write_text('1')\n"
+        " print(json.dumps(" + repr(_bootstrap_payload(
+            status="needs_input",
+            needs_input=["Provide the authoritative human goal text."],
+            summary="The human goal is not present.",
+        )) + "))\n"
+        "else:\n"
+        " Path('.bananloop_eval/evaluator.py').write_text("
+        f"\"import json\\nprint(json.dumps({{'status':'ok','metrics':{{'quality':0.0}},'protocol_sha256':'{PROTOCOL_SHA256}'}}))\\n\""
+        ")\n"
+        " print(json.dumps(" + repr(_bootstrap_payload(
+            status="ready",
+            needs_input=[],
+            summary="goal recovered from bootstrap request",
+        )) + "))\n",
+        encoding="utf-8",
+    )
+    git(["add", "repair_agent.py"], repo)
+    git(["commit", "-m", "add repair fixture"], repo)
+    source_base = git(["rev-parse", "HEAD"], repo)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "repair-state")
+
+    plan, spec = bootstrap_campaign(
+        repo=repo,
+        goal="improve similarity to reference images",
+        paths=paths,
+        agent_config=AgentConfig(
+            kind="command",
+            command=[sys.executable, "repair_agent.py"],
+        ),
+        max_experiments=1,
+        max_attempts=2,
+        max_agent_calls=4,
+        max_evaluator_calls=2,
+        deadline_seconds=300,
+    )
+
+    assert plan.status == "ready"
+    assert spec is not None
+    assert spec.signal_sanity_status == "UNAVAILABLE"
+    assert len(spec.signal_sanity_receipt_sha256) == 64
+    record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
+    assert len(record["bootstrap_attempts"]) == 2
+    assert record["bootstrap_attempts"][0]["contract_error"]
+    assert record["bootstrap_attempts"][1]["contract_error"] is None
+    assert record["bootstrap_request"]["goal"] == "improve similarity to reference images"
+    assert git(["rev-parse", "HEAD"], repo) == source_base
+
+
+
+def test_bootstrap_repairs_failed_core_owned_smoke(tmp_path: Path):
+    repo, _ = make_repo(tmp_path)
+    payload = _bootstrap_payload(
+        status="ready",
+        needs_input=[],
+        summary="fixture evaluator",
+    )
+    payload["smoke_command"] = [sys.executable, ".bananloop_eval/evaluator.py"]
+    agent = repo / "smoke_repair_agent.py"
+    agent.write_text(
+        "import json,sys\n"
+        "from pathlib import Path\n"
+        "task=json.load(sys.stdin)\n"
+        "root=Path('.bananloop_eval'); root.mkdir(exist_ok=True)\n"
+        "if task.get('repair',{}).get('readiness_error'):\n"
+        " root.joinpath('evaluator.py').write_text("
+        f"\"import json\\nprint(json.dumps({{'status':'ok','metrics':{{'quality':0.2}},'checks':{{}},'protocol_sha256':'{PROTOCOL_SHA256}'}}))\\n\""
+        ")\n"
+        "else:\n"
+        " root.joinpath('evaluator.py').write_text("
+        "\"import json\\nprint(json.dumps({'status':'ok','metrics':{'wrong':0.2},'checks':{}}))\\n\""
+        ")\n"
+        f"print(json.dumps({payload!r}))\n",
+        encoding="utf-8",
+    )
+    git(["add", "smoke_repair_agent.py"], repo)
+    git(["commit", "-m", "add smoke repair fixture"], repo)
+    source_base = git(["rev-parse", "HEAD"], repo)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "smoke-repair-state")
+
+    plan, spec = bootstrap_campaign(
+        repo=repo,
+        goal="improve fixture quality",
+        paths=paths,
+        agent_config=AgentConfig(
+            kind="command",
+            command=[sys.executable, "smoke_repair_agent.py"],
+        ),
+        max_experiments=1,
+        max_attempts=2,
+        max_agent_calls=4,
+        max_evaluator_calls=2,
+        deadline_seconds=300,
+    )
+
+    assert plan.status == "ready"
+    assert spec is not None
+    approved_hash = spec.approved_hash()
+    record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
+    assert len(record["bootstrap_attempts"]) == 2
+    assert record["bootstrap_attempts"][0]["readiness"]["status"] == "FAILED"
+    assert "missing required metric" in record["bootstrap_attempts"][0]["readiness"]["error"]
+    assert record["bootstrap_attempts"][1]["readiness"]["status"] == "PASSED"
+    assert record["bootstrap_attempts"][1]["readiness"]["primary_values"] == [0.2, 0.2, 0.2]
+    assert record["bootstrap_attempts"][1]["readiness"]["calibration"]["repeat_count"] == 3
+    assert "calibration" not in spec.model_dump(mode="json")
+    store = CampaignStore(paths.db)
+    try:
+        assert store.spec().approved_hash() == approved_hash
+    finally:
+        store.close()
+    assert spec.base_commit == record["bootstrap_snapshot"]
+    assert git(["rev-parse", "HEAD"], repo) == source_base
+    assert git(["status", "--porcelain"], repo) == ""
+
+
+def test_noisy_readiness_diagnostics_reach_bounded_repair_and_exhaust_without_campaign(tmp_path: Path):
+    repo, _ = make_repo(tmp_path)
+    counter = tmp_path / "external-run-count.txt"
+    agent = repo / "noisy_agent.py"
+    evaluator_source = (
+        "import json\nfrom pathlib import Path\n"
+        f"p=Path({str(counter)!r})\n"
+        "n=int(p.read_text())+1 if p.exists() else 1\n"
+        "p.write_text(str(n))\n"
+        "value=0.4 if n % 2 else 0.6\n"
+        f"print(json.dumps({{'status':'ok','metrics':{{'quality':value}},'checks':{{}},'protocol_sha256':'{PROTOCOL_SHA256}'}}))\n"
+    )
+    bootstrap_payload = _bootstrap_payload(
+        status="ready", needs_input=[], summary="noisy fixture evaluator"
+    )
+    agent.write_text(
+        "import json\n"
+        "from pathlib import Path\n"
+        "root=Path('.bananloop_eval'); root.mkdir(exist_ok=True)\n"
+        f"root.joinpath('evaluator.py').write_text({evaluator_source!r})\n"
+        f"print(json.dumps({bootstrap_payload!r}))\n",
+        encoding="utf-8",
+    )
+    git(["add", "noisy_agent.py"], repo)
+    git(["commit", "-m", "add noisy bootstrap fixture"], repo)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "noisy-state")
+
+    with pytest.raises(BootstrapError, match="failed readiness after bounded repair"):
+        bootstrap_campaign(
+            repo=repo,
+            goal="improve fixture quality",
+            paths=paths,
+            agent_config=AgentConfig(
+                kind="command", command=[sys.executable, "noisy_agent.py"]
+            ),
+            max_experiments=1,
+            max_attempts=2,
+            max_agent_calls=4,
+            max_evaluator_calls=2,
+            deadline_seconds=300,
+        )
+
+    record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
+    assert len(record["bootstrap_attempts"]) == 3
+    first = record["bootstrap_attempts"][0]["readiness"]
+    assert first["status"] == "FAILED"
+    assert first["calibration"]["repeat_count"] == 3
+    assert first["calibration"]["noise_gate_passed"] is False
+    assert "readiness_receipt" in record["bootstrap_attempts"][1]["request"]["repair"]
+    assert not paths.db.exists()
+
+def test_materialize_runtime_resources_binds_tracked_and_ignored_csv_but_not_env(tmp_path: Path):
+    import bananloop.bootstrap as bootstrap_module
+
+    source = tmp_path / "source"
+    managed = tmp_path / "managed"
+    (source / "data").mkdir(parents=True)
+    (managed / "data").mkdir(parents=True)
+    (source / "data" / "catalog.csv").write_text(
+        "id,name\n1,x\n", encoding="utf-8"
+    )
+    (managed / "data" / "catalog.csv").write_text(
+        "id,name\n1,x\n", encoding="utf-8"
+    )
+    (source / "data" / "extra.csv").write_text(
+        "id,name\n2,y\n", encoding="utf-8"
+    )
+    (source / ".env").write_text("API_KEY=do-not-copy\n", encoding="utf-8")
+    discovery = {
+        "resources": {
+            "csv_files": ["data/catalog.csv", "data/extra.csv"],
+            "benchmark_files": [],
+            "config_files": [],
+            "compose_files": [],
+            "env_files": [".env"],
+        }
+    }
+
+    bound = bootstrap_module._materialize_runtime_resources(
+        source, managed, discovery
+    )
+
+    assert bound == ["data/catalog.csv", "data/extra.csv"]
+    assert (managed / "data" / "catalog.csv").is_file()
+    assert (managed / "data" / "extra.csv").is_file()
+    assert not (managed / ".env").exists()
+
+def test_ready_plan_binds_generic_python_to_project_runtime(tmp_path: Path):
+    task = {
+        "repository": {
+            "preferred_python_runtime": {
+                "executable": "/project/.venv/bin/python",
+                "version": "3.12.9",
+                "source": "project",
+            }
+        }
+    }
+    payload = _bootstrap_payload(
+        status="ready", needs_input=[], summary="fixture"
+    )
+    payload["evaluation_command"] = ["python", "scripts/eval.py", "--sample", "100", "--seed", "53"]
+    payload["smoke_command"] = ["env", "SMOKE=1", "/usr/bin/python3", "scripts/eval.py", "--sample", "5", "--seed", "53"]
+    plan = BootstrapPlan.model_validate(payload)
+
+    bound = _bind_plan_runtime(plan, task)
+
+    assert bound.evaluation_command[0] == "/project/.venv/bin/python"
+    assert bound.evaluation_command[-4:] == ["--sample", "100", "--seed", "53"]
+    assert bound.smoke_command[:3] == ["env", "SMOKE=1", "/project/.venv/bin/python"]
+
+
+def test_bootstrap_contract_uses_discovered_dotenv_key_instead_of_reasking_secret(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".env").write_text(
+        "OPENAI_API_KEY=secret\nDEEPSEEK_API_KEY=secret\nQDRANT_URL=http://127.0.0.1:6333\n",
+        encoding="utf-8",
+    )
+    task = _bootstrap_task(repo, "Improve quality", "deadbeef", AgentConfig(kind="codex"))
+    plan = BootstrapPlan.model_validate(
+        _bootstrap_payload(
+            status="needs_input",
+            needs_input=["Export OPENAI_API_KEY so the evaluator can run."],
+            summary="Credential is not exported in the bootstrap process.",
+        )
+    )
+
+    error = _bootstrap_contract_error(plan, task)
+
+    assert error is not None
+    assert "trusted evaluator process" in error
+
+
+def test_bootstrap_contract_allows_confirmed_missing_package_with_project_runtime(tmp_path: Path):
+    task = {
+        "goal": "Improve quality",
+        "repository": {
+            "detected_python_runtimes": [
+                {"executable": "/project/.venv/bin/python", "version": "3.12.9", "source": "project"},
+                {"executable": "/usr/bin/python3", "version": "3.12.9", "source": "host"},
+            ],
+            "preferred_python_runtime": {
+                "executable": "/project/.venv/bin/python",
+                "version": "3.12.9",
+                "source": "project",
+            },
+            "detected_resources": {},
+        },
+    }
+    plan = BootstrapPlan.model_validate(
+        _bootstrap_payload(
+            status="needs_input",
+            needs_input=["Install missing package qdrant-client."],
+            summary="System Python cannot import qdrant_client.",
+        )
+    )
+
+    error = _bootstrap_contract_error(plan, task)
+
+    assert error is None
+
+
+def test_bootstrap_contract_reuses_history_for_frozen_sample_instead_of_case_file(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "EXPERIMENT_HISTORY.md").write_text(
+        "E06 frozen-100 sample 100 seed 53", encoding="utf-8"
+    )
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "eval_benchmark.py").write_text("", encoding="utf-8")
+    task = _bootstrap_task(repo, "Rerun the same frozen 100-case benchmark", "deadbeef", AgentConfig(kind="codex"))
+    plan = BootstrapPlan.model_validate(
+        _bootstrap_payload(
+            status="needs_input",
+            needs_input=["Provide the frozen 100-case sample file."],
+            summary="The exact cases are unknown.",
+        )
+    )
+
+    error = _bootstrap_contract_error(plan, task)
+
+    assert error is not None
+    assert "history_files" in error
+
+
+def test_bootstrap_allows_leftover_uninitialized_sqlite_file(tmp_path: Path):
+    repo, _ = make_repo(tmp_path)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "reserved-state")
+    paths.ensure()
+
+    stale = CampaignStore(paths.db)
+    stale.close()
+
+    plan, spec = bootstrap_campaign(
+        repo=repo,
+        goal="improve fixture quality",
+        paths=paths,
+        agent_config=AgentConfig(
+            kind="command",
+            command=[sys.executable, "bootstrap_agent.py"],
+        ),
+        max_experiments=1,
+        max_attempts=1,
+        max_agent_calls=2,
+        max_evaluator_calls=2,
+        deadline_seconds=120,
+    )
+
+    assert plan.status == "ready"
+    assert spec is not None
+    store = CampaignStore(paths.db)
+    try:
+        assert store.campaign()["status"] == "READY"
+    finally:
+        store.close()

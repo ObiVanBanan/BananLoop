@@ -18,6 +18,17 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def sha256_evaluation_asset(path: Path) -> str:
+    """Hash evaluator inputs consistently across Git CRLF/LF checkouts."""
+    data = path.read_bytes()
+    if b"\0" not in data:
+        # Git's core.autocrlf may materialize the same committed text blob with
+        # different newline bytes. Evaluation identity should follow its content,
+        # not the platform-specific checkout representation.
+        data = data.replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()
+
+
 def normalize_repo_file(repo: Path, value: str) -> tuple[str, Path]:
     repo = repo.resolve()
     candidate = Path(value)
@@ -45,7 +56,7 @@ def discover_evaluation_assets(
     # arbitrary host files into a portable CampaignSpec.
     for value in explicit_assets or []:
         relative, path = normalize_repo_file(repo, value)
-        assets[relative] = EvaluationAsset(path=relative, sha256=sha256_file(path))
+        assets[relative] = EvaluationAsset(path=relative, sha256=sha256_evaluation_asset(path))
 
     # Command arguments can legitimately reference external inputs such as a
     # hidden holdout. Auto-discover only files that live inside the source repo;
@@ -60,7 +71,7 @@ def discover_evaluation_assets(
             relative = path.relative_to(repo).as_posix()
         except (OSError, ValueError):
             continue
-        assets[relative] = EvaluationAsset(path=relative, sha256=sha256_file(path))
+        assets[relative] = EvaluationAsset(path=relative, sha256=sha256_evaluation_asset(path))
 
     return [assets[key] for key in sorted(assets)]
 
@@ -89,7 +100,7 @@ def verify_evaluation_assets(root: Path, assets: list[EvaluationAsset]) -> list[
         if not path.is_file():
             violations.append(f"missing:{asset.path}")
             continue
-        actual = sha256_file(path)
+        actual = sha256_evaluation_asset(path)
         if actual != asset.sha256:
             violations.append(f"hash_mismatch:{asset.path}")
     return violations

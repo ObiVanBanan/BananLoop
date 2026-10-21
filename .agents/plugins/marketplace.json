@@ -1,0 +1,21 @@
+{
+  "name": "bananloop-local",
+  "interface": {
+    "displayName": "BananLoop"
+  },
+  "plugins": [
+    {
+      "name": "bananloop",
+      "source": {
+        "source": "local",
+        "path": "./plugins/bananloop"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL",
+        "products": ["CODEX"]
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

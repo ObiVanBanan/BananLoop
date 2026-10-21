@@ -11,7 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from .base import AgentAdapter, AgentError
-from ..process import ProcessError, run_process
+from ..process import (
+    ProcessError, check_process_control, process_group_options,
+    run_process, terminate_process_tree,
+)
 
 
 class _JsonlReader:
@@ -36,10 +39,14 @@ class PiAdapter(AgentAdapter):
         model: str | None = None,
         extra_args: list[str] | None = None,
         command: list[str] | None = None,
+        provider: str | None = None,
+        reasoning_effort: str | None = None,
     ):
         self.model = model
         self.extra_args = extra_args or []
         self.command = command or ["pi"]
+        self.provider = provider
+        self.reasoning_effort = reasoning_effort
         self._active: dict[str, subprocess.Popen[str]] = {}
         self._lock = threading.Lock()
 
@@ -79,6 +86,8 @@ class PiAdapter(AgentAdapter):
             "resolved_command": resolved_command,
             "version": version,
             "model": self.model,
+            "provider": self.provider,
+            "reasoning_effort": self.reasoning_effort,
         }
 
     @staticmethod
@@ -91,19 +100,90 @@ class PiAdapter(AgentAdapter):
         argv = [*self._resolved_command(), "--mode", "rpc", "--no-session", "--no-approve"]
         if self.model:
             argv += ["--model", self.model]
+        if self.provider and "--provider" not in self.extra_args:
+            argv += ["--provider", self.provider]
+        if self.reasoning_effort and "--thinking" not in self.extra_args:
+            argv += ["--thinking", self.reasoning_effort]
         argv += self.extra_args
         return argv
 
     @staticmethod
     def _prompt(task: dict[str, Any]) -> str:
         role = task.get("role")
-        if role == "propose":
+        if role == "bootstrap":
             instruction = (
-                "You are the proposer inside BananLoop. Inspect the repository and propose exactly one "
-                "bounded, falsifiable hypothesis. Do not modify files during this role. "
-                "Your final assistant message MUST be exactly one JSON object with these keys: "
-                "hypothesis, rationale, expected_effect, files_or_area, falsification_condition, mechanism_key. "
+                "You are the campaign bootstrapper inside BananLoop. Inspect the repository and human goal and "
+                "build an executable measurement contract. The top-level goal field is authoritative human intent. "
+                "Never request a repository-side goal/fix/brief file just to confirm that intent; do not require "
+                ".hermes/fix.md when goal is present. If evaluators conflict, choose the one whose semantics best "
+                "match the explicit goal. Use repository.detected_python_runtimes and probe those executables before "
+                "claiming that Python or a required package environment is missing. You may create or modify files only under "
+                ".bananloop_eval/. Never modify production code, tests, reference assets, or user configuration. "
+                "Prefer an existing trustworthy evaluator; otherwise create a thin evaluator adapter. Freeze cases "
+                "and randomness where possible, avoid per-evaluation LLM planning, and use paired case-level "
+                "measurements for stochastic outputs. The core runs three A/A smoke measurements on one snapshot, "
+                "requires stable case/input and protocol identity, and compares empirical noise with min_improvement; "
+                "emit a stable protocol_sha256 in every evaluation result. "
+                "For each fixed-input evaluator tier, provide a cheap protocol_manifest_commands entry that emits "
+                "the full protocol_sha256 and case_id/repetition/input_sha256 list without scoring. The full evaluator "
+                "must read BANANLOOP_PROTOCOL_MANIFEST and emit exactly those identities; smoke may score a subset. "
+                "Keep DEV, VALIDATION, and HOLDOUT manifests separate. Fixed inputs alone do not justify paired statistical acceptance. "
+                "If implementation should learn from discovered training resources, list only those paths in "
+                "agent_visible_training_paths; never include evaluation, test, validation, holdout, GOLD, or reference resources. "
+                "Also include signal_sanity. Configure it only from defensible repository-backed positive and negative "
+                "case IDs or controls, using evidence_kind known_examples, controlled_degradation, metamorphic, or "
+                "invariants, and the primary metric. Never invent labels or derive labels from the evaluator's own "
+                "scores. If evidence is absent, mark status unavailable, leave evidence_kind/metric null and case lists "
+                "empty, and state the reason; this must not claim scorer validity. The core independently checks "
+                "The core checks directed separation in every A/A smoke run. Do not invent missing references or "
+                "credentials; if essential inputs are missing, set status to needs_input and list exactly what the operator must provide. "
+                "Your final assistant message MUST be exactly one JSON object with keys: status, summary, "
+                "project_context, needs_input, evaluation_command, smoke_command, protocol_manifest_commands, agent_visible_training_paths, validation_command, holdout_command, "
+                "primary_metric, guardrails, non_regression, mandatory_checks, editable_scope, protected_paths, "
+                "agent_visible_metrics, agent_visible_diagnostics, paired_comparison, signal_sanity, evaluator_timeout_seconds. "
+                "primary_metric must contain name, direction, target, min_improvement. paired_comparison must "
+                "contain enabled, case_count, repetitions, metric, direction, min_wins, worst_case_tolerance. "
+                "Do not use markdown fences or prose outside the JSON object."
+            )
+        elif role == "propose":
+            instruction = (
+                "You are the proposer inside BananLoop. Inspect the repository and propose a portfolio of 2-3 "
+                "materially different, bounded, falsifiable hypotheses (maximum 4). Do not modify files during this role. "
+                "Use the supplied research_state, aggregate failure_signals, experiment_evidence, "
+                "and planning_mode. When failure_signals exist, choose one supplied signal_key as "
+                "target_failure_signal and explain the causal failure_mechanism; use empty strings "
+                "for both fields otherwise. Distinguish partial DEV gains from failed mechanisms. "
+                "When experiment_evidence exists, cite a prior ordinal and explain how its result "
+                "changes this proposal in novelty_rationale. "
+                "Each portfolio candidate must contain candidate_id, nested hypothesis (existing Hypothesis fields), "
+                "evidence_refs, suspected_failure_mode, predicted_observable, discriminating_test, scope_eligibility, "
+                "estimated_agent_calls, estimated_evaluator_calls, estimated_work_units (or null), rationale, "
+                "uncertainty, and inference=agent_inference. Candidate IDs must be stable mechanism slugs. "
+                "Estimate only remaining implementation/evaluation calls after this proposal call. "
+                "Use supplied DEV evidence references only or "
+                "INSUFFICIENT_EVIDENCE; separate observed evidence from inference. Do not invent gains, causes, "
+                "USD costs, or evidence. The core chooses one and enforces scope and budgets. "
+                "Avoid repeating a mechanism unless "
+                "you explicitly mark it as refine, retry, or supersede and reference the prior experiment ordinal. "
+                "Your final assistant message MUST be exactly one JSON object with key candidates containing "
+                "1-4 candidate objects, or a legacy single Hypothesis object with keys "
+                "hypothesis, rationale, expected_effect, files_or_area, falsification_condition, mechanism_key, "
+                "relation, prior_experiment_refs, novelty_rationale, target_failure_signal, failure_mechanism. "
                 "If no useful hypothesis exists, return exactly {\"status\":\"NO_HYPOTHESIS\"}. "
+                "Do not use markdown fences and do not include prose outside the JSON object."
+            )
+        elif role == "analyze":
+            instruction = (
+                "You are the DEV failure analyst inside BananLoop. Analyze the supplied DEV failure signals, "
+                "public DEV teacher examples, and the current candidate repository. Do not modify files. "
+                "Use the exact public DEV expected answers to diagnose the root cause, then distill causal, "
+                "reusable lessons rather than memorizing benchmark cases. Do not copy case IDs, product IDs, "
+                "exact expected answers, or case-specific constants into the resulting capsules. Focus on stage attribution, "
+                "state/provenance conflicts, violated invariants, and generic regression tests. If evidence is "
+                "insufficient, lower confidence instead of inventing a cause. Your final assistant message MUST "
+                "be exactly one JSON object with key capsules. Each capsule must contain title, failure_class, "
+                "stage, affected_fields, observation, likely_mechanism, general_rule, suggested_regression, "
+                "confidence. Return {\"capsules\":[]} if no safe general lesson can be supported. "
                 "Do not use markdown fences and do not include prose outside the JSON object."
             )
         elif role == "implement":
@@ -181,10 +261,35 @@ class PiAdapter(AgentAdapter):
     @staticmethod
     def _repair_prompt(task: dict[str, Any]) -> str:
         role = task.get("role")
-        if role == "propose":
+        if role == "bootstrap":
+            schema = (
+                '{"status":"ready","summary":"...","project_context":"...","needs_input":[],'
+                '"evaluation_command":["python",".bananloop_eval/evaluator.py"],'
+                '"smoke_command":["python",".bananloop_eval/evaluator.py","--smoke"],'
+                '"protocol_manifest_commands":{"dev":[],"validation":[],"holdout":[]},'
+                '"agent_visible_training_paths":[], '
+                '"validation_command":[],"holdout_command":[],'
+                '"primary_metric":{"name":"quality","direction":"maximize","target":1.0,"min_improvement":0.01},'
+                '"guardrails":[],"non_regression":[],"mandatory_checks":[],"editable_scope":["**"],'
+                '"protected_paths":[".bananloop_eval/**"],"agent_visible_metrics":["quality"],'
+                '"agent_visible_diagnostics":[],"paired_comparison":{"enabled":false,"case_count":1,'
+                '"repetitions":1,"metric":"quality","direction":"maximize","min_wins":1,'
+                '"worst_case_tolerance":0.0},"signal_sanity":{"status":"unavailable",'
+                '"evidence_kind":null,"metric":null,"positive_case_ids":[],"negative_case_ids":[],'
+                '"reason":"No defensible repository-backed positive/negative examples available."},'
+                '"evaluator_timeout_seconds":900}'
+            )
+        elif role == "propose":
             schema = (
                 '{"hypothesis":"...","rationale":"...","expected_effect":"...",'
-                '"files_or_area":["..."],"falsification_condition":"...","mechanism_key":"..."}'
+                '"files_or_area":["..."],"falsification_condition":"...","mechanism_key":"...",'
+                '"relation":"new","prior_experiment_refs":[],"novelty_rationale":"..."}'
+            )
+        elif role == "analyze":
+            schema = (
+                '{"capsules":[{"title":"...","failure_class":"...","stage":"...",'
+                '"affected_fields":["..."],"observation":"...","likely_mechanism":"...",'
+                '"general_rule":"...","suggested_regression":"...","confidence":0.8}]}'
             )
         elif role == "implement":
             schema = (
@@ -246,14 +351,7 @@ class PiAdapter(AgentAdapter):
 
     @staticmethod
     def _terminate(proc: subprocess.Popen[str]) -> None:
-        if proc.poll() is not None:
-            return
-        proc.terminate()
-        try:
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=2)
+        terminate_process_tree(proc)
 
     def _next_event(
         self,
@@ -263,6 +361,7 @@ class PiAdapter(AgentAdapter):
         stderr_lines: list[str],
     ) -> dict[str, Any]:
         while True:
+            check_process_control()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 self._terminate(proc)
@@ -344,6 +443,7 @@ class PiAdapter(AgentAdapter):
         return text
 
     def execute(self, task: dict[str, Any], workspace: Path, timeout: int) -> dict[str, Any]:
+        check_process_control()
         argv = self._argv()
         action_id = self._action_id(task)
         stderr_lines: list[str] = []
@@ -358,6 +458,7 @@ class PiAdapter(AgentAdapter):
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
+                **process_group_options(),
             )
         except OSError as exc:
             raise AgentError(f"cannot start Pi RPC: {argv!r}: {exc}") from exc
