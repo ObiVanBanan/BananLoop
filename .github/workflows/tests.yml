@@ -5,15 +5,10 @@ on:
     branches: [main, "codex/**"]
   pull_request:
 
-permissions:
-  contents: read
-  pull-requests: write
-
 jobs:
   pytest:
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
       matrix:
         os: [ubuntu-latest]
         python-version: ["3.11", "3.12", "3.13"]
@@ -27,24 +22,4 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -U pip
       - run: python -m pip install -e ".[test]"
-      - name: Pytest (short traceback)
-        shell: bash
-        run: |
-          pytest -q --tb=short > pytest-output.txt 2>&1 || {
-            cat pytest-output.txt
-            exit 1
-          }
-      - name: Publish concise diagnostics to integration PR
-        if: ${{ failure() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          test -f pytest-output.txt || exit 0
-          {
-            echo "Temporary CI diagnostic for ${{ matrix.os }} Python ${{ matrix.python-version }}:"
-            echo '\`\`\`text'
-            tail -n 65 pytest-output.txt | cut -c1-190
-            echo '\`\`\`'
-          } > ci-note.txt
-          gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" --method POST --field body="$(cat ci-note.txt)"
+      - run: pytest
