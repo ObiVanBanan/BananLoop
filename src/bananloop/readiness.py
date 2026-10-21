@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 import shutil
 import stat
 import statistics
@@ -22,6 +23,49 @@ class ReadinessError(RuntimeError):
     def __init__(self, message: str, receipt: dict[str, Any] | None = None):
         super().__init__(message)
         self.receipt = receipt or {}
+
+
+def _staged_script_errors(plan: Any, workspace: Path) -> list[str]:
+    """Check Python script entrypoints before spending evaluator smoke calls.
+
+    Only Python *file* invocations are checked here. Module and inline-code
+    commands remain subject to the ordinary readiness smoke. Do not resolve
+    missing scripts against the original checkout: the frozen staged workspace
+    is the only place that will execute during the campaign.
+    """
+    commands = {
+        "dev": plan.evaluation_command,
+        "smoke": plan.smoke_command or plan.evaluation_command,
+        "validation": plan.validation_command,
+        "holdout": plan.holdout_command,
+        **{
+            f"manifest:{tier}": command
+            for tier, command in getattr(plan, "protocol_manifest_commands", {}).items()
+        },
+    }
+    root = workspace.resolve()
+    errors: list[str] = []
+    for tier, command in commands.items():
+        if not command:
+            continue
+        executable = str(command[0]).replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if not re.fullmatch(r"(?:pythonw?(?:[0-9]+(?:\\.[0-9]+)*)?(?:\\.exe)?|py(?:\\.exe)?)", executable):
+            continue
+        args = [str(token) for token in command[1:]]
+        if "-m" in args or "-c" in args or "-" in args:
+            continue
+        script = next((arg for arg in args if arg.endswith(".py") and not arg.startswith("-")), None)
+        if script is None:
+            continue
+        script_path = (workspace / script).resolve()
+        try:
+            relative = script_path.relative_to(root)
+        except ValueError:
+            errors.append(f"{tier}: Python evaluator script is outside staged workspace: {script}")
+            continue
+        if not script_path.is_file():
+            errors.append(f"{tier}: Python evaluator script is missing from staged workspace: {relative.as_posix()}")
+    return sorted(set(errors))
 
 
 def _remove_smoke_workspace(path: Path) -> None:
@@ -296,6 +340,19 @@ def run_bootstrap_readiness(
             guard.metric for guard in plan.non_regression
         }),
     }
+    # Validate all tier entrypoints against the managed snapshot first, before
+    # any expensive smoke/manifest call. A file present only in the user's
+    # original checkout cannot serve as a frozen campaign evaluator.
+    entrypoint_errors = _staged_script_errors(plan, workspace)
+    if entrypoint_errors:
+        receipt["status"] = "FAILED"
+        receipt["error"] = "bootstrap evaluator entrypoint is not available in staged workspace"
+        receipt["error_code"] = "STAGED_EVALUATOR_ENTRYPOINT_MISSING"
+        receipt["entrypoint_errors"] = entrypoint_errors
+        raise ReadinessError(
+            receipt["error"] + ": " + "; ".join(entrypoint_errors),
+            receipt,
+        )
     results: list[EvaluationResult] = []
     trusted_source = (source_repo or workspace).resolve()
     trusted_env = project_environment(trusted_source)
