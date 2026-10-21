@@ -369,6 +369,9 @@ class Hypothesis(BaseModel):
     files_or_area: list[str] = Field(default_factory=list)
     falsification_condition: str
     mechanism_key: str
+    # Broader causal family, e.g. "linear regularization" across C values.
+    # Defaults to the mechanism key for backward-compatible durable campaigns.
+    mechanism_family: str = ""
     relation: Literal["new", "refine", "retry", "supersede"] = "new"
     prior_experiment_refs: list[int] = Field(default_factory=list)
     novelty_rationale: str = ""
@@ -642,6 +645,7 @@ class ResearchState(BaseModel):
     dev_non_improve_streak: int = Field(default=0, ge=0)
     # Strictly DEV-derived, aggregate-only mechanism blacklist for new proposals.
     stagnant_mechanisms: list[str] = Field(default_factory=list, max_length=16)
+    failed_dev_families: list[str] = Field(default_factory=list, max_length=16)
     failure_counts: dict[str, int] = Field(default_factory=dict)
     mechanisms: list[MechanismEvidence] = Field(default_factory=list)
     recent_lessons: list[str] = Field(default_factory=list)
