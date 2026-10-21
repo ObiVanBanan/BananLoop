@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from bananloop.workspace import _remove_readonly
+from bananloop.workspace import WorkspaceManager, _remove_readonly
 
 
 def test_remove_readonly_makes_path_writable_before_retry(tmp_path):
@@ -34,3 +34,31 @@ def test_remove_readonly_reraises_non_permission_error(tmp_path):
 
     with pytest.raises(OSError, match="different failure"):
         _remove_readonly(os.unlink, str(path), (OSError, error, None))
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("src/nomenclature_matcher/matcher.py", True),
+        ("src/nomenclature_matcher/nested/module.py", True),
+        ("src/nomenclature_matcher", True),
+        ("src/nomenclature_matcher_extra/matcher.py", False),
+        ("src/nomenclature_matcher.py", False),
+    ],
+)
+def test_trailing_slash_editable_scope_is_directory(tmp_path, path, expected):
+    manager = WorkspaceManager(tmp_path, tmp_path / "isolation")
+    allowed, violations = manager.verify_scope(
+        [path], ["src/nomenclature_matcher/"], []
+    )
+    assert allowed is expected
+    assert bool(violations) is not expected
+
+
+def test_trailing_slash_protected_directory_blocks_nested_files(tmp_path):
+    manager = WorkspaceManager(tmp_path, tmp_path / "isolation")
+    allowed, violations = manager.verify_scope(
+        ["tests/suite/test_private.py"], ["**"], ["tests/"]
+    )
+    assert not allowed
+    assert violations == ["protected:tests/suite/test_private.py"]
