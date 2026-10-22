@@ -68,9 +68,9 @@ def test_stop_while_child_ignores_large_stdin_is_prompt(tmp_path: Path):
     ready = tmp_path / "stdin-not-read"
     script = tmp_path / "sleep_without_reading.py"
     script.write_text(
-        "import time\\nfrom pathlib import Path\\n"
-        + f"Path({str(ready)!r}).write_text('ready')\\n"
-        + "time.sleep(30)\\n",
+        "import time\nfrom pathlib import Path\n"
+        + f"Path({str(ready)!r}).write_text('ready')\n"
+        + "time.sleep(30)\n",
         encoding="utf-8",
     )
     control = lambda: "USER_STOPPED" if ready.exists() else None
