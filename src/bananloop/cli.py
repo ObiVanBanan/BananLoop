@@ -18,6 +18,7 @@ from .lock import CampaignLock, CampaignLockError
 from .report import build_report, render_markdown
 from .registry import CampaignRegistry, RegistryError, assert_safe_campaign_db
 from .store import CampaignStore, StoreError, campaign_db_initialized
+from .trace import export_trace
 from .wizard import confirm_spec, discover_project, needs_interactive_init, run_init_wizard
 from .workspace import WorkspaceError, WorkspaceManager, assert_clean_source, current_commit
 
@@ -565,6 +566,19 @@ def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_trace_export(args: argparse.Namespace) -> int:
+    paths = _selected_paths(args)
+    store = CampaignStore(paths.db)
+    try:
+        store.campaign()
+        campaign_id = _display_campaign_id(args, paths) or "campaign-unknown"
+        output = export_trace(store, campaign_id, Path(args.output))
+    finally:
+        store.close()
+    print(f"Shareable campaign trace exported to {output}")
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bananloop")
     sub = p.add_subparsers(dest="command", required=True)
@@ -840,6 +854,15 @@ def parser() -> argparse.ArgumentParser:
     list_cmd.add_argument("--repo", default=".")
     list_cmd.add_argument("--json", action="store_true")
     list_cmd.set_defaults(func=cmd_campaigns_list)
+
+    trace = sub.add_parser("trace", help="portable operator trace")
+    trace_sub = trace.add_subparsers(dest="trace_command", required=True)
+    trace_export = trace_sub.add_parser("export", help="export a shareable read-only campaign trace")
+    trace_export.add_argument("--repo", default=".")
+    trace_export.add_argument("--state-dir")
+    trace_export.add_argument("--campaign-id")
+    trace_export.add_argument("--output", required=True, help="trace directory; BananLoop trace directories can be refreshed")
+    trace_export.set_defaults(func=cmd_trace_export)
     return p
 
 

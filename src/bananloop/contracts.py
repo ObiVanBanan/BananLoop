@@ -706,6 +706,44 @@ class Decision(BaseModel):
     reasons: list[str]
 
 
+class DecisionReceiptReference(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    action_id: str
+    tier: Literal["dev", "validation", "holdout"]
+    receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class DecisionReceipt(BaseModel):
+    """Integrity-bound record of a deterministic policy decision."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: int = Field(default=1, ge=1)
+    receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    experiment_id: int | None
+    tier: Literal["pre_evaluation", "dev", "validation", "holdout"]
+    candidate_snapshot: str
+    reference: dict[str, Any]
+    spec_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evaluator_binding_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    evaluator_receipts: list[DecisionReceiptReference]
+    delta: float | None
+    predicate_results: dict[str, Any]
+    verdict: Literal["ACCEPT", "REJECT"]
+    reasons: list[str]
+
+    @model_validator(mode="after")
+    def verify_identity(self):
+        body = self.model_dump(mode="json")
+        identity = body.pop("receipt_sha256")
+        raw = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        expected = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        if identity != expected:
+            raise ValueError("decision receipt hash mismatch")
+        return self
+
+
 class MechanismEvidence(BaseModel):
     mechanism_key: str
     experiment_ordinals: list[int] = Field(default_factory=list)

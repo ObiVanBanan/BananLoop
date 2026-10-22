@@ -4,10 +4,13 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from functools import lru_cache
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -131,7 +134,18 @@ def runtime_descriptor(commands: dict[str, list[str]]) -> dict[str, Any]:
             candidate = Path(executable)
             if candidate.is_file():
                 resolved = str(candidate.resolve())
-        runner[tier] = {"configured_executable": executable, "resolved_executable": str(Path(resolved).resolve()) if resolved else None}
+        runner_record: dict[str, Any] = {
+            "configured_executable": executable,
+            "resolved_executable": str(Path(resolved).resolve()) if resolved else None,
+        }
+        invocation = _python_runtime_invocation(executable, argv[1:])
+        if resolved and invocation is not None:
+            runner_record["effective_python"] = _probe_python_runtime(
+                str(Path(resolved).resolve()), tuple(invocation)
+            )
+        else:
+            runner_record["effective_python"] = {"status": "UNKNOWN"}
+        runner[tier] = runner_record
     return {
         "python_executable": str(Path(sys.executable).resolve()),
         "python_version": platform.python_version(),
@@ -139,6 +153,65 @@ def runtime_descriptor(commands: dict[str, list[str]]) -> dict[str, Any]:
         "os_release": platform.release(),
         "architecture": platform.machine(),
         "runners": runner,
+    }
+
+
+def _python_runtime_invocation(executable: str, arguments: list[str]) -> list[str] | None:
+    name = executable.replace("\\", "/").rsplit("/", 1)[-1]
+    launcher = re.fullmatch(r"py(?:\.exe)?", name, flags=re.IGNORECASE)
+    if launcher:
+        selector = next((arg for arg in arguments if re.fullmatch(
+            r"-(?:[0-9]+(?:\.[0-9]+)*(?:-(?:32|64))?|V:.+)", arg, flags=re.IGNORECASE
+        )), None)
+        return [selector] if selector else []
+    if re.fullmatch(r"pythonw?(?:[0-9]+(?:\.[0-9]+)*)?(?:\.exe)?", name, flags=re.IGNORECASE):
+        return []
+    return None
+
+
+@lru_cache(maxsize=16)
+def _probe_python_runtime(resolved_executable: str, selectors: tuple[str, ...]) -> dict[str, Any]:
+    """Fingerprint a direct Python evaluator without importing project code."""
+    probe = (
+        "import hashlib, importlib.metadata as m, json, platform, sys; "
+        "packages=sorted((d.metadata.get('Name','').strip().lower(),d.version) "
+        "for d in m.distributions() if d.metadata.get('Name')); "
+        "raw=json.dumps(packages,separators=(',',':'),ensure_ascii=True).encode(); "
+        "print(json.dumps({'python_version':platform.python_version(),"
+        "'implementation':platform.python_implementation(),"
+        "'python_build_fingerprint':hashlib.sha256(json.dumps(platform.python_build()).encode()).hexdigest(),"
+        "'python_compiler_fingerprint':hashlib.sha256(platform.python_compiler().encode()).hexdigest(),"
+        "'sys_platform':sys.platform,"
+        "'os':platform.system(),'os_release':platform.release(),"
+        "'architecture':platform.machine(),'cache_tag':sys.implementation.cache_tag,"
+        "'dependency_count':len(packages),"
+        "'dependency_fingerprint':hashlib.sha256(raw).hexdigest()}))"
+    )
+    argv = [resolved_executable, *selectors, "-I", "-c", probe]
+    try:
+        completed = subprocess.run(
+            argv, capture_output=True, text=True, check=False, timeout=10,
+        )
+        data = json.loads(completed.stdout) if completed.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        data = None
+    if not isinstance(data, dict) or not re.fullmatch(
+        r"[0-9a-f]{64}", str(data.get("dependency_fingerprint", ""))
+    ):
+        return {"status": "UNKNOWN"}
+    return {
+        "status": "VERIFIED",
+        "python_version": data.get("python_version"),
+        "implementation": data.get("implementation"),
+        "python_build_fingerprint": data.get("python_build_fingerprint"),
+        "python_compiler_fingerprint": data.get("python_compiler_fingerprint"),
+        "sys_platform": data.get("sys_platform"),
+        "os": data.get("os"),
+        "os_release": data.get("os_release"),
+        "architecture": data.get("architecture"),
+        "cache_tag": data.get("cache_tag"),
+        "dependency_count": data.get("dependency_count"),
+        "dependency_fingerprint": data["dependency_fingerprint"],
     }
 
 

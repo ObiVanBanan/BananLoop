@@ -470,6 +470,26 @@ def test_orphaned_running_action_requires_explicit_retry(tmp_path: Path):
         store.close()
 
 
+def test_resume_rejects_unapproved_campaign_spec_change_before_any_call(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        original = store.campaign()
+        changed_spec = store.spec().model_copy(update={"goal": "silently change the approved goal"})
+        store.update_campaign(spec_json=changed_spec.model_dump_json())
+        resumed_engine = Engine(store, engine.workspace)
+
+        with pytest.raises(EngineError, match="approved campaign spec hash mismatch"):
+            resumed_engine.run(resume=True)
+
+        after = store.campaign()
+        assert after["spec_hash"] == original["spec_hash"]
+        assert after["agent_calls"] == 0
+        assert after["evaluator_calls"] == 0
+        assert store.actions() == []
+    finally:
+        store.close()
+
+
 
 def test_accepted_experiment_clears_transient_failure_and_lesson(tmp_path: Path):
     store, engine, _, _ = make_engine(tmp_path)
@@ -847,6 +867,18 @@ def test_staged_validation_gates_promotion_and_final_holdout_runs_once(
         assert report["evaluation_protocol"]["holdout"]["value"] == 3.0
         assert report["evaluation_protocol"]["holdout"]["target_met"] is True
         assert report["evaluator_binding"]["binding_id"] == store.evaluator_binding()["binding_id"]
+        decision_receipts = report["decision_receipts"]
+        assert {(item["tier"], item["status"]) for item in decision_receipts} >= {
+            ("dev", "VERIFIED"), ("validation", "VERIFIED"), ("holdout", "VERIFIED")
+        }
+        validation_receipt = next(item["receipt"] for item in decision_receipts if item["tier"] == "validation")
+        assert {item["tier"] for item in validation_receipt["evaluator_receipts"]} == {"dev", "validation"}
+        assert report["operator_summary"]["what_improved"]["status"] == report["improvement_status"]
+        assert report["operator_summary"]["what_measured"]["aggregate_measurements"]
+        assert "failure_kinds" in report["operator_summary"]["what_checked"]
+        assert set(report["operator_summary"]) == {
+            "what_improved", "what_checked", "what_measured", "why_accept_reject", "unknowns", "next_action"
+        }
         receipt_tiers = {row["receipt"]["tier"] for row in store.evaluation_receipts()}
         assert receipt_tiers == {"dev", "validation", "holdout"}
         assert len(store.evaluation_receipts()) == len(store.evaluations())
@@ -864,6 +896,21 @@ def test_staged_validation_gates_promotion_and_final_holdout_runs_once(
         binding_line = next(line for line in markdown.splitlines() if line.startswith("- Binding:"))
         assert binding_line.endswith("`")
         assert any("receipt=`" in line and "binding=`" in line and line.endswith("`") for line in markdown.splitlines())
+        assert "## Decision receipts" in markdown
+        assert "## Operator summary" in markdown
+        stored_decision = store.decision_receipts()[0]
+        tampered = dict(stored_decision["receipt"])
+        tampered["verdict"] = "REJECT" if tampered["verdict"] == "ACCEPT" else "ACCEPT"
+        store.conn.execute(
+            "UPDATE decision_receipts SET receipt_json=? WHERE receipt_hash=?",
+            (json.dumps(tampered, sort_keys=True), stored_decision["receipt_hash"]),
+        )
+        store.conn.commit()
+        invalid = next(
+            item for item in build_report(store)["decision_receipts"]
+            if item["receipt_hash"] == stored_decision["receipt_hash"]
+        )
+        assert invalid["status"] == "INVALID"
     finally:
         store.close()
 
@@ -1061,6 +1108,9 @@ def test_anti_gaming_guard_rejects_candidate_before_evaluator(tmp_path: Path):
         assert store.attempt(attempt_id)["stage"] == "REJECT"
         assert exp["failure_category"] == "LEAKAGE_GUARD"
         assert json.loads(exp["decision_json"])["reasons"] == ["LEAKAGE_GUARD"]
+        decision_receipt = next(item for item in store.decision_receipts() if item["tier"] == "pre_evaluation")
+        assert decision_receipt["receipt"]["evaluator_receipts"] == []
+        assert decision_receipt["receipt"]["verdict"] == "REJECT"
         assert "forbidden_marker" in exp["lesson"]
         assert store.campaign()["evaluator_calls"] == evaluator_calls_before
     finally:
@@ -1413,6 +1463,22 @@ def test_evaluator_binding_is_stable_and_tampering_is_rejected(tmp_path: Path):
         assert engine.spec.approved_hash() == store.campaign()["spec_hash"]
     finally:
         store.close()
+
+
+def test_runtime_descriptor_fingerprints_direct_python_dependencies_only():
+    descriptor = runtime_descriptor({
+        "dev": [sys.executable, "evaluator.py"],
+        "wrapper": ["sh", "-c", "python evaluator.py"],
+    })
+    direct = descriptor["runners"]["dev"]["effective_python"]
+    wrapped = descriptor["runners"]["wrapper"]["effective_python"]
+
+    assert direct["status"] == "VERIFIED"
+    assert direct["python_version"]
+    assert direct["dependency_count"] > 0
+    assert re.fullmatch(r"[0-9a-f]{64}", direct["dependency_fingerprint"])
+    assert "packages" not in direct
+    assert wrapped == {"status": "UNKNOWN"}
 
 
 def test_completed_evaluation_replay_neither_reruns_nor_rewrites_receipt(tmp_path: Path):
