@@ -30,7 +30,9 @@ The local campaign artifacts support useful partial evidence, but the exact R0 E
 | `c-5e39c1df87de1932743263b4de6a1993` | Two scientific DEV rejections produced two generalized DEV-only capsules. The next planned experiment used a different mechanism family and cited prior DEV experiments. | Its implementation reached the evaluator but raised a `TypeError` before a score was produced. The campaign paused as infrastructure/implementation failure; this is not a third scientific experiment. |
 | `c-3deb7ddb27f3cff57cb1be8f7a395a16` | Diagnostic run exposed the scoped-symbol-locator issue; no science was measured. The locator handling is covered by the current regression test. | No campaign acceptance evidence. |
 
-Across these runs, no single campaign proves **at least three scientific experiments plus DEV failure → persisted capsule → different hypothesis family → measured DEV result, followed by retry/resume**. The operational failure remains distinct from a scientific rejection. Aggregate-only evidence remains explicitly unknown rather than being promoted to a root-cause claim.
+Safe resume was also exercised on `c-5e39c1df87de1932743263b4de6a1993` through the normal goal command, without `--retry-failed-action`. BananLoop stopped at the recorded FAILED evaluator action; the campaign remained `PAUSED_INFRA` with 2 experiments, 3 attempts, 8 agent calls, and 5 evaluator calls before and after resume. No failed evaluator action was executed again.
+
+Across these runs, no single campaign proves **at least three scientific experiments plus DEV failure → persisted capsule → different hypothesis family → measured DEV result, followed by a scored retry/resume**. The operational failure remains distinct from a scientific rejection. Aggregate-only evidence remains explicitly unknown rather than being promoted to a root-cause claim.
 
 Historical QA reports also describe Bank Marketing campaigns, including DEV-only reflection, but the runs above are the relevant current artifacts. Historical reports are not substituted for the acceptance gate.
 
