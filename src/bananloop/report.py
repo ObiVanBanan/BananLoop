@@ -35,7 +35,13 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             "candidate_proof": evaluation_request.get("candidate_proof"),
             "decision": json.loads(row["decision_json"]) if row["decision_json"] else None,
             "failure_category": None if accepted else row["failure_category"],
-            "failure_classification": None if accepted else classify_failure(row["failure_category"]),
+            "failure_classification": None if accepted else classify_failure(
+                row["failure_category"]
+                or next(
+                    (reason for reason in (json.loads(row["decision_json"] or "{}").get("reasons") or []) if reason != "ACCEPTED"),
+                    None,
+                )
+            ),
             "lesson": "Promoted as new champion" if accepted else row["lesson"],
             "failure_analysis": (
                 json.loads(row["failure_analysis_json"])

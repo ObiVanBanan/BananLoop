@@ -34,6 +34,7 @@ from .evaluator_binding import (
     EvaluationReceipt, EvaluatorBinding, canonical_hash, make_binding,
     make_receipt, runtime_descriptor, validate_receipt_linkage,
 )
+from .failures import classify_failure
 from .leakage import scan_forbidden_diff_patterns
 from .metric_semantics import metric_failure_guidance
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
@@ -1676,6 +1677,19 @@ class Engine:
             dev_decision_json=decision.model_dump_json(),
             decision_json=decision.model_dump_json(),
         )
+        if not decision.accepted:
+            scientific_classification = None
+            for reason in decision.reasons:
+                classification = classify_failure(reason)
+                if classification and classification["kind"] == "scientific_outcome":
+                    scientific_classification = classification
+                    break
+            if scientific_classification:
+                self.store.event(
+                    "FAILURE_CLASSIFIED",
+                    {"experiment_id": experiment_id, **scientific_classification},
+                )
+                self.store.conn.commit()
         self.store.record_decision(
             experiment_id,
             exp["candidate_snapshot"],
