@@ -4,6 +4,7 @@ import json
 import os
 import signal
 import subprocess
+import threading
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -58,42 +59,78 @@ def process_group_options() -> dict[str, Any]:
     return {"start_new_session": True}
 
 
-def terminate_process_tree(proc: subprocess.Popen) -> None:
-    """Terminate only the process group created for this invocation."""
+def terminate_process_tree(
+    proc: subprocess.Popen,
+    *,
+    communicate_thread: threading.Thread | None = None,
+) -> None:
+    """Stop this invocation's process group with bounded, race-free cleanup.
+
+    Windows may deny CTRL_BREAK or taskkill (for example under a job object).
+    Do not let their independent grace periods accumulate past the operator's
+    stop timeout. Only the communicate worker may read/write the pipes.
+    """
+    def wait_for_communication(timeout: float) -> bool:
+        if communicate_thread is not None:
+            communicate_thread.join(timeout=timeout)
+            return not communicate_thread.is_alive() and proc.poll() is not None
+        try:
+            proc.communicate(timeout=timeout)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+
+    if proc.poll() is not None and (
+        communicate_thread is None or not communicate_thread.is_alive()
+    ):
+        return
+
     if os.name == "nt":
-        # Windows sandbox/job boundaries can deny taskkill even for a child we
-        # started. CTRL_BREAK reaches the CREATE_NEW_PROCESS_GROUP members first
-        # and lets wrappers such as cmd.exe and their descendants exit together.
+        # The direct child may already have exited while a grandchild still
+        # owns stdout/stderr. The process-group ID can still refer to that
+        # descendant, so signal the group even if the leader exited.
         try:
             os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
         except (OSError, ValueError):
             pass
-        try:
-            proc.communicate(timeout=2)
+        if wait_for_communication(0.35):
             return
-        except subprocess.TimeoutExpired:
-            pass
+        # Best-effort descendant cleanup; a denied/hung taskkill must not
+        # block the campaign's STOP_REQUESTED reconciliation indefinitely.
         try:
             subprocess.run(
                 ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                capture_output=True, timeout=5, check=False,
+                capture_output=True, timeout=1.5, check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
             pass
+        if wait_for_communication(0.25):
+            return
     else:
-        # The leader may have exited while a child still holds an output pipe.
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
+        if wait_for_communication(0.5):
+            return
+
+    # Kill the direct child even if signaling its group was denied. A pipe
+    # reader can remain alive briefly if descendants still own output handles;
+    # never close those streams concurrently with communicate().
     if proc.poll() is None:
-        proc.kill()
-    try:
-        proc.communicate(timeout=5)
-    except subprocess.TimeoutExpired:
-        if proc.poll() is None:
+        try:
             proc.kill()
-        proc.wait(timeout=5)
+        except ProcessLookupError:
+            pass
+    if wait_for_communication(0.5):
+        return
+    if proc.poll() is None:
+        try:
+            proc.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    if communicate_thread is not None:
+        communicate_thread.join(timeout=0.25)
 
 
 def run_process(
@@ -123,25 +160,38 @@ def run_process(
     except OSError as exc:
         raise ProcessError(f"cannot start process: {argv!r}: {exc}") from exc
     deadline = time.monotonic() + timeout
-    pending_input = input_text
+    communication_result: list[tuple[str | None, str | None]] = []
+    communication_errors: list[Exception] = []
+
+    def communicate() -> None:
+        try:
+            communication_result.append(proc.communicate(input=input_text))
+        except Exception as exc:
+            communication_errors.append(exc)
+
+    communicate_thread = threading.Thread(target=communicate, daemon=True)
+    communicate_thread.start()
     try:
-        while True:
+        while communicate_thread.is_alive():
             check_process_control()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ProcessError(f"process timed out after {timeout}s: {argv!r}")
-            try:
-                stdout, stderr = proc.communicate(input=pending_input, timeout=min(0.1, remaining))
-                check_process_control()
-                break
-            except subprocess.TimeoutExpired:
-                pending_input = None
+            communicate_thread.join(timeout=min(0.1, remaining))
+        check_process_control()
+        if communication_errors:
+            raise communication_errors[0]
+        stdout, stderr = communication_result[0]
     finally:
         # Also clean children left behind after a successful parent exit.
-        terminate_process_tree(proc)
-        for stream in (proc.stdin, proc.stdout, proc.stderr):
-            if stream is not None:
-                stream.close()
+        terminate_process_tree(proc, communicate_thread=communicate_thread)
+        # close() can wait on the same buffered pipe lock held by the
+        # communicate worker. If Windows descendants retained pipe handles,
+        # allow the daemon worker to finish without blocking stop/recovery.
+        if not communicate_thread.is_alive():
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
     result = ProcessResult(proc.returncode, stdout, stderr)
     if check and result.returncode != 0:
         details: list[str] = []

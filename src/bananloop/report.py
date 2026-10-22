@@ -4,8 +4,9 @@ import json
 import hashlib
 from typing import Any
 
-from .contracts import CampaignSpec, EvaluationResult
+from .contracts import CampaignSpec, DecisionReceipt, EvaluationResult
 from .evaluator_binding import EvaluationReceipt, canonical_hash, validate_receipt_linkage
+from .failures import classify_failure
 from .policy import metric_value, target_met
 from .research import attempt_bucket
 from .store import CampaignStore
@@ -34,6 +35,13 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             "candidate_proof": evaluation_request.get("candidate_proof"),
             "decision": json.loads(row["decision_json"]) if row["decision_json"] else None,
             "failure_category": None if accepted else row["failure_category"],
+            "failure_classification": None if accepted else classify_failure(
+                row["failure_category"]
+                or next(
+                    (reason for reason in (json.loads(row["decision_json"] or "{}").get("reasons") or []) if reason != "ACCEPTED"),
+                    None,
+                )
+            ),
             "lesson": "Promoted as new champion" if accepted else row["lesson"],
             "failure_analysis": (
                 json.loads(row["failure_analysis_json"])
@@ -216,6 +224,73 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
                 "binding_id": None,
                 "binding_hash": None,
             })
+    decision_receipts = []
+    verified_evaluation_receipts = {
+        (item["action_id"], item["receipt_hash"]): item
+        for item in receipts
+        if item["status"] == "RECORDED" and item.get("receipt_hash")
+    }
+    for stored in store.decision_receipts():
+        receipt = stored["receipt"]
+        body = dict(receipt)
+        identity = body.pop("receipt_sha256", None)
+        status = "VERIFIED"
+        try:
+            DecisionReceipt.model_validate(receipt)
+            if identity != stored["receipt_hash"] or canonical_hash(body) != identity:
+                raise ValueError("decision receipt hash mismatch")
+            if receipt.get("experiment_id") != stored["experiment_id"] or receipt.get("tier") != stored["tier"]:
+                raise ValueError("decision receipt row linkage mismatch")
+            if receipt.get("spec_sha256") != campaign["spec_hash"]:
+                raise ValueError("campaign spec linkage mismatch")
+            if receipt.get("candidate_snapshot") != stored["candidate_snapshot"]:
+                raise ValueError("candidate snapshot linkage mismatch")
+            binding_hash = binding_row["binding_hash"] if binding_row else None
+            if receipt.get("evaluator_binding_sha256") != binding_hash:
+                raise ValueError("evaluator binding linkage mismatch")
+            for ref in receipt.get("evaluator_receipts", []):
+                item = verified_evaluation_receipts.get((ref["action_id"], ref["receipt_sha256"]))
+                if not item or item.get("tier") != ref.get("tier") or item.get("candidate_snapshot") != receipt.get("candidate_snapshot"):
+                    raise ValueError("evaluator receipt linkage mismatch")
+        except (KeyError, TypeError, ValueError):
+            status = "INVALID"
+        decision_receipts.append({
+            "experiment_id": stored["experiment_id"],
+            "tier": stored["tier"],
+            "candidate_snapshot": stored["candidate_snapshot"],
+            "receipt_hash": stored["receipt_hash"],
+            "status": status,
+            "receipt": receipt,
+        })
+    recorded_experiment_decisions = {
+        (item["experiment_id"], item["candidate_snapshot"])
+        for item in decision_receipts
+        if item["experiment_id"] is not None
+    }
+    for row in store.experiments():
+        if row["decision_json"] and (row["id"], row["candidate_snapshot"]) not in recorded_experiment_decisions:
+            decision_receipts.append({
+                "experiment_id": row["id"],
+                "tier": "unknown",
+                "candidate_snapshot": row["candidate_snapshot"],
+                "receipt_hash": None,
+                "status": "LEGACY_UNRECEIPTED",
+                "receipt": None,
+            })
+    decision_receipts.sort(key=lambda item: (item["experiment_id"] or 0, item["tier"]))
+    operator_summary = _operator_summary(
+        campaign=campaign,
+        spec=spec,
+        experiments=experiments,
+        measurements=store.evaluations(),
+        baseline_value=baseline_value,
+        final_value=final_value,
+        improvement_status=improvement_status,
+        final_assessment=final_assessment,
+        decision_receipts=decision_receipts,
+        evaluation_receipts=receipts,
+        resources=resource_summary,
+    )
     return {
         "campaign_outcome": campaign["status"],
         "improvement_status": improvement_status,
@@ -278,6 +353,8 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             if binding_row else None
         ),
         "evaluation_receipts": receipts,
+        "decision_receipts": decision_receipts,
+        "operator_summary": operator_summary,
         "research_state": research_state,
         "resources": {
             "agent_calls": campaign["agent_calls"],
@@ -286,6 +363,118 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             "attempts": campaign["attempt_count"],
             **resource_summary,
         },
+    }
+
+
+def _operator_summary(
+    *, campaign: dict[str, Any], spec: CampaignSpec, experiments: list[dict[str, Any]],
+    measurements: list[dict[str, Any]], baseline_value: float | None,
+    final_value: float | None, improvement_status: str, final_assessment: str,
+    decision_receipts: list[dict[str, Any]], evaluation_receipts: list[dict[str, Any]],
+    resources: dict[str, Any],
+) -> dict[str, Any]:
+    unknowns: list[str] = []
+    if not spec.validation_command:
+        unknowns.append("Validation tier is not configured.")
+    if not spec.holdout_command:
+        unknowns.append("Final holdout is not configured.")
+    elif final_assessment == "DEV_ONLY":
+        unknowns.append("Final holdout does not support a scientific conclusion under the current signal-sanity status.")
+    if spec.signal_sanity_status in {"UNAVAILABLE", "DIAGNOSTIC_ONLY"}:
+        unknowns.append(f"Evaluator signal sanity is {spec.signal_sanity_status.lower()}.")
+    if resources.get("unknown_outcomes", 0):
+        unknowns.append(f"{resources['unknown_outcomes']} action outcome(s) remain unknown.")
+    invalid = sum(item["status"] == "INVALID" for item in decision_receipts)
+    legacy = sum(item["status"] == "LEGACY_UNRECEIPTED" for item in decision_receipts)
+    invalid_evaluations = sum(item["status"] == "INVALID" for item in evaluation_receipts)
+    legacy_evaluations = sum(item["status"] == "LEGACY_UNRECEIPTED" for item in evaluation_receipts)
+    if invalid:
+        unknowns.append(f"{invalid} decision receipt(s) failed integrity or linkage checks.")
+    if legacy:
+        unknowns.append(f"{legacy} historical decision(s) have no decision receipt.")
+    if invalid_evaluations:
+        unknowns.append(f"{invalid_evaluations} evaluator receipt(s) failed integrity or linkage checks.")
+    if legacy_evaluations:
+        unknowns.append(f"{legacy_evaluations} historical evaluator action(s) have no evaluation receipt.")
+    why = []
+    for exp in experiments:
+        decision = exp.get("decision") or {}
+        why.append({
+            "experiment_id": exp["id"],
+            "verdict": "ACCEPT" if decision.get("accepted") else "REJECT",
+            "predicates": decision.get("predicates", {}),
+            "reasons": decision.get("reasons", []),
+            "failure_category": exp.get("failure_category"),
+            "failure_kind": (exp.get("failure_classification") or {}).get("kind"),
+            "retryable": (exp.get("failure_classification") or {}).get("retryable"),
+            "suggested_remediation": (exp.get("failure_classification") or {}).get("suggested_remediation"),
+        })
+    for item in decision_receipts:
+        if item["tier"] != "holdout" or not item.get("receipt"):
+            continue
+        receipt = item["receipt"]
+        why.append({
+            "experiment_id": None,
+            "verdict": receipt.get("verdict", "UNKNOWN"),
+            "predicates": receipt.get("predicate_results", {}),
+            "reasons": receipt.get("reasons", []),
+            "failure_category": None,
+            "failure_kind": None,
+            "retryable": None,
+            "suggested_remediation": None,
+        })
+    tiers = sorted({row.get("tier") for row in measurements})
+    if campaign["status"] in {"PAUSED_INFRA", "FAILED"}:
+        next_action = "Resolve the recorded operational incident, then resume the campaign from its durable checkpoint."
+    elif improvement_status == "IMPROVED":
+        next_action = "Review the validated candidate and its receipts; any merge or deployment decision remains an explicit operator action."
+    elif campaign["status"] in {"GOAL_MET", "STOPPED"}:
+        next_action = "Review the terminal evidence and choose whether to stop or approve a materially different experiment."
+    else:
+        next_action = "Inspect the current checkpoint and remaining budget, then continue or stop the campaign explicitly."
+    return {
+        "what_improved": {
+            "status": improvement_status,
+            "metric": spec.primary_metric.name,
+            "baseline": baseline_value,
+            "final_champion": final_value,
+            "delta": None if baseline_value is None or final_value is None else final_value - baseline_value,
+            "champion_was_promoted": campaign["champion_snapshot"] != campaign["baseline_snapshot"],
+        },
+        "what_checked": {
+            "tiers_configured": ["dev"] + (["validation"] if spec.validation_command else []) + (["holdout"] if spec.holdout_command else []),
+            "guardrails": [item.model_dump(mode="json") for item in spec.guardrails],
+            "non_regression": [item.model_dump(mode="json") for item in spec.non_regression],
+            "mandatory_checks": list(spec.mandatory_checks),
+            "signal_sanity_status": spec.signal_sanity_status,
+            "decision_receipts": {status: sum(item["status"] == status for item in decision_receipts) for status in ("VERIFIED", "INVALID", "LEGACY_UNRECEIPTED")},
+            "failure_kinds": sorted({
+                item["failure_classification"]["kind"]
+                for item in experiments if item.get("failure_classification")
+            }),
+        },
+        "what_measured": {
+            "tiers_present": tiers,
+            "measurement_count": len(measurements),
+            "experiment_count": len(experiments),
+            "aggregate_measurements": [
+                {
+                    "experiment_id": row.get("experiment_id"),
+                    "tier": row.get("tier"),
+                    "candidate_snapshot": row.get("candidate_snapshot"),
+                    "metrics": {
+                        name: metric.get("value")
+                        for name, metric in sorted((json.loads(row["result_json"]).get("metrics") or {}).items())
+                        if isinstance(metric, dict)
+                    },
+                    "resource_units": json.loads(row["result_json"]).get("resource_units"),
+                }
+                for row in measurements
+            ],
+        },
+        "why_accept_reject": why,
+        "unknowns": unknowns,
+        "next_action": next_action,
     }
 
 
@@ -345,6 +534,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         hypothesis = (exp["hypothesis"] or {}).get("hypothesis", "-")
         decision = exp["decision"] or {}
         lines.append(f"- #{exp['ordinal']} **{exp['status']}** — {hypothesis}; delta={decision.get('delta', '-')}; failure={exp['failure_category'] or '-'}")
+        classification = exp.get("failure_classification")
+        if classification:
+            lines.append(
+                f"  - Failure kind: `{classification['kind']}`; retryable=`{classification['retryable']}`; "
+                f"risk=`{classification['risk']}`; next step: {classification['suggested_remediation']}"
+            )
         proof = exp.get("candidate_proof")
         if proof:
             lines.append(
@@ -362,6 +557,48 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"- {receipt['action_id']} ({receipt['tier']}): {receipt['status']}; "
             f"receipt=`{receipt['receipt_hash'] or '-'}`; binding=`{receipt['binding_id'] or '-'}`"
         )
+    lines += ["", "## Decision receipts", ""]
+    for item in report.get("decision_receipts", []):
+        receipt = item.get("receipt") or {}
+        lines.append(
+            f"- Experiment `{item['experiment_id'] if item['experiment_id'] is not None else 'final'}` "
+            f"({item['tier']}): **{item['status']}**; verdict=`{receipt.get('verdict', '-')}`; "
+            f"receipt=`{item.get('receipt_hash') or '-'}`; snapshot=`{item.get('candidate_snapshot') or '-'}`"
+        )
+    summary = report.get("operator_summary") or {}
+    lines += ["", "## Operator summary", ""]
+    improved = summary.get("what_improved", {})
+    lines.append(
+        f"- What improved: `{improved.get('status', 'unknown')}`; metric `{improved.get('metric', '-')}`; "
+        f"baseline `{improved.get('baseline')}` → champion `{improved.get('final_champion')}`; "
+        f"delta `{improved.get('delta')}`; promoted=`{improved.get('champion_was_promoted')}`"
+    )
+    checked = summary.get("what_checked", {})
+    lines.append(
+        f"- What checked: tiers `{', '.join(checked.get('tiers_configured', []))}`; "
+        f"mandatory checks `{json.dumps(checked.get('mandatory_checks', []), ensure_ascii=False)}`; "
+        f"signal sanity `{checked.get('signal_sanity_status') or 'unknown'}`; "
+        f"decision receipts `{json.dumps(checked.get('decision_receipts', {}), sort_keys=True)}`; "
+        f"failure kinds `{', '.join(checked.get('failure_kinds', [])) or 'none recorded'}`"
+    )
+    measured = summary.get("what_measured", {})
+    lines.append(
+        f"- What measured: tiers `{', '.join(measured.get('tiers_present', []))}`; "
+        f"{measured.get('measurement_count', 0)} measurements across {measured.get('experiment_count', 0)} experiments; "
+        f"aggregates `{json.dumps(measured.get('aggregate_measurements', []), sort_keys=True)}`"
+    )
+    lines.append("- Why accept/reject:")
+    for item in summary.get("why_accept_reject", []):
+        lines.append(
+            f"  - Experiment `{item['experiment_id']}`: `{item['verdict']}`; "
+            f"predicates `{json.dumps(item['predicates'], sort_keys=True)}`; "
+            f"reasons `{json.dumps(item['reasons'], ensure_ascii=False)}`; "
+            f"failure `{item.get('failure_category') or '-'}`"
+            + f"; type `{item.get('failure_kind') or '-'}`; retryable=`{item.get('retryable')}`"
+        )
+    unknowns = summary.get("unknowns", [])
+    lines.append("- Unknowns: " + ("; ".join(unknowns) if unknowns else "none recorded by the current campaign contract"))
+    lines.append(f"- Next action: {summary.get('next_action', 'Review the durable campaign checkpoint.')}")
     accounting = report.get("attempt_accounting")
     if accounting:
         lines += [
@@ -397,6 +634,16 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"- Failure classes: `{json.dumps(research['failure_counts'], sort_keys=True)}`",
             f"- Remaining budget: `{json.dumps(research['remaining_budget'], sort_keys=True)}`",
         ]
+        if research.get("stagnant_mechanisms"):
+            lines.append(
+                "- Repeated identical DEV mechanisms (reframe required): "
+                + ", ".join(f"`{key}`" for key in research["stagnant_mechanisms"])
+            )
+        if research.get("failed_dev_families"):
+            lines.append(
+                "- DEV families with non-improving results (avoid during reframe): "
+                + ", ".join(f"`{key}`" for key in research["failed_dev_families"])
+            )
         if research.get("recent_lessons"):
             lines.append("- Recent lessons:")
             lines.extend(f"  - {lesson}" for lesson in research["recent_lessons"])
@@ -405,7 +652,11 @@ def render_markdown(report: dict[str, Any]) -> str:
             for capsule in research["recent_failure_capsules"]:
                 lines.append(
                     f"  - [{capsule['failure_class']}] {capsule['title']}: "
-                    f"{capsule['general_rule']}"
+                    f"observed={capsule['observation']}; "
+                    f"inferred mechanism={capsule['likely_mechanism']}; "
+                    f"rule={capsule['general_rule']}; "
+                    f"next DEV test={capsule['suggested_regression']}; "
+                    f"confidence={capsule['confidence']}"
                 )
         if research.get("portfolios"):
             lines += ["", "### Planning portfolios", ""]

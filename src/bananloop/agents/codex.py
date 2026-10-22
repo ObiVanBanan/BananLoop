@@ -84,6 +84,20 @@ BOOTSTRAP_SCHEMA = {
         "protected_paths": {"type": "array", "items": {"type": "string"}},
         "agent_visible_metrics": {"type": "array", "items": {"type": "string"}},
         "agent_visible_diagnostics": {"type": "array", "items": {"type": "string"}},
+        "agent_visible_diagnostic_capabilities": {
+            "type": "array",
+            "description": "Typed allowlist for aggregate diagnostics the frozen evaluator already emits.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]*$"},
+                    "kind": {"type": "string", "enum": ["ranking", "classification", "performance", "regression_tests"]},
+                    "metric": {"type": "string"},
+                },
+                "required": ["name", "kind", "metric"],
+                "additionalProperties": False,
+            },
+        },
         "paired_comparison": {
             "type": "object",
             "properties": {
@@ -118,7 +132,8 @@ BOOTSTRAP_SCHEMA = {
         "evaluation_command", "smoke_command", "protocol_manifest_commands", "agent_visible_training_paths", "agent_visible_context_paths", "validation_command", "holdout_command",
         "primary_metric", "guardrails", "non_regression", "mandatory_checks",
         "editable_scope", "protected_paths", "agent_visible_metrics",
-        "agent_visible_diagnostics", "paired_comparison", "signal_sanity", "evaluator_timeout_seconds"
+        "agent_visible_diagnostics", "agent_visible_diagnostic_capabilities",
+        "paired_comparison", "signal_sanity", "evaluator_timeout_seconds"
     ],
     "additionalProperties": False
 }
@@ -132,11 +147,21 @@ LEGACY_HYPOTHESIS_SCHEMA = {
         "files_or_area": {"type": "array", "items": {"type": "string"}},
         "falsification_condition": {"type": "string"},
         "mechanism_key": {"type": "string"},
+        "mechanism_family": {"type": "string"},
         "relation": {"type": "string", "enum": ["new", "refine", "retry", "supersede"]},
         "prior_experiment_refs": {"type": "array", "items": {"type": "integer"}},
         "novelty_rationale": {"type": "string"},
         "target_failure_signal": {"type": "string"},
         "failure_mechanism": {"type": "string"},
+        "intervention_type": {"type": "string", "enum": [
+            "feature_representation", "hyperparameter", "objective", "data_sampling",
+            "threshold", "architecture", "caching", "inference_logic", "test_coverage",
+            "runtime", "data_preprocessing",
+        ]},
+        "algorithmic_layer": {"type": "string", "enum": [
+            "data", "features", "model", "objective", "training", "inference",
+            "evaluation", "runtime", "tests",
+        ]},
     },
     "required": [
         "hypothesis",
@@ -145,11 +170,14 @@ LEGACY_HYPOTHESIS_SCHEMA = {
         "files_or_area",
         "falsification_condition",
         "mechanism_key",
+        "mechanism_family",
         "relation",
         "prior_experiment_refs",
         "novelty_rationale",
         "target_failure_signal",
         "failure_mechanism",
+        "intervention_type",
+        "algorithmic_layer",
     ],
     "additionalProperties": False,
 }
@@ -308,6 +336,9 @@ class CodexAdapter(AgentAdapter):
             instruction = (
                 "You are the campaign bootstrapper for BananLoop. Inspect the repository and the human goal, "
                 "then turn them into an executable measurement contract with minimal operator work. "
+                "Keep policy metrics tier-correct: a guardrail or non-regression bound that applies only to validation "
+                "must use a validation-prefixed metric such as validation_pr_auc (or validation.pr_auc). A bare metric "
+                "is evaluated on the current tier, usually DEV; never compare a validation-derived bound against DEV. "
                 "The top-level goal field is the authoritative human intent. Never request a repository-side "
                 "goal/fix/brief file merely to confirm or choose that intent; in particular, do not require files "
                 "such as .hermes/fix.md when goal is already present. If multiple existing evaluators conflict, "
@@ -348,7 +379,11 @@ class CodexAdapter(AgentAdapter):
                 "Also provide signal_sanity. Configure it only when the repository/evaluator exposes defensible, "
                 "explicitly identified positive and negative examples or controls. Use evidence_kind known_examples, "
                 "controlled_degradation, metamorphic, or invariants; list their exact case_ids and set metric to the "
-                "primary metric. Never invent labels or infer gold labels from model output. If no such evidence exists, "
+                "primary metric. For known_examples, the evaluator must emit a per-case value for that primary metric "
+                "for every listed case on every readiness run. Public labels, failure_examples, and aggregate metrics "
+                "alone do not provide per-case metric evidence; mark signal_sanity unavailable when per-case receipts "
+                "are absent, even if those examples can still support DEV failure analysis. Never invent labels or "
+                "infer gold labels from model output. If no such evidence exists, "
                 "set status=unavailable, leave evidence_kind/metric/case lists null or empty, and explain why. The core "
                 "will verify separation independently on every A/A run. If the core returns a "
                 "repair.readiness_error, diagnose and repair only the measurement package, then return an "
@@ -356,6 +391,16 @@ class CodexAdapter(AgentAdapter):
                 "The evaluator must compare the same frozen inputs/settings for baseline and candidates, emit the "
                 "BananLoop JSON evaluation contract as one top-level object with status, metrics, checks, "
                 "protocol_sha256 when cases are emitted, and optional cases; metrics may be numbers or {value: number}. "
+                "For ranking metrics (PR-AUC/ROC-AUC), prefer DEV-only score-order or precision-recall "
+                "diagnostics already supported by the frozen evaluator; cutoff confusion counts alone "
+                "cannot establish the reason for ranking-metric changes. Declare each supported aggregate "
+                "diagnostic in agent_visible_diagnostic_capabilities with name, kind, and metric. Emit "
+                "diagnostic_evidence only for declared capabilities, with aggregation='aggregate' and the "
+                "exact protocol_sha256; never include case IDs, labels, or per-row values. Never invent diagnostics. "
+                "If the DEV teacher labels are explicitly public, optionally emit up to five DEV-only failure_examples "
+                "with query, verdict, expected, actual, pipeline_trace, and up to eight identity-free failure_signals. "
+                "These are inspected only by the isolated DEV failure analyst; never expose hidden expected answers, "
+                "validation/holdout teacher examples, or protected labels. Skip examples when DEV labels are not public. "
                 "For each configured tier whose inputs can be enumerated cheaply, create a protocol manifest command "
                 "that emits protocol_sha256 and the full case_id/repetition/input_sha256 list without scoring. The full "
                 "evaluator must read BANANLOOP_PROTOCOL_MANIFEST and emit exactly those identities; readiness may score "
@@ -386,8 +431,27 @@ class CodexAdapter(AgentAdapter):
         elif role == "propose":
             instruction = (
                 "Propose a bounded portfolio of 2-3 materially different, falsifiable hypotheses (never more than 4) for this measurable campaign. "
-                "Use the supplied research_state, its aggregate failure_signals and experiment_evidence, "
-                "and planning_mode. If failure_signals exist, target one supplied signal_key and explain "
+                "Use the supplied research_state, its aggregate failure_signals, failure capsules, "
+                "stagnant_mechanisms, failed_dev_families, structural_interventions, dev_lessons "
+                "and experiment_evidence, and planning_mode. "
+                "For each hypothesis, fill intervention_type from feature_representation, hyperparameter, "
+                "objective, data_sampling, threshold, architecture, caching, inference_logic, test_coverage, "
+                "runtime, or data_preprocessing, and algorithmic_layer from data, features, model, objective, "
+                "training, inference, evaluation, runtime, or tests. The core derives a structural signature "
+                "from these typed fields and normalized files_or_area paths; changing mechanism_key/family "
+                "or renaming a path locator cannot make the same supported intervention new. "
+                "Avoid any signature with a failed DEV outcome; choose a materially different intervention. "
+                "Set hypothesis.mechanism_family to a stable causal category broader than mechanism_key; "
+                "two C-value or weighting variations of the same modeling idea must share a family. "
+                "In reframe mode never retest a family listed in failed_dev_families under a new name. "
+                "Discuss prior DEV falsifications or inconclusive results and choose a discriminating test "
+                "for a genuinely different causal mechanism. "
+                "Use primary_metric_failure_guidance to distinguish errors of the optimized metric "
+                "from auxiliary errors; in PR-AUC, a cutoff-only change cannot improve ranking AP. "
+                "When a mechanism has repeated the same DEV outcome, propose a materially different mechanism "
+                "family rather than a renamed weighting or tuning variant. Ground the new hypothesis in "
+                "the observed DEV errors and distinguish observation from conjecture. "
+                "If failure_signals exist, target one supplied signal_key and explain "
                 "the causal failure_mechanism; use empty strings for both fields otherwise. "
                 "When experiment_evidence exists, cite a prior ordinal and explain in novelty_rationale "
                 "what its measured result changes. Distinguish a partial DEV gain from a failed mechanism. "
@@ -406,19 +470,28 @@ class CodexAdapter(AgentAdapter):
             )
         elif role == "analyze":
             instruction = (
-                "Analyze the supplied DEV-only failure signals and public DEV teacher examples against the candidate implementation. "
-                "Do not modify files. Use the exact public DEV expected answers to diagnose the root cause, then "
+                "Analyze the supplied DEV-only failure signals and/or public DEV teacher examples against the candidate implementation. "
+                "Compare the intended mechanism and predicted effect to observed DEV errors. "
+                "Obey analysis_requirements.primary_metric_semantics and explain whether each error "
+                "can actually change the optimized metric. For PR-AUC, do not confuse fixed-threshold "
+                "false negatives with ranking loss; threshold-only changes preserve average precision. "
+                "Where DEV score-order evidence is missing, record that limitation and reduce confidence. "
+                "Do not modify files. Use exact public DEV expected answers only for diagnosis, then "
                 "distill causal, reusable lessons rather than memorizing individual benchmark cases. Do not copy "
                 "case IDs, product IDs, exact expected answers, or case-specific constants into the resulting "
                 "capsules. Focus on stage attribution, conflicting "
-                "state/provenance, violated invariants, and general regression tests. Return only the requested "
+                "state/provenance, violated invariants, and discriminating regression tests for a new causal theory. "
+                "Never use validation or holdout evidence for hypothesis selection. Return only the requested "
                 "structured failure capsules. If evidence is insufficient, use a low confidence value rather "
                 "than fabricating a cause.\n\n"
             )
         else:
             instruction = (
-                "Implement exactly the approved hypothesis in the current repository. "
-                "Modify only the allowed editable scope. Do not modify evaluator/protected artifacts. "
+                ("Repair only the reported candidate preflight failure in the current repository. "
+                 "This is one bounded attempt. Do not change evaluators, datasets, labels, measurement protocol, "
+                 "validation or holdout assets. Modify only editable_scope and never protected_paths. "
+                 if role == "repair" else "Implement exactly the approved hypothesis in the current repository. ")
+                + "Modify only the allowed editable scope. Do not modify evaluator/protected artifacts. "
                 "Do not decide whether the result is better; BananLoop will evaluate it independently. "
                 "The supervisor runs configured evaluator and validation commands independently. Do not mark "
                 "the implementation blocked only because optional local tooling for those checks is unavailable; "
@@ -436,7 +509,7 @@ class CodexAdapter(AgentAdapter):
             schema_path = Path(td) / "schema.json"
             result_path = Path(td) / "result.json"
             schema_path.write_text(json.dumps(schema), encoding="utf-8")
-            sandbox = "workspace-write" if role in {"bootstrap", "implement"} else "read-only"
+            sandbox = "workspace-write" if role in {"bootstrap", "implement", "repair"} else "read-only"
             argv = [
                 *self._resolved_command(),
                 "exec",

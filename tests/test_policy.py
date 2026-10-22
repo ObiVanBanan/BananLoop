@@ -25,6 +25,20 @@ def test_accept_and_target():
     assert target_met(spec(), result(3))
 
 
+def test_typed_diagnostic_evidence_does_not_change_scoring_or_promotion():
+    baseline = EvaluationResult(metrics={"quality": 1, "regressions": 0}, checks={"tests": True})
+    plain = EvaluationResult(metrics={"quality": 2, "regressions": 0}, checks={"tests": True})
+    diagnostic = EvaluationResult.model_validate({
+        "metrics": {"quality": 2, "regressions": 0}, "checks": {"tests": True},
+        "diagnostic_evidence": [{
+            "name": "ranking_signal", "kind": "ranking", "metric": "quality",
+            "value": 999.0, "aggregation": "aggregate", "protocol_sha256": "a" * 64,
+        }],
+    })
+    assert decide(spec(), baseline, plain).model_dump() == decide(spec(), baseline, diagnostic).model_dump()
+    assert target_met(spec(), plain) == target_met(spec(), diagnostic)
+
+
 def test_guardrail_rejects_even_when_primary_improves():
     d = decide(spec(), result(1), result(2, regressions=1))
     assert not d.accepted

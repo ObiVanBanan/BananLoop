@@ -18,6 +18,7 @@ from .lock import CampaignLock, CampaignLockError
 from .report import build_report, render_markdown
 from .registry import CampaignRegistry, RegistryError, assert_safe_campaign_db
 from .store import CampaignStore, StoreError, campaign_db_initialized
+from .trace import export_trace
 from .wizard import confirm_spec, discover_project, needs_interactive_init, run_init_wizard
 from .workspace import WorkspaceError, WorkspaceManager, assert_clean_source, current_commit
 
@@ -134,6 +135,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         if args.validation_eval_cmd
         else []
     )
+    smoke_command = shlex.split(args.smoke_cmd) if args.smoke_cmd else []
     holdout_command = (
         shlex.split(args.holdout_eval_cmd)
         if args.holdout_eval_cmd
@@ -141,7 +143,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     )
 
     discovered_assets = {}
-    for command in (evaluation_command, validation_command, holdout_command):
+    for command in (evaluation_command, validation_command, holdout_command, smoke_command):
         if not command:
             continue
         for asset in discover_evaluation_assets(repo, command, args.eval_asset):
@@ -157,6 +159,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         base_commit=base,
         evaluation_command=evaluation_command,
         evaluator_timeout_seconds=args.evaluator_timeout_seconds,
+        smoke_command=smoke_command,
+        smoke_timeout_seconds=args.smoke_timeout_seconds if smoke_command else None,
         validation_command=validation_command,
         validation_timeout_seconds=args.validation_timeout_seconds,
         holdout_command=holdout_command,
@@ -565,6 +569,19 @@ def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_trace_export(args: argparse.Namespace) -> int:
+    paths = _selected_paths(args)
+    store = CampaignStore(paths.db)
+    try:
+        store.campaign()
+        campaign_id = _display_campaign_id(args, paths) or "campaign-unknown"
+        output = export_trace(store, campaign_id, Path(args.output))
+    finally:
+        store.close()
+    print(f"Shareable campaign trace exported to {output}")
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bananloop")
     sub = p.add_subparsers(dest="command", required=True)
@@ -706,6 +723,16 @@ def parser() -> argparse.ArgumentParser:
         help="blind validation evaluator; runs on baseline and dev-accepted candidates only",
     )
     init.add_argument(
+        "--smoke-cmd",
+        help="cheap frozen smoke evaluator; reruns after a bounded implementation repair",
+    )
+    init.add_argument(
+        "--smoke-timeout-seconds",
+        type=int,
+        default=90,
+        help="maximum wall time for a post-repair smoke (1-90 seconds)",
+    )
+    init.add_argument(
         "--holdout-eval-cmd",
         help="final-only holdout evaluator; runs once on the terminal champion",
     )
@@ -840,6 +867,15 @@ def parser() -> argparse.ArgumentParser:
     list_cmd.add_argument("--repo", default=".")
     list_cmd.add_argument("--json", action="store_true")
     list_cmd.set_defaults(func=cmd_campaigns_list)
+
+    trace = sub.add_parser("trace", help="portable operator trace")
+    trace_sub = trace.add_subparsers(dest="trace_command", required=True)
+    trace_export = trace_sub.add_parser("export", help="export a shareable read-only campaign trace")
+    trace_export.add_argument("--repo", default=".")
+    trace_export.add_argument("--state-dir")
+    trace_export.add_argument("--campaign-id")
+    trace_export.add_argument("--output", required=True, help="trace directory; BananLoop trace directories can be refreshed")
+    trace_export.set_defaults(func=cmd_trace_export)
     return p
 
 

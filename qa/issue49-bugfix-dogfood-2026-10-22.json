@@ -1,0 +1,106 @@
+{
+  "bananloop_core_commit": "2916e2b6dd9e7b218da5a70ddf7b5cab71332422",
+  "baseline_fails_dev_regression": true,
+  "campaign_budget": {
+    "agent_calls": 4,
+    "attempts": 2,
+    "evaluator_calls": 6,
+    "experiments": 1
+  },
+  "campaign_calls": {
+    "agent": 2,
+    "evaluator": 5
+  },
+  "campaign_id": "state-34dd6fcbf50c8ded7f23d9255b9b4606",
+  "changed_paths": [
+    "src/discount.py"
+  ],
+  "dev_receipts": [
+    {
+      "action_id": "baseline:evaluate",
+      "receipt_hash": "0e7c4374354058561935cdf088ee825e3cef723ec10eaa7468e7504245008e56"
+    },
+    {
+      "action_id": "exp:1:evaluate",
+      "receipt_hash": "0e9b0a6fda797455d2daad3df0af4a41a58c6770137b2b2fd3f710ec60da0062"
+    }
+  ],
+  "domain": "bugfix_regression_reduction",
+  "evaluation_receipts": [
+    {
+      "action_id": "baseline:evaluate",
+      "receipt_hash": "0e7c4374354058561935cdf088ee825e3cef723ec10eaa7468e7504245008e56",
+      "tier": "dev"
+    },
+    {
+      "action_id": "baseline:validation",
+      "receipt_hash": "cf3d92bfeade42426888ede89c3e1f4955fed6d72888c25d94c262d9a2279f1b",
+      "tier": "validation"
+    },
+    {
+      "action_id": "exp:1:evaluate",
+      "receipt_hash": "0e9b0a6fda797455d2daad3df0af4a41a58c6770137b2b2fd3f710ec60da0062",
+      "tier": "dev"
+    },
+    {
+      "action_id": "exp:1:validation",
+      "receipt_hash": "7f97a5a80e865be647f8852ae871c69d3f534ccc923b20186ce15207177d695e",
+      "tier": "validation"
+    },
+    {
+      "action_id": "final:holdout",
+      "receipt_hash": "e1af84eeee192327bfb18291f42b9755354cf2de28d8a4cb5388bdf5af1dac75",
+      "tier": "holdout"
+    }
+  ],
+  "final_assessment": "ACCEPTED",
+  "fixture_commit": "eb80ac6c49668360b5b7bb3ede52a457d7f55c3f",
+  "holdout": {
+    "configured": true,
+    "evaluated": true,
+    "snapshot": "9aba1a662c513464b2ccc0d322d8d337dca6905f",
+    "target_met": true,
+    "value": 1.0
+  },
+  "measurements": [
+    {
+      "experiment_id": null,
+      "pass_rate": 0.0,
+      "regression_suite": false,
+      "tier": "dev"
+    },
+    {
+      "experiment_id": null,
+      "pass_rate": 0.0,
+      "regression_suite": false,
+      "tier": "validation"
+    },
+    {
+      "experiment_id": 1,
+      "pass_rate": 1.0,
+      "regression_suite": true,
+      "tier": "dev"
+    },
+    {
+      "experiment_id": 1,
+      "pass_rate": 1.0,
+      "regression_suite": true,
+      "tier": "validation"
+    },
+    {
+      "experiment_id": null,
+      "pass_rate": 1.0,
+      "regression_suite": true,
+      "tier": "holdout"
+    }
+  ],
+  "real_model_calls": 0,
+  "status": "GOAL_MET",
+  "stop_reason": "GOAL_MET",
+  "validation": {
+    "baseline": 0.0,
+    "champion": 1.0,
+    "configured": true,
+    "delta": 1.0
+  }
+}

@@ -16,6 +16,75 @@ class Direction(StrEnum):
     MINIMIZE = "minimize"
 
 
+class DiagnosticKind(StrEnum):
+    RANKING = "ranking"
+    CLASSIFICATION = "classification"
+    PERFORMANCE = "performance"
+    REGRESSION_TESTS = "regression_tests"
+
+
+class InterventionType(StrEnum):
+    FEATURE_REPRESENTATION = "feature_representation"
+    HYPERPARAMETER = "hyperparameter"
+    OBJECTIVE = "objective"
+    DATA_SAMPLING = "data_sampling"
+    THRESHOLD = "threshold"
+    ARCHITECTURE = "architecture"
+    CACHING = "caching"
+    INFERENCE_LOGIC = "inference_logic"
+    TEST_COVERAGE = "test_coverage"
+    RUNTIME = "runtime"
+    DATA_PREPROCESSING = "data_preprocessing"
+
+
+class AlgorithmicLayer(StrEnum):
+    DATA = "data"
+    FEATURES = "features"
+    MODEL = "model"
+    OBJECTIVE = "objective"
+    TRAINING = "training"
+    INFERENCE = "inference"
+    EVALUATION = "evaluation"
+    RUNTIME = "runtime"
+    TESTS = "tests"
+
+
+class DiagnosticCapability(BaseModel):
+    """Frozen allowlist entry for one aggregate evaluator diagnostic."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_.-]*$")
+    kind: DiagnosticKind
+    metric: str = Field(min_length=1, max_length=100)
+
+
+class DiagnosticEvidence(BaseModel):
+    """One aggregate diagnostic tied to the frozen evaluator protocol.
+
+    The schema intentionally has no case ID, example, label, or arbitrary
+    provenance field. The protocol digest is the only provenance reference.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_.-]*$")
+    kind: DiagnosticKind
+    metric: str = Field(min_length=1, max_length=100)
+    value: float
+    unit: str | None = None
+    aggregation: Literal["aggregate"] = "aggregate"
+    protocol_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("value")
+    @classmethod
+    def finite_value(cls, value: float) -> float:
+        import math
+        if not math.isfinite(value):
+            raise ValueError("diagnostic evidence must be finite")
+        return value
+
+
 class CampaignStatus(StrEnum):
     READY = "READY"
     RUNNING = "RUNNING"
@@ -87,6 +156,7 @@ class PairedComparison(BaseModel):
 class BudgetSpec(BaseModel):
     max_evaluation_units: int | None = Field(default=None, ge=1)
     evaluation_units_per_call: int | None = Field(default=None, ge=1)
+    max_repair_attempts: int = Field(default=1, ge=1, le=2)
 
     @model_validator(mode="after")
     def work_budget(self):
@@ -204,6 +274,8 @@ class CampaignSpec(BaseModel):
     project_context: str = ""
     evaluation_command: list[str]
     evaluator_timeout_seconds: int = Field(default=900, ge=1)
+    smoke_command: list[str] = Field(default_factory=list)
+    smoke_timeout_seconds: int | None = Field(default=None, ge=1, le=90)
     validation_command: list[str] = Field(default_factory=list)
     validation_timeout_seconds: int | None = Field(default=None, ge=1)
     holdout_command: list[str] = Field(default_factory=list)
@@ -214,6 +286,7 @@ class CampaignSpec(BaseModel):
     agent_visible_context_paths: list[str] = Field(default_factory=list)
     agent_visible_metrics: list[str] = Field(default_factory=list)
     agent_visible_diagnostics: list[str] = Field(default_factory=list)
+    agent_visible_diagnostic_capabilities: list[DiagnosticCapability] = Field(default_factory=list)
     paired_comparison: PairedComparison | None = None
     protocol_manifests: dict[Literal["dev", "validation", "holdout"], ProtocolManifest] = Field(default_factory=dict)
     # Optional readiness metadata. None is omitted from approved_hash to keep
@@ -292,13 +365,21 @@ class CampaignSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_staged_evaluation_budget(self) -> "CampaignSpec":
+        capability_names = [item.name for item in self.agent_visible_diagnostic_capabilities]
+        if len(capability_names) != len(set(capability_names)):
+            raise ValueError("agent_visible_diagnostic_capabilities names must be unique")
         if (self.signal_sanity_status is None) != (self.signal_sanity_receipt_sha256 is None):
             raise ValueError("signal sanity status and receipt digest must be set together")
         if self.validation_timeout_seconds is not None and not self.validation_command:
             raise ValueError("validation_timeout_seconds requires validation_command")
         if self.holdout_timeout_seconds is not None and not self.holdout_command:
             raise ValueError("holdout_timeout_seconds requires holdout_command")
-        minimum_calls = 1 + int(bool(self.validation_command)) + int(bool(self.holdout_command))
+        if self.smoke_timeout_seconds is not None and not self.smoke_command:
+            raise ValueError("smoke_timeout_seconds requires smoke_command")
+        minimum_calls = (
+            1 + int(bool(self.validation_command)) + int(bool(self.holdout_command))
+            + self.budget.max_repair_attempts * int(bool(self.smoke_command))
+        )
         if self.budget.max_evaluator_calls < minimum_calls:
             raise ValueError(
                 "max_evaluator_calls is too small for baseline staged evaluation; "
@@ -322,6 +403,8 @@ class CampaignSpec(BaseModel):
         for key in ("max_evaluation_units", "evaluation_units_per_call"):
             if data["budget"][key] is None:
                 data["budget"].pop(key)
+        if data["budget"].get("max_repair_attempts", 1) == 1:
+            data["budget"].pop("max_repair_attempts", None)
         # Keep hashes compatible with v0.1 specs created before these fields existed.
         if not self.project_context:
             data.pop("project_context", None)
@@ -329,6 +412,10 @@ class CampaignSpec(BaseModel):
             data.pop("evaluator_timeout_seconds", None)
         if not self.validation_command:
             data.pop("validation_command", None)
+        if not self.smoke_command:
+            data.pop("smoke_command", None)
+        if self.smoke_timeout_seconds is None:
+            data.pop("smoke_timeout_seconds", None)
         if self.validation_timeout_seconds is None:
             data.pop("validation_timeout_seconds", None)
         if not self.holdout_command:
@@ -347,6 +434,8 @@ class CampaignSpec(BaseModel):
             data.pop("agent_visible_metrics", None)
         if not self.agent_visible_diagnostics:
             data.pop("agent_visible_diagnostics", None)
+        if not self.agent_visible_diagnostic_capabilities:
+            data.pop("agent_visible_diagnostic_capabilities", None)
         if not self.non_regression:
             data.pop("non_regression", None)
         # Keep approved hashes stable for campaign specs created before agent profiles.
@@ -369,6 +458,9 @@ class Hypothesis(BaseModel):
     files_or_area: list[str] = Field(default_factory=list)
     falsification_condition: str
     mechanism_key: str
+    # Broader causal family, e.g. "linear regularization" across C values.
+    # Defaults to the mechanism key for backward-compatible durable campaigns.
+    mechanism_family: str = ""
     relation: Literal["new", "refine", "retry", "supersede"] = "new"
     prior_experiment_refs: list[int] = Field(default_factory=list)
     novelty_rationale: str = ""
@@ -376,6 +468,8 @@ class Hypothesis(BaseModel):
     # mechanism_key. Older durable hypotheses remain valid without these fields.
     target_failure_signal: str = ""
     failure_mechanism: str = ""
+    intervention_type: InterventionType | None = None
+    algorithmic_layer: AlgorithmicLayer | None = None
 
 
 class HypothesisCandidate(BaseModel):
@@ -446,6 +540,9 @@ class DevResearchLesson(BaseModel):
     inference: str = ""
     next_discriminator: str = ""
     evidence_refs: list[str] = Field(default_factory=list, max_length=8)
+    observation_status: Literal["observed"] = "observed"
+    causal_status: Literal["inferred", "refuted", "unknown"] = "unknown"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class ImplementResult(BaseModel):
@@ -560,6 +657,7 @@ class EvaluationResult(BaseModel):
     # alongside numeric diagnostics. Consumers that compare diagnostics
     # already select finite numeric values only.
     diagnostics: dict[str, float | str] = Field(default_factory=dict)
+    diagnostic_evidence: list[DiagnosticEvidence] = Field(default_factory=list, max_length=32)
     failure_signals: list[DevFailureSignal] = Field(default_factory=list, max_length=8)
     failure_examples: list[DevFailureExample] = Field(default_factory=list, max_length=5)
     artifacts: list[str] = Field(default_factory=list)  # legacy references
@@ -567,6 +665,21 @@ class EvaluationResult(BaseModel):
     cases: list[CaseMeasurement] = Field(default_factory=list, max_length=10000)
     artifact_manifest: list[ArtifactRecord] = Field(default_factory=list, max_length=10000)
     resource_units: int | None = Field(default=None, ge=0)
+
+    @field_validator("diagnostic_evidence", mode="before")
+    @classmethod
+    def discard_invalid_diagnostic_evidence(cls, value: Any) -> list[DiagnosticEvidence]:
+        # Optional diagnostics must never make an otherwise valid primary
+        # measurement fail. The campaign-specific allowlist is applied later.
+        if not isinstance(value, list):
+            return []
+        accepted: list[DiagnosticEvidence] = []
+        for item in value[:32]:
+            try:
+                accepted.append(DiagnosticEvidence.model_validate(item))
+            except Exception:
+                continue
+        return accepted
 
     @model_validator(mode="after")
     def unique_cases(self):
@@ -607,6 +720,44 @@ class Decision(BaseModel):
     reasons: list[str]
 
 
+class DecisionReceiptReference(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    action_id: str
+    tier: Literal["dev", "validation", "holdout"]
+    receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class DecisionReceipt(BaseModel):
+    """Integrity-bound record of a deterministic policy decision."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: int = Field(default=1, ge=1)
+    receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    experiment_id: int | None
+    tier: Literal["pre_evaluation", "dev", "validation", "holdout"]
+    candidate_snapshot: str
+    reference: dict[str, Any]
+    spec_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evaluator_binding_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    evaluator_receipts: list[DecisionReceiptReference]
+    delta: float | None
+    predicate_results: dict[str, Any]
+    verdict: Literal["ACCEPT", "REJECT"]
+    reasons: list[str]
+
+    @model_validator(mode="after")
+    def verify_identity(self):
+        body = self.model_dump(mode="json")
+        identity = body.pop("receipt_sha256")
+        raw = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        expected = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        if identity != expected:
+            raise ValueError("decision receipt hash mismatch")
+        return self
+
+
 class MechanismEvidence(BaseModel):
     mechanism_key: str
     experiment_ordinals: list[int] = Field(default_factory=list)
@@ -636,10 +787,26 @@ class DevExperimentEvidence(BaseModel):
     rejection_reasons: list[str] = Field(default_factory=list)
 
 
+class StructuralInterventionMemory(BaseModel):
+    """DEV-only durable record of a structurally described intervention."""
+
+    signature: str = Field(pattern=r"^intervention:[a-f0-9]{20}$")
+    intervention_type: InterventionType
+    algorithmic_layer: AlgorithmicLayer
+    affected_paths: list[str] = Field(default_factory=list, max_length=16)
+    experiment_ordinals: list[int] = Field(default_factory=list, max_length=1000)
+    dev_outcomes: dict[str, int] = Field(default_factory=dict)
+    last_dev_outcome: str = "unknown"
+
+
 class ResearchState(BaseModel):
     schema_version: int = 1
     planning_mode: Literal["exploit", "explore", "reframe"] = "exploit"
     dev_non_improve_streak: int = Field(default=0, ge=0)
+    # Strictly DEV-derived, aggregate-only mechanism blacklist for new proposals.
+    stagnant_mechanisms: list[str] = Field(default_factory=list, max_length=16)
+    failed_dev_families: list[str] = Field(default_factory=list, max_length=16)
+    structural_interventions: list[StructuralInterventionMemory] = Field(default_factory=list, max_length=64)
     failure_counts: dict[str, int] = Field(default_factory=dict)
     mechanisms: list[MechanismEvidence] = Field(default_factory=list)
     recent_lessons: list[str] = Field(default_factory=list)

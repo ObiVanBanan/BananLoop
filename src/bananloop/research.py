@@ -5,14 +5,16 @@ import math
 import fnmatch
 import hashlib
 import re
+import posixpath
 from collections import Counter
 from typing import Any, Callable
 from pydantic import ValidationError
 
 from .contracts import (
-    CampaignSpec, CandidateDecision, DevExperimentEvidence, DevFailureSummary,
+    AlgorithmicLayer, CampaignSpec, CandidateDecision, DevExperimentEvidence, DevFailureSummary,
     DevResearchLesson, FailureCapsule, Hypothesis, HypothesisCandidate,
-    HypothesisPortfolio, MechanismEvidence, PortfolioRecord, ResearchState,
+    HypothesisPortfolio, InterventionType, MechanismEvidence, PortfolioRecord,
+    ResearchState, StructuralInterventionMemory,
 )
 
 
@@ -20,6 +22,89 @@ _FAILURE_NAME = re.compile(
     r"miss|fail|error|wrong|drop|reject|timeout|no_result|unmatched|violation|selection",
     re.IGNORECASE,
 )
+_AREA_LOCATOR = re.compile(r"(?:[A-Za-z_]\w*(?:\.\w+)*|\d+(?:-\d+)?)\Z")
+
+
+def _area_matches_scope(area: str, pattern: str) -> bool:
+    def matches(path: str) -> bool:
+        return (
+            pattern == "**"
+            or fnmatch.fnmatchcase(path, pattern)
+            or (pattern.endswith("/**") and path == pattern[:-3])
+        )
+
+    if matches(area):
+        return True
+    # Agents sometimes qualify a repository path with a function or line
+    # locator (for example ``src/model.py:build_model``). Treat that suffix as
+    # context only when the actual path itself matches the approved scope.
+    path, separator, locator = area.rpartition(":")
+    return bool(
+        separator
+        and path
+        and _AREA_LOCATOR.fullmatch(locator)
+        and matches(path)
+    )
+
+
+def intervention_signature(hypothesis: Hypothesis) -> tuple[str, list[str]] | None:
+    """Derive a stable signature from typed intervention fields and normalized paths."""
+    if not hypothesis.intervention_type or not hypothesis.algorithmic_layer:
+        return None
+    paths: set[str] = set()
+    for area in hypothesis.files_or_area:
+        normalized = area.replace("\\", "/").strip()
+        path, separator, locator = normalized.rpartition(":")
+        if separator and path and _AREA_LOCATOR.fullmatch(locator):
+            normalized = path
+        normalized = posixpath.normpath(normalized).strip("/")
+        if normalized and normalized != ".":
+            paths.add(normalized)
+    if not paths:
+        return None
+    canonical_paths = sorted(paths)
+    payload = {
+        "intervention_type": hypothesis.intervention_type.value,
+        "algorithmic_layer": hypothesis.algorithmic_layer.value,
+        "affected_paths": canonical_paths,
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:20]
+    return f"intervention:{digest}", canonical_paths
+
+
+def structural_intervention_memory(
+    spec: CampaignSpec,
+    experiments: list[dict[str, Any]],
+) -> list[StructuralInterventionMemory]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in experiments:
+        if attempt_bucket(row) != "scientific_trials" or not row.get("hypothesis_json"):
+            continue
+        try:
+            hypothesis = Hypothesis.model_validate(json.loads(row["hypothesis_json"]))
+        except (ValueError, TypeError):
+            continue
+        derived = intervention_signature(hypothesis)
+        if derived is None:
+            continue
+        signature, paths = derived
+        outcome = classify_dev_outcome(spec, row)
+        entry = grouped.setdefault(signature, {
+            "signature": signature,
+            "intervention_type": hypothesis.intervention_type,
+            "algorithmic_layer": hypothesis.algorithmic_layer,
+            "affected_paths": paths,
+            "experiment_ordinals": [],
+            "dev_outcomes": {},
+            "last_dev_outcome": outcome,
+        })
+        entry["experiment_ordinals"].append(int(row["ordinal"]))
+        entry["dev_outcomes"][outcome] = entry["dev_outcomes"].get(outcome, 0) + 1
+        entry["last_dev_outcome"] = outcome
+    memories = [StructuralInterventionMemory.model_validate(value) for value in grouped.values()]
+    return sorted(memories, key=lambda item: (item.experiment_ordinals[-1], item.signature))[-64:]
 
 
 def attempt_bucket(row: dict[str, Any]) -> str:
@@ -147,6 +232,28 @@ def candidate_rejection_reasons(
 ) -> list[str]:
     reasons: list[str] = []
     hypothesis = candidate.hypothesis
+    # Only frozen DEV evidence is used to blacklist a stagnant mechanism;
+    # validation and holdout results must never guide adaptive proposals.
+    if hypothesis.mechanism_key.casefold().strip() in state.stagnant_mechanisms:
+        reasons.append("STAGNANT_DEV_MECHANISM_CHANGE_FAMILY")
+    family = (hypothesis.mechanism_family or hypothesis.mechanism_key).casefold().strip()
+    if state.planning_mode == "reframe" and family in state.failed_dev_families:
+        reasons.append("REFRAME_REUSES_FAILED_DEV_FAMILY")
+    structural = intervention_signature(hypothesis)
+    failed_structural_memory = any(
+        item.last_dev_outcome in {"DEV_NO_EFFECT", "DEV_REGRESSION", "DEV_GUARD_REJECT"}
+        for item in state.structural_interventions
+    )
+    if failed_structural_memory and structural is None:
+        reasons.append("MISSING_STRUCTURAL_INTERVENTION_SIGNATURE")
+    if structural is not None:
+        signature, _ = structural
+        if any(
+            item.signature == signature
+            and item.last_dev_outcome in {"DEV_NO_EFFECT", "DEV_REGRESSION", "DEV_GUARD_REJECT"}
+            for item in state.structural_interventions
+        ):
+            reasons.append("STRUCTURAL_INTERVENTION_REPEATS_FAILED_DEV")
     if not candidate.scope_eligibility:
         reasons.append("AGENT_SCOPE_INELIGIBLE")
     scopes = spec.editable_scope or ["**"]
@@ -155,11 +262,7 @@ def candidate_rejection_reasons(
         if not normalized or normalized.startswith("/") or ".." in normalized.split("/"):
             reasons.append("UNSAFE_OR_UNGROUNDED_AREA")
             break
-        if not any(
-            pattern == "**" or fnmatch.fnmatchcase(normalized, pattern)
-            or (pattern.endswith("/**") and normalized == pattern[:-3])
-            for pattern in scopes
-        ):
+        if not any(_area_matches_scope(normalized, pattern) for pattern in scopes):
             reasons.append("OUT_OF_SCOPE")
             break
     if not hypothesis.files_or_area:
@@ -301,24 +404,53 @@ def derive_dev_lesson(row: dict[str, Any], spec: CampaignSpec) -> DevResearchLes
     hypothesis = json.loads(row.get("hypothesis_json") or "{}")
     outcome = classify_dev_outcome(spec, row)
     interpretation = ("supported" if outcome in {"DEV_IMPROVEMENT", "DEV_PARTIAL_IMPROVEMENT"}
-                      else "refuted" if outcome == "DEV_NO_IMPROVEMENT" else "unknown")
-    decision = json.loads(row.get("dev_decision_json") or "{}")
+                      else "refuted" if outcome in {"DEV_REGRESSION", "DEV_GUARD_REJECT"} else "unknown")
+    decision = _dev_decision_from_row(row) or {}
     delta = decision.get("delta")
+    capsules = _failure_capsules_from_row(row)
+    actionable_capsules = [
+        capsule for capsule in capsules
+        if capsule.failure_class.casefold() != "insufficient_evidence"
+        and capsule.likely_mechanism.strip()
+        and not capsule.likely_mechanism.strip().casefold().startswith("unknown")
+    ]
+    # These are proposals from an LLM analyst, not established causal facts.
+    causal_inference = "; ".join(c.likely_mechanism for c in actionable_capsules[:2])
+    discriminators = [c.suggested_regression for c in actionable_capsules[:2] if c.suggested_regression]
+    next_discriminator = "; ".join(discriminators) or hypothesis.get("falsification_condition", "")
+    causal_status = (
+        "inferred" if causal_inference
+        else "refuted" if interpretation == "refuted"
+        else "unknown"
+    )
+    confidence = (
+        max((capsule.confidence for capsule in capsules if capsule.likely_mechanism), default=0.0)
+        if causal_status == "inferred"
+        else 0.5 if causal_status == "refuted"
+        else 0.0
+    )
     return DevResearchLesson(
         experiment_ordinal=int(row["ordinal"]), mechanism_key=hypothesis.get("mechanism_key", "unknown"),
         observation=f"DEV outcome {outcome}; primary delta {delta if delta is not None else 'unknown'}.",
         interpretation=interpretation,
-        inference=("The result is consistent with the stated mechanism." if interpretation == "supported" else
-                   "The result weighs against this mechanism under the recorded DEV protocol." if interpretation == "refuted" else
-                   "Available DEV evidence does not determine this mechanism."),
-        next_discriminator=hypothesis.get("falsification_condition", ""),
+        inference=(
+            ("DEV analyst's unverified causal proposal: " + causal_inference)
+            if causal_inference else
+            "DEV score alone cannot establish the cause of the observed change."
+        ),
+        next_discriminator=next_discriminator,
         evidence_refs=[f"exp:{row['ordinal']}"],
+        observation_status="observed",
+        causal_status=causal_status,
+        confidence=confidence,
     )
 
 
 def agent_evaluation_view(
     spec: CampaignSpec,
     payload_json: str | None,
+    *,
+    source_tier: str = "dev",
 ) -> dict[str, Any] | None:
     """Return only DEV evidence explicitly allowed into adaptive agent context."""
     if not payload_json:
@@ -328,6 +460,44 @@ def agent_evaluation_view(
     payload = {key: value for key, value in raw.items() if key in {
         "schema_version", "status", "metrics", "checks", "diagnostics"
     }}
+    # Typed diagnostics are adaptive evidence only on public DEV, and only
+    # when both their declared capability and protocol provenance match.
+    payload["diagnostic_evidence"] = []
+    if source_tier == "dev" and isinstance(raw.get("diagnostic_evidence"), list):
+        capabilities = {
+            (cap.name, cap.kind.value, cap.metric)
+            for cap in spec.agent_visible_diagnostic_capabilities
+        }
+        protocol_sha256 = raw.get("protocol_sha256")
+        for item in raw["diagnostic_evidence"][:32]:
+            if not isinstance(item, dict):
+                continue
+            identity = (item.get("name"), item.get("kind"), item.get("metric"))
+            if (
+                set(item) - {"name", "kind", "metric", "value", "unit", "aggregation", "protocol_sha256"}
+                or
+                identity not in capabilities
+                or item.get("aggregation") != "aggregate"
+                or not protocol_sha256
+                or item.get("protocol_sha256") != protocol_sha256
+                or not isinstance(item.get("value"), (int, float))
+                or not math.isfinite(float(item["value"]))
+            ):
+                continue
+            safe_item = {
+                "name": item["name"],
+                "kind": item["kind"],
+                "metric": item["metric"],
+                "value": item["value"],
+                "aggregation": "aggregate",
+                "provenance": {
+                    "tier": "dev",
+                    "protocol_sha256": protocol_sha256,
+                },
+            }
+            if isinstance(item.get("unit"), str):
+                safe_item["unit"] = item["unit"]
+            payload["diagnostic_evidence"].append(safe_item)
     payload["artifacts"] = []
     # Raw per-failure DEV evidence is privileged input for the dedicated
     # analyzer role. Proposer/implementer context only receives generalized
@@ -446,13 +616,23 @@ def classify_dev_outcome(
     if row.get("evaluation_json") and decision is not None:
         if decision.get("accepted"):
             return "DEV_IMPROVEMENT"
-        # A promotion threshold or guard can reject a candidate that still
-        # yielded a useful DEV improvement. Keep that signal for planning.
+        # A/A readiness calibrates noise below min_improvement. Tiny positive
+        # AND negative DEV deltas are inconclusive, not scientific progress or
+        # evidence that the underlying mechanism regressed.
         delta = decision.get("delta")
-        if isinstance(delta, (int, float)) and math.isfinite(delta) and delta > 0:
-            return "DEV_PARTIAL_IMPROVEMENT"
+        threshold = float(spec.primary_metric.min_improvement)
         reasons = decision.get("reasons") or []
-        if "PRIMARY_NOT_IMPROVED" in reasons:
+        if isinstance(delta, (int, float)) and math.isfinite(delta):
+            if delta >= threshold:
+                # A meaningful primary gain can still violate another guard.
+                return "DEV_PARTIAL_IMPROVEMENT"
+            if delta <= -threshold:
+                return "DEV_REGRESSION"
+            if any(
+                reason.startswith(("GUARDRAIL_FAILED:", "REGRESSION:", "CHECK_FAILED:"))
+                for reason in reasons
+            ):
+                return "DEV_GUARD_REJECT"
             return "DEV_NO_EFFECT"
         if any(
             reason.startswith(("GUARDRAIL_FAILED:", "REGRESSION:", "CHECK_FAILED:"))
@@ -477,7 +657,8 @@ def _lesson_for(outcome: str, mechanism: str) -> str:
     messages = {
         "DEV_IMPROVEMENT": "DEV evidence showed a measurable improvement signal.",
         "DEV_PARTIAL_IMPROVEMENT": "DEV primary quality improved, but promotion thresholds or guards were not met.",
-        "DEV_NO_EFFECT": "DEV evidence did not meet the required minimum improvement.",
+        "DEV_NO_EFFECT": "The DEV primary change is below the configured minimum meaningful change, in either direction; treat it as inconclusive noise.",
+        "DEV_REGRESSION": "DEV primary quality regressed by at least the configured minimum meaningful change.",
         "DEV_GUARD_REJECT": "DEV evidence violated an approved guardrail or mandatory check.",
         "DEV_REJECTED": "DEV evidence rejected the candidate without a visible causal category.",
         "PRE_EVAL_REJECT": "The candidate was rejected before DEV measurement by deterministic policy.",
@@ -579,6 +760,11 @@ def summarize_dev_failures(
         if row.get("status") == "ACTIVE":
             continue
         for capsule in _failure_capsules_from_row(row):
+            # An aggregate-only capsule records that the cause is unknown; it
+            # is useful planning context, but it is not an actionable DEV
+            # failure signal that a hypothesis can claim to target.
+            if capsule.failure_class == "insufficient_evidence":
+                continue
             # Free-form case identifiers cannot become planning signal keys.
             if not re.fullmatch(r"[A-Za-z_][A-Za-z_-]{0,79}", capsule.failure_class):
                 continue
@@ -617,6 +803,59 @@ def summarize_dev_failures(
             rejection_reasons=list(decision.get("reasons") or [])[:8],
         ))
     return summaries, evidence
+
+
+def stagnant_dev_mechanisms(
+    spec: CampaignSpec,
+    experiments: list[dict[str, Any]],
+    *,
+    tolerance: float = 1e-6,
+) -> list[str]:
+    """Find mechanisms whose last two scientific DEV trials are indistinguishable.
+
+    The primary metric uses the *configured minimum meaningful improvement* as
+    a conservative noise band (readiness requires A/A variation below it).
+    Other allowlisted metric/diagnostic values require near-exact equality:
+    unlike the primary metric, they have no configured noise calibration.
+    Do not inspect validation/holdout outcomes, status rejection reasons, or cases.
+    """
+    observations: dict[str, list[tuple[str, float, dict[str, float]]]] = {}
+    for row in experiments:
+        if (attempt_bucket(row) != "scientific_trials"
+                or not row.get("hypothesis_json") or not row.get("evaluation_json")):
+            continue
+        mechanism = str(json.loads(row["hypothesis_json"]).get("mechanism_key") or "").strip().casefold()
+        decision = agent_decision_view(spec, _dev_decision_from_row(row)) or {}
+        delta = decision.get("delta")
+        if not mechanism or not isinstance(delta, (int, float)) or not math.isfinite(delta):
+            continue
+        observations.setdefault(mechanism, []).append((
+            classify_dev_outcome(spec, row),
+            float(delta),
+            _visible_numbers(spec, row["evaluation_json"]),
+        ))
+
+    stagnant: list[str] = []
+    for mechanism, trials in observations.items():
+        if len(trials) < 2:
+            continue
+        before, after = trials[-2:]
+        minimum_effect = float(spec.primary_metric.min_improvement)
+        both_inconclusive = all(abs(trial[1]) < minimum_effect for trial in (before, after))
+        nearly_equal = math.isclose(
+            before[1], after[1], rel_tol=0.0, abs_tol=max(tolerance, minimum_effect),
+        )
+        if before[0] != after[0] or not (both_inconclusive or nearly_equal):
+            continue
+        primary_key = f"metric:{spec.primary_metric.name}"
+        prior_metrics = {k: v for k, v in before[2].items() if k != primary_key}
+        current_metrics = {k: v for k, v in after[2].items() if k != primary_key}
+        if prior_metrics.keys() != current_metrics.keys():
+            continue
+        if all(math.isclose(prior_metrics[key], current_metrics[key],
+                            rel_tol=0.0, abs_tol=tolerance) for key in prior_metrics):
+            stagnant.append(mechanism)
+    return sorted(stagnant)[:16]
 
 
 def build_history(
@@ -725,11 +964,33 @@ def build_research_state(
         except (KeyError, ValueError, TypeError):
             continue
     dev_lessons = [lesson for row in experiments if (lesson := derive_dev_lesson(row, spec)) is not None]
+    stagnant = stagnant_dev_mechanisms(spec, experiments)
+    structural_interventions = structural_intervention_memory(spec, experiments)
+    # The last unsuccessful DEV trials constrain the next reframe. Do not use
+    # validation rejection status as evidence that a DEV mechanism failed.
+    failed_families: list[str] = []
+    for row in experiments[-8:]:
+        if attempt_bucket(row) != "scientific_trials" or not row.get("hypothesis_json"):
+            continue
+        if classify_dev_outcome(spec, row) not in {"DEV_NO_EFFECT", "DEV_REGRESSION", "DEV_GUARD_REJECT"}:
+            continue
+        hypothesis = json.loads(row["hypothesis_json"])
+        family = str(hypothesis.get("mechanism_family") or hypothesis.get("mechanism_key") or "").strip().casefold()
+        if family and family not in failed_families:
+            failed_families.append(family)
+    latest_mechanism = next((
+        str(json.loads(row["hypothesis_json"]).get("mechanism_key") or "").strip().casefold()
+        for row in reversed(experiments)
+        if attempt_bucket(row) == "scientific_trials" and row.get("hypothesis_json")
+    ), "")
     return ResearchState(
-        planning_mode=planning_mode(
+        planning_mode=("reframe" if latest_mechanism in stagnant else planning_mode(
             dev_non_improve_streak,
             spec.budget.plateau_experiments,
-        ),
+        )),
+        stagnant_mechanisms=stagnant,
+        failed_dev_families=failed_families[-16:],
+        structural_interventions=structural_interventions,
         dev_non_improve_streak=dev_non_improve_streak,
         failure_counts=dict(sorted(failure_counts.items())),
         mechanisms=[

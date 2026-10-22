@@ -5,13 +5,15 @@ import json
 import logging
 import os
 import re
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
 from pydantic import ValidationError
 
 from .agents import AgentAdapter, AgentError, CodexAdapter, CommandAgentAdapter, PiAdapter
-from .candidate_preflight import python_syntax_errors
+from .candidate_preflight import python_api_compatibility_errors, python_syntax_errors
 from .budget import deadline_reached, pre_action_stop
 from .artifacts import retain_artifacts
 from .contracts import (
@@ -29,14 +31,16 @@ from .contracts import (
 )
 from .envfiles import project_environment
 from .evaluators import CommandEvaluator, EvaluatorError
-from .integrity import evaluation_fingerprint, verify_evaluation_assets
+from .integrity import evaluation_fingerprint, sha256_evaluation_asset, verify_evaluation_assets
 from .evaluator_binding import (
     EvaluationReceipt, EvaluatorBinding, canonical_hash, make_binding,
     make_receipt, runtime_descriptor, validate_receipt_linkage,
 )
+from .failures import classify_failure, sanitized_candidate_traceback
 from .leakage import scan_forbidden_diff_patterns
+from .metric_semantics import metric_failure_guidance
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
-from .process import ProcessCancelled, check_process_control, process_control
+from .process import ProcessCancelled, ProcessError, check_process_control, process_control, run_process
 from .research import (
     attempt_bucket,
     agent_decision_view,
@@ -106,6 +110,11 @@ class Engine:
         self.evaluator = CommandEvaluator(
             self.spec.evaluation_command, base_env=trusted_env
         )
+        self.smoke_evaluator = (
+            CommandEvaluator(self.spec.smoke_command, base_env=trusted_env)
+            if self.spec.smoke_command
+            else None
+        )
         self.validation_evaluator = (
             CommandEvaluator(self.spec.validation_command, base_env=trusted_env)
             if self.spec.validation_command
@@ -135,14 +144,20 @@ class Engine:
 
     def _agent_protected_paths(self) -> list[str]:
         hidden = self._agent_hidden_paths()
-        return [
+        # Context paths are intentionally visible to the agent but remain
+        # read-only. Keep them protected even when editable_scope is broad.
+        protected = [*self.spec.agent_visible_context_paths]
+        protected.extend(
             path
             for path in self.spec.protected_paths
             if not self.workspace._matches(path, hidden)
-        ]
+        )
+        return list(dict.fromkeys(protected))
 
-    def _agent_evaluation_view(self, payload_json: str | None) -> dict[str, Any] | None:
-        return agent_evaluation_view(self.spec, payload_json)
+    def _agent_evaluation_view(
+        self, payload_json: str | None, *, source_tier: str = "dev"
+    ) -> dict[str, Any] | None:
+        return agent_evaluation_view(self.spec, payload_json, source_tier=source_tier)
 
     def _agent_decision_view(self, decision_json: str | None) -> dict[str, Any] | None:
         if not decision_json:
@@ -272,14 +287,14 @@ class Engine:
         if control_reason:
             raise ProcessCancelled(control_reason)
         campaign = self.store.campaign()
-        if kind in {"evaluator", "final_evaluator"}:
+        if kind in {"evaluator", "final_evaluator", "smoke"}:
             reserve = int(kind != "final_evaluator" and self.holdout_evaluator is not None)
             if campaign["evaluator_calls"] + 1 + reserve > self.spec.budget.max_evaluator_calls:
                 if kind == "final_evaluator":
                     raise EngineError("no reserved evaluator call for final holdout")
                 self._stop(StopReason.BUDGET_EXHAUSTED)
                 return True
-        if kind in {"evaluator", "final_evaluator"} and self.spec.budget.max_evaluation_units is not None:
+        if kind in {"evaluator", "final_evaluator", "smoke"} and self.spec.budget.max_evaluation_units is not None:
             calls = 1 + int(kind != "final_evaluator" and self.holdout_evaluator is not None)
             if self.store.evaluation_work_reserved() + calls * self.spec.budget.evaluation_units_per_call > self.spec.budget.max_evaluation_units:
                 if kind == "final_evaluator":
@@ -309,6 +324,11 @@ class Engine:
             required += 1  # worst case: dev ACCEPT also needs validation
         if self.holdout_evaluator is not None:
             required += 1  # reserved final-only holdout slot
+        if self.smoke_evaluator is not None:
+            required += max(
+                0,
+                self.spec.budget.max_repair_attempts - self._repair_attempts_used(),
+            )
         if self.spec.budget.max_evaluation_units is not None:
             if self.store.evaluation_work_reserved() + required * self.spec.budget.evaluation_units_per_call > self.spec.budget.max_evaluation_units:
                 return False
@@ -316,6 +336,305 @@ class Engine:
             campaign["evaluator_calls"] + required
             <= self.spec.budget.max_evaluator_calls
         )
+
+    def _repair_attempts_used(self, *, exclude_action_id: str | None = None) -> int:
+        """Count durable repair actions, including failed or unknown outcomes."""
+        return sum(
+            ":repair:" in action["id"] and action["id"] != exclude_action_id
+            for action in self.store.actions()
+        )
+
+    def _stage_smoke(self, attempt_id: int, experiment_id: int) -> None:
+        exp = self.store.experiment(experiment_id)
+        snapshot = exp["candidate_snapshot"]
+        self.workspace.checkout(snapshot)
+        proof = self._candidate_materialization_proof(experiment_id)
+        changed = self.workspace.changed_paths(exp["parent_snapshot"], snapshot)
+        valid, violations = self.workspace.verify_scope(
+            changed, self.spec.editable_scope, self.spec.protected_paths
+        )
+        integrity_violations = verify_evaluation_assets(
+            self.workspace.workspace, self.spec.evaluation_assets
+        )
+        syntax_errors = python_syntax_errors(self.workspace.workspace, changed)
+        api_errors = [] if syntax_errors else python_api_compatibility_errors(
+            self.workspace.workspace,
+            changed,
+            evaluator_command=self.spec.evaluation_command,
+        )
+        if not valid or integrity_violations or syntax_errors or api_errors:
+            self._reject_repaired_candidate(
+                attempt_id,
+                experiment_id,
+                "post-repair preflight failed before smoke",
+                violations + integrity_violations + syntax_errors + api_errors,
+            )
+            return
+        if self.smoke_evaluator is None:
+            self.store.event("BOUNDED_REPAIR_PREFLIGHT_PASSED", {
+                "experiment_id": experiment_id,
+                "snapshot": snapshot,
+                "smoke_status": "NOT_CONFIGURED",
+            })
+            self.store.conn.commit()
+            self.store.set_stage(attempt_id, "EVALUATE")
+            self._checkpoint("EVALUATE")
+            return
+
+        existing_smokes = [
+            action for action in self.store.actions()
+            if action["id"].startswith(f"exp:{experiment_id}:smoke:")
+        ]
+        smoke_index = max(
+            (int(action["id"].rsplit(":", 1)[1]) for action in existing_smokes),
+            default=0,
+        ) + 1
+        if existing_smokes:
+            latest = max(existing_smokes, key=lambda item: int(item["id"].rsplit(":", 1)[1]))
+            prior_request = json.loads(latest["request_json"])
+            if prior_request.get("snapshot") == snapshot:
+                smoke_index = int(latest["id"].rsplit(":", 1)[1])
+
+        while True:
+            exp = self.store.experiment(experiment_id)
+            snapshot = exp["candidate_snapshot"]
+            proof = self._candidate_materialization_proof(experiment_id)
+            request = self._evaluation_request(
+                snapshot,
+                tier="smoke",
+                command=self.spec.smoke_command,
+                candidate_proof=proof,
+            )
+
+            def invoke_smoke() -> dict[str, Any]:
+                smoke_root = self.store.path.parent / "smoke-workspaces"
+                smoke_root.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(
+                    prefix=f"exp-{experiment_id}-", dir=smoke_root
+                ) as temporary:
+                    smoke_workspace = Path(temporary) / "workspace"
+                    run_process(
+                        ["git", "clone", "--no-hardlinks", "--no-checkout", str(self.workspace.workspace), str(smoke_workspace)],
+                        cwd=smoke_root,
+                        timeout=120,
+                    )
+                    run_process(
+                        ["git", "checkout", "--detach", snapshot],
+                        cwd=smoke_workspace,
+                        timeout=30,
+                    )
+                    for asset in self.spec.evaluation_assets:
+                        source = self.workspace.workspace / asset.path
+                        target = smoke_workspace / asset.path
+                        if not source.is_file() or sha256_evaluation_asset(source) != asset.sha256:
+                            raise EngineError("frozen smoke asset is unavailable")
+                        if not target.is_file() or sha256_evaluation_asset(target) != asset.sha256:
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(source, target)
+                    self.smoke_evaluator.context["BANANLOOP_WORKSPACE"] = str(smoke_workspace.resolve())
+                    try:
+                        result = self.smoke_evaluator.evaluate(
+                            smoke_workspace,
+                            timeout=self.spec.smoke_timeout_seconds or 90,
+                        )
+                    except ProcessCancelled:
+                        raise
+                    except Exception as exc:
+                        stderr = ""
+                        current: BaseException | None = exc
+                        while current is not None:
+                            if isinstance(current, ProcessError) and current.result is not None:
+                                stderr = current.result.stderr
+                                break
+                            current = current.__cause__ or current.__context__
+                        diagnostic = sanitized_candidate_traceback(stderr, smoke_workspace)
+                        if diagnostic:
+                            return {
+                                "smoke_passed": False,
+                                "snapshot": snapshot,
+                                "resource_units": self.spec.budget.evaluation_units_per_call or 1,
+                                "sanitized_traceback": diagnostic,
+                            }
+                        raise EngineError("post-repair smoke failed") from exc
+                    if result.status != "ok" or self.spec.primary_metric.name not in result.metrics:
+                        raise EngineError("smoke output did not satisfy the approved smoke contract")
+                    head = run_process(
+                        ["git", "rev-parse", "HEAD"], cwd=smoke_workspace, timeout=10
+                    ).stdout.strip()
+                    tracked_changes = run_process(
+                        ["git", "diff", "--name-only", "HEAD"], cwd=smoke_workspace, timeout=10
+                    ).stdout.strip()
+                    staged_changes = run_process(
+                        ["git", "diff", "--cached", "--name-only"], cwd=smoke_workspace, timeout=10
+                    ).stdout.strip()
+                    if head != snapshot or tracked_changes or staged_changes:
+                        raise EngineError("smoke modified its frozen candidate snapshot")
+                    if verify_evaluation_assets(smoke_workspace, self.spec.evaluation_assets):
+                        raise EngineError("smoke modified frozen evaluation assets")
+                    return {
+                        "smoke_passed": True,
+                        "snapshot": snapshot,
+                        "resource_units": result.resource_units,
+                    }
+
+            smoke_action_id = f"exp:{experiment_id}:smoke:{smoke_index}"
+            try:
+                result = self._action(
+                    action_id=smoke_action_id,
+                    experiment_id=experiment_id,
+                    stage="SMOKE",
+                    kind="smoke",
+                    request=request,
+                    invoke=invoke_smoke,
+                )
+                if result.get("snapshot") != snapshot:
+                    raise EngineError("post-repair smoke receipt is invalid")
+                if result.get("smoke_passed") is True:
+                    break
+                diagnostic = result.get("sanitized_traceback")
+                if not isinstance(diagnostic, str) or not diagnostic:
+                    raise EngineError("smoke failed without a repairable candidate traceback")
+                changed, repair_errors = self._repair_smoke_failure(
+                    attempt_id, experiment_id, snapshot, diagnostic
+                )
+                if not changed:
+                    raise EngineError("bounded runtime repair failed: " + "; ".join(repair_errors[:4]))
+                smoke_index += 1
+            except UnknownActionOutcome as exc:
+                self.store.event("POST_REPAIR_SMOKE_OUTCOME_UNKNOWN", {
+                    "experiment_id": experiment_id,
+                    "snapshot": snapshot,
+                })
+                self.store.conn.commit()
+                self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+                raise EngineError("post-repair smoke outcome is unknown; resume with explicit retry") from exc
+            except (AgentError, EvaluatorError, ValidationError, WorkspaceError, EngineError) as exc:
+                self._reject_repaired_candidate(
+                    attempt_id,
+                    experiment_id,
+                    "post-repair smoke failed",
+                    [str(exc)],
+                    reason_code="POST_REPAIR_SMOKE_FAILED",
+                )
+                return
+
+        self.store.event("BOUNDED_REPAIR_ACCEPTED", {
+            "experiment_id": experiment_id,
+            "snapshot": snapshot,
+            "changed_paths": changed[:20],
+            "smoke_status": "PASSED",
+        })
+        self.store.conn.commit()
+        self.store.set_stage(attempt_id, "EVALUATE")
+        self._checkpoint("EVALUATE")
+
+    def _repair_smoke_failure(
+        self,
+        attempt_id: int,
+        experiment_id: int,
+        snapshot: str,
+        sanitized_traceback: str,
+    ) -> tuple[list[str], list[str]]:
+        repair_id = f"exp:{experiment_id}:repair:runtime"
+        if self._repair_attempts_used(exclude_action_id=repair_id) >= self.spec.budget.max_repair_attempts:
+            return [], ["campaign bounded repair budget exhausted"]
+        experiment = self.store.experiment(experiment_id)
+        if not experiment["hypothesis_json"]:
+            return [], ["no approved hypothesis is available for runtime repair"]
+        task = {
+            "schema_version": 1,
+            "role": "repair",
+            "goal": self.spec.goal,
+            "hypothesis": json.loads(experiment["hypothesis_json"]),
+            "candidate_snapshot": snapshot,
+            "editable_scope": list(self.spec.editable_scope),
+            "protected_paths": list(self.spec.protected_paths),
+            "failure_kind": "implementation_smoke",
+            "sanitized_traceback": sanitized_traceback,
+            "constraints": [
+                "Repair only the candidate code identified by the sanitized traceback.",
+                "Do not modify evaluators, datasets, labels, protocol, validation, or holdout assets.",
+                "Only change paths inside editable_scope; protected_paths are immutable.",
+                "This consumes one attempt from the approved campaign repair budget.",
+            ],
+        }
+
+        def invoke_repair() -> dict[str, Any]:
+            result = self._invoke_agent(task, timeout=self._agent_timeout(600), apply_changes=True)
+            normalized = self.agent.normalize_result(task, result)
+            parsed = ImplementResult.model_validate(normalized)
+            if not parsed.blockers and self.workspace.working_tree_changed_paths():
+                normalized["repair_candidate_snapshot"] = self.workspace.snapshot(
+                    f"bananloop experiment {experiment_id} bounded runtime repair"
+                )
+            return normalized
+
+        repaired = self._action(
+            action_id=repair_id,
+            experiment_id=experiment_id,
+            stage="SMOKE",
+            kind="agent",
+            request=task,
+            invoke=invoke_repair,
+        )
+        repaired = self.agent.normalize_result(task, repaired)
+        candidate = repaired.pop("repair_candidate_snapshot", None)
+        parsed = ImplementResult.model_validate(repaired)
+        if parsed.blockers or not candidate:
+            return [], parsed.blockers or ["runtime repair produced no material changes"]
+        self.store.update_experiment(experiment_id, candidate_snapshot=candidate)
+        self.workspace.checkout(candidate)
+        changed = self.workspace.changed_paths(experiment["parent_snapshot"], candidate)
+        valid, scope_errors = self.workspace.verify_scope(
+            changed, self.spec.editable_scope, self.spec.protected_paths
+        )
+        integrity_errors = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
+        syntax_errors = python_syntax_errors(self.workspace.workspace, changed)
+        api_errors = [] if syntax_errors else python_api_compatibility_errors(
+            self.workspace.workspace, changed, evaluator_command=self.spec.evaluation_command
+        )
+        errors = scope_errors + integrity_errors + syntax_errors + api_errors
+        if not valid or errors:
+            return [], errors or ["repaired candidate failed post-repair preflight"]
+        self._checkpoint("SMOKE")
+        return changed, []
+
+    def _reject_repaired_candidate(
+        self,
+        attempt_id: int,
+        experiment_id: int,
+        reason: str,
+        details: list[str],
+        *,
+        reason_code: str = "CANDIDATE_PREFLIGHT_FAILED",
+    ) -> None:
+        decision = {
+            "accepted": False,
+            "primary_value": None,
+            "champion_value": None,
+            "delta": None,
+            "predicates": {"repair_preflight": False},
+            "reasons": [reason_code],
+        }
+        safe_details = [item[:300] for item in details[:8]]
+        self.store.update_experiment(
+            experiment_id,
+            decision_json=json.dumps(decision),
+            failure_category="IMPLEMENTATION_BLOCKED",
+            lesson=f"{reason}: " + "; ".join(safe_details)[:800],
+        )
+        self.store.record_decision(
+            experiment_id,
+            self.store.experiment(experiment_id)["candidate_snapshot"],
+            decision,
+        )
+        self.store.event(reason_code, {
+            "experiment_id": experiment_id,
+            "errors": safe_details,
+        })
+        self.store.conn.commit()
+        self.store.set_stage(attempt_id, "REJECT")
+        self._checkpoint("REJECT")
 
     def _action(
         self,
@@ -343,7 +662,7 @@ class Engine:
                     root = self.store.path.parent / "artifacts" / hashlib.sha256(action_id.encode()).hexdigest()[:24]
                     retained = EvaluationResult.model_validate(response)
                     retain_artifacts(retained, root, experiment_id, request["snapshot"])
-                if kind != "agent":
+                if kind not in {"agent", "smoke"}:
                     self._verify_completed_receipt(action_id)
                 return response
             if kind != "agent":
@@ -415,7 +734,7 @@ class Engine:
                 )
             if self.spec.budget.evaluation_units_per_call is not None:
                 context["BANANLOOP_EVALUATION_UNIT_LIMIT"] = str(self.spec.budget.evaluation_units_per_call)
-            for evaluator in (self.evaluator, self.validation_evaluator, self.holdout_evaluator):
+            for evaluator in (self.evaluator, self.smoke_evaluator, self.validation_evaluator, self.holdout_evaluator):
                 if evaluator is not None:
                     evaluator.context = context
         try:
@@ -425,7 +744,7 @@ class Engine:
                 check_process_control()
                 if kind != "agent":
                     self._protocol_manifest_context(request.get("tier", "dev"))
-            if kind != "agent":
+            if kind not in {"agent", "smoke"}:
                 result = EvaluationResult.model_validate(response)
                 ceiling = self.spec.budget.evaluation_units_per_call
                 if ceiling is not None and (result.resource_units is None or result.resource_units > ceiling):
@@ -453,6 +772,19 @@ class Engine:
                 tmp_sidecar.replace(sidecar)
                 response = result.model_dump(mode="json")
                 response["_evaluation_receipt"] = receipt.model_dump(mode="json")
+            elif kind == "smoke":
+                ceiling = self.spec.budget.evaluation_units_per_call
+                units = response.get("resource_units")
+                if ceiling is not None and (units is None or units > ceiling):
+                    raise EvaluatorError("smoke exceeded or omitted its reserved work units")
+                safe_response = {
+                    "smoke_passed": response.get("smoke_passed") is True,
+                    "snapshot": response.get("snapshot"),
+                }
+                diagnostic = response.get("sanitized_traceback")
+                if isinstance(diagnostic, str) and len(diagnostic) <= 2000:
+                    safe_response["sanitized_traceback"] = diagnostic
+                response = safe_response
         except ProcessCancelled as exc:
             self.store.cancel_action(action_id, exc.reason)
             raise
@@ -473,6 +805,8 @@ class Engine:
             commands["validation"] = self.spec.validation_command
         if self.spec.holdout_command:
             commands["holdout"] = self.spec.holdout_command
+        if self.spec.smoke_command:
+            commands["smoke"] = self.spec.smoke_command
         current = make_binding(self.spec, runtime_descriptor(commands))
         row = self.store.evaluator_binding()
         if row is None:
@@ -623,7 +957,9 @@ class Engine:
         existing = self.store.latest_evaluation(snapshot, "holdout")
         if existing is not None:
             result = EvaluationResult.model_validate_json(existing["result_json"])
-            return self._holdout_assessment(result)
+            assessment = self._holdout_assessment(result)
+            self._record_holdout_decision(snapshot, result, assessment)
+            return assessment
 
         self.workspace.checkout(snapshot)
         integrity_violations = verify_evaluation_assets(
@@ -663,6 +999,7 @@ class Engine:
             tier="holdout",
         )
         assessment = self._holdout_assessment(result)
+        self._record_holdout_decision(snapshot, result, assessment)
         self.store.event(
             "FINAL_HOLDOUT_RECORDED",
             {
@@ -672,6 +1009,27 @@ class Engine:
         )
         self.store.conn.commit()
         return assessment
+
+    def _record_holdout_decision(
+        self,
+        snapshot: str,
+        result: EvaluationResult,
+        assessment: dict[str, Any],
+    ) -> None:
+        metric_value = result.metrics[self.spec.primary_metric.name].value
+        self.store.record_decision(
+            None,
+            snapshot,
+            {
+                "accepted": bool(assessment["target_met"]),
+                "target_met": bool(assessment["target_met"]),
+                "champion_value": metric_value,
+                "delta": None,
+                "predicates": {"holdout_target": bool(assessment["target_met"])},
+                "reasons": ["HOLDOUT_TARGET_MET" if assessment["target_met"] else "HOLDOUT_TARGET_NOT_MET"],
+            },
+            tier="holdout",
+        )
 
     def _baseline(self) -> None:
         campaign = self.store.campaign()
@@ -828,6 +1186,7 @@ class Engine:
             "goal": self.spec.goal,
             "project_context": self.spec.project_context,
             "primary_metric": self.spec.primary_metric.model_dump(mode="json"),
+            "primary_metric_failure_guidance": metric_failure_guidance(self.spec.primary_metric.name),
             "guardrails": [
                 g.model_dump(mode="json")
                 for g in self.spec.guardrails
@@ -861,9 +1220,20 @@ class Engine:
                 "legacy_fallback": "A single existing Hypothesis JSON object remains valid.",
             },
             "planning_requirements": {
+                "failure_reflection": (
+                    "Review prior DEV failure capsules, DEV experiment evidence, falsified or inconclusive "
+                    "hypotheses, and their next discriminating tests. Explain why the previous mechanism failed "
+                    "to produce a meaningful DEV gain before proposing a new causal mechanism. "
+                    "Explain which observation supports the next causal theory; do not memorize public DEV examples. "
+                    "Do not infer or request validation/holdout examples, labels, or measurements."
+                ),
+                "stagnation": (
+                    "If research_state.stagnant_mechanisms contains a mechanism, change its mechanism family. "
+                    "Those mechanisms repeated the same aggregate frozen DEV outcome; a renamed retry is not a new test."
+                ),
                 "exploit": "build on the strongest DEV-supported mechanism without duplicating prior work",
                 "explore": "test a materially different mechanism family from recent failed attempts",
-                "reframe": "challenge the current framing and choose a new mechanism family before plateau",
+                "reframe": "challenge the current framing, avoid families of recent unsuccessful DEV trials, and choose a new mechanism before plateau",
                 "genealogy": (
                     "If reusing a mechanism_key, set relation to refine/retry/supersede "
                     "and cite a matching prior experiment ordinal."
@@ -1250,7 +1620,11 @@ class Engine:
         exp = self.store.experiment(experiment_id)
         self.workspace.checkout(exp["candidate_snapshot"])
         changed = self.workspace.changed_paths(exp["parent_snapshot"], exp["candidate_snapshot"])
-        valid, violations = self.workspace.verify_scope(changed, self.spec.editable_scope, self.spec.protected_paths)
+        valid, violations = self.workspace.verify_scope(
+            changed,
+            self.spec.editable_scope,
+            self._agent_protected_paths(),
+        )
         integrity_violations = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
         if integrity_violations:
             self.store.update_experiment(
@@ -1273,7 +1647,7 @@ class Engine:
                 "reasons": ["SCOPE_VIOLATION", *violations],
             }
             self.store.update_experiment(experiment_id, decision_json=json.dumps(decision), failure_category="SCOPE_VIOLATION", lesson="Candidate changed protected/out-of-scope paths")
-            self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
+            self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision, tier="pre_evaluation")
             self.store.set_stage(attempt_id, "REJECT")
         elif self.spec.forbidden_diff_patterns:
             leakage_violations = scan_forbidden_diff_patterns(
@@ -1302,6 +1676,7 @@ class Engine:
                     experiment_id,
                     exp["candidate_snapshot"],
                     decision,
+                    tier="pre_evaluation",
                 )
                 self.store.event(
                     "LEAKAGE_GUARD_REJECTED",
@@ -1319,25 +1694,121 @@ class Engine:
             self.store.set_stage(attempt_id, "EVALUATE")
         if self.store.attempt(attempt_id)["stage"] == "EVALUATE":
             syntax_errors = python_syntax_errors(self.workspace.workspace, changed)
-            if syntax_errors:
+            api_errors = [] if syntax_errors else python_api_compatibility_errors(
+                self.workspace.workspace,
+                changed,
+                evaluator_command=self.spec.evaluation_command,
+            )
+            preflight_errors = syntax_errors + api_errors
+            if preflight_errors:
+                if not exp["hypothesis_json"]:
+                    # A repair must be grounded in an approved hypothesis.
+                    pass
+                elif self._repair_attempts_used(
+                    exclude_action_id=f"exp:{experiment_id}:repair:1"
+                ) >= self.spec.budget.max_repair_attempts:
+                    preflight_errors = ["campaign bounded repair budget exhausted"]
+                else:
+                    repair_task = {
+                        "schema_version": 1,
+                        "role": "repair",
+                        "goal": self.spec.goal,
+                        "hypothesis": json.loads(exp["hypothesis_json"]),
+                        "candidate_snapshot": exp["candidate_snapshot"],
+                        "editable_scope": list(self.spec.editable_scope),
+                        "protected_paths": list(self.spec.protected_paths),
+                        "failure_kind": "implementation_preflight",
+                        "failure_details": preflight_errors[:8],
+                        "constraints": [
+                            "Repair only the reported implementation preflight errors.",
+                            "Do not modify evaluators, datasets, labels, protocol, validation, or holdout assets.",
+                            "Only change paths inside editable_scope; protected_paths are immutable.",
+                            "This is the single automatic repair attempt for this candidate.",
+                        ],
+                    }
+                    try:
+                        def invoke_repair() -> dict[str, Any]:
+                            result = self._invoke_agent(
+                                repair_task,
+                                timeout=self._agent_timeout(600),
+                                apply_changes=True,
+                            )
+                            normalized_result = self.agent.normalize_result(repair_task, result)
+                            parsed_result = ImplementResult.model_validate(normalized_result)
+                            if not parsed_result.blockers and self.workspace.working_tree_changed_paths():
+                                normalized_result["repair_candidate_snapshot"] = self.workspace.snapshot(
+                                    f"bananloop experiment {experiment_id} bounded repair"
+                                )
+                            return normalized_result
+
+                        repaired = self._action(
+                            action_id=f"exp:{experiment_id}:repair:1",
+                            experiment_id=experiment_id,
+                            stage="VERIFY",
+                            kind="agent",
+                            request=repair_task,
+                            invoke=invoke_repair,
+                        )
+                        repaired = self.agent.normalize_result(repair_task, repaired)
+                        repair_snapshot = repaired.pop("repair_candidate_snapshot", None)
+                        repair_result = ImplementResult.model_validate(repaired)
+                        if not repair_result.blockers and repair_snapshot:
+                            self.store.update_experiment(experiment_id, candidate_snapshot=repair_snapshot)
+                            self.workspace.checkout(repair_snapshot)
+                            exp = self.store.experiment(experiment_id)
+                            changed = self.workspace.changed_paths(exp["parent_snapshot"], repair_snapshot)
+                            valid, violations = self.workspace.verify_scope(
+                                changed, self.spec.editable_scope, self.spec.protected_paths
+                            )
+                            integrity_violations = verify_evaluation_assets(
+                                self.workspace.workspace, self.spec.evaluation_assets
+                            )
+                            syntax_errors = python_syntax_errors(self.workspace.workspace, changed)
+                            api_errors = [] if syntax_errors else python_api_compatibility_errors(
+                                self.workspace.workspace,
+                                changed,
+                                evaluator_command=self.spec.evaluation_command,
+                            )
+                            remaining_errors = syntax_errors + api_errors
+                            if valid and not integrity_violations and not remaining_errors:
+                                next_stage = "SMOKE" if self.smoke_evaluator is not None else "EVALUATE"
+                                self.store.set_stage(attempt_id, next_stage)
+                                self._checkpoint(next_stage)
+                                if self.smoke_evaluator is None:
+                                    self.store.event("BOUNDED_REPAIR_PREFLIGHT_PASSED", {
+                                        "experiment_id": experiment_id,
+                                        "snapshot": repair_snapshot,
+                                        "changed_paths": changed[:20],
+                                        "smoke_status": "NOT_CONFIGURED",
+                                    })
+                                    self.store.conn.commit()
+                                return
+                            preflight_errors = remaining_errors or violations or integrity_violations
+                        else:
+                            preflight_errors = repair_result.blockers or ["repair produced no material changes"]
+                    except (AgentError, ValidationError, UnknownActionOutcome, WorkspaceError, EngineError) as repair_exc:
+                        preflight_errors = [f"bounded repair failed: {repair_exc}"]
                 decision = {
                     "accepted": False,
                     "primary_value": None,
                     "champion_value": None,
                     "delta": None,
-                    "predicates": {"candidate_python_syntax": False},
+                    "predicates": {
+                        "candidate_python_syntax": not bool(syntax_errors),
+                        "candidate_python_api_compatibility": not bool(api_errors),
+                    },
                     "reasons": ["CANDIDATE_PREFLIGHT_FAILED"],
                 }
                 self.store.update_experiment(
                     experiment_id,
                     decision_json=json.dumps(decision),
                     failure_category="IMPLEMENTATION_BLOCKED",
-                    lesson="Python candidate syntax preflight: " + "; ".join(syntax_errors)[:800],
+                    lesson="Python candidate preflight failed after bounded repair policy: " + "; ".join(preflight_errors)[:800],
                 )
-                self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
+                self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision, tier="pre_evaluation")
                 self.store.event(
                     "CANDIDATE_PREFLIGHT_FAILED",
-                    {"experiment_id": experiment_id, "errors": syntax_errors[:8]},
+                    {"experiment_id": experiment_id, "errors": preflight_errors[:8]},
                 )
                 self.store.conn.commit()
                 self.store.set_stage(attempt_id, "REJECT")
@@ -1449,7 +1920,9 @@ class Engine:
         task["hypothesis"] = (
             json.loads(exp["hypothesis_json"]) if exp.get("hypothesis_json") else None
         )
-        task["dev_evaluation"] = self._agent_evaluation_view(exp.get("evaluation_json"))
+        task["dev_evaluation"] = self._agent_evaluation_view(
+            exp.get("evaluation_json"), source_tier="dev"
+        )
         task["dev_decision"] = self._agent_decision_view(exp.get("dev_decision_json"))
 
         safe_signals: list[dict[str, Any]] = []
@@ -1477,6 +1950,14 @@ class Engine:
             "may_use_exact_expected_answers_for_diagnosis": True,
             "do_not_copy_case_specific_answers_into_capsules": True,
             "prefer_invariants_and_provenance": True,
+            "explain_failed_hypothesis_against_dev_evidence": True,
+            "suggest_a_discriminating_regression_test": True,
+            "do_not_infer_causes_from_aggregate_scores_alone": True,
+            "primary_metric_semantics": metric_failure_guidance(
+                self.spec.primary_metric.name,
+                diagnostic_evidence=(task["dev_evaluation"] or {}).get("diagnostic_evidence", []),
+            ),
+            "explain_target_metric_not_just_auxiliary_cutoff_errors": True,
         }
         return task
 
@@ -1501,6 +1982,14 @@ class Engine:
                     query_tokens.append(token)
         query_tokens.sort(key=len, reverse=True)
         payload = analysis.model_dump(mode="json")
+        safe_evaluation = self._agent_evaluation_view(
+            candidate.model_dump_json(), source_tier="dev"
+        ) or {}
+        semantics = metric_failure_guidance(
+            self.spec.primary_metric.name,
+            diagnostic_evidence=safe_evaluation.get("diagnostic_evidence", []),
+        )
+        confidence_ceiling = semantics.get("causal_confidence_ceiling")
         for capsule in payload.get("capsules") or []:
             for field in (
                 "title",
@@ -1518,6 +2007,12 @@ class Engine:
                     if token in value:
                         value = value.replace(token, "<case-specific-query>")
                 capsule[field] = self._redact_failure_text(value)
+            if confidence_ceiling is not None:
+                capsule["confidence"] = min(float(capsule.get("confidence", 0.5)), float(confidence_ceiling))
+                if semantics.get("evidence_status", "").startswith("unknown_"):
+                    capsule["likely_mechanism"] = (
+                        "Unverified conjecture: " + str(capsule.get("likely_mechanism") or "")
+                    ).strip()
         return FailureAnalysisResult.model_validate(payload)
 
     def _route_after_dev_analysis(self, attempt_id: int, decision: dict[str, Any]) -> None:
@@ -1548,10 +2043,24 @@ class Engine:
             dev_decision_json=decision.model_dump_json(),
             decision_json=decision.model_dump_json(),
         )
+        if not decision.accepted:
+            scientific_classification = None
+            for reason in decision.reasons:
+                classification = classify_failure(reason)
+                if classification and classification["kind"] == "scientific_outcome":
+                    scientific_classification = classification
+                    break
+            if scientific_classification:
+                self.store.event(
+                    "FAILURE_CLASSIFIED",
+                    {"experiment_id": experiment_id, **scientific_classification},
+                )
+                self.store.conn.commit()
         self.store.record_decision(
             experiment_id,
             exp["candidate_snapshot"],
             decision.model_dump(mode="json"),
+            tier="dev",
         )
         verdict = "ACCEPT" if decision.accepted else "REJECT"
         self._progress(
@@ -1570,7 +2079,7 @@ class Engine:
                 )
         if changed_metrics:
             self._progress("metrics: " + "; ".join(changed_metrics[:8]))
-        if candidate.failure_signals:
+        if candidate.failure_signals or candidate.failure_examples:
             # Failure analysis is DEV-only and optional. Never consume validation
             # or holdout evidence for adaptive research memory.
             stop_reason = pre_action_stop(
@@ -1594,6 +2103,49 @@ class Engine:
                     decision.model_dump(mode="json"),
                 )
         else:
+            if not decision.accepted:
+                # Preserve an explicit research record when DEV supplies only
+                # aggregate metrics. The score and deterministic decision are
+                # observations; they do not identify a causal mechanism.
+                reasons = ", ".join(decision.reasons) or "no rejection reason"
+                capsule = FailureCapsule(
+                    title="Aggregate-only DEV rejection",
+                    failure_class="insufficient_evidence",
+                    stage="aggregate_metric",
+                    observation=(
+                        f"DEV {self.spec.primary_metric.name} delta "
+                        f"{decision.delta:+.6g}; decision reasons: {reasons}. "
+                        "The evaluator supplied no DEV failure signals or examples."
+                    ),
+                    likely_mechanism=(
+                        "Unknown. Aggregate DEV metrics do not establish why the "
+                        "candidate failed to improve."
+                    ),
+                    general_rule=(
+                        "Do not infer a feature-level or algorithmic cause from "
+                        "an aggregate score without public DEV diagnostics."
+                    ),
+                    suggested_regression=(
+                        "Test a materially different falsifiable mechanism on the "
+                        "same frozen DEV split; use public DEV diagnostics only "
+                        "if the evaluator supplies them."
+                    ),
+                    confidence=0.0,
+                )
+                analysis = FailureAnalysisResult(capsules=[capsule])
+                self.store.update_experiment(
+                    experiment_id,
+                    failure_analysis_json=analysis.model_dump_json(),
+                )
+                self.store.event(
+                    "DEV_FAILURE_ANALYSIS_INSUFFICIENT_EVIDENCE",
+                    {
+                        "experiment_id": experiment_id,
+                        "capsule_count": 1,
+                        "failure_class": "insufficient_evidence",
+                    },
+                )
+                self.store.conn.commit()
             self._route_after_dev_analysis(
                 attempt_id,
                 decision.model_dump(mode="json"),
@@ -1604,7 +2156,7 @@ class Engine:
         exp = self.store.experiment(experiment_id)
         candidate = EvaluationResult.model_validate_json(exp["evaluation_json"])
         decision = json.loads(exp["dev_decision_json"])
-        if not candidate.failure_signals:
+        if not candidate.failure_signals and not candidate.failure_examples:
             self._route_after_dev_analysis(attempt_id, decision)
             return
 
@@ -1753,6 +2305,7 @@ class Engine:
                 experiment_id,
                 exp["candidate_snapshot"],
                 combined,
+                tier="validation",
             )
             self.store.set_stage(attempt_id, "REJECT")
         else:
@@ -1764,6 +2317,7 @@ class Engine:
                 experiment_id,
                 exp["candidate_snapshot"],
                 combined,
+                tier="validation",
             )
             self.store.set_stage(attempt_id, "PROMOTE")
         self._checkpoint(self.store.attempt(attempt_id)["stage"])
@@ -1974,6 +2528,8 @@ class Engine:
                 self._stage_snapshot(attempt_id, experiment_id)
             elif stage == "VERIFY":
                 self._stage_verify(attempt_id, experiment_id)
+            elif stage == "SMOKE":
+                self._stage_smoke(attempt_id, experiment_id)
             elif stage == "EVALUATE":
                 self._stage_evaluate(attempt_id, experiment_id)
             elif stage == "DECIDE":

@@ -279,8 +279,20 @@ BananLoop can own the full evaluation lifecycle instead of requiring a manual po
 - `--eval-cmd` is the **dev** evaluator. It runs on the baseline and every candidate and drives the ordinary iterative decision.
 - `--validation-eval-cmd` is a blind **validation** evaluator. It runs on the baseline and only on candidates that first pass the dev policy. A candidate is promoted only when the same metric/guardrail policy also improves against the current validation champion.
 - `--holdout-eval-cmd` is the **final holdout** evaluator. It runs once on the terminal champion after normal campaign termination. Its detailed result is never added to agent context or experiment history.
+- `--smoke-cmd` is an optional cheap evaluator used after a bounded implementation repair. It runs in a disposable checkout of that candidate; the result must be valid and contain the primary metric, but its metric values are discarded. Smoke calls consume evaluator/work budget and the command plus referenced assets are frozen with the campaign.
 - Validation/holdout commands may point at external datasets. Repository evaluator scripts/configs referenced by any tier are frozen and automatically hidden from the agent workspace.
 - When a holdout is configured, BananLoop reserves the final evaluator-call budget slot for it.
+
+The post-repair smoke timeout defaults to 90 seconds and can be lowered with
+`--smoke-timeout-seconds`. A campaign without an approved smoke command still
+repeats static preflight after repair, but does not claim a runtime smoke passed.
+When the smoke process fails with a Python traceback containing frames from
+candidate code, BananLoop can pass the repair agent only candidate-relative
+file/line/function frames and the exception type. Source lines, exception
+messages, evaluator frames, raw stdout/stderr, and host paths are excluded.
+The repaired snapshot must pass scope, frozen-asset, syntax, and API checks and
+then pass smoke again before it can reach DEV. Failures without a candidate
+traceback remain implementation rejections and are not guessed at.
 
 `GOAL_MET` requires the final holdout to meet the target and mandatory guards.
 A valid final measurement below target ends as `STOPPED / FINAL_HOLDOUT_REJECTED`;
@@ -362,9 +374,10 @@ bananloop report --repo . --json --output campaign.json
 bananloop stop --repo .
 bananloop resume --repo .
 bananloop export --repo . --output ../champion-export
+bananloop trace export --repo . --campaign-id ID --output ../campaign-trace
 ```
 
-Use `--campaign-id ID` with run/resume/status/stop/report/export to select an
+Use `--campaign-id ID` with run/resume/status/stop/report/export/trace export to select an
 indexed campaign. Without it, commands use the active campaign shown by
 `campaigns list`. Repeating the same canonical goal resumes its indexed
 campaign; use `--request-id ID` on `goal`/`start` to make retries explicit, or
@@ -374,6 +387,27 @@ Use `--state-dir PATH` on all commands to keep campaign state in an explicit
 single-campaign directory (useful for CI/tests). Existing state at the old
 `~/.bananloop/projects/<repo-hash>/campaign.sqlite3` path stays in place and is
 listed as `legacy`.
+
+The portable trace is a read-only export for an operator or reviewer. It
+contains `events.jsonl`, `summary.json`, `report.md`, and a checksum manifest.
+To share a campaign, send `events.jsonl`, `summary.json`, and `report.md` (the
+manifest is useful for integrity checks). The shareable export omits raw goal
+text, agent rationales, evaluator output payloads, case inputs, labels, and
+per-case validation/holdout results; it records only a goal hash and aggregate
+metrics. It also records the durable evaluator/runtime binding hash and, for
+direct Python runners, Python/build/platform identifiers and a hash/count of
+installed dependency metadata. Wrapper runtimes and older bindings without a
+dependency probe are explicitly `UNKNOWN` or `PARTIAL`. Executable paths and
+dependency names are not exported. Provider cost remains `unknown` unless the
+provider supplies metering. The shareable summary includes integrity-checked
+decision receipt digests and evaluator receipt references, without policy
+predicates or rationales. The operator-only report includes decision details
+and a six-part summary of improvement, checks, measurements, decision reasons,
+unknowns, and next action. Historical decisions without receipts are marked
+`LEGACY_UNRECEIPTED` rather than treated as verified.
+Choose an output path outside the source checkout when you do not want the
+export files in that checkout. BananLoop only refreshes a directory carrying
+its own trace manifest; other non-empty directories are refused.
 
 `stop` sends a durable cancellation request to the running supervisor. Managed
 local processes are polled for cancellation and the campaign deadline. The
@@ -492,3 +526,70 @@ quality gains from the terminal status alone.
 Directory scope entries ending with a slash (such as
 `src/nomenclature_matcher/`) are treated recursively. Sibling paths
 (`src/nomenclature_matcher_extra/`) are not implicitly editable.
+
+## DEV error reflection and new hypothesis selection
+
+When the DEV evaluator exposes `failure_signals` **or** public
+`failure_examples`, BananLoop runs its budget-bounded, read-only `ANALYZE`
+stage. The analyst can inspect those DEV mistakes and the candidate checkout.
+It records generalized failure capsules: observation, likely mechanism,
+regression test, and confidence. The next proposer receives the sanitized
+capsules, the DEV experiment history, and guidance to build a different,
+falsifiable causal hypothesis. Case identities/expected answers must not appear
+in those durable capsules or in subsequent proposal prompts.
+
+The core also detects **stagnant mechanisms**: when the two most recent
+scientific DEV trials for a mechanism have the same DEV outcome, primary deltas
+that differ by less than the configured `min_improvement` (or both lie within
+the symmetric no-effect band), and unchanged other allowlisted aggregate metrics,
+it selects `reframe` and rejects another proposal with that exact
+`mechanism_key`. A small DEV gain **or loss** below `min_improvement` is
+`DEV_NO_EFFECT`: it is inconclusive, cannot reset the no-progress streak, and
+cannot promote a champion. A decrease of at least that threshold is
+`DEV_REGRESSION`. The threshold is a conservative decision rule rather than
+proof of statistical insignificance; readiness separately checks that A/A
+noise is smaller than this threshold. Do not assume different units/diagnostics
+share the primary metric's noise calibration. The report shows the stuck mechanisms
+and the failure analyst's observation, inference, and next DEV test. This
+does not identify semantically identical mechanisms renamed by an agent, and
+it cannot diagnose specific failures unless the project evaluator supplies DEV
+signals or examples. Only frozen, allowlisted DEV evidence drives the rule;
+validation/holdout results remain unavailable to the planner.
+
+The `ANALYZE` stage uses an agent call if budget is available, so allow some
+agent budget beyond proposal+implementation calls when testing failure
+reflection. Missing diagnostic evidence is not a reason to hallucinate a
+root cause.
+
+### Metric-aware reflection, family-level reframe and dependency preflight
+
+The DEV analyst/proposer now receive `primary_metric_failure_guidance`. For
+PR-AUC and ROC-AUC, a false negative at a fixed decision cutoff does **not**
+by itself explain the ranking metric, and modifying only the cutoff cannot
+improve average precision or ROC-AUC while continuous scores remain fixed.
+Ask the trusted DEV evaluator for public score-order / precision-recall
+diagnostics if available; never invent such evidence or use hidden-tier labels.
+
+Each new hypothesis may specify `mechanism_family` (default: `mechanism_key`
+for previously saved campaigns). Families group variations of the *same
+causal intervention*, e.g. multiple regularization strengths. On `reframe`
+the core excludes `failed_dev_families` derived exclusively from recent
+unsuccessful DEV trials, even if an agent renames the mechanism key. DEV
+failure capsules and suggested discriminating regression tests are retained
+in `dev_lessons` across recovery. Family names are declared by the agent;
+this is not semantic-equivalence proof, and deliberately avoids leaking
+validation/holdout results into adaptation.
+
+After syntax and scope checks, candidate VERIFY runs a bounded static AST
+check for direct scikit-learn `OneHotEncoder(sparse=...)` calls. It queries
+**only package metadata** in the evaluator's isolated Python interpreter;
+for scikit-learn 1.4 or later, incompatible candidates are rejected as
+`IMPLEMENTATION_BLOCKED/CANDIDATE_PREFLIGHT_FAILED` without spending a
+DEV evaluator call. Wrapper commands and unknown runtimes skip this check,
+and other APIs are still subject to normal evaluator smoke/integration tests.
+This check does not execute candidate code or import it.
+
+Recommended dogfood: use `plateau_experiments=3` and sufficient budget for
+three distinguishable scientific trials. Verify the report contains past
+DEV theories, next discriminating tests, and failed mechanism families before
+judging whether the third hypothesis is genuinely different.

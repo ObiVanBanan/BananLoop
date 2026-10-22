@@ -10,6 +10,10 @@ def test_bootstrap_protocol_manifest_schema_is_strict_and_total():
     properties = BOOTSTRAP_SCHEMA["properties"]
     assert properties["agent_visible_training_paths"]["type"] == "array"
     assert "agent_visible_training_paths" in BOOTSTRAP_SCHEMA["required"]
+    assert "agent_visible_diagnostic_capabilities" in BOOTSTRAP_SCHEMA["required"]
+    capability = properties["agent_visible_diagnostic_capabilities"]["items"]
+    assert capability["required"] == ["name", "kind", "metric"]
+    assert capability["additionalProperties"] is False
     manifest_schema = properties["protocol_manifest_commands"]
     assert manifest_schema["required"] == ["dev", "validation", "holdout"]
     assert manifest_schema["additionalProperties"] is False
@@ -38,6 +42,10 @@ def test_codex_propose_schema_accepts_portfolio_and_legacy_hypothesis(tmp_path: 
     assert "oneOf" not in captured["schema"]
     assert captured["schema"]["properties"]["candidates"]["type"] == ["array", "null"]
     assert "estimated_evaluator_calls" in captured["schema"]["properties"]["candidates"]["items"]["required"]
+    nested_hypothesis = captured["schema"]["properties"]["candidates"]["items"]["properties"]["hypothesis"]
+    assert "intervention_type" in nested_hypothesis["required"]
+    assert "algorithmic_layer" in nested_hypothesis["required"]
+    assert nested_hypothesis["properties"]["intervention_type"]["enum"][-1] == "data_preprocessing"
     assert set(captured["schema"]["required"]) == set(captured["schema"]["properties"])
     assert out == {"candidates": []}
 

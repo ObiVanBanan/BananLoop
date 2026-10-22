@@ -13,6 +13,7 @@ from .contracts import (
     AgentConfig,
     BudgetSpec,
     CampaignSpec,
+    DiagnosticCapability,
     EvaluationAsset,
     GuardrailSpec,
     MetricSpec,
@@ -112,6 +113,7 @@ class BootstrapPlan(BaseModel):
     protected_paths: list[str] = Field(default_factory=list)
     agent_visible_metrics: list[str] = Field(default_factory=list)
     agent_visible_diagnostics: list[str] = Field(default_factory=list)
+    agent_visible_diagnostic_capabilities: list[DiagnosticCapability] = Field(default_factory=list)
     paired_comparison: BootstrapPairedPlan = Field(default_factory=BootstrapPairedPlan)
     signal_sanity: BootstrapSignalSanity = Field(
         default_factory=lambda: BootstrapSignalSanity(
@@ -197,6 +199,8 @@ def _bootstrap_task(
             "use_detected_environment_variable_names_without_requesting_secret_values": True,
             "report_resource_paths_and_availability_before_requesting_missing_inputs": True,
             "goal_is_authoritative": True,
+            "validation_only_policy_metrics_use_validation_prefix": True,
+            "bare_policy_metrics_apply_to_current_evaluation_tier": True,
             "do_not_request_goal_file_when_goal_is_present": True,
             "resolve_conflicting_evaluators_by_goal_semantics": True,
             "use_detected_runtimes_before_requesting_python_environment": True,
@@ -250,6 +254,7 @@ def _bootstrap_task(
                 "never_invent_labels": True,
                 "mark_unavailable_with_reason_when_no_defensible_evidence": True,
                 "configured_metric_must_be_primary_metric": True,
+                "configured_known_examples_require_per_case_primary_metric_receipts": True,
             },
             "emit_bananloop_evaluation_contract": True,
             "do_not_invent_missing_reference_data": True,
@@ -841,6 +846,10 @@ def bootstrap_campaign(
         project_context=plan.project_context,
         evaluation_command=plan.evaluation_command,
         evaluator_timeout_seconds=plan.evaluator_timeout_seconds,
+        smoke_command=plan.smoke_command,
+        smoke_timeout_seconds=(
+            min(plan.evaluator_timeout_seconds, 90) if plan.smoke_command else None
+        ),
         validation_command=plan.validation_command,
         holdout_command=plan.holdout_command,
         evaluation_assets=assets,
@@ -856,6 +865,7 @@ def bootstrap_campaign(
             plan.agent_visible_metrics or [plan.primary_metric.name]
         ),
         agent_visible_diagnostics=plan.agent_visible_diagnostics,
+        agent_visible_diagnostic_capabilities=plan.agent_visible_diagnostic_capabilities,
         paired_comparison=paired,
         protocol_manifests={
             tier: ProtocolManifest.model_validate(manifest)

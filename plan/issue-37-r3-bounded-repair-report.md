@@ -1,0 +1,32 @@
+# R3 bounded repair implementation report
+
+## Scope
+
+This increment adds a machine-readable failure taxonomy and one campaign-level implementation repair attempt after Python syntax/API preflight failures. It does not implement the broader issue #37 recovery planner, approval manager, or dashboard.
+
+## Behavior
+
+- The repair agent receives only the goal, approved hypothesis, editable/protected paths, current snapshot identifier, and sanitized preflight errors.
+- A stable `exp:<id>:repair:1` agent action is subject to the existing global agent-call budget and replay rules.
+- Failure categories and DEV decision reasons map to implementation, infrastructure, scientific outcome, policy, planning, budget, or unknown classes, with retryability, risk, and a suggested next step. Classification is journaled and included in the operator report.
+- Codex and Pi can execute the `repair` role with the implementation response schema and write access to the disposable agent workspace.
+- After the repair, BananLoop snapshots the candidate and repeats scope, frozen evaluation asset, syntax, and API compatibility checks. Only then can it reach the existing independent DEV evaluator.
+- A configured smoke command that raises a Python exception in candidate code produces an allowlisted diagnostic containing candidate-relative frames and the exception type only. It omits source lines, exception text, evaluator frames, raw output, and host paths. A bounded repair may run within the same campaign repair budget; its snapshot must pass all preflight checks and a fresh smoke action before DEV. Other smoke failures are rejected without guessed repairs.
+- Runtime repair and smoke actions are durable and replayable. Fault injection after the repair action completes but before its snapshot is applied reuses the saved snapshot without a second agent call.
+- Exhaustion, no material change, or remaining preflight errors produce an implementation-blocked rejection. Validation/holdout results are never included in the repair request.
+
+## Verification
+
+- `python -m py_compile src/bananloop/engine.py src/bananloop/agents/codex.py src/bananloop/agents/pi.py` passed.
+- `git diff --check` passed.
+- `PYTHONPATH=src pytest -q tests/test_failures.py tests/test_attempt_accounting.py tests/test_engine.py -k 'failure or api_preflight or implementation_blocker or noop_implementation'` passed.
+- `PYTHONPATH=src pytest -q tests/test_engine.py::test_one_bounded_repair_rechecks_candidate_before_dev_evaluation` passed.
+- Fault injection after a completed repair action but before the experiment snapshot update resumes from the stored repair snapshot without a second agent call.
+- `PYTHONPATH=src pytest -q tests/test_engine.py -k 'bounded_repair or repair_replays' tests/test_failures.py` passed after adding a failed-repair regression: a completed but ineffective repair is rejected, consumes no DEV evaluator call, and reprocessing VERIFY does not trigger a second repair.
+- `PYTHONPATH=src pytest -q tests/test_failures.py tests/test_engine.py -k 'smoke or bounded_repair or repair_replays'` passes after adding runtime traceback sanitization, no-canary assertions, repair/smoke recheck, and interrupted repair-action replay.
+- `python -m py_compile src/bananloop/engine.py src/bananloop/failures.py tests/test_engine.py tests/test_failures.py` and `git diff --check` pass.
+- Full `PYTHONPATH=src pytest -q` passed after this runtime-smoke-repair follow-up (exit code 0, reached 100%).
+
+## Remaining R3 work
+
+Recovery planning beyond bounded Python preflight/smoke repair, fault-injection coverage for broader operational failures, and the remaining #37 approval/dashboard scope are still open. This report does not claim R3 complete.
