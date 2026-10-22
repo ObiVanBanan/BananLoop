@@ -1,0 +1,125 @@
+{
+  "claim_limit": "one synthetic CPU fixture only; this does not estimate general coding-agent success rates",
+  "fixture_commit": "22185512da0a11871776ccd32c4654cb0f44d1ff",
+  "matched_budget_caps": {
+    "agent_calls": 2,
+    "evaluator_calls": 6,
+    "experiments": 1
+  },
+  "method": "controlled local comparison: BananLoop core selects from a two-candidate portfolio; naive loop takes the first candidate. Same fixture commit, frozen tier workloads, command agent, evaluator, target/gates, and maximum budgets.",
+  "naive_first_candidate_loop": {
+    "accepted_despite_baseline_aa_spread_exceeding_threshold": false,
+    "agent_calls": 2,
+    "baseline": {
+      "dev": {
+        "correctness": 1.0,
+        "latency_p95_ms": 16.500955,
+        "throughput_rps": 24593.12436956903
+      },
+      "validation": {
+        "correctness": 1.0,
+        "latency_p95_ms": 29.7010448,
+        "throughput_rps": 20309.674271781172
+      }
+    },
+    "baseline_aa_half_delta_ms": 0.27307960000000264,
+    "candidate": {
+      "dev": {
+        "correctness": 1.0,
+        "latency_p95_ms": 12.1109592,
+        "throughput_rps": 21391.516747218582
+      },
+      "validation": {
+        "correctness": 1.0,
+        "latency_p95_ms": 11.7909416,
+        "throughput_rps": 22607.80195839039
+      }
+    },
+    "candidate_aa_half_delta_ms": 0.04599879999999956,
+    "candidate_accepted": false,
+    "candidate_correctness": {
+      "dev": true,
+      "validation": true
+    },
+    "candidate_diff_sha256": "bf1e01ea264d0934f55896d620eddee18824029381e6492af1e5e1bbfd5b9cca",
+    "dev_delta_ms": 4.389995800000001,
+    "evaluator_calls": 5,
+    "final_holdout_champion": {
+      "correctness": 1.0,
+      "latency_p95_ms": 9.867933,
+      "throughput_rps": 28213.53814390213
+    },
+    "measurement_sha256": {
+      "baseline": {
+        "dev": "4e07ed6ea37675f19050d0eae630cd73e5dfea9ec3316de72142057153d0a129",
+        "validation": "b25e97094d70e5b927b88d8eb2b5451632ce8ff8198693902146020fcf638c57"
+      },
+      "candidate": {
+        "dev": "7149cce80f5b0e58ef75e17334a918241a27d5c25c47f9c14b059ab670ddcf68",
+        "validation": "2cc05678168726686922ba92892d0c55264456cfcb2cf2e251ff6ab0dd58dc65"
+      }
+    },
+    "rejection_reasons": [
+      "DEV_MIN_IMPROVEMENT",
+      "DEV_THROUGHPUT"
+    ],
+    "selected_candidate_id": "a-linear-scan-rewrite",
+    "validation_delta_ms": 17.9101032
+  },
+  "portfolio": {
+    "agent_calls": 2,
+    "champion_was_promoted": true,
+    "dev": [
+      {
+        "correctness": 1.0,
+        "latency_p95_ms": 9.6354908,
+        "throughput_rps": 28082.973522965356
+      },
+      {
+        "correctness": 1.0,
+        "latency_p95_ms": 0.2603922,
+        "throughput_rps": 1271341.385409313
+      }
+    ],
+    "dev_aa_calibration": [
+      {
+        "aa_half_p95_abs_delta_ms": 0.8043417999999996
+      },
+      {
+        "aa_half_p95_abs_delta_ms": 0.02189919999999998
+      }
+    ],
+    "evaluator_calls": 5,
+    "holdout": {
+      "configured": true,
+      "evaluated": true,
+      "snapshot": "94277692c7eb684a5bea6ba29dd773b78950c23f",
+      "target_met": true,
+      "value": 0.2508214
+    },
+    "improvement_status": "CHAMPION_IMPROVED",
+    "outcome": "GOAL_MET",
+    "receipts": [
+      "7d6c32e4dbe37184a92f43a07448c3deee01b577a2a0a686747c89ab2c7fe6b8",
+      "f366767aa7af65d3ccce685c7cf143206d86de13354a2a7489b2b6377b3eff5d",
+      "a6447dd4c96cf9e26fc6c5ae20dabdbe0d0fd4a6006d61631497caa0eb81db5e",
+      "cde330f5e2fca386472c59e3b8ad4cb378f49edf10fc00cd151b6656279a059e",
+      "77bd496db129867a371503ecf916e9be29fe929a312a107f4245c976ad5e335c"
+    ],
+    "selected_candidate_id": "z-build-index-once",
+    "status": "GOAL_MET",
+    "stop_reason": "GOAL_MET",
+    "validation": {
+      "baseline": 10.519237,
+      "champion": 0.2567994,
+      "configured": true,
+      "delta": -10.2624376
+    }
+  },
+  "real_model_calls": 0,
+  "resources_observed": {
+    "cpu_affinity_count": 2,
+    "free_disk_bytes": 34170249216,
+    "memory_total_kib": 8138084
+  }
+}

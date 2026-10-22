@@ -1,0 +1,216 @@
+{
+  "campaigns": [
+    {
+      "agent_adapter": "codex",
+      "attempt_accounting": {
+        "active": 0,
+        "cancelled": 0,
+        "counter_matches_classification": true,
+        "durable_experiment_counter": 5,
+        "implementation_blocked": 1,
+        "infra_failures": 0,
+        "no_changes": 0,
+        "no_hypothesis": 0,
+        "other": 0,
+        "pre_evaluation_rejected": 0,
+        "redundant": 0,
+        "scientific_trials": 5,
+        "total_attempts": 6,
+        "ungrounded": 0
+      },
+      "base_commit": "72425fd16ff183182ef614003f04f29a13479190",
+      "baseline": 0.22968058974008898,
+      "baseline_snapshot": "72425fd16ff183182ef614003f04f29a13479190",
+      "calls": {
+        "agent": 18,
+        "evaluator": 12
+      },
+      "campaign_id": "c-226fc50bd99ad640be98ead83495700a",
+      "campaign_outcome": "STOPPED",
+      "campaign_spec_sha256": "feaf742ba61a5a6cebb3413b5c211fc87060a37048b9260394bc5ccdfe820e76",
+      "champion": 0.22968058974008898,
+      "champion_snapshot": "72425fd16ff183182ef614003f04f29a13479190",
+      "champion_was_promoted": false,
+      "delta": 0.0,
+      "domain": "ML classification",
+      "evaluator_binding": {
+        "binding_hash": "8b46ee56f9ae835301cc1600d0630c8598dc51ccee60a502b2807ec3fb19d3fb",
+        "binding_id": "773cc5f9f31a7dab034eac5dd42d486e52f6b602b4661f56eaf4ede2f89230d2"
+      },
+      "final_holdout_aggregate": {
+        "configured": true,
+        "evaluated": true,
+        "snapshot": "72425fd16ff183182ef614003f04f29a13479190",
+        "target_met": true,
+        "value": 0.4921590468035799
+      },
+      "improvement_status": "BASELINE_ALREADY_MET_TARGET",
+      "primary_metric": "pr_auc",
+      "project": "Bank Marketing",
+      "protocol_sha256": {
+        "dev": "36b7dfa861d0bd0bfcbea4013cfb757c6205fd8734d5f1105c682ad99d168e4f",
+        "holdout": "bac8eb99ce675544cca6fc2b8b010d820264f55d2071410c211c46fcade634e5",
+        "validation": "a624519426bf8c6f5791bab94f11ab8addbc0a2710c7d6051360eeb76fa65c4b"
+      },
+      "receipt_sha256": [
+        "74910569f702eb1489f0d4ce46e5c05082a49cd70474ebf1d9f40765243675bc",
+        "2b2b5da77725048120e32385297590be6f8a296b32741fdc17d1e165c26602b1",
+        "19bcb6621597b32635b05f247ca281295c1b81bacd88dd78475800fd9a7576a7",
+        "d4f4331abe2141fb89c0e29937a4d8d11f9d7cca492bc6167fd70569f20aa812",
+        "96dfa336ef157379265ac92cb1367ce0eb49f31aeb9f8e0f7a1351d39bcdaad9",
+        "eb9efaaf676e6125780bdfdad8fe73a597d3d4c77df82541a6ea581a45af67a7",
+        "a58a9b29a71067724a7b8e8917717ac9f1b44766d8a02306d33155543f305500",
+        "22e2a03f946885ce331bfd019a0e6e1a4bbd8bf8ecf99a85e42d4fce4c630d49",
+        "51ce12e43329e22be278346106f0a6bb9b42f9b1c40120ed3f82e89504d32bfb",
+        "22ff2842c601ba276126ea153523ad21b70808ce6222c6003751cceee39f50a2"
+      ],
+      "scientific_assessment": "DEV_ONLY",
+      "validation": {
+        "baseline": 0.34017741774014704,
+        "champion": 0.34017741774014704,
+        "configured": true,
+        "delta": 0.0
+      }
+    },
+    {
+      "agent_adapter": "codex",
+      "attempt_accounting": {
+        "active": 0,
+        "cancelled": 0,
+        "counter_matches_classification": true,
+        "durable_experiment_counter": 4,
+        "implementation_blocked": 0,
+        "infra_failures": 0,
+        "no_changes": 0,
+        "no_hypothesis": 0,
+        "other": 0,
+        "pre_evaluation_rejected": 0,
+        "redundant": 0,
+        "scientific_trials": 4,
+        "total_attempts": 4,
+        "ungrounded": 0
+      },
+      "base_commit": "f00140b1aadbd111285663fbac06b98ed56a8d63",
+      "baseline": 0.875,
+      "baseline_snapshot": "f00140b1aadbd111285663fbac06b98ed56a8d63",
+      "calls": {
+        "agent": 9,
+        "evaluator": 8
+      },
+      "campaign_id": "c-afbf21b4f610db2db0a97087313f9112",
+      "campaign_outcome": "STOPPED",
+      "campaign_spec_sha256": "3f8f9feecb1a127546eab1c797130ab1c1642b8d0335b3b129964dd2502bab0a",
+      "champion": 1.0,
+      "champion_snapshot": "63829ff54c1f6955966925fd533bbf65f3ccb463",
+      "champion_was_promoted": true,
+      "delta": 0.125,
+      "domain": "retrieval",
+      "evaluator_binding": {
+        "binding_hash": "027588fdad0441b0a6b6071cee7b5c9daf20b69521e9b1440cd536fbf5323c7f",
+        "binding_id": "b9097fb548333cfe0e7622b2cacce8ecd9ac9c5258476d6d0224fa02cf42b352"
+      },
+      "final_holdout_aggregate": {
+        "configured": true,
+        "evaluated": true,
+        "snapshot": "63829ff54c1f6955966925fd533bbf65f3ccb463",
+        "target_met": false,
+        "value": 0.75
+      },
+      "improvement_status": "CHAMPION_IMPROVED",
+      "primary_metric": "accuracy",
+      "project": "Product matcher",
+      "protocol_sha256": {
+        "dev": "514c43810b0fef41353d373b8e46facb6a0bf51099c2eace0fc2a377666ef124",
+        "holdout": "4773627542f5f71e403d484b90e2fe2c105d13fe24ea1260d29f33b6bb7a75ae",
+        "validation": "75b19af51146deff8a713ae6fe85386042457760aa88eb85799a5baca33f4ce2"
+      },
+      "receipt_sha256": [
+        "76ca4ac2014fe4b6d08717027285008acabd5d6ea913db7b91df0ded229ea68e",
+        "112aaa1bf5b40954461611b1ef17b80331e5aaa9dec3d78c0014e374bcf465dc",
+        "87a86b2abaf62814b63de3894630972967211b9bbb7d4c4ca1dacdf96a0fa7ca",
+        "4bd08bc9b151f6f2ed94ee380758878c7cbbf530fdbe3e32f65a17ed5f1d84cd",
+        "43165ca6da4ea7553b612715e850dc5e7a8e53de66f16ac60a1a22f04182efcd",
+        "c63f5892150e3e093d80e9a7a9a6422449c13cf8ea2b3d09685b30b58bb39c6b",
+        "d3cb9fbd0c83775e79acdcfddb6fc2361850d667ba409fcfef41bf6338a03129",
+        "fe7cdd3896a1e7b9346311fb40c848e5e0d16ce32a1ca7dfa9e9c5fdef128e42"
+      ],
+      "scientific_assessment": "DEV_ONLY",
+      "validation": {
+        "baseline": 0.375,
+        "champion": 0.75,
+        "configured": true,
+        "delta": 0.375
+      }
+    },
+    {
+      "agent_adapter": "codex",
+      "attempt_accounting": {
+        "active": 0,
+        "cancelled": 0,
+        "counter_matches_classification": true,
+        "durable_experiment_counter": 3,
+        "implementation_blocked": 0,
+        "infra_failures": 0,
+        "no_changes": 0,
+        "no_hypothesis": 0,
+        "other": 0,
+        "pre_evaluation_rejected": 0,
+        "redundant": 0,
+        "scientific_trials": 3,
+        "total_attempts": 3,
+        "ungrounded": 0
+      },
+      "base_commit": "ef520e2807eb2b7f3114ca016c8fd996d65ae62e",
+      "baseline": 0.8655913978494623,
+      "baseline_snapshot": "ef520e2807eb2b7f3114ca016c8fd996d65ae62e",
+      "calls": {
+        "agent": 6,
+        "evaluator": 6
+      },
+      "campaign_id": "c-6482e268b37321166b5ffbaf04807e43",
+      "campaign_outcome": "STOPPED",
+      "campaign_spec_sha256": "24dd633c2a344f4ea755c6bb68b4989693124565aa006b54c25e17667905a0d2",
+      "champion": 0.8655913978494623,
+      "champion_snapshot": "ef520e2807eb2b7f3114ca016c8fd996d65ae62e",
+      "champion_was_promoted": false,
+      "delta": 0.0,
+      "domain": "ML classification",
+      "evaluator_binding": {
+        "binding_hash": "b753011324b66bb9821fcc882265ac1536e50d09e50f64b181547c4f46903cb2",
+        "binding_id": "0c86616e30e5ea208636430f7276ed49a89a2ce84689fb1feeba41df5e6a0a36"
+      },
+      "final_holdout_aggregate": {
+        "configured": true,
+        "evaluated": true,
+        "snapshot": "ef520e2807eb2b7f3114ca016c8fd996d65ae62e",
+        "target_met": false,
+        "value": 0.8655913978494623
+      },
+      "improvement_status": "NO_VALIDATED_IMPROVEMENT",
+      "primary_metric": "roc_auc",
+      "project": "WineQT",
+      "protocol_sha256": {
+        "dev": "9e309c7dc9095e2863c8b896e170fbeb8faddb16cbc91420c722ef669253a988",
+        "holdout": "9e309c7dc9095e2863c8b896e170fbeb8faddb16cbc91420c722ef669253a988",
+        "validation": "9e309c7dc9095e2863c8b896e170fbeb8faddb16cbc91420c722ef669253a988"
+      },
+      "receipt_sha256": [
+        "dbd35289644f369e82d80b1d89a3a3f91cd7c7f57265e6b0cb368eb4120e114a",
+        "10661ff33ca89a13416b63eda8bd24da304434ba0757e1c16f936a080c7b02d7",
+        "e51387b247cb08786f0a665b7f295e48ccc506734e104338542078c89d10edc6",
+        "ad1f17349608514ae357ef4d6aad053603aa6a6c55c80669bd94250731771c3f",
+        "838670b7364f4fb8b520313ff926c08bde54ebc5076bc75c0c1d169674e24f9a",
+        "28a4873166cb0ed5128ab1f127150cb488450783047cdc8b3535fb4ac99fc43a"
+      ],
+      "scientific_assessment": "DEV_ONLY",
+      "validation": {
+        "baseline": 0.8655913978494623,
+        "champion": 0.8655913978494623,
+        "configured": true,
+        "delta": 0.0
+      }
+    }
+  ],
+  "schema_version": 1,
+  "source": "Read-only aggregate exports from durable local campaign stores; per-case data and labels omitted."
+}
