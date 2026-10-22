@@ -2119,6 +2119,80 @@ def test_failed_post_repair_smoke_rejects_without_dev_or_raw_error(tmp_path: Pat
         store.close()
 
 
+def test_runtime_smoke_traceback_is_sanitized_repaired_and_smoked_again(tmp_path: Path):
+    smoke = "import json\nfrom model import run\nrun()\nprint(json.dumps({'status':'ok','metrics':{'quality':1}}))\n"
+
+    class RuntimeRepairAgent(AgentAdapter):
+        def __init__(self):
+            self.calls = 0
+
+        def probe(self):
+            return {"available": True, "kind": "test"}
+
+        def execute(self, task, workspace, timeout):
+            self.calls += 1
+            assert task["role"] == "repair"
+            assert task["failure_kind"] == "implementation_smoke"
+            assert "RuntimeError" in task["sanitized_traceback"]
+            assert "private-runtime-canary" not in json.dumps(task)
+            (workspace / "model.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+            return {
+                "summary": "fixed runtime failure",
+                "changed_paths": ["model.py"],
+                "verification_notes": "",
+                "blockers": [],
+            }
+
+    store, engine, _, _ = make_engine(tmp_path, smoke_source=smoke)
+    try:
+        engine.spec.editable_scope.append("model.py")
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        dev_before = len(store.evaluations("dev"))
+        (engine.workspace.workspace / "model.py").write_text(
+            "def run():\n    raise RuntimeError('private-runtime-canary')\n", encoding="utf-8"
+        )
+        candidate = engine.workspace.snapshot("candidate with runtime failure")
+        store.update_experiment(experiment_id, candidate_snapshot=candidate)
+        store.set_stage(attempt_id, "SMOKE")
+        repair_agent = RuntimeRepairAgent()
+        engine.agent = repair_agent
+
+        update_experiment = store.update_experiment
+
+        def interrupt_before_snapshot_update(current_experiment_id, **fields):
+            if fields.get("candidate_snapshot"):
+                raise ControlledInterruption("after durable runtime repair action")
+            update_experiment(current_experiment_id, **fields)
+
+        store.update_experiment = interrupt_before_snapshot_update
+        with pytest.raises(ControlledInterruption):
+            engine._stage_smoke(attempt_id, experiment_id)
+        store.update_experiment = update_experiment
+
+        assert store.action(f"exp:{experiment_id}:repair:runtime")["status"] == "COMPLETED"
+        assert store.experiment(experiment_id)["candidate_snapshot"] == candidate
+        engine._stage_smoke(attempt_id, experiment_id)
+
+        smoke1 = store.action(f"exp:{experiment_id}:smoke:1")
+        repair = store.action(f"exp:{experiment_id}:repair:runtime")
+        smoke2 = store.action(f"exp:{experiment_id}:smoke:2")
+        assert smoke1["status"] == "COMPLETED"
+        smoke1_response = json.loads(smoke1["response_json"])
+        assert "RuntimeError" in smoke1_response["sanitized_traceback"]
+        assert "private-runtime-canary" not in json.dumps(smoke1_response)
+        assert repair["status"] == "COMPLETED"
+        assert repair_agent.calls == 1
+        repair_request = json.loads(repair["request_json"])
+        assert "private-runtime-canary" not in json.dumps(repair_request)
+        assert store.experiment(experiment_id)["candidate_snapshot"] != candidate
+        assert smoke2["status"] == "COMPLETED", smoke2.get("error")
+        assert json.loads(smoke2["response_json"])["smoke_passed"] is True
+        assert store.attempt(attempt_id)["stage"] == "EVALUATE"
+        assert len(store.evaluations("dev")) == dev_before
+    finally:
+        store.close()
+
+
 def test_completed_repair_replays_its_snapshot_without_a_second_agent_call(tmp_path: Path, monkeypatch):
     class CountingRepairAgent(AgentAdapter):
         def __init__(self):

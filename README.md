@@ -286,6 +286,13 @@ BananLoop can own the full evaluation lifecycle instead of requiring a manual po
 The post-repair smoke timeout defaults to 90 seconds and can be lowered with
 `--smoke-timeout-seconds`. A campaign without an approved smoke command still
 repeats static preflight after repair, but does not claim a runtime smoke passed.
+When the smoke process fails with a Python traceback containing frames from
+candidate code, BananLoop can pass the repair agent only candidate-relative
+file/line/function frames and the exception type. Source lines, exception
+messages, evaluator frames, raw stdout/stderr, and host paths are excluded.
+The repaired snapshot must pass scope, frozen-asset, syntax, and API checks and
+then pass smoke again before it can reach DEV. Failures without a candidate
+traceback remain implementation rejections and are not guessed at.
 
 `GOAL_MET` requires the final holdout to meet the target and mandatory guards.
 A valid final measurement below target ends as `STOPPED / FINAL_HOLDOUT_REJECTED`;

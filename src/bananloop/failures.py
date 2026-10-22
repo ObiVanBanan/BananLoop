@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from pathlib import Path
+import re
 from typing import Any
 
 
@@ -58,3 +60,43 @@ def classify_failure(category: str | None) -> dict[str, Any] | None:
         "retryable": retryable,
         "risk": risk,
     }
+
+
+_TRACE_FRAME = re.compile(
+    r'^\s*File ["\'](.+?)["\'], line (\d+), in (<module>|[A-Za-z_][A-Za-z0-9_.]*)$'
+)
+_EXCEPTION_LINE = re.compile(
+    r"^([A-Z][A-Za-z0-9_.]*(?:Error|Exception|Exit|Interrupt|Warning))(?::.*)?$"
+)
+
+
+def sanitized_candidate_traceback(stderr: str, workspace: Path) -> str | None:
+    """Keep only candidate-relative Python frames and exception type.
+
+    Trace source lines, exception messages, evaluator frames, and host paths can
+    contain private inputs or secrets, so none are included in the result.
+    """
+    root = workspace.resolve()
+    frames: list[str] = []
+    exception_type: str | None = None
+    for line in stderr.splitlines():
+        match = _TRACE_FRAME.match(line)
+        if match:
+            raw_path, number, function = match.groups()
+            candidate = Path(raw_path)
+            if not candidate.is_absolute():
+                candidate = root / candidate
+            try:
+                relative = candidate.resolve().relative_to(root).as_posix()
+            except (OSError, ValueError):
+                continue
+            if relative.startswith("../") or relative == "..":
+                continue
+            frames.append(f'  File "{relative}", line {number}, in {function[:80]}')
+            continue
+        exception_match = _EXCEPTION_LINE.match(line.strip())
+        if exception_match:
+            exception_type = exception_match.group(1).rsplit(".", 1)[-1]
+    if not frames or not exception_type:
+        return None
+    return "Sanitized Python traceback (candidate frames only):\n" + "\n".join(frames) + f"\n{exception_type}"

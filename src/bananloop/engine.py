@@ -36,11 +36,11 @@ from .evaluator_binding import (
     EvaluationReceipt, EvaluatorBinding, canonical_hash, make_binding,
     make_receipt, runtime_descriptor, validate_receipt_linkage,
 )
-from .failures import classify_failure
+from .failures import classify_failure, sanitized_candidate_traceback
 from .leakage import scan_forbidden_diff_patterns
 from .metric_semantics import metric_failure_guidance
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
-from .process import ProcessCancelled, check_process_control, process_control, run_process
+from .process import ProcessCancelled, ProcessError, check_process_control, process_control, run_process
 from .research import (
     attempt_bucket,
     agent_decision_view,
@@ -377,15 +377,32 @@ class Engine:
             self._checkpoint("EVALUATE")
             return
 
-        request = self._evaluation_request(
-            snapshot,
-            tier="smoke",
-            command=self.spec.smoke_command,
-            candidate_proof=proof,
-        )
+        existing_smokes = [
+            action for action in self.store.actions()
+            if action["id"].startswith(f"exp:{experiment_id}:smoke:")
+        ]
+        smoke_index = max(
+            (int(action["id"].rsplit(":", 1)[1]) for action in existing_smokes),
+            default=0,
+        ) + 1
+        if existing_smokes:
+            latest = max(existing_smokes, key=lambda item: int(item["id"].rsplit(":", 1)[1]))
+            prior_request = json.loads(latest["request_json"])
+            if prior_request.get("snapshot") == snapshot:
+                smoke_index = int(latest["id"].rsplit(":", 1)[1])
 
-        def invoke_smoke() -> dict[str, Any]:
-            try:
+        while True:
+            exp = self.store.experiment(experiment_id)
+            snapshot = exp["candidate_snapshot"]
+            proof = self._candidate_materialization_proof(experiment_id)
+            request = self._evaluation_request(
+                snapshot,
+                tier="smoke",
+                command=self.spec.smoke_command,
+                candidate_proof=proof,
+            )
+
+            def invoke_smoke() -> dict[str, Any]:
                 smoke_root = self.store.path.parent / "smoke-workspaces"
                 smoke_root.mkdir(parents=True, exist_ok=True)
                 with tempfile.TemporaryDirectory(
@@ -411,10 +428,30 @@ class Engine:
                             target.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copy2(source, target)
                     self.smoke_evaluator.context["BANANLOOP_WORKSPACE"] = str(smoke_workspace.resolve())
-                    result = self.smoke_evaluator.evaluate(
-                        smoke_workspace,
-                        timeout=self.spec.smoke_timeout_seconds or 90,
-                    )
+                    try:
+                        result = self.smoke_evaluator.evaluate(
+                            smoke_workspace,
+                            timeout=self.spec.smoke_timeout_seconds or 90,
+                        )
+                    except ProcessCancelled:
+                        raise
+                    except Exception as exc:
+                        stderr = ""
+                        current: BaseException | None = exc
+                        while current is not None:
+                            if isinstance(current, ProcessError) and current.result is not None:
+                                stderr = current.result.stderr
+                                break
+                            current = current.__cause__ or current.__context__
+                        diagnostic = sanitized_candidate_traceback(stderr, smoke_workspace)
+                        if diagnostic:
+                            return {
+                                "smoke_passed": False,
+                                "snapshot": snapshot,
+                                "resource_units": self.spec.budget.evaluation_units_per_call or 1,
+                                "sanitized_traceback": diagnostic,
+                            }
+                        raise EngineError("post-repair smoke failed") from exc
                     if result.status != "ok" or self.spec.primary_metric.name not in result.metrics:
                         raise EngineError("smoke output did not satisfy the approved smoke contract")
                     head = run_process(
@@ -435,37 +472,47 @@ class Engine:
                         "snapshot": snapshot,
                         "resource_units": result.resource_units,
                     }
-            except Exception as exc:
-                raise EngineError("post-repair smoke failed") from exc
 
-        try:
-            result = self._action(
-                action_id=f"exp:{experiment_id}:smoke:1",
-                experiment_id=experiment_id,
-                stage="SMOKE",
-                kind="smoke",
-                request=request,
-                invoke=invoke_smoke,
-            )
-            if result.get("smoke_passed") is not True or result.get("snapshot") != snapshot:
-                raise EngineError("post-repair smoke receipt is invalid")
-        except UnknownActionOutcome as exc:
-            self.store.event("POST_REPAIR_SMOKE_OUTCOME_UNKNOWN", {
-                "experiment_id": experiment_id,
-                "snapshot": snapshot,
-            })
-            self.store.conn.commit()
-            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
-            raise EngineError("post-repair smoke outcome is unknown; resume with explicit retry") from exc
-        except (AgentError, EvaluatorError, ValidationError, WorkspaceError, EngineError) as exc:
-            self._reject_repaired_candidate(
-                attempt_id,
-                experiment_id,
-                "post-repair smoke failed",
-                [str(exc)],
-                reason_code="POST_REPAIR_SMOKE_FAILED",
-            )
-            return
+            smoke_action_id = f"exp:{experiment_id}:smoke:{smoke_index}"
+            try:
+                result = self._action(
+                    action_id=smoke_action_id,
+                    experiment_id=experiment_id,
+                    stage="SMOKE",
+                    kind="smoke",
+                    request=request,
+                    invoke=invoke_smoke,
+                )
+                if result.get("snapshot") != snapshot:
+                    raise EngineError("post-repair smoke receipt is invalid")
+                if result.get("smoke_passed") is True:
+                    break
+                diagnostic = result.get("sanitized_traceback")
+                if not isinstance(diagnostic, str) or not diagnostic:
+                    raise EngineError("smoke failed without a repairable candidate traceback")
+                changed, repair_errors = self._repair_smoke_failure(
+                    attempt_id, experiment_id, snapshot, diagnostic
+                )
+                if not changed:
+                    raise EngineError("bounded runtime repair failed: " + "; ".join(repair_errors[:4]))
+                smoke_index += 1
+            except UnknownActionOutcome as exc:
+                self.store.event("POST_REPAIR_SMOKE_OUTCOME_UNKNOWN", {
+                    "experiment_id": experiment_id,
+                    "snapshot": snapshot,
+                })
+                self.store.conn.commit()
+                self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+                raise EngineError("post-repair smoke outcome is unknown; resume with explicit retry") from exc
+            except (AgentError, EvaluatorError, ValidationError, WorkspaceError, EngineError) as exc:
+                self._reject_repaired_candidate(
+                    attempt_id,
+                    experiment_id,
+                    "post-repair smoke failed",
+                    [str(exc)],
+                    reason_code="POST_REPAIR_SMOKE_FAILED",
+                )
+                return
 
         self.store.event("BOUNDED_REPAIR_ACCEPTED", {
             "experiment_id": experiment_id,
@@ -476,6 +523,77 @@ class Engine:
         self.store.conn.commit()
         self.store.set_stage(attempt_id, "EVALUATE")
         self._checkpoint("EVALUATE")
+
+    def _repair_smoke_failure(
+        self,
+        attempt_id: int,
+        experiment_id: int,
+        snapshot: str,
+        sanitized_traceback: str,
+    ) -> tuple[list[str], list[str]]:
+        repair_id = f"exp:{experiment_id}:repair:runtime"
+        if self._repair_attempts_used(exclude_action_id=repair_id) >= self.spec.budget.max_repair_attempts:
+            return [], ["campaign bounded repair budget exhausted"]
+        experiment = self.store.experiment(experiment_id)
+        if not experiment["hypothesis_json"]:
+            return [], ["no approved hypothesis is available for runtime repair"]
+        task = {
+            "schema_version": 1,
+            "role": "repair",
+            "goal": self.spec.goal,
+            "hypothesis": json.loads(experiment["hypothesis_json"]),
+            "candidate_snapshot": snapshot,
+            "editable_scope": list(self.spec.editable_scope),
+            "protected_paths": list(self.spec.protected_paths),
+            "failure_kind": "implementation_smoke",
+            "sanitized_traceback": sanitized_traceback,
+            "constraints": [
+                "Repair only the candidate code identified by the sanitized traceback.",
+                "Do not modify evaluators, datasets, labels, protocol, validation, or holdout assets.",
+                "Only change paths inside editable_scope; protected_paths are immutable.",
+                "This consumes one attempt from the approved campaign repair budget.",
+            ],
+        }
+
+        def invoke_repair() -> dict[str, Any]:
+            result = self._invoke_agent(task, timeout=self._agent_timeout(600), apply_changes=True)
+            normalized = self.agent.normalize_result(task, result)
+            parsed = ImplementResult.model_validate(normalized)
+            if not parsed.blockers and self.workspace.working_tree_changed_paths():
+                normalized["repair_candidate_snapshot"] = self.workspace.snapshot(
+                    f"bananloop experiment {experiment_id} bounded runtime repair"
+                )
+            return normalized
+
+        repaired = self._action(
+            action_id=repair_id,
+            experiment_id=experiment_id,
+            stage="SMOKE",
+            kind="agent",
+            request=task,
+            invoke=invoke_repair,
+        )
+        repaired = self.agent.normalize_result(task, repaired)
+        candidate = repaired.pop("repair_candidate_snapshot", None)
+        parsed = ImplementResult.model_validate(repaired)
+        if parsed.blockers or not candidate:
+            return [], parsed.blockers or ["runtime repair produced no material changes"]
+        self.store.update_experiment(experiment_id, candidate_snapshot=candidate)
+        self.workspace.checkout(candidate)
+        changed = self.workspace.changed_paths(experiment["parent_snapshot"], candidate)
+        valid, scope_errors = self.workspace.verify_scope(
+            changed, self.spec.editable_scope, self.spec.protected_paths
+        )
+        integrity_errors = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
+        syntax_errors = python_syntax_errors(self.workspace.workspace, changed)
+        api_errors = [] if syntax_errors else python_api_compatibility_errors(
+            self.workspace.workspace, changed, evaluator_command=self.spec.evaluation_command
+        )
+        errors = scope_errors + integrity_errors + syntax_errors + api_errors
+        if not valid or errors:
+            return [], errors or ["repaired candidate failed post-repair preflight"]
+        self._checkpoint("SMOKE")
+        return changed, []
 
     def _reject_repaired_candidate(
         self,
@@ -655,10 +773,14 @@ class Engine:
                 units = response.get("resource_units")
                 if ceiling is not None and (units is None or units > ceiling):
                     raise EvaluatorError("smoke exceeded or omitted its reserved work units")
-                response = {
+                safe_response = {
                     "smoke_passed": response.get("smoke_passed") is True,
                     "snapshot": response.get("snapshot"),
                 }
+                diagnostic = response.get("sanitized_traceback")
+                if isinstance(diagnostic, str) and len(diagnostic) <= 2000:
+                    safe_response["sanitized_traceback"] = diagnostic
+                response = safe_response
         except ProcessCancelled as exc:
             self.store.cancel_action(action_id, exc.reason)
             raise
