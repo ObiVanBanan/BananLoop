@@ -72,8 +72,16 @@ def make_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def make_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str]:
+def make_engine(
+    tmp_path: Path, *, smoke_source: str | None = None
+) -> tuple[CampaignStore, Engine, Path, str]:
     repo = make_repo(tmp_path)
+    smoke_command = []
+    if smoke_source is not None:
+        (repo / "smoke.py").write_text(smoke_source, encoding="utf-8")
+        git(["add", "smoke.py"], repo)
+        git(["commit", "-m", "add smoke evaluator"], repo)
+        smoke_command = [sys.executable, "smoke.py"]
     base = git(["rev-parse", "HEAD"], repo)
     paths = RuntimePaths.for_repo(repo, tmp_path / "state")
     paths.ensure()
@@ -83,10 +91,16 @@ def make_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str]:
         base_commit=base,
         evaluation_command=[sys.executable, "evaluator.py"],
         primary_metric=MetricSpec(name="quality", direction=Direction.MAXIMIZE, target=3, min_improvement=0.5),
+        smoke_command=smoke_command,
+        smoke_timeout_seconds=10 if smoke_command else None,
+        evaluation_assets=(
+            [EvaluationAsset(path="smoke.py", sha256=sha256_evaluation_asset(repo / "smoke.py"))]
+            if smoke_command else []
+        ),
         guardrails=[GuardrailSpec(metric="regressions", operator="<=", bound=0)],
         mandatory_checks=["tests"],
         editable_scope=["value.txt", "guard.txt"],
-        protected_paths=["evaluator.py", "agent.py"],
+        protected_paths=["evaluator.py", "agent.py", *( ["smoke.py"] if smoke_command else [])],
         budget=BudgetSpec(max_experiments=5, max_attempts=6, max_agent_calls=12, max_evaluator_calls=8, plateau_experiments=3),
         agent=AgentConfig(kind="command", command=[sys.executable, "agent.py"]),
     )
@@ -1951,6 +1965,395 @@ def test_api_preflight_rejects_unsupported_sklearn_before_dev_budget(tmp_path: P
     finally:
         store.close()
 
+
+
+def test_one_bounded_repair_rechecks_candidate_before_dev_evaluation(tmp_path: Path):
+    class RepairAgent(AgentAdapter):
+        def probe(self):
+            return {"available": True, "kind": "test"}
+
+        def execute(self, task, workspace, timeout):
+            assert task["role"] == "repair"
+            (workspace / "model.py").write_text("value = 1\n", encoding="utf-8")
+            return {
+                "summary": "fixed syntax error",
+                "changed_paths": ["model.py"],
+                "verification_notes": "",
+                "blockers": [],
+            }
+
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.spec.editable_scope.append("model.py")
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        model = engine.workspace.workspace / "model.py"
+        model.write_text("value = (\n", encoding="utf-8")
+        candidate = engine.workspace.snapshot("candidate with syntax error")
+        store.update_experiment(experiment_id, candidate_snapshot=candidate)
+        store.set_stage(attempt_id, "VERIFY")
+        engine.agent = RepairAgent()
+
+        engine._stage_verify(attempt_id, experiment_id)
+
+        action = store.action(f"exp:{experiment_id}:repair:1")
+        assert action["status"] == "COMPLETED"
+        request = json.loads(action["request_json"])
+        assert request["failure_kind"] == "implementation_preflight"
+        assert set(request) == {
+            "schema_version", "role", "goal", "hypothesis", "candidate_snapshot",
+            "editable_scope", "protected_paths", "failure_kind", "failure_details", "constraints",
+        }
+        assert store.experiment(experiment_id)["candidate_snapshot"] != candidate
+        assert store.attempt(attempt_id)["stage"] == "EVALUATE"
+
+        engine._stage_evaluate(attempt_id, experiment_id)
+        assert store.evaluations("dev")
+    finally:
+        store.close()
+
+
+def test_bounded_repair_runs_frozen_smoke_before_dev(tmp_path: Path):
+    smoke = (
+        "import json\nfrom model import value\n"
+        "print(json.dumps({'status':'ok','metrics':{'quality':value}}))\n"
+    )
+
+    class RepairAgent(AgentAdapter):
+        def probe(self):
+            return {"available": True, "kind": "test"}
+
+        def execute(self, task, workspace, timeout):
+            assert task["role"] == "repair"
+            (workspace / "model.py").write_text("value = 1\n", encoding="utf-8")
+            return {
+                "summary": "fixed syntax error",
+                "changed_paths": ["model.py"],
+                "verification_notes": "",
+                "blockers": [],
+            }
+
+    store, engine, _, _ = make_engine(tmp_path, smoke_source=smoke)
+    try:
+        engine.spec.editable_scope.append("model.py")
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        evaluator_calls_before = store.campaign()["evaluator_calls"]
+        dev_evaluations_before = len(store.evaluations("dev"))
+        model = engine.workspace.workspace / "model.py"
+        model.write_text("value = (\n", encoding="utf-8")
+        candidate = engine.workspace.snapshot("candidate with syntax error")
+        store.update_experiment(experiment_id, candidate_snapshot=candidate)
+        store.set_stage(attempt_id, "VERIFY")
+        engine.agent = RepairAgent()
+
+        engine._stage_verify(attempt_id, experiment_id)
+
+        assert store.attempt(attempt_id)["stage"] == "SMOKE"
+        assert store.campaign()["evaluator_calls"] == evaluator_calls_before
+        engine._stage_smoke(attempt_id, experiment_id)
+
+        action = store.action(f"exp:{experiment_id}:smoke:1")
+        assert action["status"] == "COMPLETED", action.get("error")
+        assert json.loads(action["response_json"]) == {
+            "smoke_passed": True,
+            "snapshot": store.experiment(experiment_id)["candidate_snapshot"],
+        }
+        assert store.evaluation_receipt(action["id"]) is None
+        assert store.attempt(attempt_id)["stage"] == "EVALUATE"
+        assert store.campaign()["evaluator_calls"] == evaluator_calls_before + 1
+
+        # A restart after the durable smoke action completed reuses its result.
+        calls_after_smoke = store.campaign()["evaluator_calls"]
+        store.set_stage(attempt_id, "SMOKE")
+        engine._stage_smoke(attempt_id, experiment_id)
+        assert store.attempt(attempt_id)["stage"] == "EVALUATE"
+        assert store.campaign()["evaluator_calls"] == calls_after_smoke
+
+        engine._stage_evaluate(attempt_id, experiment_id)
+        assert len(store.evaluations("dev")) == dev_evaluations_before + 1
+    finally:
+        store.close()
+
+
+def test_failed_post_repair_smoke_rejects_without_dev_or_raw_error(tmp_path: Path):
+    smoke = "import sys\nprint('private-smoke-canary', file=sys.stderr)\nsys.exit(3)\n"
+
+    class RepairAgent(AgentAdapter):
+        def probe(self):
+            return {"available": True, "kind": "test"}
+
+        def execute(self, task, workspace, timeout):
+            (workspace / "model.py").write_text("value = 1\n", encoding="utf-8")
+            return {
+                "summary": "fixed syntax error",
+                "changed_paths": ["model.py"],
+                "verification_notes": "",
+                "blockers": [],
+            }
+
+    store, engine, _, _ = make_engine(tmp_path, smoke_source=smoke)
+    try:
+        engine.spec.editable_scope.append("model.py")
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        evaluator_calls_before = store.campaign()["evaluator_calls"]
+        dev_evaluations_before = len(store.evaluations("dev"))
+        (engine.workspace.workspace / "model.py").write_text("value = (\n", encoding="utf-8")
+        candidate = engine.workspace.snapshot("candidate with syntax error")
+        store.update_experiment(experiment_id, candidate_snapshot=candidate)
+        store.set_stage(attempt_id, "VERIFY")
+        engine.agent = RepairAgent()
+
+        engine._stage_verify(attempt_id, experiment_id)
+        engine._stage_smoke(attempt_id, experiment_id)
+
+        action = store.action(f"exp:{experiment_id}:smoke:1")
+        assert action["status"] == "FAILED"
+        assert "private-smoke-canary" not in (action["error"] or "")
+        assert store.attempt(attempt_id)["stage"] == "REJECT"
+        assert store.experiment(experiment_id)["failure_category"] == "IMPLEMENTATION_BLOCKED"
+        assert "POST_REPAIR_SMOKE_FAILED" in json.loads(
+            store.experiment(experiment_id)["decision_json"]
+        )["reasons"]
+        assert store.campaign()["evaluator_calls"] == evaluator_calls_before + 1
+        assert len(store.evaluations("dev")) == dev_evaluations_before
+    finally:
+        store.close()
+
+
+def test_runtime_smoke_traceback_is_sanitized_repaired_and_smoked_again(tmp_path: Path):
+    smoke = "import json\nfrom model import run\nrun()\nprint(json.dumps({'status':'ok','metrics':{'quality':1}}))\n"
+
+    class RuntimeRepairAgent(AgentAdapter):
+        def __init__(self):
+            self.calls = 0
+
+        def probe(self):
+            return {"available": True, "kind": "test"}
+
+        def execute(self, task, workspace, timeout):
+            self.calls += 1
+            assert task["role"] == "repair"
+            assert task["failure_kind"] == "implementation_smoke"
+            assert "RuntimeError" in task["sanitized_traceback"]
+            assert "private-runtime-canary" not in json.dumps(task)
+            (workspace / "model.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+            return {
+                "summary": "fixed runtime failure",
+                "changed_paths": ["model.py"],
+                "verification_notes": "",
+                "blockers": [],
+            }
+
+    store, engine, _, _ = make_engine(tmp_path, smoke_source=smoke)
+    try:
+        engine.spec.editable_scope.append("model.py")
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        dev_before = len(store.evaluations("dev"))
+        (engine.workspace.workspace / "model.py").write_text(
+            "def run():\n    raise RuntimeError('private-runtime-canary')\n", encoding="utf-8"
+        )
+        candidate = engine.workspace.snapshot("candidate with runtime failure")
+        store.update_experiment(experiment_id, candidate_snapshot=candidate)
+        store.set_stage(attempt_id, "SMOKE")
+        repair_agent = RuntimeRepairAgent()
+        engine.agent = repair_agent
+
+        update_experiment = store.update_experiment
+
+        def interrupt_before_snapshot_update(current_experiment_id, **fields):
+            if fields.get("candidate_snapshot"):
+                raise ControlledInterruption("after durable runtime repair action")
+            update_experiment(current_experiment_id, **fields)
+
+        store.update_experiment = interrupt_before_snapshot_update
+        with pytest.raises(ControlledInterruption):
+            engine._stage_smoke(attempt_id, experiment_id)
+        store.update_experiment = update_experiment
+
+        assert store.action(f"exp:{experiment_id}:repair:runtime")["status"] == "COMPLETED"
+        assert store.experiment(experiment_id)["candidate_snapshot"] == candidate
+        engine._stage_smoke(attempt_id, experiment_id)
+
+        smoke1 = store.action(f"exp:{experiment_id}:smoke:1")
+        repair = store.action(f"exp:{experiment_id}:repair:runtime")
+        smoke2 = store.action(f"exp:{experiment_id}:smoke:2")
+        assert smoke1["status"] == "COMPLETED"
+        smoke1_response = json.loads(smoke1["response_json"])
+        assert "RuntimeError" in smoke1_response["sanitized_traceback"]
+        assert "private-runtime-canary" not in json.dumps(smoke1_response)
+        assert repair["status"] == "COMPLETED"
+        assert repair_agent.calls == 1
+        repair_request = json.loads(repair["request_json"])
+        assert "private-runtime-canary" not in json.dumps(repair_request)
+        assert store.experiment(experiment_id)["candidate_snapshot"] != candidate
+        assert smoke2["status"] == "COMPLETED", smoke2.get("error")
+        assert json.loads(smoke2["response_json"])["smoke_passed"] is True
+        assert store.attempt(attempt_id)["stage"] == "EVALUATE"
+        assert len(store.evaluations("dev")) == dev_before
+    finally:
+        store.close()
+
+
+def test_completed_repair_replays_its_snapshot_without_a_second_agent_call(tmp_path: Path, monkeypatch):
+    class CountingRepairAgent(AgentAdapter):
+        def __init__(self):
+            self.calls = 0
+
+        def probe(self):
+            return {"available": True, "kind": "test"}
+
+        def execute(self, task, workspace, timeout):
+            self.calls += 1
+            (workspace / "model.py").write_text("value = 1\n", encoding="utf-8")
+            return {"summary": "repair", "changed_paths": ["model.py"],
+                    "verification_notes": "", "blockers": []}
+
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.spec.editable_scope.append("model.py")
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        model = engine.workspace.workspace / "model.py"
+        model.write_text("value = (\n", encoding="utf-8")
+        broken_snapshot = engine.workspace.snapshot("broken candidate")
+        store.update_experiment(experiment_id, candidate_snapshot=broken_snapshot)
+        store.set_stage(attempt_id, "VERIFY")
+        agent = CountingRepairAgent()
+        engine.agent = agent
+
+        original_update = store.update_experiment
+        fail_snapshot_persist = True
+
+        def interrupt_after_action(exp_id, **fields):
+            nonlocal fail_snapshot_persist
+            if fields.get("candidate_snapshot") and fail_snapshot_persist:
+                fail_snapshot_persist = False
+                raise RuntimeError("simulated interruption before experiment snapshot update")
+            return original_update(exp_id, **fields)
+
+        monkeypatch.setattr(store, "update_experiment", interrupt_after_action)
+        with pytest.raises(RuntimeError, match="simulated interruption"):
+            engine._stage_verify(attempt_id, experiment_id)
+        action = store.action(f"exp:{experiment_id}:repair:1")
+        assert action["status"] == "COMPLETED"
+        assert agent.calls == 1
+
+        monkeypatch.setattr(store, "update_experiment", original_update)
+        engine._stage_verify(attempt_id, experiment_id)
+
+        assert agent.calls == 1
+        assert store.experiment(experiment_id)["candidate_snapshot"] != broken_snapshot
+        assert store.attempt(attempt_id)["stage"] == "EVALUATE"
+    finally:
+        store.close()
+
+
+def test_failed_bounded_repair_rejects_without_dev_or_a_second_repair(tmp_path: Path):
+    class FailedRepairAgent(AgentAdapter):
+        def __init__(self):
+            self.calls = 0
+
+        def probe(self):
+            return {"available": True, "kind": "test"}
+
+        def execute(self, task, workspace, timeout):
+            self.calls += 1
+            assert task["role"] == "repair"
+            # The repair attempt completes but leaves the syntax defect intact.
+            return {
+                "summary": "could not repair the syntax error",
+                "changed_paths": [],
+                "verification_notes": "",
+                "blockers": ["the malformed expression remains"],
+            }
+
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.spec.editable_scope.append("model.py")
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        model = engine.workspace.workspace / "model.py"
+        model.write_text("value = (\n", encoding="utf-8")
+        candidate = engine.workspace.snapshot("candidate with syntax error")
+        store.update_experiment(experiment_id, candidate_snapshot=candidate)
+        store.set_stage(attempt_id, "VERIFY")
+        agent = FailedRepairAgent()
+        engine.agent = agent
+        evaluator_calls_before = store.campaign()["evaluator_calls"]
+
+        engine._stage_verify(attempt_id, experiment_id)
+
+        action = store.action(f"exp:{experiment_id}:repair:1")
+        assert action["status"] == "COMPLETED"
+        assert agent.calls == 1
+        assert store.attempt(attempt_id)["stage"] == "REJECT"
+        experiment = store.experiment(experiment_id)
+        assert experiment["failure_category"] == "IMPLEMENTATION_BLOCKED"
+        assert "bounded repair policy" in experiment["lesson"]
+        assert store.campaign()["evaluator_calls"] == evaluator_calls_before
+
+        # Reprocessing the terminal verification result cannot invoke another repair.
+        engine._stage_verify(attempt_id, experiment_id)
+        assert agent.calls == 1
+        assert store.campaign()["evaluator_calls"] == evaluator_calls_before
+    finally:
+        store.close()
+
+
+def test_campaign_repair_budget_blocks_repairs_after_durable_attempt_limit(tmp_path: Path):
+    class MustNotRepairAgent(AgentAdapter):
+        def __init__(self):
+            self.calls = 0
+
+        def probe(self):
+            return {"available": True, "kind": "test"}
+
+        def execute(self, task, workspace, timeout):
+            self.calls += 1
+            raise AssertionError("repair agent must not run after the campaign repair budget is used")
+
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.spec.budget.max_repair_attempts = 1
+        # A durable action, even with an unknown outcome, spends the repair
+        # allowance because the underlying agent may already have run.
+        store.start_action(
+            "exp:prior:repair:1", None, "VERIFY", "agent", "prior-repair-request"
+        )
+        engine.spec.editable_scope.append("model.py")
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        model = engine.workspace.workspace / "model.py"
+        model.write_text("value = (\n", encoding="utf-8")
+        candidate = engine.workspace.snapshot("candidate after repair budget spent")
+        store.update_experiment(experiment_id, candidate_snapshot=candidate)
+        store.set_stage(attempt_id, "VERIFY")
+        agent = MustNotRepairAgent()
+        engine.agent = agent
+        evaluator_calls_before = store.campaign()["evaluator_calls"]
+
+        engine._stage_verify(attempt_id, experiment_id)
+
+        assert agent.calls == 0
+        assert store.attempt(attempt_id)["stage"] == "REJECT"
+        assert store.experiment(experiment_id)["failure_category"] == "IMPLEMENTATION_BLOCKED"
+        assert "repair budget exhausted" in store.experiment(experiment_id)["lesson"]
+        assert store.campaign()["evaluator_calls"] == evaluator_calls_before
+    finally:
+        store.close()
+
+
+def test_default_repair_budget_preserves_legacy_approved_spec_hash(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        legacy_payload = engine.spec.model_dump(mode="json")
+        legacy_payload["budget"].pop("max_repair_attempts")
+        legacy_spec = CampaignSpec.model_validate(legacy_payload)
+        assert engine.spec.budget.max_repair_attempts == 1
+        assert engine.spec.approved_hash() == legacy_spec.approved_hash()
+
+        two_attempt_payload = engine.spec.model_dump(mode="json")
+        two_attempt_payload["budget"]["max_repair_attempts"] = 2
+        two_attempt_spec = CampaignSpec.model_validate(two_attempt_payload)
+        assert two_attempt_spec.approved_hash() != engine.spec.approved_hash()
+    finally:
+        store.close()
 
 
 def test_pr_auc_analyzer_task_gets_target_metric_guidance_without_hidden_evidence(tmp_path: Path):

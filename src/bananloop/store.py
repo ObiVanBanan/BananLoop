@@ -295,9 +295,17 @@ class CampaignStore:
         self.conn.commit()
 
     def update_experiment(self, experiment_id: int, **fields: Any) -> None:
+        failure_category = fields.get("failure_category")
         fields["updated_at"] = utc_now()
         sql = ",".join(f"{key}=?" for key in fields)
         self.conn.execute(f"UPDATE experiments SET {sql} WHERE id=?", tuple(fields.values()) + (experiment_id,))
+        if failure_category:
+            from .failures import classify_failure
+
+            self.event(
+                "FAILURE_CLASSIFIED",
+                {"experiment_id": experiment_id, **classify_failure(failure_category)},
+            )
         self.conn.commit()
 
     def finish_attempt(

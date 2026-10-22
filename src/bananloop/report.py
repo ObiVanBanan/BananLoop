@@ -6,6 +6,7 @@ from typing import Any
 
 from .contracts import CampaignSpec, EvaluationResult
 from .evaluator_binding import EvaluationReceipt, canonical_hash, validate_receipt_linkage
+from .failures import classify_failure
 from .policy import metric_value, target_met
 from .research import attempt_bucket
 from .store import CampaignStore
@@ -34,6 +35,13 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             "candidate_proof": evaluation_request.get("candidate_proof"),
             "decision": json.loads(row["decision_json"]) if row["decision_json"] else None,
             "failure_category": None if accepted else row["failure_category"],
+            "failure_classification": None if accepted else classify_failure(
+                row["failure_category"]
+                or next(
+                    (reason for reason in (json.loads(row["decision_json"] or "{}").get("reasons") or []) if reason != "ACCEPTED"),
+                    None,
+                )
+            ),
             "lesson": "Promoted as new champion" if accepted else row["lesson"],
             "failure_analysis": (
                 json.loads(row["failure_analysis_json"])
@@ -345,6 +353,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         hypothesis = (exp["hypothesis"] or {}).get("hypothesis", "-")
         decision = exp["decision"] or {}
         lines.append(f"- #{exp['ordinal']} **{exp['status']}** — {hypothesis}; delta={decision.get('delta', '-')}; failure={exp['failure_category'] or '-'}")
+        classification = exp.get("failure_classification")
+        if classification:
+            lines.append(
+                f"  - Failure kind: `{classification['kind']}`; retryable=`{classification['retryable']}`; "
+                f"risk=`{classification['risk']}`; next step: {classification['suggested_remediation']}"
+            )
         proof = exp.get("candidate_proof")
         if proof:
             lines.append(

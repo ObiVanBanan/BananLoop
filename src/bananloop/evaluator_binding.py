@@ -151,6 +151,9 @@ def make_binding(spec: CampaignSpec, runtime: dict[str, Any]) -> EvaluatorBindin
     if spec.holdout_command:
         commands["holdout"] = spec.holdout_command
         timeouts["holdout"] = spec.holdout_timeout_seconds or spec.evaluator_timeout_seconds
+    if spec.smoke_command:
+        commands["smoke"] = spec.smoke_command
+        timeouts["smoke"] = spec.smoke_timeout_seconds or 90
     approved = spec.approved_hash()
     goal_fp = canonical_hash(spec.goal)
     policy = {
