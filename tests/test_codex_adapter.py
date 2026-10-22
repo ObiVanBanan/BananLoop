@@ -42,6 +42,10 @@ def test_codex_propose_schema_accepts_portfolio_and_legacy_hypothesis(tmp_path: 
     assert "oneOf" not in captured["schema"]
     assert captured["schema"]["properties"]["candidates"]["type"] == ["array", "null"]
     assert "estimated_evaluator_calls" in captured["schema"]["properties"]["candidates"]["items"]["required"]
+    nested_hypothesis = captured["schema"]["properties"]["candidates"]["items"]["properties"]["hypothesis"]
+    assert "intervention_type" in nested_hypothesis["required"]
+    assert "algorithmic_layer" in nested_hypothesis["required"]
+    assert nested_hypothesis["properties"]["intervention_type"]["enum"][-1] == "data_preprocessing"
     assert set(captured["schema"]["required"]) == set(captured["schema"]["properties"])
     assert out == {"candidates": []}
 

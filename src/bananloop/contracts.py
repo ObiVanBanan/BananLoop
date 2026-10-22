@@ -23,6 +23,32 @@ class DiagnosticKind(StrEnum):
     REGRESSION_TESTS = "regression_tests"
 
 
+class InterventionType(StrEnum):
+    FEATURE_REPRESENTATION = "feature_representation"
+    HYPERPARAMETER = "hyperparameter"
+    OBJECTIVE = "objective"
+    DATA_SAMPLING = "data_sampling"
+    THRESHOLD = "threshold"
+    ARCHITECTURE = "architecture"
+    CACHING = "caching"
+    INFERENCE_LOGIC = "inference_logic"
+    TEST_COVERAGE = "test_coverage"
+    RUNTIME = "runtime"
+    DATA_PREPROCESSING = "data_preprocessing"
+
+
+class AlgorithmicLayer(StrEnum):
+    DATA = "data"
+    FEATURES = "features"
+    MODEL = "model"
+    OBJECTIVE = "objective"
+    TRAINING = "training"
+    INFERENCE = "inference"
+    EVALUATION = "evaluation"
+    RUNTIME = "runtime"
+    TESTS = "tests"
+
+
 class DiagnosticCapability(BaseModel):
     """Frozen allowlist entry for one aggregate evaluator diagnostic."""
 
@@ -428,6 +454,8 @@ class Hypothesis(BaseModel):
     # mechanism_key. Older durable hypotheses remain valid without these fields.
     target_failure_signal: str = ""
     failure_mechanism: str = ""
+    intervention_type: InterventionType | None = None
+    algorithmic_layer: AlgorithmicLayer | None = None
 
 
 class HypothesisCandidate(BaseModel):
@@ -498,6 +526,9 @@ class DevResearchLesson(BaseModel):
     inference: str = ""
     next_discriminator: str = ""
     evidence_refs: list[str] = Field(default_factory=list, max_length=8)
+    observation_status: Literal["observed"] = "observed"
+    causal_status: Literal["inferred", "refuted", "unknown"] = "unknown"
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class ImplementResult(BaseModel):
@@ -704,6 +735,18 @@ class DevExperimentEvidence(BaseModel):
     rejection_reasons: list[str] = Field(default_factory=list)
 
 
+class StructuralInterventionMemory(BaseModel):
+    """DEV-only durable record of a structurally described intervention."""
+
+    signature: str = Field(pattern=r"^intervention:[a-f0-9]{20}$")
+    intervention_type: InterventionType
+    algorithmic_layer: AlgorithmicLayer
+    affected_paths: list[str] = Field(default_factory=list, max_length=16)
+    experiment_ordinals: list[int] = Field(default_factory=list, max_length=1000)
+    dev_outcomes: dict[str, int] = Field(default_factory=dict)
+    last_dev_outcome: str = "unknown"
+
+
 class ResearchState(BaseModel):
     schema_version: int = 1
     planning_mode: Literal["exploit", "explore", "reframe"] = "exploit"
@@ -711,6 +754,7 @@ class ResearchState(BaseModel):
     # Strictly DEV-derived, aggregate-only mechanism blacklist for new proposals.
     stagnant_mechanisms: list[str] = Field(default_factory=list, max_length=16)
     failed_dev_families: list[str] = Field(default_factory=list, max_length=16)
+    structural_interventions: list[StructuralInterventionMemory] = Field(default_factory=list, max_length=64)
     failure_counts: dict[str, int] = Field(default_factory=dict)
     mechanisms: list[MechanismEvidence] = Field(default_factory=list)
     recent_lessons: list[str] = Field(default_factory=list)

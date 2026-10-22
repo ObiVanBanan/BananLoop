@@ -9,23 +9,27 @@ from bananloop.contracts import (
     Direction,
     DiagnosticCapability,
     FailureCapsule,
+    AlgorithmicLayer,
     Hypothesis,
     HypothesisCandidate,
     HypothesisPortfolio,
     MetricSpec,
     ResearchState,
+    InterventionType,
 )
 from bananloop.research import (
     agent_evaluation_view,
     build_history,
     build_research_state,
     capsule_evidence_ref,
+    candidate_rejection_reasons,
     classify_dev_outcome,
     derive_dev_lesson,
     planning_mode,
     redundancy_reason,
     normalize_portfolio,
     select_candidate,
+    intervention_signature,
 )
 
 
@@ -686,6 +690,136 @@ def test_changed_allowlisted_dev_error_metric_prevents_false_stagnation():
     assert state.stagnant_mechanisms == []
     assert state.planning_mode == "reframe"  # Ordinary two-trial DEV plateau.
 
+
+def test_structural_intervention_signature_blocks_renamed_failed_intervention():
+    s = spec()
+    failed = Hypothesis(
+        hypothesis="adjust regularization", rationale="reduce overfit",
+        expected_effect="higher quality", files_or_area=["src/model.py:fit_model", "src/model.py"],
+        falsification_condition="quality does not improve", mechanism_key="old-key",
+        mechanism_family="old-family", intervention_type=InterventionType.HYPERPARAMETER,
+        algorithmic_layer=AlgorithmicLayer.MODEL,
+    )
+    row = {
+        "ordinal": 1, "status": "REJECTED", "hypothesis_json": failed.model_dump_json(),
+        "evaluation_json": json.dumps({"metrics": {"quality": 0.6}}),
+        "dev_decision_json": json.dumps({
+            "accepted": False, "primary_value": 0.6, "champion_value": 0.7,
+            "delta": -0.1, "reasons": ["PRIMARY_NOT_IMPROVED"],
+        }),
+        "decision_json": json.dumps({
+            "accepted": False, "reasons": ["VALIDATION_REJECTED"],
+            "validation": {"secret_metric": "HIDDEN_VALIDATION_VALUE"},
+        }),
+    }
+    state = build_research_state(s, campaign(experiment_count=1, attempt_count=1), [row])
+    expected_signature, canonical_paths = intervention_signature(failed)
+    memory = state.structural_interventions[0]
+    assert memory.signature == expected_signature
+    assert memory.affected_paths == canonical_paths == ["src/model.py"]
+    assert memory.dev_outcomes == {"DEV_REGRESSION": 1}
+    assert memory.last_dev_outcome == "DEV_REGRESSION"
+    assert "HIDDEN_VALIDATION_VALUE" not in state.model_dump_json()
+    assert ResearchState.model_validate(state.model_dump(mode="json")) == state
+
+    renamed = Hypothesis(
+        hypothesis="try another C value", rationale="same model intervention",
+        expected_effect="higher quality", files_or_area=["src/model.py:predict"],
+        falsification_condition="no quality change", mechanism_key="new-key",
+        mechanism_family="new-family", intervention_type="hyperparameter",
+        algorithmic_layer="model",
+    )
+    signature, _ = intervention_signature(renamed)
+    assert signature == expected_signature
+    candidate = HypothesisCandidate(
+        candidate_id="renamed-model-tune", hypothesis=renamed,
+        evidence_refs=["exp:1"], predicted_observable="quality delta",
+        discriminating_test="measure frozen DEV quality", scope_eligibility=True,
+        estimated_agent_calls=1, estimated_evaluator_calls=1,
+        rationale="new names only", uncertainty="same intervention",
+    )
+    reasons = candidate_rejection_reasons(candidate, spec=s, state=state, experiments=[row])
+    assert "STRUCTURAL_INTERVENTION_REPEATS_FAILED_DEV" in reasons
+
+    omitted = candidate.model_copy(update={
+        "candidate_id": "omit-structure",
+        "hypothesis": renamed.model_copy(update={
+            "intervention_type": None, "algorithmic_layer": None,
+        }),
+    })
+    omitted_reasons = candidate_rejection_reasons(
+        omitted, spec=s, state=state, experiments=[row]
+    )
+    assert "MISSING_STRUCTURAL_INTERVENTION_SIGNATURE" in omitted_reasons
+
+    distinct = candidate.model_copy(update={
+        "candidate_id": "feature-representation",
+        "hypothesis": renamed.model_copy(update={
+            "intervention_type": InterventionType.FEATURE_REPRESENTATION,
+            "mechanism_key": "feature-key", "mechanism_family": "feature-family",
+        }),
+    })
+    distinct_reasons = candidate_rejection_reasons(
+        distinct, spec=s, state=state, experiments=[row]
+    )
+    assert "STRUCTURAL_INTERVENTION_REPEATS_FAILED_DEV" not in distinct_reasons
+
+
+def test_legacy_hypothesis_without_structural_fields_stays_readable():
+    legacy = Hypothesis.model_validate({
+        "hypothesis": "increase regularization", "rationale": "test", "expected_effect": "higher",
+        "files_or_area": ["src/model.py"], "falsification_condition": "no gain",
+        "mechanism_key": "legacy-key",
+    })
+    assert legacy.intervention_type is None
+    assert legacy.algorithmic_layer is None
+    assert intervention_signature(legacy) is None
+
+
+def test_structural_refutation_and_budget_rebuild_after_campaign_store_resume(tmp_path):
+    from bananloop.store import CampaignStore
+
+    s = spec()
+    db_path = tmp_path / "campaign.sqlite"
+    store = CampaignStore(db_path)
+    store.initialize(s)
+    experiment_id, attempt_id = store.create_attempt("baseline-snapshot")
+    hypothesis = Hypothesis(
+        hypothesis="adjust model regularization", rationale="test overfit",
+        expected_effect="higher quality", files_or_area=["src/model.py"],
+        falsification_condition="no DEV change", mechanism_key="lambda-one",
+        mechanism_family="linear-model", intervention_type="hyperparameter",
+        algorithmic_layer="model",
+    )
+    decision = {
+        "accepted": False, "primary_value": 0.6, "champion_value": 0.7,
+        "delta": -0.1, "reasons": ["PRIMARY_NOT_IMPROVED"],
+    }
+    store.update_experiment(
+        experiment_id, hypothesis_json=hypothesis.model_dump_json(),
+        evaluation_json=json.dumps({"metrics": {"quality": 0.6}}),
+        dev_decision_json=json.dumps(decision), decision_json=json.dumps(decision),
+    )
+    store.finish_attempt(
+        attempt_id, experiment_id, status="REJECTED", scientific=True, improved=False
+    )
+    first = build_research_state(s, store.campaign(), store.experiments(), store.events())
+    store.close()
+
+    resumed_store = CampaignStore(db_path)
+    try:
+        resumed = build_research_state(
+            resumed_store.spec(), resumed_store.campaign(),
+            resumed_store.experiments(), resumed_store.events(),
+        )
+        assert resumed.structural_interventions == first.structural_interventions
+        assert resumed.structural_interventions[0].last_dev_outcome == "DEV_REGRESSION"
+        assert resumed.dev_lessons[0].evidence_refs == ["exp:1"]
+        assert resumed.remaining_budget["experiments"] == first.remaining_budget["experiments"] == 4
+        assert resumed.remaining_budget["attempts"] == first.remaining_budget["attempts"] == 7
+    finally:
+        resumed_store.close()
+
 def test_dev_noise_band_is_symmetric_for_small_gains_and_losses():
     s = spec(agent_visible_metrics=["quality"])
     def row(ordinal: int, delta: float):
@@ -796,6 +930,9 @@ def test_reflection_memory_uses_generalized_dev_capsules_to_suggest_next_test():
     lesson = derive_dev_lesson(row, s)
     assert lesson is not None
     assert lesson.interpretation == "unknown"
+    assert lesson.observation_status == "observed"
+    assert lesson.causal_status == "inferred"
+    assert lesson.confidence == 0.4
     assert "unverified causal proposal" in lesson.inference
     assert "feature representation" in lesson.inference
     assert lesson.next_discriminator == (
@@ -804,6 +941,34 @@ def test_reflection_memory_uses_generalized_dev_capsules_to_suggest_next_test():
     state = build_research_state(s, campaign(), [row])
     assert state.dev_lessons[0].next_discriminator == lesson.next_discriminator
     assert "SEALED_NOT_VISIBLE" not in state.model_dump_json()
+
+
+def test_aggregate_only_capsule_preserves_unknown_causal_state():
+    s = spec()
+    capsule = FailureCapsule(
+        title="Insufficient aggregate evidence", failure_class="insufficient_evidence",
+        stage="aggregate_metric", observation="The DEV metric did not improve.",
+        likely_mechanism="Unknown: no metric-specific DEV diagnostics were available.",
+        general_rule="Do not infer a cause from the aggregate score.", confidence=0.0,
+    )
+    row = {
+        "ordinal": 1, "status": "REJECTED",
+        "hypothesis_json": json.dumps({"mechanism_key": "opaque-change"}),
+        "evaluation_json": json.dumps({"metrics": {"quality": 0.7}}),
+        "dev_decision_json": json.dumps({
+            "accepted": False, "primary_value": 0.7, "champion_value": 0.7,
+            "delta": 0.0, "reasons": ["PRIMARY_NOT_IMPROVED"],
+        }),
+        "decision_json": json.dumps({"accepted": False, "reasons": ["PRIMARY_NOT_IMPROVED"]}),
+        "failure_analysis_json": json.dumps({"capsules": [capsule.model_dump(mode="json")]}),
+    }
+    lesson = derive_dev_lesson(row, s)
+    assert lesson is not None
+    assert lesson.observation_status == "observed"
+    assert lesson.interpretation == "unknown"
+    assert lesson.causal_status == "unknown"
+    assert lesson.confidence == 0.0
+    assert "unverified causal proposal" not in lesson.inference
 
 
 def test_reframe_rejects_renamed_model_variants_in_same_failed_family():

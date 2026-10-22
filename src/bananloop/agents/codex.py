@@ -153,6 +153,15 @@ LEGACY_HYPOTHESIS_SCHEMA = {
         "novelty_rationale": {"type": "string"},
         "target_failure_signal": {"type": "string"},
         "failure_mechanism": {"type": "string"},
+        "intervention_type": {"type": "string", "enum": [
+            "feature_representation", "hyperparameter", "objective", "data_sampling",
+            "threshold", "architecture", "caching", "inference_logic", "test_coverage",
+            "runtime", "data_preprocessing",
+        ]},
+        "algorithmic_layer": {"type": "string", "enum": [
+            "data", "features", "model", "objective", "training", "inference",
+            "evaluation", "runtime", "tests",
+        ]},
     },
     "required": [
         "hypothesis",
@@ -167,6 +176,8 @@ LEGACY_HYPOTHESIS_SCHEMA = {
         "novelty_rationale",
         "target_failure_signal",
         "failure_mechanism",
+        "intervention_type",
+        "algorithmic_layer",
     ],
     "additionalProperties": False,
 }
@@ -421,7 +432,15 @@ class CodexAdapter(AgentAdapter):
             instruction = (
                 "Propose a bounded portfolio of 2-3 materially different, falsifiable hypotheses (never more than 4) for this measurable campaign. "
                 "Use the supplied research_state, its aggregate failure_signals, failure capsules, "
-                "stagnant_mechanisms, failed_dev_families, dev_lessons and experiment_evidence, and planning_mode. "
+                "stagnant_mechanisms, failed_dev_families, structural_interventions, dev_lessons "
+                "and experiment_evidence, and planning_mode. "
+                "For each hypothesis, fill intervention_type from feature_representation, hyperparameter, "
+                "objective, data_sampling, threshold, architecture, caching, inference_logic, test_coverage, "
+                "runtime, or data_preprocessing, and algorithmic_layer from data, features, model, objective, "
+                "training, inference, evaluation, runtime, or tests. The core derives a structural signature "
+                "from these typed fields and normalized files_or_area paths; changing mechanism_key/family "
+                "or renaming a path locator cannot make the same supported intervention new. "
+                "Avoid any signature with a failed DEV outcome; choose a materially different intervention. "
                 "Set hypothesis.mechanism_family to a stable causal category broader than mechanism_key; "
                 "two C-value or weighting variations of the same modeling idea must share a family. "
                 "In reframe mode never retest a family listed in failed_dev_families under a new name. "
