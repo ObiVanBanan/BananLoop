@@ -1,0 +1,25 @@
+split,query,expected_product_id
+dev,Кран шаровый фланцевый DN25 PN16 сталь,LD-1001
+validation,"КШФ Ду 25 Ру 1,6 МПа корпус сталь",LD-1001
+holdout,ball valve steel DN25 PN16 flanged,LD-1001
+dev,Кран шаровой фланцевый Ду80 Ру16 стальной,LD-1002
+validation,КШФ DN 80 PN 16 корпус сталь,LD-1002
+holdout,ball valve DN80 PN16 steel flanged,LD-1002
+dev,Кран шаровый фланцевый DN80 PN40 сталь,LD-1003
+validation,КШФ Ду80 Ру40 корпус сталь,LD-1003
+holdout,ball valve steel DN80 PN40 flanged,LD-1003
+dev,Кран шаровой латунный муфтовый DN25 PN16,LD-1004
+validation,КШМ Ду25 Ру16 латунь,LD-1004
+holdout,brass threaded ball valve DN25 PN16,LD-1004
+dev,Фланец плоский стальной DN100 PN16,LD-2001
+validation,Фланец стальной Ду100 Ру16 плоский приварной,LD-2001
+holdout,flat steel flange DN100 PN16,LD-2001
+dev,Фланец плоский стальной DN80 PN10,LD-2002
+validation,Фланец стальной Ду80 Ру10 плоский приварной,LD-2002
+holdout,flat steel flange DN80 PN10,LD-2002
+dev,Тройник стальной равнопроходный DN50,LD-3001
+validation,Тройник равный сталь Ду50 сварной,LD-3001
+holdout,equal tee steel DN50,LD-3001
+dev,Фильтр сетчатый латунный муфтовый DN25 PN16,LD-4001
+validation,Фильтр латунь Ду25 Ру16 резьбовой,LD-4001
+holdout,brass threaded strainer DN25 PN16,LD-4001

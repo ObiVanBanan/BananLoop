@@ -1,0 +1,64 @@
+{
+  "source": "UCI Bank Marketing, bank-additional-full.csv",
+  "source_rows": 41188,
+  "order": "Preserved source order; official repository describes this version as ordered by date from May 2008 to November 2010.",
+  "split_policy": "Contiguous chronological 70/10/10/10 split; no shuffle.",
+  "excluded_features": [
+    "duration"
+  ],
+  "excluded_feature_reason": "Duration of the current call is only known after the call; excluded to prevent post-outcome leakage in a pre-contact prediction task.",
+  "features": [
+    "age",
+    "job",
+    "marital",
+    "education",
+    "default",
+    "housing",
+    "loan",
+    "contact",
+    "month",
+    "day_of_week",
+    "campaign",
+    "pdays",
+    "previous",
+    "poutcome",
+    "emp.var.rate",
+    "cons.price.idx",
+    "cons.conf.idx",
+    "euribor3m",
+    "nr.employed"
+  ],
+  "target": "y",
+  "counts": {
+    "train": {
+      "rows": 28831,
+      "positive": 1606,
+      "negative": 27225,
+      "first_index": 0,
+      "last_index_exclusive": 28831
+    },
+    "dev": {
+      "rows": 4119,
+      "positive": 494,
+      "negative": 3625,
+      "first_index": 28831,
+      "last_index_exclusive": 32950
+    },
+    "validation": {
+      "rows": 4119,
+      "first_index": 32950,
+      "last_index_exclusive": 37069
+    },
+    "holdout": {
+      "rows": 4119,
+      "first_index": 37069,
+      "last_index_exclusive": 41188
+    }
+  },
+  "sha256": {
+    "data/train.csv": "edd748af3ad4dae96aed258938f8c7f42cc7f12d2cdb645468059f50620f16cf",
+    "data/dev.csv": "e7fd8428ac043e74d810b2cf9e884ce5344fa6a5afed922d36d12c5c747ddbe2",
+    ".bananloop_eval/validation.csv": "b4359cba09fa86176c8ff3210d00ba2af41d279b025c851de2ffb3a2b88ecee9",
+    ".bananloop_eval/holdout.csv": "42f705bbb0c88fb89685b64daacfcf583880fb34e5ac3cbb388b0f67d9d7a65c"
+  }
+}
