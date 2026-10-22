@@ -80,3 +80,26 @@ Gold Logic v0.3 is a separate external archive, **not part of this branch**; run
 - R3 is a bounded Python candidate preflight/smoke repair slice, not the complete approval manager or operator dashboard in #37.
 - Gold Journeys J10/J16 and the rest require explicit whole-campaign adapter certification rather than reclassifying partial subsystem tests.
 - Cross-platform GitHub Actions may fail before runner assignment independently of Python test correctness.
+
+## Follow-up: repeated Windows Stop/Resume timeout
+
+An operator reported on integration HEAD `082e1c7b4e8052362f6240028600fa1b234f2522`:
+- Full Windows / Python 3.13.1 pytest: **339 passed, 5 skipped** in 6m28s, with cached dependencies; `pip install -e ".[test]"` could not fetch PyPI build requirements due to unavailable network.
+- Running `tests/test_completion.py::test_stop_cli_cancels_running_agent_and_preserves_source` **three times individually failed with TimeoutExpired each time**: STOP was requested, but owner CLI was not observed exiting within five seconds.
+- Hosted CI still has no runnable jobs/steps. Python 3.12 Windows run is not available yet.
+This means **the full-suite green result does not clear the Stop/Resume reliability gate**.
+
+Follow-up integration-only patch in `src/bananloop/process.py`: shorten and bound the sequential Windows group-signal/`taskkill`/direct-kill cleanup, avoid concurrently calling `close()` on pipe streams while a `communicate()` worker may hold their locks, and leave already-completed children untouched. A process regression feeds >2 MiB of input to a child that never reads stdin and checks prompt cancellation. **Patch is unverified on Windows and must be re-tested.** The test is not an excuse to raise the five-second threshold without evidence.
+
+Re-test from the latest integration branch:
+```powershell
+git pull --ff-only
+git rev-parse HEAD
+python -m pytest -q -o addopts='' tests/test_process.py
+1..3 | ForEach-Object {
+    python -m pytest -q -o addopts='' tests/test_completion.py::test_stop_cli_cancels_running_agent_and_preserves_source
+}
+python -m pytest -q -o addopts='' --tb=short
+```
+Report both the process test and campaign stop test outcomes, and check that after STOP the durable SQLite state has `STOPPED/USER_STOPPED`, cancelled active action, cleared active attempt, settled reservations, and no surviving agent subprocess. If STOP still fails, do not claim R0/R5 cancellation safe; preserve a redacted traceback/elapsed step timings for diagnosis.
+
