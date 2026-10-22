@@ -64,48 +64,71 @@ def terminate_process_tree(
     *,
     communicate_thread: threading.Thread | None = None,
 ) -> None:
-    """Terminate only the process group created for this invocation."""
+    """Stop this invocation's process group with bounded, race-free cleanup.
+
+    Windows may deny CTRL_BREAK or taskkill (for example under a job object).
+    Do not let their independent grace periods accumulate past the operator's
+    stop timeout. Only the communicate worker may read/write the pipes.
+    """
     def wait_for_communication(timeout: float) -> bool:
         if communicate_thread is not None:
             communicate_thread.join(timeout=timeout)
-            return not communicate_thread.is_alive()
+            return not communicate_thread.is_alive() and proc.poll() is not None
         try:
             proc.communicate(timeout=timeout)
             return True
         except subprocess.TimeoutExpired:
             return False
 
+    if proc.poll() is not None and (
+        communicate_thread is None or not communicate_thread.is_alive()
+    ):
+        return
+
     if os.name == "nt":
-        # Windows sandbox/job boundaries can deny taskkill even for a child we
-        # started. CTRL_BREAK reaches the CREATE_NEW_PROCESS_GROUP members first
-        # and lets wrappers such as cmd.exe and their descendants exit together.
-        try:
-            os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
-        except (OSError, ValueError):
-            pass
-        if wait_for_communication(2):
+        if proc.poll() is None:
+            try:
+                os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
+            except (OSError, ValueError):
+                pass
+        if wait_for_communication(0.35):
             return
+        # Best-effort descendant cleanup; a denied/hung taskkill must not
+        # block the campaign's STOP_REQUESTED reconciliation indefinitely.
         try:
             subprocess.run(
                 ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                capture_output=True, timeout=5, check=False,
+                capture_output=True, timeout=1.5, check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
             pass
+        if wait_for_communication(0.25):
+            return
     else:
-        # The leader may have exited while a child still holds an output pipe.
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        if wait_for_communication(5):
+        if wait_for_communication(0.5):
             return
+
+    # Kill the direct child even if signaling its group was denied. A pipe
+    # reader can remain alive briefly if descendants still own output handles;
+    # never close those streams concurrently with communicate().
     if proc.poll() is None:
-        proc.kill()
-    if not wait_for_communication(5):
-        if proc.poll() is None:
+        try:
             proc.kill()
-        proc.wait(timeout=5)
+        except ProcessLookupError:
+            pass
+    if wait_for_communication(0.5):
+        return
+    if proc.poll() is None:
+        try:
+            proc.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    if communicate_thread is not None:
+        communicate_thread.join(timeout=0.25)
 
 
 def run_process(
@@ -159,13 +182,14 @@ def run_process(
         stdout, stderr = communication_result[0]
     finally:
         # Also clean children left behind after a successful parent exit.
-        if communicate_thread.is_alive():
-            terminate_process_tree(proc, communicate_thread=communicate_thread)
-        else:
-            terminate_process_tree(proc)
-        for stream in (proc.stdin, proc.stdout, proc.stderr):
-            if stream is not None:
-                stream.close()
+        terminate_process_tree(proc, communicate_thread=communicate_thread)
+        # close() can wait on the same buffered pipe lock held by the
+        # communicate worker. If Windows descendants retained pipe handles,
+        # allow the daemon worker to finish without blocking stop/recovery.
+        if not communicate_thread.is_alive():
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
     result = ProcessResult(proc.returncode, stdout, stderr)
     if check and result.returncode != 0:
         details: list[str] = []
