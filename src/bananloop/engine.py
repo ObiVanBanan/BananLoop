@@ -1621,6 +1621,49 @@ class Engine:
                     decision.model_dump(mode="json"),
                 )
         else:
+            if not decision.accepted:
+                # Preserve an explicit research record when DEV supplies only
+                # aggregate metrics. The score and deterministic decision are
+                # observations; they do not identify a causal mechanism.
+                reasons = ", ".join(decision.reasons) or "no rejection reason"
+                capsule = FailureCapsule(
+                    title="Aggregate-only DEV rejection",
+                    failure_class="insufficient_evidence",
+                    stage="aggregate_metric",
+                    observation=(
+                        f"DEV {self.spec.primary_metric.name} delta "
+                        f"{decision.delta:+.6g}; decision reasons: {reasons}. "
+                        "The evaluator supplied no DEV failure signals or examples."
+                    ),
+                    likely_mechanism=(
+                        "Unknown. Aggregate DEV metrics do not establish why the "
+                        "candidate failed to improve."
+                    ),
+                    general_rule=(
+                        "Do not infer a feature-level or algorithmic cause from "
+                        "an aggregate score without public DEV diagnostics."
+                    ),
+                    suggested_regression=(
+                        "Test a materially different falsifiable mechanism on the "
+                        "same frozen DEV split; use public DEV diagnostics only "
+                        "if the evaluator supplies them."
+                    ),
+                    confidence=0.0,
+                )
+                analysis = FailureAnalysisResult(capsules=[capsule])
+                self.store.update_experiment(
+                    experiment_id,
+                    failure_analysis_json=analysis.model_dump_json(),
+                )
+                self.store.event(
+                    "DEV_FAILURE_ANALYSIS_INSUFFICIENT_EVIDENCE",
+                    {
+                        "experiment_id": experiment_id,
+                        "capsule_count": 1,
+                        "failure_class": "insufficient_evidence",
+                    },
+                )
+                self.store.conn.commit()
             self._route_after_dev_analysis(
                 attempt_id,
                 decision.model_dump(mode="json"),

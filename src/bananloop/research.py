@@ -604,6 +604,11 @@ def summarize_dev_failures(
         if row.get("status") == "ACTIVE":
             continue
         for capsule in _failure_capsules_from_row(row):
+            # An aggregate-only capsule records that the cause is unknown; it
+            # is useful planning context, but it is not an actionable DEV
+            # failure signal that a hypothesis can claim to target.
+            if capsule.failure_class == "insufficient_evidence":
+                continue
             # Free-form case identifiers cannot become planning signal keys.
             if not re.fullmatch(r"[A-Za-z_][A-Za-z_-]{0,79}", capsule.failure_class):
                 continue

@@ -202,6 +202,45 @@ def test_end_to_end_accept_reject_accept_and_source_unchanged(tmp_path: Path):
         store.close()
 
 
+def test_aggregate_only_dev_rejection_persists_unknown_capsule_for_next_proposal(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        out = engine.run()
+        assert out["status"] == "GOAL_MET", {
+            key: out.get(key)
+            for key in ("status", "stop_reason", "experiment_count", "attempt_count")
+        }
+
+        rejected = store.experiment(2)
+        assert rejected["status"] == "REJECTED"
+        assert rejected["failure_analysis_json"]
+        analysis = json.loads(rejected["failure_analysis_json"])
+        assert len(analysis["capsules"]) == 1
+        capsule = analysis["capsules"][0]
+        assert capsule["failure_class"] == "insufficient_evidence"
+        assert capsule["stage"] == "aggregate_metric"
+        assert capsule["confidence"] == 0.0
+        assert capsule["likely_mechanism"].startswith("Unknown.")
+        assert "validation" not in json.dumps(capsule).lower()
+        assert "holdout" not in json.dumps(capsule).lower()
+
+        next_request = json.loads(store.action("exp:3:propose")["request_json"])
+        visible_capsules = next_request["research_state"]["recent_failure_capsules"]
+        assert len(visible_capsules) == 1
+        assert visible_capsules[0]["failure_class"] == "insufficient_evidence"
+        assert visible_capsules[0]["likely_mechanism"].startswith("Unknown.")
+        assert visible_capsules[0]["evidence_id"].startswith("capsule:")
+        assert store.action("exp:2:analyze-dev-failures") is None
+
+        event = next(
+            item for item in store.events()
+            if item["event_type"] == "DEV_FAILURE_ANALYSIS_INSUFFICIENT_EVIDENCE"
+        )
+        assert json.loads(event["payload_json"])["failure_class"] == "insufficient_evidence"
+    finally:
+        store.close()
+
+
 def test_resume_after_durable_stage_does_not_restart_experiment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     store, engine, _, _ = make_engine(tmp_path)
     try:
