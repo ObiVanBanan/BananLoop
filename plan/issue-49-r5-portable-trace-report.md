@@ -11,10 +11,11 @@ The shareable default omits raw goal text (retains its SHA-256), agent rationale
 ## Verification
 
 - `PYTHONPATH=src pytest -q tests/test_trace.py` passes: CLI parsing/execution, byte-identical repeated export, manifest hash checks, goal/error/holdout canary exclusion, refusal to overwrite user data, rollback after injected swap failure, and stable JSONL keys.
+- The resume guard regression confirms that changing a persisted CampaignSpec without changing its approved hash raises before any action or evaluator/agent call. Existing orphaned `RUNNING` actions still require the explicit retry flag, and the action retry path remains covered.
 - `PYTHONPATH=src pytest -q` passes on the feature branch.
 - `python -m py_compile src/bananloop/trace.py src/bananloop/cli.py tests/test_trace.py` and `git diff --check` pass.
 - The exporter was run against the saved product matcher retrieval campaign `c-afbf21b4f610db2db0a97087313f9112`. It exported 96 events and 8 receipt digests; a verifier checked JSONL parsing, manifest hashes, no case records, and no `GOLD_CANARY`. Aggregate evidence is in `qa/issue49-r5-trace-export-2026-10-22.json`.
 
 ## Limits
 
-This increment does not complete R5 or the umbrella issue. The trace omits raw goal text for shareability, has no effective runtime/dependency fingerprint, and does not implement the broader #37 approval manager/dashboard. Hosted CI remains unavailable before runnable steps/logs; the local Linux full test result does not establish Windows CI.
+This increment does not complete R5 or the umbrella issue. The trace omits raw goal text for shareability, has no effective runtime/dependency fingerprint, and does not implement the broader #37 approval manager/dashboard. Protocol edits require a new approved campaign; there is no in-place protocol editing flow. Hosted CI remains unavailable before runnable steps/logs; the local Linux full test result does not establish Windows CI.

@@ -470,6 +470,26 @@ def test_orphaned_running_action_requires_explicit_retry(tmp_path: Path):
         store.close()
 
 
+def test_resume_rejects_unapproved_campaign_spec_change_before_any_call(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        original = store.campaign()
+        changed_spec = store.spec().model_copy(update={"goal": "silently change the approved goal"})
+        store.update_campaign(spec_json=changed_spec.model_dump_json())
+        resumed_engine = Engine(store, engine.workspace)
+
+        with pytest.raises(EngineError, match="approved campaign spec hash mismatch"):
+            resumed_engine.run(resume=True)
+
+        after = store.campaign()
+        assert after["spec_hash"] == original["spec_hash"]
+        assert after["agent_calls"] == 0
+        assert after["evaluator_calls"] == 0
+        assert store.actions() == []
+    finally:
+        store.close()
+
+
 
 def test_accepted_experiment_clears_transient_failure_and_lesson(tmp_path: Path):
     store, engine, _, _ = make_engine(tmp_path)
