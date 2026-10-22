@@ -231,10 +231,13 @@ class PiAdapter(AgentAdapter):
                 "confidence. Return {\"capsules\":[]} if no safe general lesson can be supported. "
                 "Do not use markdown fences and do not include prose outside the JSON object."
             )
-        elif role == "implement":
+        elif role in {"implement", "repair"}:
             instruction = (
-                "You are the implementer inside BananLoop. Implement exactly the approved hypothesis in the "
-                "current managed workspace. You may inspect the repository and use coding tools. "
+                ("You are performing the single bounded repair attempt inside BananLoop. Fix only the supplied "
+                 "candidate preflight errors. Do not change evaluators, datasets, labels, protocol, validation, "
+                 "or holdout assets. Modify only editable_scope and never protected_paths. "
+                 if role == "repair" else "You are the implementer inside BananLoop. Implement exactly the approved hypothesis in the ")
+                + "current managed workspace. You may inspect the repository and use coding tools. "
                 "Modify only editable_scope and never modify protected_paths. Do not decide whether the change "
                 "is better; BananLoop evaluates it independently. Your final assistant message MUST be exactly "
                 "one JSON object with these keys: summary, changed_paths, verification_notes, blockers. "
@@ -337,7 +340,7 @@ class PiAdapter(AgentAdapter):
                 '"affected_fields":["..."],"observation":"...","likely_mechanism":"...",'
                 '"general_rule":"...","suggested_regression":"...","confidence":0.8}]}'
             )
-        elif role == "implement":
+        elif role in {"implement", "repair"}:
             schema = (
                 '{"summary":"...","changed_paths":["..."],"verification_notes":"...",'
                 '"blockers":[]}'

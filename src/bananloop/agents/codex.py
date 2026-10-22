@@ -487,8 +487,11 @@ class CodexAdapter(AgentAdapter):
             )
         else:
             instruction = (
-                "Implement exactly the approved hypothesis in the current repository. "
-                "Modify only the allowed editable scope. Do not modify evaluator/protected artifacts. "
+                ("Repair only the reported candidate preflight failure in the current repository. "
+                 "This is one bounded attempt. Do not change evaluators, datasets, labels, measurement protocol, "
+                 "validation or holdout assets. Modify only editable_scope and never protected_paths. "
+                 if role == "repair" else "Implement exactly the approved hypothesis in the current repository. ")
+                + "Modify only the allowed editable scope. Do not modify evaluator/protected artifacts. "
                 "Do not decide whether the result is better; BananLoop will evaluate it independently. "
                 "The supervisor runs configured evaluator and validation commands independently. Do not mark "
                 "the implementation blocked only because optional local tooling for those checks is unavailable; "
@@ -506,7 +509,7 @@ class CodexAdapter(AgentAdapter):
             schema_path = Path(td) / "schema.json"
             result_path = Path(td) / "result.json"
             schema_path.write_text(json.dumps(schema), encoding="utf-8")
-            sandbox = "workspace-write" if role in {"bootstrap", "implement"} else "read-only"
+            sandbox = "workspace-write" if role in {"bootstrap", "implement", "repair"} else "read-only"
             argv = [
                 *self._resolved_command(),
                 "exec",
