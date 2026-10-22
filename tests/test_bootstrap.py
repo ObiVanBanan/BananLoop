@@ -11,6 +11,7 @@ import pytest
 from bananloop.bootstrap import BootstrapError, BootstrapPlan, BootstrapSignalSanity, _bind_plan_runtime, _bootstrap_contract_error, _bootstrap_path, _bootstrap_task, _validate_agent_visible_context_paths, _validate_agent_visible_training_paths, bootstrap_campaign
 from bananloop.contracts import AgentConfig, RuntimePaths
 from bananloop.store import CampaignStore
+from bananloop.readiness import ReadinessError, run_bootstrap_readiness
 from bananloop.wizard import _parse_py_launcher_paths, discover_project
 
 
@@ -358,6 +359,11 @@ def test_bootstrap_task_makes_cli_goal_authoritative(tmp_path: Path):
 
     assert task["goal"] == "improve similarity to reference images"
     assert task["requirements"]["goal_is_authoritative"] is True
+    assert task["requirements"]["signal_sanity"][
+        "configured_known_examples_require_per_case_primary_metric_receipts"
+    ] is True
+    assert task["requirements"]["validation_only_policy_metrics_use_validation_prefix"] is True
+    assert task["requirements"]["bare_policy_metrics_apply_to_current_evaluation_tier"] is True
     assert task["requirements"]["do_not_request_goal_file_when_goal_is_present"] is True
     assert task["requirements"]["resolve_conflicting_evaluators_by_goal_semantics"] is True
     assert task["requirements"]["use_detected_runtimes_before_requesting_python_environment"] is True
@@ -979,3 +985,79 @@ def test_bootstrap_allows_leftover_uninitialized_sqlite_file(tmp_path: Path):
         assert store.campaign()["status"] == "READY"
     finally:
         store.close()
+
+def test_missing_evaluator_in_staged_workspace_fails_before_smoke(tmp_path: Path):
+    source = tmp_path / "original"
+    staged = tmp_path / "staged"
+    source.mkdir()
+    staged.mkdir()
+    # A script in the operator's checkout must not make the staged command valid.
+    (source / "evaluate.py").write_text("raise AssertionError('must not execute')\n")
+    payload = _bootstrap_payload(status="ready", needs_input=[], summary="fixture")
+    payload["evaluation_command"] = [sys.executable, "evaluate.py"]
+    payload["validation_command"] = [sys.executable, "validation.py"]
+    plan = BootstrapPlan.model_validate(payload)
+
+    with pytest.raises(ReadinessError, match="staged workspace") as raised:
+        run_bootstrap_readiness(
+            plan=plan, workspace=staged, snapshot="uncommitted-test-snapshot",
+            state_root=tmp_path / "state", attempt=1, source_repo=source,
+        )
+    receipt = raised.value.receipt
+    assert receipt["error_code"] == "STAGED_EVALUATOR_ENTRYPOINT_MISSING"
+    assert receipt["status"] == "FAILED"
+    assert receipt["runs"] == []
+    assert any("dev: " in item and "evaluate.py" in item
+               for item in receipt["entrypoint_errors"])
+    assert any("validation: " in item and "validation.py" in item
+               for item in receipt["entrypoint_errors"])
+
+
+def test_bootstrap_repairs_missing_staged_entrypoint_from_receipt(tmp_path: Path):
+    repo, _ = make_repo(tmp_path)
+    payload = _bootstrap_payload(
+        status="ready", needs_input=[], summary="fixture staged entrypoint",
+    )
+    payload["evaluation_command"] = [sys.executable, "evaluate.py"]
+    evaluator_source = (
+        "import json\n"
+        f"print(json.dumps({{'status':'ok','metrics':{{'quality':0.2}},"
+        f"'checks':{{}},'protocol_sha256':'{PROTOCOL_SHA256}'}}))\n"
+    )
+    agent = repo / "entrypoint_repair_agent.py"
+    agent.write_text(
+        "import json,sys\n"
+        "from pathlib import Path\n"
+        "task=json.load(sys.stdin)\n"
+        f"payload={payload!r}\n"
+        "receipt=task.get('repair',{}).get('readiness_receipt',{})\n"
+        "if receipt.get('error_code')=='STAGED_EVALUATOR_ENTRYPOINT_MISSING':\n"
+        " payload['evaluation_command']=[sys.executable,'.bananloop_eval/evaluator.py']\n"
+        "root=Path('.bananloop_eval'); root.mkdir(exist_ok=True)\n"
+        f"root.joinpath('evaluator.py').write_text({evaluator_source!r})\n"
+        "print(json.dumps(payload))\n",
+        encoding="utf-8",
+    )
+    git(["add", "entrypoint_repair_agent.py"], repo)
+    git(["commit", "-m", "add staged entrypoint repair fixture"], repo)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "entrypoint-repair-state")
+
+    plan, spec = bootstrap_campaign(
+        repo=repo,
+        goal="improve fixture quality",
+        paths=paths,
+        agent_config=AgentConfig(
+            kind="command", command=[sys.executable, "entrypoint_repair_agent.py"],
+        ),
+        max_experiments=1, max_attempts=2,
+        max_agent_calls=4, max_evaluator_calls=4,
+        deadline_seconds=300,
+    )
+    assert spec is not None
+    assert plan.evaluation_command[-1] == ".bananloop_eval/evaluator.py"
+    record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
+    assert len(record["bootstrap_attempts"]) == 2
+    first = record["bootstrap_attempts"][0]["readiness"]
+    assert first["error_code"] == "STAGED_EVALUATOR_ENTRYPOINT_MISSING"
+    assert first["runs"] == []
+    assert record["bootstrap_attempts"][1]["readiness"]["status"] == "PASSED"

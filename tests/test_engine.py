@@ -126,6 +126,31 @@ def test_agent_sees_declared_training_assets_but_keeps_evaluation_assets_hidden(
     store.close()
 
 
+def test_agent_visible_context_is_read_only_even_when_scope_is_broad(tmp_path: Path):
+    store, engine, repo, _ = make_engine(tmp_path)
+    try:
+        data = repo / "data"
+        data.mkdir()
+        (data / "products.csv").write_text("id,name\n1,Widget\n", encoding="utf-8")
+        git(["add", "data/products.csv"], repo)
+        git(["commit", "-m", "add read-only context"], repo)
+        engine.spec.base_commit = git(["rev-parse", "HEAD"], repo)
+        engine.spec.editable_scope = ["**"]
+        engine.spec.agent_visible_context_paths = ["data/products.csv"]
+        engine.spec.protected_paths = []
+        engine.workspace.ensure(engine.spec.base_commit)
+
+        protected = engine._agent_protected_paths()
+        allowed, violations = engine.workspace.verify_scope(
+            ["data/products.csv"], engine.spec.editable_scope, protected,
+        )
+
+        assert not allowed
+        assert violations == ["protected:data/products.csv"]
+    finally:
+        store.close()
+
+
 def make_staged_engine(
     tmp_path: Path,
     *,
@@ -198,6 +223,45 @@ def test_end_to_end_accept_reject_accept_and_source_unchanged(tmp_path: Path):
         assert "estimated cost 1 agent calls + 1 evaluator calls" in markdown
         assert git(["rev-parse", "HEAD"], repo) == base
         assert git(["status", "--porcelain"], repo) == ""
+    finally:
+        store.close()
+
+
+def test_aggregate_only_dev_rejection_persists_unknown_capsule_for_next_proposal(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        out = engine.run()
+        assert out["status"] == "GOAL_MET", {
+            key: out.get(key)
+            for key in ("status", "stop_reason", "experiment_count", "attempt_count")
+        }
+
+        rejected = store.experiment(2)
+        assert rejected["status"] == "REJECTED"
+        assert rejected["failure_analysis_json"]
+        analysis = json.loads(rejected["failure_analysis_json"])
+        assert len(analysis["capsules"]) == 1
+        capsule = analysis["capsules"][0]
+        assert capsule["failure_class"] == "insufficient_evidence"
+        assert capsule["stage"] == "aggregate_metric"
+        assert capsule["confidence"] == 0.0
+        assert capsule["likely_mechanism"].startswith("Unknown.")
+        assert "validation" not in json.dumps(capsule).lower()
+        assert "holdout" not in json.dumps(capsule).lower()
+
+        next_request = json.loads(store.action("exp:3:propose")["request_json"])
+        visible_capsules = next_request["research_state"]["recent_failure_capsules"]
+        assert len(visible_capsules) == 1
+        assert visible_capsules[0]["failure_class"] == "insufficient_evidence"
+        assert visible_capsules[0]["likely_mechanism"].startswith("Unknown.")
+        assert visible_capsules[0]["evidence_id"].startswith("capsule:")
+        assert store.action("exp:2:analyze-dev-failures") is None
+
+        event = next(
+            item for item in store.events()
+            if item["event_type"] == "DEV_FAILURE_ANALYSIS_INSUFFICIENT_EVIDENCE"
+        )
+        assert json.loads(event["payload_json"])["failure_class"] == "insufficient_evidence"
     finally:
         store.close()
 
@@ -845,18 +909,29 @@ def test_agent_history_and_research_state_use_only_dev_evidence(tmp_path: Path):
 
         task = engine._task_context("propose", 999)
         rendered_task = json.dumps(task).upper()
-        assert "VALIDATION_REJECTED" not in rendered_task
-        assert "INVALID_VALIDATION" not in rendered_task
-        assert "HOLDOUT" not in rendered_task
-        assert "validation_command" not in json.dumps(task)
-        assert "holdout_command" not in json.dumps(task)
+        # Explicit policy text may name hidden tiers to forbid access to
+        # them. Test the actual adaptive evidence rather than a word match
+        # against the complete instruction payload.
+        adaptive_evidence = json.dumps(
+            {
+                key: task[key]
+                for key in ("history", "research_state", "baseline", "champion")
+            },
+            sort_keys=True,
+        ).upper()
+        assert "VALIDATION_REJECTED" not in adaptive_evidence
+        assert "INVALID_VALIDATION" not in adaptive_evidence
+        assert "HOLDOUT" not in adaptive_evidence
+        assert "VALIDATION:" not in adaptive_evidence
+        assert "validation_command" not in task
+        assert "holdout_command" not in task
         assert task["research_state"]["planning_mode"] in {"exploit", "explore", "reframe"}
         assert "remaining_budget" in task["research_state"]
     finally:
         store.close()
 
 
-def test_partial_dev_gain_does_not_trigger_plateau_or_promote(tmp_path: Path):
+def test_subthreshold_dev_gain_counts_as_no_progress_without_promotion(tmp_path: Path):
     store, engine, _, _ = make_engine(tmp_path)
     try:
         engine.workspace.ensure(engine.spec.base_commit)
@@ -891,8 +966,10 @@ def test_partial_dev_gain_does_not_trigger_plateau_or_promote(tmp_path: Path):
         engine._stage_record(attempt_id, experiment_id)
         assert store.experiment(experiment_id)["status"] == "REJECTED"
         assert store.campaign()["champion_json"] == champion
-        assert store.campaign()["non_improve_streak"] == 0
-        assert engine._post_iteration_stop() is False
+        # The +0.1 gain is smaller than min_improvement=0.5. It is
+        # inconclusive noise, not scientific progress that resets the streak.
+        assert store.campaign()["non_improve_streak"] == 3
+        assert engine._post_iteration_stop() is False  # One bounded reframe remains.
     finally:
         store.close()
 
@@ -1643,5 +1720,230 @@ def test_evaluation_request_records_candidate_materialization_proof(tmp_path: Pa
 
         report = build_report(store)
         assert report["experiments"][0]["candidate_proof"] == proof
+    finally:
+        store.close()
+
+def test_public_dev_examples_without_signals_trigger_failure_analysis(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        hypothesis = Hypothesis(
+            hypothesis="fix candidate matching",
+            rationale="DEV teacher evidence",
+            expected_effect="fewer mistakes",
+            files_or_area=["value.txt"],
+            falsification_condition="no DEV improvement",
+            mechanism_key="matching-reconcile",
+        )
+        candidate = EvaluationResult.model_validate({
+            "status": "ok",
+            "metrics": {"quality": 0.0, "regressions": 0.0},
+            "checks": {"tests": True},
+            "failure_examples": [{
+                "query": "item EX-123",
+                "verdict": "FAIL_WRONG_RESULT",
+                "expected": {"result": "correct"},
+                "actual": {"result": "incorrect"},
+                "pipeline_trace": {"stage": "rerank"},
+            }],
+        })
+        store.update_experiment(
+            experiment_id,
+            hypothesis_json=hypothesis.model_dump_json(),
+            candidate_snapshot=campaign["champion_snapshot"],
+            evaluation_json=candidate.model_dump_json(),
+        )
+        engine._stage_decide(attempt_id, experiment_id)
+        assert store.attempt(attempt_id)["stage"] == "ANALYZE"
+
+        analyzer = CapturingFailureAnalyzer()
+        engine.agent = analyzer
+        engine._stage_analyze(attempt_id, experiment_id)
+        assert analyzer.task is not None
+        assert analyzer.task["dev_failure_signals"] == []
+        assert analyzer.task["dev_failure_examples"][0]["query"] == "item EX-123"
+        assert store.attempt(attempt_id)["stage"] == "REJECT"
+        assert json.loads(store.experiment(experiment_id)["failure_analysis_json"])["capsules"]
+    finally:
+        store.close()
+
+
+def test_failure_capsule_and_repeated_dev_failure_reach_different_next_hypothesis(tmp_path: Path):
+    from bananloop.contracts import FailureCapsule, HypothesisCandidate, HypothesisPortfolio, ResearchState
+    from bananloop.research import select_candidate
+
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        capsule = FailureCapsule(
+            title="Stale hard constraint",
+            failure_class="STALE_CONSTRAINT_AFTER_ENRICHMENT",
+            stage="enrichment",
+            affected_fields=["dn"],
+            observation="The reconciled value changes but filtering keeps the earlier value.",
+            likely_mechanism="Hard constraints are materialized before evidence reconciliation.",
+            general_rule="Reconcile source conflicts before hard filtering.",
+            suggested_regression="Add conflicting evidence and assert the reconciled value is used.",
+            confidence=0.9,
+        )
+        for ordinal in (1, 2):
+            campaign = store.campaign()
+            experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+            hypothesis = Hypothesis(
+                hypothesis="adjust weights",
+                rationale="test repeated mechanism",
+                expected_effect="quality improves",
+                files_or_area=["value.txt"],
+                falsification_condition="quality unchanged",
+                mechanism_key="weight-tuning",
+            )
+            evaluation = EvaluationResult(
+                metrics={"quality": 0.0, "regressions": 0.0},
+                checks={"tests": True},
+            )
+            decision = {
+                "accepted": False,
+                "primary_value": 0.0,
+                "champion_value": 0.0,
+                "delta": 0.0,
+                "predicates": {},
+                "reasons": ["PRIMARY_NOT_IMPROVED"],
+            }
+            store.update_experiment(
+                experiment_id,
+                hypothesis_json=hypothesis.model_dump_json(),
+                candidate_snapshot=campaign["champion_snapshot"],
+                evaluation_json=evaluation.model_dump_json(),
+                dev_decision_json=json.dumps(decision),
+                decision_json=json.dumps(decision),
+                failure_analysis_json=json.dumps(
+                    {"capsules": [capsule.model_dump(mode="json")]} if ordinal == 1 else {"capsules": []}
+                ),
+            )
+            store.finish_attempt(
+                attempt_id, experiment_id, status="REJECTED", scientific=True, improved=False
+            )
+
+        campaign = store.campaign()
+        next_experiment_id, _ = store.create_attempt(campaign["champion_snapshot"])
+        proposal_task = engine._task_context("propose", next_experiment_id)
+        state = proposal_task["research_state"]
+        assert state["planning_mode"] == "reframe"
+        assert "weight-tuning" in state["stagnant_mechanisms"]
+        assert state["recent_failure_capsules"][0]["likely_mechanism"] == capsule.likely_mechanism
+        assert proposal_task["history"][0]["failure_capsules"][0]["general_rule"] == capsule.general_rule
+
+        def candidate(candidate_id: str, mechanism: str) -> HypothesisCandidate:
+            return HypothesisCandidate(
+                candidate_id=candidate_id,
+                hypothesis=Hypothesis(
+                    hypothesis=f"test {mechanism}", rationale="prior failure evidence",
+                    expected_effect="quality improves", files_or_area=["value.txt"],
+                    falsification_condition="quality unchanged", mechanism_key=mechanism,
+                    prior_experiment_refs=[2], novelty_rationale="same DEV failure rejects weight tuning",
+                ),
+                evidence_refs=["exp:2"], suspected_failure_mode="stale constraint after enrichment",
+                predicted_observable="quality", discriminating_test="conflicting evidence uses resolved value",
+                scope_eligibility=True, estimated_agent_calls=1, estimated_evaluator_calls=1,
+                rationale="test a distinct mechanism", uncertainty="synthetic integration fixture",
+            )
+
+        selected = select_candidate(
+            HypothesisPortfolio(candidates=[
+                candidate("weights-again", "weight-tuning"),
+                candidate("reconcile-first", "evidence-reconciliation"),
+            ]),
+            spec=engine.spec,
+            state=ResearchState.model_validate(engine._refresh_research_state()),
+            experiments=store.experiments(),
+            experiment_ordinal=3,
+            action_id=f"exp:{next_experiment_id}:propose",
+        )
+        assert selected.selected_candidate_id == "reconcile-first"
+        rejected = next(item for item in selected.decisions if item.candidate_id == "weights-again")
+        assert "STAGNANT_DEV_MECHANISM_CHANGE_FAMILY" in rejected.rejection_reasons
+    finally:
+        store.close()
+
+
+
+def test_api_preflight_rejects_unsupported_sklearn_before_dev_budget(tmp_path: Path, monkeypatch):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.spec.editable_scope.append("src/model.py")
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        file = engine.workspace.workspace / "src" / "model.py"
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(
+            "from sklearn.preprocessing import OneHotEncoder\n"
+            "encoder = OneHotEncoder(sparse=False)\n",
+            encoding="utf-8",
+        )
+        snapshot = engine.workspace.snapshot("candidate using removed encoder kwarg")
+        store.update_experiment(experiment_id, candidate_snapshot=snapshot)
+        store.set_stage(attempt_id, "VERIFY")
+        before = store.campaign()["evaluator_calls"]
+
+        monkeypatch.setattr(
+            engine_module, "python_api_compatibility_errors",
+            lambda workspace, changed_paths, *, evaluator_command: [
+                "src/model.py: OneHotEncoder(sparse=...) unsupported"
+            ],
+        )
+        engine._stage_verify(attempt_id, experiment_id)
+        assert store.attempt(attempt_id)["stage"] == "REJECT"
+        assert store.experiment(experiment_id)["failure_category"] == "IMPLEMENTATION_BLOCKED"
+        assert "OneHotEncoder" in store.experiment(experiment_id)["lesson"]
+        assert store.campaign()["evaluator_calls"] == before
+        decision = json.loads(store.experiment(experiment_id)["decision_json"])
+        assert "CANDIDATE_PREFLIGHT_FAILED" in decision["reasons"]
+        assert decision["predicates"]["candidate_python_api_compatibility"] is False
+    finally:
+        store.close()
+
+
+
+def test_pr_auc_analyzer_task_gets_target_metric_guidance_without_hidden_evidence(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        engine.spec.primary_metric = MetricSpec(
+            name="pr_auc", direction=Direction.MAXIMIZE,
+            target=1.0, min_improvement=0.01,
+        )
+        proposer = engine._task_context("propose", 991)
+        guidance = proposer["primary_metric_failure_guidance"]
+        assert guidance["kind"] == "ranking_average_precision"
+        assert guidance["threshold_invariant"] is True
+        assert proposer["research_state"]["dev_lessons"] == []
+        rendered = json.dumps(proposer, sort_keys=True)
+        assert "validation_command" not in rendered
+        assert "holdout_command" not in rendered
+
+        campaign = store.campaign()
+        experiment_id, _ = store.create_attempt(campaign["champion_snapshot"])
+        store.update_experiment(
+            experiment_id,
+            hypothesis_json=Hypothesis(
+                hypothesis="change score ranking", rationale="DEV ranking",
+                expected_effect="higher pr_auc", files_or_area=["value.txt"],
+                falsification_condition="no AP change",
+                mechanism_key="ranking-probe",
+            ).model_dump_json(),
+        )
+        candidate = EvaluationResult(metrics={"pr_auc": 0.7}, checks={})
+        task = engine._dev_failure_analysis_task(experiment_id, candidate)
+        assert task["analysis_requirements"]["primary_metric_semantics"]["kind"] == (
+            "ranking_average_precision"
+        )
+        assert task["dev_failure_examples"] == []
     finally:
         store.close()

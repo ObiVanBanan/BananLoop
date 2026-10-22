@@ -397,6 +397,16 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"- Failure classes: `{json.dumps(research['failure_counts'], sort_keys=True)}`",
             f"- Remaining budget: `{json.dumps(research['remaining_budget'], sort_keys=True)}`",
         ]
+        if research.get("stagnant_mechanisms"):
+            lines.append(
+                "- Repeated identical DEV mechanisms (reframe required): "
+                + ", ".join(f"`{key}`" for key in research["stagnant_mechanisms"])
+            )
+        if research.get("failed_dev_families"):
+            lines.append(
+                "- DEV families with non-improving results (avoid during reframe): "
+                + ", ".join(f"`{key}`" for key in research["failed_dev_families"])
+            )
         if research.get("recent_lessons"):
             lines.append("- Recent lessons:")
             lines.extend(f"  - {lesson}" for lesson in research["recent_lessons"])
@@ -405,7 +415,11 @@ def render_markdown(report: dict[str, Any]) -> str:
             for capsule in research["recent_failure_capsules"]:
                 lines.append(
                     f"  - [{capsule['failure_class']}] {capsule['title']}: "
-                    f"{capsule['general_rule']}"
+                    f"observed={capsule['observation']}; "
+                    f"inferred mechanism={capsule['likely_mechanism']}; "
+                    f"rule={capsule['general_rule']}; "
+                    f"next DEV test={capsule['suggested_regression']}; "
+                    f"confidence={capsule['confidence']}"
                 )
         if research.get("portfolios"):
             lines += ["", "### Planning portfolios", ""]

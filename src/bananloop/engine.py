@@ -11,7 +11,7 @@ from typing import Any, Callable
 from pydantic import ValidationError
 
 from .agents import AgentAdapter, AgentError, CodexAdapter, CommandAgentAdapter, PiAdapter
-from .candidate_preflight import python_syntax_errors
+from .candidate_preflight import python_api_compatibility_errors, python_syntax_errors
 from .budget import deadline_reached, pre_action_stop
 from .artifacts import retain_artifacts
 from .contracts import (
@@ -35,6 +35,7 @@ from .evaluator_binding import (
     make_receipt, runtime_descriptor, validate_receipt_linkage,
 )
 from .leakage import scan_forbidden_diff_patterns
+from .metric_semantics import metric_failure_guidance
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
 from .process import ProcessCancelled, check_process_control, process_control
 from .research import (
@@ -135,11 +136,15 @@ class Engine:
 
     def _agent_protected_paths(self) -> list[str]:
         hidden = self._agent_hidden_paths()
-        return [
+        # Context paths are intentionally visible to the agent but remain
+        # read-only. Keep them protected even when editable_scope is broad.
+        protected = [*self.spec.agent_visible_context_paths]
+        protected.extend(
             path
             for path in self.spec.protected_paths
             if not self.workspace._matches(path, hidden)
-        ]
+        )
+        return list(dict.fromkeys(protected))
 
     def _agent_evaluation_view(self, payload_json: str | None) -> dict[str, Any] | None:
         return agent_evaluation_view(self.spec, payload_json)
@@ -828,6 +833,7 @@ class Engine:
             "goal": self.spec.goal,
             "project_context": self.spec.project_context,
             "primary_metric": self.spec.primary_metric.model_dump(mode="json"),
+            "primary_metric_failure_guidance": metric_failure_guidance(self.spec.primary_metric.name),
             "guardrails": [
                 g.model_dump(mode="json")
                 for g in self.spec.guardrails
@@ -861,9 +867,20 @@ class Engine:
                 "legacy_fallback": "A single existing Hypothesis JSON object remains valid.",
             },
             "planning_requirements": {
+                "failure_reflection": (
+                    "Review prior DEV failure capsules, DEV experiment evidence, falsified or inconclusive "
+                    "hypotheses, and their next discriminating tests. Explain why the previous mechanism failed "
+                    "to produce a meaningful DEV gain before proposing a new causal mechanism. "
+                    "Explain which observation supports the next causal theory; do not memorize public DEV examples. "
+                    "Do not infer or request validation/holdout examples, labels, or measurements."
+                ),
+                "stagnation": (
+                    "If research_state.stagnant_mechanisms contains a mechanism, change its mechanism family. "
+                    "Those mechanisms repeated the same aggregate frozen DEV outcome; a renamed retry is not a new test."
+                ),
                 "exploit": "build on the strongest DEV-supported mechanism without duplicating prior work",
                 "explore": "test a materially different mechanism family from recent failed attempts",
-                "reframe": "challenge the current framing and choose a new mechanism family before plateau",
+                "reframe": "challenge the current framing, avoid families of recent unsuccessful DEV trials, and choose a new mechanism before plateau",
                 "genealogy": (
                     "If reusing a mechanism_key, set relation to refine/retry/supersede "
                     "and cite a matching prior experiment ordinal."
@@ -1250,7 +1267,11 @@ class Engine:
         exp = self.store.experiment(experiment_id)
         self.workspace.checkout(exp["candidate_snapshot"])
         changed = self.workspace.changed_paths(exp["parent_snapshot"], exp["candidate_snapshot"])
-        valid, violations = self.workspace.verify_scope(changed, self.spec.editable_scope, self.spec.protected_paths)
+        valid, violations = self.workspace.verify_scope(
+            changed,
+            self.spec.editable_scope,
+            self._agent_protected_paths(),
+        )
         integrity_violations = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
         if integrity_violations:
             self.store.update_experiment(
@@ -1319,25 +1340,34 @@ class Engine:
             self.store.set_stage(attempt_id, "EVALUATE")
         if self.store.attempt(attempt_id)["stage"] == "EVALUATE":
             syntax_errors = python_syntax_errors(self.workspace.workspace, changed)
-            if syntax_errors:
+            api_errors = [] if syntax_errors else python_api_compatibility_errors(
+                self.workspace.workspace,
+                changed,
+                evaluator_command=self.spec.evaluation_command,
+            )
+            preflight_errors = syntax_errors + api_errors
+            if preflight_errors:
                 decision = {
                     "accepted": False,
                     "primary_value": None,
                     "champion_value": None,
                     "delta": None,
-                    "predicates": {"candidate_python_syntax": False},
+                    "predicates": {
+                        "candidate_python_syntax": not bool(syntax_errors),
+                        "candidate_python_api_compatibility": not bool(api_errors),
+                    },
                     "reasons": ["CANDIDATE_PREFLIGHT_FAILED"],
                 }
                 self.store.update_experiment(
                     experiment_id,
                     decision_json=json.dumps(decision),
                     failure_category="IMPLEMENTATION_BLOCKED",
-                    lesson="Python candidate syntax preflight: " + "; ".join(syntax_errors)[:800],
+                    lesson="Python candidate preflight: " + "; ".join(preflight_errors)[:800],
                 )
                 self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
                 self.store.event(
                     "CANDIDATE_PREFLIGHT_FAILED",
-                    {"experiment_id": experiment_id, "errors": syntax_errors[:8]},
+                    {"experiment_id": experiment_id, "errors": preflight_errors[:8]},
                 )
                 self.store.conn.commit()
                 self.store.set_stage(attempt_id, "REJECT")
@@ -1477,6 +1507,11 @@ class Engine:
             "may_use_exact_expected_answers_for_diagnosis": True,
             "do_not_copy_case_specific_answers_into_capsules": True,
             "prefer_invariants_and_provenance": True,
+            "explain_failed_hypothesis_against_dev_evidence": True,
+            "suggest_a_discriminating_regression_test": True,
+            "do_not_infer_causes_from_aggregate_scores_alone": True,
+            "primary_metric_semantics": metric_failure_guidance(self.spec.primary_metric.name),
+            "explain_target_metric_not_just_auxiliary_cutoff_errors": True,
         }
         return task
 
@@ -1570,7 +1605,7 @@ class Engine:
                 )
         if changed_metrics:
             self._progress("metrics: " + "; ".join(changed_metrics[:8]))
-        if candidate.failure_signals:
+        if candidate.failure_signals or candidate.failure_examples:
             # Failure analysis is DEV-only and optional. Never consume validation
             # or holdout evidence for adaptive research memory.
             stop_reason = pre_action_stop(
@@ -1594,6 +1629,49 @@ class Engine:
                     decision.model_dump(mode="json"),
                 )
         else:
+            if not decision.accepted:
+                # Preserve an explicit research record when DEV supplies only
+                # aggregate metrics. The score and deterministic decision are
+                # observations; they do not identify a causal mechanism.
+                reasons = ", ".join(decision.reasons) or "no rejection reason"
+                capsule = FailureCapsule(
+                    title="Aggregate-only DEV rejection",
+                    failure_class="insufficient_evidence",
+                    stage="aggregate_metric",
+                    observation=(
+                        f"DEV {self.spec.primary_metric.name} delta "
+                        f"{decision.delta:+.6g}; decision reasons: {reasons}. "
+                        "The evaluator supplied no DEV failure signals or examples."
+                    ),
+                    likely_mechanism=(
+                        "Unknown. Aggregate DEV metrics do not establish why the "
+                        "candidate failed to improve."
+                    ),
+                    general_rule=(
+                        "Do not infer a feature-level or algorithmic cause from "
+                        "an aggregate score without public DEV diagnostics."
+                    ),
+                    suggested_regression=(
+                        "Test a materially different falsifiable mechanism on the "
+                        "same frozen DEV split; use public DEV diagnostics only "
+                        "if the evaluator supplies them."
+                    ),
+                    confidence=0.0,
+                )
+                analysis = FailureAnalysisResult(capsules=[capsule])
+                self.store.update_experiment(
+                    experiment_id,
+                    failure_analysis_json=analysis.model_dump_json(),
+                )
+                self.store.event(
+                    "DEV_FAILURE_ANALYSIS_INSUFFICIENT_EVIDENCE",
+                    {
+                        "experiment_id": experiment_id,
+                        "capsule_count": 1,
+                        "failure_class": "insufficient_evidence",
+                    },
+                )
+                self.store.conn.commit()
             self._route_after_dev_analysis(
                 attempt_id,
                 decision.model_dump(mode="json"),
@@ -1604,7 +1682,7 @@ class Engine:
         exp = self.store.experiment(experiment_id)
         candidate = EvaluationResult.model_validate_json(exp["evaluation_json"])
         decision = json.loads(exp["dev_decision_json"])
-        if not candidate.failure_signals:
+        if not candidate.failure_signals and not candidate.failure_examples:
             self._route_after_dev_analysis(attempt_id, decision)
             return
 

@@ -492,3 +492,70 @@ quality gains from the terminal status alone.
 Directory scope entries ending with a slash (such as
 `src/nomenclature_matcher/`) are treated recursively. Sibling paths
 (`src/nomenclature_matcher_extra/`) are not implicitly editable.
+
+## DEV error reflection and new hypothesis selection
+
+When the DEV evaluator exposes `failure_signals` **or** public
+`failure_examples`, BananLoop runs its budget-bounded, read-only `ANALYZE`
+stage. The analyst can inspect those DEV mistakes and the candidate checkout.
+It records generalized failure capsules: observation, likely mechanism,
+regression test, and confidence. The next proposer receives the sanitized
+capsules, the DEV experiment history, and guidance to build a different,
+falsifiable causal hypothesis. Case identities/expected answers must not appear
+in those durable capsules or in subsequent proposal prompts.
+
+The core also detects **stagnant mechanisms**: when the two most recent
+scientific DEV trials for a mechanism have the same DEV outcome, primary deltas
+that differ by less than the configured `min_improvement` (or both lie within
+the symmetric no-effect band), and unchanged other allowlisted aggregate metrics,
+it selects `reframe` and rejects another proposal with that exact
+`mechanism_key`. A small DEV gain **or loss** below `min_improvement` is
+`DEV_NO_EFFECT`: it is inconclusive, cannot reset the no-progress streak, and
+cannot promote a champion. A decrease of at least that threshold is
+`DEV_REGRESSION`. The threshold is a conservative decision rule rather than
+proof of statistical insignificance; readiness separately checks that A/A
+noise is smaller than this threshold. Do not assume different units/diagnostics
+share the primary metric's noise calibration. The report shows the stuck mechanisms
+and the failure analyst's observation, inference, and next DEV test. This
+does not identify semantically identical mechanisms renamed by an agent, and
+it cannot diagnose specific failures unless the project evaluator supplies DEV
+signals or examples. Only frozen, allowlisted DEV evidence drives the rule;
+validation/holdout results remain unavailable to the planner.
+
+The `ANALYZE` stage uses an agent call if budget is available, so allow some
+agent budget beyond proposal+implementation calls when testing failure
+reflection. Missing diagnostic evidence is not a reason to hallucinate a
+root cause.
+
+### Metric-aware reflection, family-level reframe and dependency preflight
+
+The DEV analyst/proposer now receive `primary_metric_failure_guidance`. For
+PR-AUC and ROC-AUC, a false negative at a fixed decision cutoff does **not**
+by itself explain the ranking metric, and modifying only the cutoff cannot
+improve average precision or ROC-AUC while continuous scores remain fixed.
+Ask the trusted DEV evaluator for public score-order / precision-recall
+diagnostics if available; never invent such evidence or use hidden-tier labels.
+
+Each new hypothesis may specify `mechanism_family` (default: `mechanism_key`
+for previously saved campaigns). Families group variations of the *same
+causal intervention*, e.g. multiple regularization strengths. On `reframe`
+the core excludes `failed_dev_families` derived exclusively from recent
+unsuccessful DEV trials, even if an agent renames the mechanism key. DEV
+failure capsules and suggested discriminating regression tests are retained
+in `dev_lessons` across recovery. Family names are declared by the agent;
+this is not semantic-equivalence proof, and deliberately avoids leaking
+validation/holdout results into adaptation.
+
+After syntax and scope checks, candidate VERIFY runs a bounded static AST
+check for direct scikit-learn `OneHotEncoder(sparse=...)` calls. It queries
+**only package metadata** in the evaluator's isolated Python interpreter;
+for scikit-learn 1.4 or later, incompatible candidates are rejected as
+`IMPLEMENTATION_BLOCKED/CANDIDATE_PREFLIGHT_FAILED` without spending a
+DEV evaluator call. Wrapper commands and unknown runtimes skip this check,
+and other APIs are still subject to normal evaluator smoke/integration tests.
+This check does not execute candidate code or import it.
+
+Recommended dogfood: use `plateau_experiments=3` and sufficient budget for
+three distinguishable scientific trials. Verify the report contains past
+DEV theories, next discriminating tests, and failed mechanism families before
+judging whether the third hypothesis is genuinely different.
