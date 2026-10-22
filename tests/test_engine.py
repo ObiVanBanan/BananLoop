@@ -1746,6 +1746,74 @@ def test_public_dev_examples_without_signals_trigger_failure_analysis(tmp_path: 
         store.close()
 
 
+def test_pr_auc_capsule_confidence_requires_aggregate_ranking_evidence():
+    from types import SimpleNamespace
+
+    from bananloop.contracts import (
+        CampaignSpec, DiagnosticCapability, Direction, EvaluationResult,
+        FailureAnalysisResult, MetricSpec,
+    )
+    from bananloop.research import agent_evaluation_view
+
+    protocol = "a" * 64
+    spec = CampaignSpec(
+        goal="improve PR-AUC", source_repo=".", base_commit="abc",
+        evaluation_command=["eval"],
+        primary_metric=MetricSpec(
+            name="pr_auc", direction=Direction.MAXIMIZE, target=1.0, min_improvement=0.01
+        ),
+        agent_visible_diagnostic_capabilities=[
+            DiagnosticCapability(name="rank_inversions", kind="ranking", metric="pr_auc")
+        ],
+    )
+    harness = SimpleNamespace(spec=spec)
+    harness._agent_evaluation_view = lambda payload_json, *, source_tier="dev": agent_evaluation_view(
+        spec, payload_json, source_tier=source_tier
+    )
+    harness._redact_failure_text = lambda value: value
+    capsule = {
+        "title": "Cutoff misses", "failure_class": "ranking_error", "stage": "scoring",
+        "observation": "False negatives increased at the fixed cutoff.",
+        "likely_mechanism": "The cutoff caused a ranking regression.",
+        "general_rule": "Check ranking evidence.", "confidence": 0.95,
+    }
+    unsupported = EvaluationResult.model_validate({
+        "metrics": {"pr_auc": 0.4}, "protocol_sha256": protocol,
+    })
+    unknown = Engine._sanitize_failure_analysis(
+        harness, FailureAnalysisResult(capsules=[capsule]), unsupported
+    ).capsules[0]
+    assert unknown.confidence == 0.35
+    assert unknown.likely_mechanism.startswith("Unverified conjecture:")
+
+    supported = EvaluationResult.model_validate({
+        "metrics": {"pr_auc": 0.4}, "protocol_sha256": protocol,
+        "diagnostic_evidence": [{
+            "name": "rank_inversions", "kind": "ranking", "metric": "pr_auc",
+            "value": 0.12, "aggregation": "aggregate", "protocol_sha256": protocol,
+        }],
+    })
+    harness.store = SimpleNamespace(experiment=lambda _experiment_id: {
+        "hypothesis_json": None,
+        "evaluation_json": supported.model_dump_json(),
+        "dev_decision_json": None,
+    })
+    harness._task_context = lambda _role, _experiment_id: {}
+    harness._agent_decision_view = lambda _payload: None
+    task = Engine._dev_failure_analysis_task(harness, 1, supported)
+    assert task["dev_evaluation"]["diagnostic_evidence"][0]["provenance"] == {
+        "tier": "dev", "protocol_sha256": protocol,
+    }
+    assert task["analysis_requirements"]["primary_metric_semantics"]["metric_specific_evidence_available"]
+    assert "frozen public DEV cases" in task["analysis_requirements"]["primary_metric_semantics"]["causal_test"]
+    assert "case_id" not in json.dumps(task["dev_evaluation"])
+    evidenced = Engine._sanitize_failure_analysis(
+        harness, FailureAnalysisResult(capsules=[capsule]), supported
+    ).capsules[0]
+    assert evidenced.confidence == 0.95
+    assert not evidenced.likely_mechanism.startswith("Unverified conjecture:")
+
+
 def test_failure_capsule_and_repeated_dev_failure_reach_different_next_hypothesis(tmp_path: Path):
     from bananloop.contracts import FailureCapsule, HypothesisCandidate, HypothesisPortfolio, ResearchState
     from bananloop.research import select_candidate

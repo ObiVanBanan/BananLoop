@@ -129,7 +129,11 @@ class PiAdapter(AgentAdapter):
                 "emit a stable protocol_sha256 in every evaluation result. "
                 "For ranking metrics, request trustworthy, already supported public DEV score-order "
                 "or precision-recall aggregate diagnostics rather than only cutoff confusion counts. "
-                "Do not invent missing score-level evidence. "
+                "Declare each supported aggregate diagnostic in agent_visible_diagnostic_capabilities "
+                "with its name, kind, and primary metric. The evaluator may emit diagnostic_evidence "
+                "only for declared capabilities, with aggregation='aggregate' and the exact frozen "
+                "protocol_sha256; never include case IDs, labels, or per-row values. Do not invent "
+                "missing score-level evidence. "
                 "When DEV labels are expressly public, the DEV evaluator may include up to five DEV-only "
                 "failure_examples (query, verdict, expected, actual, pipeline_trace) and up to eight identity-free "
                 "failure_signals for causal error diagnosis. Never supply hidden expected answers or any "
@@ -157,7 +161,7 @@ class PiAdapter(AgentAdapter):
                 "Your final assistant message MUST be exactly one JSON object with keys: status, summary, "
                 "project_context, needs_input, evaluation_command, smoke_command, protocol_manifest_commands, agent_visible_training_paths, agent_visible_context_paths, validation_command, holdout_command, "
                 "primary_metric, guardrails, non_regression, mandatory_checks, editable_scope, protected_paths, "
-                "agent_visible_metrics, agent_visible_diagnostics, paired_comparison, signal_sanity, evaluator_timeout_seconds. "
+                "agent_visible_metrics, agent_visible_diagnostics, agent_visible_diagnostic_capabilities, paired_comparison, signal_sanity, evaluator_timeout_seconds. "
                 "primary_metric must contain name, direction, target, min_improvement. paired_comparison must "
                 "contain enabled, case_count, repetitions, metric, direction, min_wins, worst_case_tolerance. "
                 "Do not use markdown fences or prose outside the JSON object."
@@ -305,7 +309,7 @@ class PiAdapter(AgentAdapter):
                 '"primary_metric":{"name":"quality","direction":"maximize","target":1.0,"min_improvement":0.01},'
                 '"guardrails":[],"non_regression":[],"mandatory_checks":[],"editable_scope":["**"],'
                 '"protected_paths":[".bananloop_eval/**"],"agent_visible_metrics":["quality"],'
-                '"agent_visible_diagnostics":[],"paired_comparison":{"enabled":false,"case_count":1,'
+                '"agent_visible_diagnostics":[],"agent_visible_diagnostic_capabilities":[],"paired_comparison":{"enabled":false,"case_count":1,'
                 '"repetitions":1,"metric":"quality","direction":"maximize","min_wins":1,'
                 '"worst_case_tolerance":0.0},"signal_sanity":{"status":"unavailable",'
                 '"evidence_kind":null,"metric":null,"positive_case_ids":[],"negative_case_ids":[],'

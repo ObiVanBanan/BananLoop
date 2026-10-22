@@ -7,6 +7,7 @@ from bananloop.contracts import (
     CampaignSpec,
     DevExperimentEvidence,
     Direction,
+    DiagnosticCapability,
     FailureCapsule,
     Hypothesis,
     HypothesisCandidate,
@@ -153,6 +154,59 @@ def test_diagnostics_require_explicit_allowlist():
     )
     assert view["diagnostics"] == {}
     assert view["artifacts"] == []
+
+
+def test_typed_rank_diagnostics_require_dev_allowlist_and_protocol_provenance():
+    protocol = "a" * 64
+    s = spec(
+        primary_metric=MetricSpec(
+            name="pr_auc", direction=Direction.MAXIMIZE, target=1.0, min_improvement=0.01
+        ),
+        agent_visible_diagnostic_capabilities=[
+            DiagnosticCapability(name="rank_inversions", kind="ranking", metric="pr_auc")
+        ],
+    )
+    evidence = {
+        "name": "rank_inversions", "kind": "ranking", "metric": "pr_auc",
+        "value": 0.12, "aggregation": "aggregate", "protocol_sha256": protocol,
+    }
+    raw = {
+        "status": "ok", "metrics": {"pr_auc": 0.4}, "protocol_sha256": protocol,
+        "diagnostic_evidence": [evidence],
+        "failure_examples": [{"query": "private case 123", "expected": "private label"}],
+    }
+    view = agent_evaluation_view(s, json.dumps(raw))
+    assert view["diagnostic_evidence"] == [{
+        "name": "rank_inversions", "kind": "ranking", "metric": "pr_auc",
+        "value": 0.12, "aggregation": "aggregate",
+        "provenance": {"tier": "dev", "protocol_sha256": protocol},
+    }]
+    assert "private" not in json.dumps(view)
+    assert agent_evaluation_view(s, json.dumps(raw), source_tier="validation")["diagnostic_evidence"] == []
+    assert agent_evaluation_view(s, json.dumps(raw), source_tier="holdout")["diagnostic_evidence"] == []
+
+    mismatched = dict(raw)
+    mismatched["diagnostic_evidence"] = [
+        evidence,
+        {**evidence, "protocol_sha256": "b" * 64},
+        {**evidence, "name": "unapproved"},
+        {**evidence, "case_id": "private-123"},
+    ]
+    assert len(agent_evaluation_view(s, json.dumps(mismatched))["diagnostic_evidence"]) == 1
+
+
+def test_invalid_optional_diagnostics_do_not_invalidate_metric_result():
+    from bananloop.contracts import EvaluationResult
+
+    result = EvaluationResult.model_validate({
+        "status": "ok", "metrics": {"pr_auc": 0.4},
+        "diagnostic_evidence": [
+            {"name": "bad", "kind": "ranking", "metric": "pr_auc", "value": 0.2,
+             "protocol_sha256": "not-a-digest", "case_id": "must-not-break-scoring"}
+        ],
+    })
+    assert result.metrics["pr_auc"].value == 0.4
+    assert result.diagnostic_evidence == []
 
 
 def test_exact_mechanism_repeat_requires_genealogy_relation():

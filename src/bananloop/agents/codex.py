@@ -84,6 +84,20 @@ BOOTSTRAP_SCHEMA = {
         "protected_paths": {"type": "array", "items": {"type": "string"}},
         "agent_visible_metrics": {"type": "array", "items": {"type": "string"}},
         "agent_visible_diagnostics": {"type": "array", "items": {"type": "string"}},
+        "agent_visible_diagnostic_capabilities": {
+            "type": "array",
+            "description": "Typed allowlist for aggregate diagnostics the frozen evaluator already emits.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]*$"},
+                    "kind": {"type": "string", "enum": ["ranking", "classification", "performance", "regression_tests"]},
+                    "metric": {"type": "string"},
+                },
+                "required": ["name", "kind", "metric"],
+                "additionalProperties": False,
+            },
+        },
         "paired_comparison": {
             "type": "object",
             "properties": {
@@ -118,7 +132,8 @@ BOOTSTRAP_SCHEMA = {
         "evaluation_command", "smoke_command", "protocol_manifest_commands", "agent_visible_training_paths", "agent_visible_context_paths", "validation_command", "holdout_command",
         "primary_metric", "guardrails", "non_regression", "mandatory_checks",
         "editable_scope", "protected_paths", "agent_visible_metrics",
-        "agent_visible_diagnostics", "paired_comparison", "signal_sanity", "evaluator_timeout_seconds"
+        "agent_visible_diagnostics", "agent_visible_diagnostic_capabilities",
+        "paired_comparison", "signal_sanity", "evaluator_timeout_seconds"
     ],
     "additionalProperties": False
 }
@@ -367,7 +382,10 @@ class CodexAdapter(AgentAdapter):
                 "protocol_sha256 when cases are emitted, and optional cases; metrics may be numbers or {value: number}. "
                 "For ranking metrics (PR-AUC/ROC-AUC), prefer DEV-only score-order or precision-recall "
                 "diagnostics already supported by the frozen evaluator; cutoff confusion counts alone "
-                "cannot establish the reason for ranking-metric changes. Never invent diagnostics. "
+                "cannot establish the reason for ranking-metric changes. Declare each supported aggregate "
+                "diagnostic in agent_visible_diagnostic_capabilities with name, kind, and metric. Emit "
+                "diagnostic_evidence only for declared capabilities, with aggregation='aggregate' and the "
+                "exact protocol_sha256; never include case IDs, labels, or per-row values. Never invent diagnostics. "
                 "If the DEV teacher labels are explicitly public, optionally emit up to five DEV-only failure_examples "
                 "with query, verdict, expected, actual, pipeline_trace, and up to eight identity-free failure_signals. "
                 "These are inspected only by the isolated DEV failure analyst; never expose hidden expected answers, "
