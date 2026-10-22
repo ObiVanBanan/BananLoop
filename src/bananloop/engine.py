@@ -1341,83 +1341,86 @@ class Engine:
             )
             preflight_errors = syntax_errors + api_errors
             if preflight_errors:
-                repair_task = {
-                    "schema_version": 1,
-                    "role": "repair",
-                    "goal": self.spec.goal,
-                    "hypothesis": json.loads(exp["hypothesis_json"]),
-                    "candidate_snapshot": exp["candidate_snapshot"],
-                    "editable_scope": list(self.spec.editable_scope),
-                    "protected_paths": list(self.spec.protected_paths),
-                    "failure_kind": "implementation_preflight",
-                    "failure_details": preflight_errors[:8],
-                    "constraints": [
-                        "Repair only the reported implementation preflight errors.",
-                        "Do not modify evaluators, datasets, labels, protocol, validation, or holdout assets.",
-                        "Only change paths inside editable_scope; protected_paths are immutable.",
-                        "This is the single automatic repair attempt for this candidate.",
-                    ],
-                }
-                try:
-                    def invoke_repair() -> dict[str, Any]:
-                        result = self._invoke_agent(
-                            repair_task,
-                            timeout=self._agent_timeout(600),
-                            apply_changes=True,
-                        )
-                        normalized_result = self.agent.normalize_result(repair_task, result)
-                        parsed_result = ImplementResult.model_validate(normalized_result)
-                        if not parsed_result.blockers and self.workspace.working_tree_changed_paths():
-                            normalized_result["repair_candidate_snapshot"] = self.workspace.snapshot(
-                                f"bananloop experiment {experiment_id} bounded repair"
+                if not exp["hypothesis_json"]:
+                    # A repair must be grounded in an approved hypothesis.
+                    pass
+                else:
+                    repair_task = {
+                        "schema_version": 1,
+                        "role": "repair",
+                        "goal": self.spec.goal,
+                        "hypothesis": json.loads(exp["hypothesis_json"]),
+                        "candidate_snapshot": exp["candidate_snapshot"],
+                        "editable_scope": list(self.spec.editable_scope),
+                        "protected_paths": list(self.spec.protected_paths),
+                        "failure_kind": "implementation_preflight",
+                        "failure_details": preflight_errors[:8],
+                        "constraints": [
+                            "Repair only the reported implementation preflight errors.",
+                            "Do not modify evaluators, datasets, labels, protocol, validation, or holdout assets.",
+                            "Only change paths inside editable_scope; protected_paths are immutable.",
+                            "This is the single automatic repair attempt for this candidate.",
+                        ],
+                    }
+                    try:
+                        def invoke_repair() -> dict[str, Any]:
+                            result = self._invoke_agent(
+                                repair_task,
+                                timeout=self._agent_timeout(600),
+                                apply_changes=True,
                             )
-                        return normalized_result
+                            normalized_result = self.agent.normalize_result(repair_task, result)
+                            parsed_result = ImplementResult.model_validate(normalized_result)
+                            if not parsed_result.blockers and self.workspace.working_tree_changed_paths():
+                                normalized_result["repair_candidate_snapshot"] = self.workspace.snapshot(
+                                    f"bananloop experiment {experiment_id} bounded repair"
+                                )
+                            return normalized_result
 
-                    repaired = self._action(
-                        action_id=f"exp:{experiment_id}:repair:1",
-                        experiment_id=experiment_id,
-                        stage="VERIFY",
-                        kind="agent",
-                        request=repair_task,
-                        invoke=invoke_repair,
-                    )
-                    repaired = self.agent.normalize_result(repair_task, repaired)
-                    repair_snapshot = repaired.pop("repair_candidate_snapshot", None)
-                    repair_result = ImplementResult.model_validate(repaired)
-                    repaired_paths = self.workspace.working_tree_changed_paths()
-                    if not repair_result.blockers and repair_snapshot:
-                        self.store.update_experiment(experiment_id, candidate_snapshot=repair_snapshot)
-                        self.workspace.checkout(repair_snapshot)
-                        exp = self.store.experiment(experiment_id)
-                        changed = self.workspace.changed_paths(exp["parent_snapshot"], repair_snapshot)
-                        valid, violations = self.workspace.verify_scope(
-                            changed, self.spec.editable_scope, self.spec.protected_paths
+                        repaired = self._action(
+                            action_id=f"exp:{experiment_id}:repair:1",
+                            experiment_id=experiment_id,
+                            stage="VERIFY",
+                            kind="agent",
+                            request=repair_task,
+                            invoke=invoke_repair,
                         )
-                        integrity_violations = verify_evaluation_assets(
-                            self.workspace.workspace, self.spec.evaluation_assets
-                        )
-                        syntax_errors = python_syntax_errors(self.workspace.workspace, changed)
-                        api_errors = [] if syntax_errors else python_api_compatibility_errors(
-                            self.workspace.workspace,
-                            changed,
-                            evaluator_command=self.spec.evaluation_command,
-                        )
-                        remaining_errors = syntax_errors + api_errors
-                        if valid and not integrity_violations and not remaining_errors:
-                            self.store.event("BOUNDED_REPAIR_ACCEPTED", {
-                                "experiment_id": experiment_id,
-                                "snapshot": repair_snapshot,
-                                "changed_paths": changed[:20],
-                            })
-                            self.store.conn.commit()
-                            self.store.set_stage(attempt_id, "EVALUATE")
-                            self._checkpoint("EVALUATE")
-                            return
-                        preflight_errors = remaining_errors or violations or integrity_violations
-                    else:
-                        preflight_errors = repair_result.blockers or ["repair produced no material changes"]
-                except (AgentError, ValidationError, UnknownActionOutcome, WorkspaceError, EngineError) as repair_exc:
-                    preflight_errors = [f"bounded repair failed: {repair_exc}"]
+                        repaired = self.agent.normalize_result(repair_task, repaired)
+                        repair_snapshot = repaired.pop("repair_candidate_snapshot", None)
+                        repair_result = ImplementResult.model_validate(repaired)
+                        if not repair_result.blockers and repair_snapshot:
+                            self.store.update_experiment(experiment_id, candidate_snapshot=repair_snapshot)
+                            self.workspace.checkout(repair_snapshot)
+                            exp = self.store.experiment(experiment_id)
+                            changed = self.workspace.changed_paths(exp["parent_snapshot"], repair_snapshot)
+                            valid, violations = self.workspace.verify_scope(
+                                changed, self.spec.editable_scope, self.spec.protected_paths
+                            )
+                            integrity_violations = verify_evaluation_assets(
+                                self.workspace.workspace, self.spec.evaluation_assets
+                            )
+                            syntax_errors = python_syntax_errors(self.workspace.workspace, changed)
+                            api_errors = [] if syntax_errors else python_api_compatibility_errors(
+                                self.workspace.workspace,
+                                changed,
+                                evaluator_command=self.spec.evaluation_command,
+                            )
+                            remaining_errors = syntax_errors + api_errors
+                            if valid and not integrity_violations and not remaining_errors:
+                                self.store.event("BOUNDED_REPAIR_ACCEPTED", {
+                                    "experiment_id": experiment_id,
+                                    "snapshot": repair_snapshot,
+                                    "changed_paths": changed[:20],
+                                })
+                                self.store.conn.commit()
+                                self.store.set_stage(attempt_id, "EVALUATE")
+                                self._checkpoint("EVALUATE")
+                                return
+                            preflight_errors = remaining_errors or violations or integrity_violations
+                        else:
+                            preflight_errors = repair_result.blockers or ["repair produced no material changes"]
+                    except (AgentError, ValidationError, UnknownActionOutcome, WorkspaceError, EngineError) as repair_exc:
+                        preflight_errors = [f"bounded repair failed: {repair_exc}"]
                 decision = {
                     "accepted": False,
                     "primary_value": None,

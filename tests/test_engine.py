@@ -1953,6 +1953,51 @@ def test_api_preflight_rejects_unsupported_sklearn_before_dev_budget(tmp_path: P
 
 
 
+def test_one_bounded_repair_rechecks_candidate_before_dev_evaluation(tmp_path: Path):
+    class RepairAgent(AgentAdapter):
+        def probe(self):
+            return {"available": True, "kind": "test"}
+
+        def execute(self, task, workspace, timeout):
+            assert task["role"] == "repair"
+            (workspace / "model.py").write_text("value = 1\n", encoding="utf-8")
+            return {
+                "summary": "fixed syntax error",
+                "changed_paths": ["model.py"],
+                "verification_notes": "",
+                "blockers": [],
+            }
+
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.spec.editable_scope.append("model.py")
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        model = engine.workspace.workspace / "model.py"
+        model.write_text("value = (\n", encoding="utf-8")
+        candidate = engine.workspace.snapshot("candidate with syntax error")
+        store.update_experiment(experiment_id, candidate_snapshot=candidate)
+        store.set_stage(attempt_id, "VERIFY")
+        engine.agent = RepairAgent()
+
+        engine._stage_verify(attempt_id, experiment_id)
+
+        action = store.action(f"exp:{experiment_id}:repair:1")
+        assert action["status"] == "COMPLETED"
+        request = json.loads(action["request_json"])
+        assert request["failure_kind"] == "implementation_preflight"
+        assert set(request) == {
+            "schema_version", "role", "goal", "hypothesis", "candidate_snapshot",
+            "editable_scope", "protected_paths", "failure_kind", "failure_details", "constraints",
+        }
+        assert store.experiment(experiment_id)["candidate_snapshot"] != candidate
+        assert store.attempt(attempt_id)["stage"] == "EVALUATE"
+
+        engine._stage_evaluate(attempt_id, experiment_id)
+        assert store.evaluations("dev")
+    finally:
+        store.close()
+
+
 def test_pr_auc_analyzer_task_gets_target_metric_guidance_without_hidden_evidence(tmp_path: Path):
     store, engine, _, _ = make_engine(tmp_path)
     try:
