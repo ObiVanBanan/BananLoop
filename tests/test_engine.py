@@ -126,6 +126,31 @@ def test_agent_sees_declared_training_assets_but_keeps_evaluation_assets_hidden(
     store.close()
 
 
+def test_agent_visible_context_is_read_only_even_when_scope_is_broad(tmp_path: Path):
+    store, engine, repo, _ = make_engine(tmp_path)
+    try:
+        data = repo / "data"
+        data.mkdir()
+        (data / "products.csv").write_text("id,name\n1,Widget\n", encoding="utf-8")
+        git(["add", "data/products.csv"], repo)
+        git(["commit", "-m", "add read-only context"], repo)
+        engine.spec.base_commit = git(["rev-parse", "HEAD"], repo)
+        engine.spec.editable_scope = ["**"]
+        engine.spec.agent_visible_context_paths = ["data/products.csv"]
+        engine.spec.protected_paths = []
+        engine.workspace.ensure(engine.spec.base_commit)
+
+        protected = engine._agent_protected_paths()
+        allowed, violations = engine.workspace.verify_scope(
+            ["data/products.csv"], engine.spec.editable_scope, protected,
+        )
+
+        assert not allowed
+        assert violations == ["protected:data/products.csv"]
+    finally:
+        store.close()
+
+
 def make_staged_engine(
     tmp_path: Path,
     *,

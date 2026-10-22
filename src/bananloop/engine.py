@@ -136,11 +136,15 @@ class Engine:
 
     def _agent_protected_paths(self) -> list[str]:
         hidden = self._agent_hidden_paths()
-        return [
+        # Context paths are intentionally visible to the agent but remain
+        # read-only. Keep them protected even when editable_scope is broad.
+        protected = [*self.spec.agent_visible_context_paths]
+        protected.extend(
             path
             for path in self.spec.protected_paths
             if not self.workspace._matches(path, hidden)
-        ]
+        )
+        return list(dict.fromkeys(protected))
 
     def _agent_evaluation_view(self, payload_json: str | None) -> dict[str, Any] | None:
         return agent_evaluation_view(self.spec, payload_json)
@@ -1263,7 +1267,11 @@ class Engine:
         exp = self.store.experiment(experiment_id)
         self.workspace.checkout(exp["candidate_snapshot"])
         changed = self.workspace.changed_paths(exp["parent_snapshot"], exp["candidate_snapshot"])
-        valid, violations = self.workspace.verify_scope(changed, self.spec.editable_scope, self.spec.protected_paths)
+        valid, violations = self.workspace.verify_scope(
+            changed,
+            self.spec.editable_scope,
+            self._agent_protected_paths(),
+        )
         integrity_violations = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
         if integrity_violations:
             self.store.update_experiment(
