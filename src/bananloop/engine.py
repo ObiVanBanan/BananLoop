@@ -321,6 +321,13 @@ class Engine:
             <= self.spec.budget.max_evaluator_calls
         )
 
+    def _repair_attempts_used(self, *, exclude_action_id: str | None = None) -> int:
+        """Count durable repair actions, including failed or unknown outcomes."""
+        return sum(
+            ":repair:" in action["id"] and action["id"] != exclude_action_id
+            for action in self.store.actions()
+        )
+
     def _action(
         self,
         *,
@@ -1345,6 +1352,10 @@ class Engine:
                 if not exp["hypothesis_json"]:
                     # A repair must be grounded in an approved hypothesis.
                     pass
+                elif self._repair_attempts_used(
+                    exclude_action_id=f"exp:{experiment_id}:repair:1"
+                ) >= self.spec.budget.max_repair_attempts:
+                    preflight_errors = ["campaign bounded repair budget exhausted"]
                 else:
                     repair_task = {
                         "schema_version": 1,
@@ -1437,7 +1448,7 @@ class Engine:
                     experiment_id,
                     decision_json=json.dumps(decision),
                     failure_category="IMPLEMENTATION_BLOCKED",
-                    lesson="Python candidate preflight failed after one bounded repair attempt: " + "; ".join(preflight_errors)[:800],
+                    lesson="Python candidate preflight failed after bounded repair policy: " + "; ".join(preflight_errors)[:800],
                 )
                 self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
                 self.store.event(

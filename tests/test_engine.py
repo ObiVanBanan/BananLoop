@@ -2091,12 +2091,54 @@ def test_failed_bounded_repair_rejects_without_dev_or_a_second_repair(tmp_path: 
         assert store.attempt(attempt_id)["stage"] == "REJECT"
         experiment = store.experiment(experiment_id)
         assert experiment["failure_category"] == "IMPLEMENTATION_BLOCKED"
-        assert "bounded repair attempt" in experiment["lesson"]
+        assert "bounded repair policy" in experiment["lesson"]
         assert store.campaign()["evaluator_calls"] == evaluator_calls_before
 
         # Reprocessing the terminal verification result cannot invoke another repair.
         engine._stage_verify(attempt_id, experiment_id)
         assert agent.calls == 1
+        assert store.campaign()["evaluator_calls"] == evaluator_calls_before
+    finally:
+        store.close()
+
+
+def test_campaign_repair_budget_blocks_repairs_after_durable_attempt_limit(tmp_path: Path):
+    class MustNotRepairAgent(AgentAdapter):
+        def __init__(self):
+            self.calls = 0
+
+        def probe(self):
+            return {"available": True, "kind": "test"}
+
+        def execute(self, task, workspace, timeout):
+            self.calls += 1
+            raise AssertionError("repair agent must not run after the campaign repair budget is used")
+
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.spec.budget.max_repair_attempts = 1
+        # A durable action, even with an unknown outcome, spends the repair
+        # allowance because the underlying agent may already have run.
+        store.start_action(
+            "exp:prior:repair:1", None, "VERIFY", "agent", "prior-repair-request"
+        )
+        engine.spec.editable_scope.append("model.py")
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        model = engine.workspace.workspace / "model.py"
+        model.write_text("value = (\n", encoding="utf-8")
+        candidate = engine.workspace.snapshot("candidate after repair budget spent")
+        store.update_experiment(experiment_id, candidate_snapshot=candidate)
+        store.set_stage(attempt_id, "VERIFY")
+        agent = MustNotRepairAgent()
+        engine.agent = agent
+        evaluator_calls_before = store.campaign()["evaluator_calls"]
+
+        engine._stage_verify(attempt_id, experiment_id)
+
+        assert agent.calls == 0
+        assert store.attempt(attempt_id)["stage"] == "REJECT"
+        assert store.experiment(experiment_id)["failure_category"] == "IMPLEMENTATION_BLOCKED"
+        assert "repair budget exhausted" in store.experiment(experiment_id)["lesson"]
         assert store.campaign()["evaluator_calls"] == evaluator_calls_before
     finally:
         store.close()

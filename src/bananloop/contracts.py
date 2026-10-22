@@ -156,6 +156,7 @@ class PairedComparison(BaseModel):
 class BudgetSpec(BaseModel):
     max_evaluation_units: int | None = Field(default=None, ge=1)
     evaluation_units_per_call: int | None = Field(default=None, ge=1)
+    max_repair_attempts: int = Field(default=1, ge=1, le=2)
 
     @model_validator(mode="after")
     def work_budget(self):
