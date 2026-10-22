@@ -17,7 +17,7 @@ class FailureKind(StrEnum):
 
 
 _CLASSIFICATIONS: dict[str, tuple[FailureKind, str, bool, str]] = {
-    "IMPLEMENTATION_BLOCKED": (FailureKind.IMPLEMENTATION, "Review the preflight or implementation errors; one bounded repair may be attempted.", True, "medium"),
+    "IMPLEMENTATION_BLOCKED": (FailureKind.IMPLEMENTATION, "Review the preflight or implementation errors; a repair may be attempted only within the approved campaign repair budget.", True, "medium"),
     "NO_CHANGES": (FailureKind.IMPLEMENTATION, "Revise the approved implementation approach; no candidate diff was produced.", False, "low"),
     "CANDIDATE_NOT_MATERIALIZED": (FailureKind.INFRASTRUCTURE, "Restore or re-materialize the recorded candidate snapshot before retrying.", True, "medium"),
     "AGENT_PROTOCOL_ERROR": (FailureKind.INFRASTRUCTURE, "Check the agent adapter and structured response; resume only through the durable action journal.", True, "medium"),
