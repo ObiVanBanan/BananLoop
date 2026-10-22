@@ -36,7 +36,7 @@ Historical QA reports also describe Bank Marketing campaigns, including DEV-only
 
 ## GitHub Actions
 
-Commit `7472ae3f9d1d409ab08cd0ecce3d53619ee1d0cb` was pushed to the existing PR #47 source branch. The GitHub workflow-runs lookup returned no PR-triggered run for this commit at the time of this report. Earlier runs on PR #47 failed before any job received a runner (`runner_id=0`, no runner name, no steps), so they do not establish a Linux or Windows test result.
+Code commit `7472ae3f9d1d409ab08cd0ecce3d53619ee1d0cb` is the source of PR head `40a97d1430e941bd749318ff556ba56d2b39cd0b` (the report-only follow-up commit). GitHub Actions run [39731715909](https://github.com/ObiVanBanan/BananLoop/actions/runs/39731715909) completed with all four matrix jobs failed. The job-steps lookup returned no steps for any job, and log downloads returned `BlobNotFound`; no hosted test result was produced. Earlier PR runs likewise failed before runner assignment (`runner_id=0`, no runner name, no steps).
 
 **Conclusion:** Linux and Windows hosted CI remain unverified. A completed run must show runner assignment and test steps for both operating systems before this gate can be marked passed.
 
