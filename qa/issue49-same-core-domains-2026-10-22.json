@@ -1,0 +1,182 @@
+{
+  "bananloop_core_commit": "2916e2b6dd9e7b218da5a70ddf7b5cab71332422",
+  "claim_limit": "Three local synthetic dogfood fixtures; one Python host and local Qdrant service. This is not a production success-rate or generated-answer quality claim.",
+  "domains": [
+    {
+      "campaign_budget": {
+        "agent_calls": 4,
+        "attempts": 2,
+        "evaluator_calls": 6,
+        "experiments": 1
+      },
+      "campaign_calls": {
+        "agent": 2,
+        "evaluator": 5
+      },
+      "campaign_id": "state-34dd6fcbf50c8ded7f23d9255b9b4606",
+      "domain": "bugfix_regression_reduction",
+      "evaluation_receipts": [
+        {
+          "action_id": "baseline:evaluate",
+          "receipt_hash": "0e7c4374354058561935cdf088ee825e3cef723ec10eaa7468e7504245008e56",
+          "tier": "dev"
+        },
+        {
+          "action_id": "baseline:validation",
+          "receipt_hash": "cf3d92bfeade42426888ede89c3e1f4955fed6d72888c25d94c262d9a2279f1b",
+          "tier": "validation"
+        },
+        {
+          "action_id": "exp:1:evaluate",
+          "receipt_hash": "0e9b0a6fda797455d2daad3df0af4a41a58c6770137b2b2fd3f710ec60da0062",
+          "tier": "dev"
+        },
+        {
+          "action_id": "exp:1:validation",
+          "receipt_hash": "7f97a5a80e865be647f8852ae871c69d3f534ccc923b20186ce15207177d695e",
+          "tier": "validation"
+        },
+        {
+          "action_id": "final:holdout",
+          "receipt_hash": "e1af84eeee192327bfb18291f42b9755354cf2de28d8a4cb5388bdf5af1dac75",
+          "tier": "holdout"
+        }
+      ],
+      "final_assessment": "ACCEPTED",
+      "holdout": {
+        "configured": true,
+        "evaluated": true,
+        "snapshot": "9aba1a662c513464b2ccc0d322d8d337dca6905f",
+        "target_met": true,
+        "value": 1.0
+      },
+      "source_report": "issue49-bugfix-dogfood-2026-10-22.json",
+      "status": "GOAL_MET",
+      "stop_reason": "GOAL_MET",
+      "validation": {
+        "baseline": 0.0,
+        "champion": 1.0,
+        "configured": true,
+        "delta": 1.0
+      }
+    },
+    {
+      "campaign_budget": {
+        "agent_calls": 4,
+        "evaluator_calls": 6,
+        "experiments": 1
+      },
+      "campaign_calls": {
+        "agent": 2,
+        "evaluator": 5
+      },
+      "campaign_id": "state-0657167a60cdcc7c91cf064b2810cdce",
+      "domain": "cpu_performance_p95",
+      "evaluation_receipts": [
+        {
+          "action_id": "baseline:evaluate",
+          "receipt_hash": "0d980c276ad001e0170561373826553a16df05eb5830820d46799a20a89c9eb8",
+          "tier": "dev"
+        },
+        {
+          "action_id": "baseline:validation",
+          "receipt_hash": "838d6f8fc6abfb354fa59443044237a4f95e9b1baf2e8fd3a1288dbf78f52db9",
+          "tier": "validation"
+        },
+        {
+          "action_id": "exp:1:evaluate",
+          "receipt_hash": "9154bfb1beada69f4cb4d5808f300b2252e48ff0953a544f622421a59cd22f7c",
+          "tier": "dev"
+        },
+        {
+          "action_id": "exp:1:validation",
+          "receipt_hash": "cf5e5e887eb1efdb2f36b516e4147967486552a383ca53e16e9c92b9631879c5",
+          "tier": "validation"
+        },
+        {
+          "action_id": "final:holdout",
+          "receipt_hash": "8f1a960cfda18a961ba79c714fcf369eff14bf1d25d10d527b14932ac98cf87d",
+          "tier": "holdout"
+        }
+      ],
+      "final_assessment": "ACCEPTED",
+      "holdout": {
+        "configured": true,
+        "evaluated": true,
+        "snapshot": "9004fc608defda070d063cd389db9d223174f300",
+        "target_met": true,
+        "value": 0.261673
+      },
+      "source_report": "issue49-performance-dogfood-2026-10-22.json",
+      "status": "GOAL_MET",
+      "stop_reason": "GOAL_MET",
+      "validation": {
+        "baseline": 10.132496,
+        "champion": 0.23209,
+        "configured": true,
+        "delta": -9.900406
+      }
+    },
+    {
+      "campaign_budget": {
+        "agent_calls": 4,
+        "evaluation_units": 60,
+        "evaluator_calls": 6,
+        "experiments": 1,
+        "units_per_evaluator_call": 12
+      },
+      "campaign_calls": {
+        "agent": 2,
+        "evaluator": 5
+      },
+      "campaign_id": "state-0772eda60e41592a6ae137f4a001de3c",
+      "domain": "qdrant_service_backed_product_retrieval",
+      "evaluation_receipts": [
+        {
+          "action_id": "baseline:evaluate",
+          "receipt_hash": "2e4725fcd9439202a8a1da20936439fa665170ad34438701fcbad0d00d126ee2",
+          "tier": "dev"
+        },
+        {
+          "action_id": "baseline:validation",
+          "receipt_hash": "a09ecc80c2bccd15532f8df066f7c78ed7fea313d4391d109391e5150d5a720a",
+          "tier": "validation"
+        },
+        {
+          "action_id": "exp:1:evaluate",
+          "receipt_hash": "4207c6604869e9a201ddcf869387cf27a6d37697dd12651dcffe16983ce0ed94",
+          "tier": "dev"
+        },
+        {
+          "action_id": "exp:1:validation",
+          "receipt_hash": "f22b95694137b9556dee28e3a8ebbc5ff6f7bf7dd288710094273e6334b16a99",
+          "tier": "validation"
+        },
+        {
+          "action_id": "final:holdout",
+          "receipt_hash": "c4001991946749eca7c4ea2f1b778d0a51d22996c5da54ec8623e06e59f6cc95",
+          "tier": "holdout"
+        }
+      ],
+      "final_assessment": "ACCEPTED",
+      "holdout": {
+        "configured": true,
+        "evaluated": true,
+        "snapshot": "ccb9ba523c4e51b6f7fc660617b248194433aeff",
+        "target_met": true,
+        "value": 1.0
+      },
+      "source_report": "issue49-rag-dogfood-2026-10-22.json",
+      "status": "GOAL_MET",
+      "stop_reason": "GOAL_MET",
+      "validation": {
+        "baseline": 0.75,
+        "champion": 1.0,
+        "configured": true,
+        "delta": 0.25
+      }
+    }
+  ],
+  "same_core_across_domains": true,
+  "schema_version": 1
+}

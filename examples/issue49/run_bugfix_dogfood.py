@@ -145,10 +145,13 @@ def main() -> int:
     measurements = report["measurements"]
     print(json.dumps({
         "domain": "bugfix_regression_reduction",
+        "bananloop_core_commit": run(["git", "rev-parse", "HEAD"], cwd=ROOT, env=env).stdout.strip(),
         "fixture_commit": run(["git", "rev-parse", "HEAD"], cwd=project, env=env).stdout.strip(),
+        "campaign_id": status["campaign_id"],
         "baseline_fails_dev_regression": measurements[0]["result"]["metrics"]["pass_rate"]["value"] == 0,
         "status": status["status"], "stop_reason": status.get("stop_reason"),
         "campaign_calls": {"agent": status["agent_calls"], "evaluator": status["evaluator_calls"]},
+        "campaign_budget": {"experiments": 1, "attempts": 2, "agent_calls": 4, "evaluator_calls": 6},
         "measurements": [
             {"tier": item["tier"], "experiment_id": item["experiment_id"],
              "pass_rate": item["result"]["metrics"]["pass_rate"]["value"],
@@ -162,6 +165,10 @@ def main() -> int:
         "dev_receipts": [
             {"action_id": item["action_id"], "receipt_hash": item["receipt_hash"]}
             for item in report["evaluation_receipts"] if item["tier"] == "dev"
+        ],
+        "evaluation_receipts": [
+            {"tier": item["tier"], "action_id": item["action_id"], "receipt_hash": item["receipt_hash"]}
+            for item in report["evaluation_receipts"]
         ],
         "real_model_calls": 0,
     }, sort_keys=True, indent=2))

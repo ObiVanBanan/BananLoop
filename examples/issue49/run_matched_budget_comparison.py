@@ -202,6 +202,7 @@ def main() -> int:
     portfolio_dev_measurements = [item for item in portfolio_report["measurements"] if item["tier"] == "dev"]
 
     comparison = {
+        "bananloop_core_commit": run(["git", "rev-parse", "HEAD"], cwd=ROOT, env=env).stdout.strip(),
         "method": "controlled local comparison: BananLoop core selects from a two-candidate portfolio; naive loop takes the first candidate. Same fixture commit, frozen tier workloads, command agent, evaluator, target/gates, and maximum budgets.",
         "claim_limit": "one synthetic CPU fixture only; this does not estimate general coding-agent success rates",
         "fixture_commit": initial_commit,
@@ -212,6 +213,7 @@ def main() -> int:
         },
         "matched_budget_caps": {"agent_calls": 2, "evaluator_calls": 6, "experiments": 1},
         "portfolio": {
+            "campaign_id": portfolio_status["campaign_id"],
             "status": portfolio_status["status"],
             "stop_reason": portfolio_status.get("stop_reason"),
             "selected_candidate_id": selected_id,

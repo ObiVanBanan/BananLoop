@@ -173,7 +173,9 @@ def main() -> int:
     dev_measurements = [item for item in report["measurements"] if item.get("tier") == "dev"]
     print(json.dumps({
         "domain": "cpu_performance_p95",
+        "bananloop_core_commit": run(["git", "rev-parse", "HEAD"], cwd=ROOT, env=env).stdout.strip(),
         "fixture_commit": run(["git", "rev-parse", "HEAD"], cwd=project, env=env).stdout.strip(),
+        "campaign_id": status["campaign_id"],
         "status": status["status"], "stop_reason": status.get("stop_reason"),
         "campaign_calls": {"agent": status["agent_calls"], "evaluator": status["evaluator_calls"]},
         "campaign_budget": {"experiments": 1, "agent_calls": 4, "evaluator_calls": 6},
@@ -190,6 +192,10 @@ def main() -> int:
         "dev_receipts": [
             {"action_id": item["action_id"], "receipt_hash": item["receipt_hash"]}
             for item in report["evaluation_receipts"] if item["tier"] == "dev"
+        ],
+        "evaluation_receipts": [
+            {"tier": item["tier"], "action_id": item["action_id"], "receipt_hash": item["receipt_hash"]}
+            for item in report["evaluation_receipts"]
         ],
         "real_model_calls": 0,
     }, sort_keys=True, indent=2))

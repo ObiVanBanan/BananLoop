@@ -1,0 +1,96 @@
+{
+  "bananloop_core_commit": "2916e2b6dd9e7b218da5a70ddf7b5cab71332422",
+  "campaign_budget": {
+    "agent_calls": 4,
+    "evaluation_units": 60,
+    "evaluator_calls": 6,
+    "experiments": 1,
+    "units_per_evaluator_call": 12
+  },
+  "campaign_calls": {
+    "agent": 2,
+    "evaluator": 5
+  },
+  "campaign_id": "state-0772eda60e41592a6ae137f4a001de3c",
+  "changed_paths": [
+    "src/retrieval.py"
+  ],
+  "claim_limit": "synthetic 8-product fixture, command adapter, and one local Qdrant service; not evidence about a production RAG system",
+  "dev_metrics": [
+    {
+      "false_match_rate": 1.0,
+      "false_reject_rate": 0.0,
+      "latency_p95_ms": 3.092178,
+      "recall_at_1": 0.625
+    },
+    {
+      "false_match_rate": 0.0,
+      "false_reject_rate": 0.0,
+      "latency_p95_ms": 3.253022,
+      "recall_at_1": 1.0
+    }
+  ],
+  "domain": "qdrant_service_backed_product_retrieval",
+  "final_assessment": "ACCEPTED",
+  "fixture_commit": "d4b3ec2590e18bb262708b31b51263c8cc8b5fee",
+  "hidden_evaluator_assets_absent_from_agent_workspace": true,
+  "holdout": {
+    "configured": true,
+    "evaluated": true,
+    "snapshot": "ccb9ba523c4e51b6f7fc660617b248194433aeff",
+    "target_met": true,
+    "value": 1.0
+  },
+  "qdrant": {
+    "commit": "20db14f87c861f3958ad50382cf0b69396e40c10",
+    "version": "1.15.4"
+  },
+  "receipts": [
+    {
+      "action_id": "baseline:evaluate",
+      "receipt_hash": "2e4725fcd9439202a8a1da20936439fa665170ad34438701fcbad0d00d126ee2",
+      "tier": "dev"
+    },
+    {
+      "action_id": "baseline:validation",
+      "receipt_hash": "a09ecc80c2bccd15532f8df066f7c78ed7fea313d4391d109391e5150d5a720a",
+      "tier": "validation"
+    },
+    {
+      "action_id": "exp:1:evaluate",
+      "receipt_hash": "4207c6604869e9a201ddcf869387cf27a6d37697dd12651dcffe16983ce0ed94",
+      "tier": "dev"
+    },
+    {
+      "action_id": "exp:1:validation",
+      "receipt_hash": "f22b95694137b9556dee28e3a8ebbc5ff6f7bf7dd288710094273e6334b16a99",
+      "tier": "validation"
+    },
+    {
+      "action_id": "final:holdout",
+      "receipt_hash": "c4001991946749eca7c4ea2f1b778d0a51d22996c5da54ec8623e06e59f6cc95",
+      "tier": "holdout"
+    }
+  ],
+  "resources": {
+    "evaluation_units_limit": 60,
+    "evaluation_units_reported": 60,
+    "evaluation_units_reserved": 60,
+    "open_reservations": 0,
+    "reservation_count": 12,
+    "unknown_outcomes": 0,
+    "wall_time_seconds": 1.9480609999999998
+  },
+  "status": "GOAL_MET",
+  "stop_reason": "GOAL_MET",
+  "terminal_resume": {
+    "agent_calls_unchanged": true,
+    "evaluator_calls_unchanged": true
+  },
+  "validation": {
+    "baseline": 0.75,
+    "champion": 1.0,
+    "configured": true,
+    "delta": 0.25
+  }
+}

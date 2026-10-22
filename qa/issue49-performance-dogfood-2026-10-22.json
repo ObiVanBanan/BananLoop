@@ -1,4 +1,5 @@
 {
+  "bananloop_core_commit": "2916e2b6dd9e7b218da5a70ddf7b5cab71332422",
   "campaign_budget": {
     "agent_calls": 4,
     "evaluator_calls": 6,
@@ -8,19 +9,20 @@
     "agent": 2,
     "evaluator": 5
   },
+  "campaign_id": "state-0657167a60cdcc7c91cf064b2810cdce",
   "changed_paths": [
     "src/bench.py"
   ],
   "dev_aa_calibration": [
     {
       "diagnostics": {
-        "aa_half_p95_abs_delta_ms": 2.1202959999999997
+        "aa_half_p95_abs_delta_ms": 2.587290000000001
       },
       "experiment_id": null
     },
     {
       "diagnostics": {
-        "aa_half_p95_abs_delta_ms": 0.038629
+        "aa_half_p95_abs_delta_ms": 0.12412299999999998
       },
       "experiment_id": 1
     }
@@ -28,55 +30,70 @@
   "dev_metrics": [
     {
       "correctness": 1.0,
-      "latency_p95_ms": 9.737392,
-      "throughput_rps": 29706.475146380817
+      "latency_p95_ms": 10.607086,
+      "throughput_rps": 28822.807458719275
     },
     {
       "correctness": 1.0,
-      "latency_p95_ms": 0.186147,
-      "throughput_rps": 1613822.9313479727
+      "latency_p95_ms": 0.291911,
+      "throughput_rps": 1261587.0528577378
     }
   ],
   "dev_receipts": [
     {
       "action_id": "baseline:evaluate",
-      "receipt_hash": "6067535052e60db43ce4eb534f1b797b17ffa8f44ccb659b50151433f8b20811"
+      "receipt_hash": "0d980c276ad001e0170561373826553a16df05eb5830820d46799a20a89c9eb8"
     },
     {
       "action_id": "exp:1:evaluate",
-      "receipt_hash": "9ef183fea9ef43eebd5b417a1b9a0c46616678ea44db73be60bca468f665a297"
+      "receipt_hash": "9154bfb1beada69f4cb4d5808f300b2252e48ff0953a544f622421a59cd22f7c"
     }
   ],
   "domain": "cpu_performance_p95",
+  "evaluation_receipts": [
+    {
+      "action_id": "baseline:evaluate",
+      "receipt_hash": "0d980c276ad001e0170561373826553a16df05eb5830820d46799a20a89c9eb8",
+      "tier": "dev"
+    },
+    {
+      "action_id": "baseline:validation",
+      "receipt_hash": "838d6f8fc6abfb354fa59443044237a4f95e9b1baf2e8fd3a1288dbf78f52db9",
+      "tier": "validation"
+    },
+    {
+      "action_id": "exp:1:evaluate",
+      "receipt_hash": "9154bfb1beada69f4cb4d5808f300b2252e48ff0953a544f622421a59cd22f7c",
+      "tier": "dev"
+    },
+    {
+      "action_id": "exp:1:validation",
+      "receipt_hash": "cf5e5e887eb1efdb2f36b516e4147967486552a383ca53e16e9c92b9631879c5",
+      "tier": "validation"
+    },
+    {
+      "action_id": "final:holdout",
+      "receipt_hash": "8f1a960cfda18a961ba79c714fcf369eff14bf1d25d10d527b14932ac98cf87d",
+      "tier": "holdout"
+    }
+  ],
   "final_assessment": "ACCEPTED",
-  "fixture_commit": "8451ea49a4966317018cf44dab421e5bcea3b407",
+  "fixture_commit": "bf1f1aaef359014ba52da5bf685f9e4ce86a6a36",
   "holdout": {
     "configured": true,
     "evaluated": true,
-    "snapshot": "a5f1b530cf401bc14c89b79f8530a2c3cf2d9582",
+    "snapshot": "9004fc608defda070d063cd389db9d223174f300",
     "target_met": true,
-    "value": 0.185036
-  },
-  "method": {
-    "aa_calibration": "absolute difference between p95 of first and second 20 sample halves",
-    "fixture": "synthetic CPU lookup workload with 1200 rows and 240 fixed queries per tier",
-    "real_model_calls": 0,
-    "resources_observed": {
-      "cpu_affinity_count": 2,
-      "free_disk_gib": 32,
-      "memory_total_kib": 8138084
-    },
-    "samples_per_evaluation": 40,
-    "scope_limit": "one local host; not evidence of cross-machine speedup"
+    "value": 0.261673
   },
   "real_model_calls": 0,
   "selected_mechanism": "z-build-index-once",
   "status": "GOAL_MET",
   "stop_reason": "GOAL_MET",
   "validation": {
-    "baseline": 13.384226,
-    "champion": 0.185728,
+    "baseline": 10.132496,
+    "champion": 0.23209,
     "configured": true,
-    "delta": -13.198498
+    "delta": -9.900406
   }
 }
