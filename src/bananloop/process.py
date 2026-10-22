@@ -86,11 +86,13 @@ def terminate_process_tree(
         return
 
     if os.name == "nt":
-        if proc.poll() is None:
-            try:
-                os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
-            except (OSError, ValueError):
-                pass
+        # The direct child may already have exited while a grandchild still
+        # owns stdout/stderr. The process-group ID can still refer to that
+        # descendant, so signal the group even if the leader exited.
+        try:
+            os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
+        except (OSError, ValueError):
+            pass
         if wait_for_communication(0.35):
             return
         # Best-effort descendant cleanup; a denied/hung taskkill must not
