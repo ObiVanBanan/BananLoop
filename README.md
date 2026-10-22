@@ -387,7 +387,12 @@ direct Python runners, Python/build/platform identifiers and a hash/count of
 installed dependency metadata. Wrapper runtimes and older bindings without a
 dependency probe are explicitly `UNKNOWN` or `PARTIAL`. Executable paths and
 dependency names are not exported. Provider cost remains `unknown` unless the
-provider supplies metering.
+provider supplies metering. The shareable summary includes integrity-checked
+decision receipt digests and evaluator receipt references, without policy
+predicates or rationales. The operator-only report includes decision details
+and a six-part summary of improvement, checks, measurements, decision reasons,
+unknowns, and next action. Historical decisions without receipts are marked
+`LEGACY_UNRECEIPTED` rather than treated as verified.
 Choose an output path outside the source checkout when you do not want the
 export files in that checkout. BananLoop only refreshes a directory carrying
 its own trace manifest; other non-empty directories are refused.
