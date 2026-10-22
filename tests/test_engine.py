@@ -1435,6 +1435,22 @@ def test_evaluator_binding_is_stable_and_tampering_is_rejected(tmp_path: Path):
         store.close()
 
 
+def test_runtime_descriptor_fingerprints_direct_python_dependencies_only():
+    descriptor = runtime_descriptor({
+        "dev": [sys.executable, "evaluator.py"],
+        "wrapper": ["sh", "-c", "python evaluator.py"],
+    })
+    direct = descriptor["runners"]["dev"]["effective_python"]
+    wrapped = descriptor["runners"]["wrapper"]["effective_python"]
+
+    assert direct["status"] == "VERIFIED"
+    assert direct["python_version"]
+    assert direct["dependency_count"] > 0
+    assert re.fullmatch(r"[0-9a-f]{64}", direct["dependency_fingerprint"])
+    assert "packages" not in direct
+    assert wrapped == {"status": "UNKNOWN"}
+
+
 def test_completed_evaluation_replay_neither_reruns_nor_rewrites_receipt(tmp_path: Path):
     store, engine, _, _ = make_engine(tmp_path)
     try:

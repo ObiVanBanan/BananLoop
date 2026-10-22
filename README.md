@@ -382,7 +382,12 @@ To share a campaign, send `events.jsonl`, `summary.json`, and `report.md` (the
 manifest is useful for integrity checks). The shareable export omits raw goal
 text, agent rationales, evaluator output payloads, case inputs, labels, and
 per-case validation/holdout results; it records only a goal hash and aggregate
-metrics. Provider cost remains `unknown` unless the provider supplies metering.
+metrics. It also records the durable evaluator/runtime binding hash and, for
+direct Python runners, Python/build/platform identifiers and a hash/count of
+installed dependency metadata. Wrapper runtimes and older bindings without a
+dependency probe are explicitly `UNKNOWN` or `PARTIAL`. Executable paths and
+dependency names are not exported. Provider cost remains `unknown` unless the
+provider supplies metering.
 Choose an output path outside the source checkout when you do not want the
 export files in that checkout. BananLoop only refreshes a directory carrying
 its own trace manifest; other non-empty directories are refused.

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .report import build_report
+from .evaluator_binding import EvaluatorBinding, canonical_hash
 from .store import CampaignStore, StoreError
 
 
@@ -113,6 +114,78 @@ def _tier_summary(report: dict[str, Any], snapshot: str | None) -> dict[str, Any
                                     and item.get("receipt_hash")), None),
         }
     return tiers
+
+
+def _runtime_projection(store: CampaignStore) -> dict[str, Any]:
+    """Expose verified runtime fingerprints without host paths or argv."""
+    row = store.evaluator_binding()
+    unknown = {
+        "status": "UNKNOWN",
+        "binding_hash": None,
+        "runtime_fingerprint": None,
+        "supervisor": {"python_version": "unknown", "os": "unknown", "architecture": "unknown"},
+        "tiers": {tier: {"status": "UNKNOWN"} for tier in ("dev", "validation", "holdout")},
+    }
+    if not row:
+        return unknown
+    try:
+        binding = EvaluatorBinding.model_validate_json(row["binding_json"])
+        binding_hash = canonical_hash(binding.model_dump(mode="json"))
+        if binding.binding_id != row["binding_id"] or binding_hash != row["binding_hash"]:
+            return unknown
+    except Exception:
+        return unknown
+
+    runtime = binding.runtime
+    version_pattern = re.compile(r"^[A-Za-z0-9.+_-]{1,40}$")
+
+    def safe_atom(value: Any) -> str:
+        return value if isinstance(value, str) and version_pattern.fullmatch(value) else "unknown"
+
+    system = safe_atom(runtime.get("os"))
+    if system not in {"Linux", "Windows", "Darwin"}:
+        system = "other" if system != "unknown" else "unknown"
+    runners = runtime.get("runners") if isinstance(runtime.get("runners"), dict) else {}
+    tiers: dict[str, Any] = {}
+    for tier in ("dev", "validation", "holdout"):
+        runner = runners.get(tier) if isinstance(runners.get(tier), dict) else {}
+        effective = runner.get("effective_python") if isinstance(runner.get("effective_python"), dict) else {}
+        verified = effective.get("status") == "VERIFIED"
+        executable = runner.get("configured_executable")
+        executable_name = Path(executable).name if isinstance(executable, str) else ""
+        tiers[tier] = {
+            "configured": tier in binding.tier_commands,
+            "status": "VERIFIED" if verified else "UNKNOWN",
+            "executable_name": _safe_name(executable_name) or "redacted",
+            "python_version": safe_atom(effective.get("python_version")) if verified else "unknown",
+            "implementation": safe_atom(effective.get("implementation")) if verified else "unknown",
+            "python_build_fingerprint": _hash_or_none(effective.get("python_build_fingerprint")) if verified else None,
+            "python_compiler_fingerprint": _hash_or_none(effective.get("python_compiler_fingerprint")) if verified else None,
+            "sys_platform": safe_atom(effective.get("sys_platform")) if verified else "unknown",
+            "os": safe_atom(effective.get("os")) if verified else "unknown",
+            "architecture": safe_atom(effective.get("architecture")) if verified else "unknown",
+            "cache_tag": safe_atom(effective.get("cache_tag")) if verified else "unknown",
+            "dependency_count": effective.get("dependency_count")
+                if verified and isinstance(effective.get("dependency_count"), int) else None,
+            "dependency_fingerprint": _hash_or_none(effective.get("dependency_fingerprint")) if verified else None,
+        }
+    configured_tiers = [tier for tier in binding.tier_commands if tier in tiers]
+    verified_count = sum(tiers[tier]["status"] == "VERIFIED" for tier in configured_tiers)
+    status = "VERIFIED" if configured_tiers and verified_count == len(configured_tiers) else (
+        "PARTIAL" if configured_tiers else "UNKNOWN"
+    )
+    return {
+        "status": status,
+        "binding_id": _hash_or_none(binding.binding_id),
+        "binding_hash": _hash_or_none(row.get("binding_hash")),
+        "runtime_fingerprint": _hash_or_none(binding.runtime_fingerprint),
+        "supervisor": {
+            "python_version": safe_atom(runtime.get("python_version")),
+            "os": system,
+            "architecture": safe_atom(runtime.get("architecture")),
+        },
+        "tiers": tiers,
+    }
 
 
 def _safe_experiments(report: dict[str, Any]) -> list[dict[str, Any]]:
@@ -220,8 +293,9 @@ def _build_trace(store: CampaignStore, campaign_id: str) -> dict[str, str]:
     ]
     sanity = report.get("signal_sanity") or {}
     primary = spec.primary_metric
+    runtime = _runtime_projection(store)
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "campaign_id": campaign_id,
         "created_at": campaign["created_at"],
         "updated_at": campaign["updated_at"],
@@ -230,6 +304,7 @@ def _build_trace(store: CampaignStore, campaign_id: str) -> dict[str, str]:
         "stop_reason": campaign["stop_reason"] if campaign["stop_reason"] in _STOP_REASONS else "UNKNOWN",
         "goal": {"text": "omitted from shareable trace", "sha256": goal_hash},
         "source": {"base_commit": _hash_or_none(spec.base_commit), "campaign_spec_sha256": campaign["spec_hash"]},
+        "runtime": runtime,
         "contract": {
             "primary_metric": {
                 "name": _safe_name(primary.name) or "redacted",
@@ -297,7 +372,7 @@ def _build_trace(store: CampaignStore, campaign_id: str) -> dict[str, str]:
     # A shareable trace is built only from the allowlisted summary above.
     markdown = _render_trace_markdown(summary)
     manifest = {
-        "format": "bananloop-shareable-trace-v1",
+        "format": "bananloop-shareable-trace-v2",
         "campaign_id": campaign_id,
         "files": {
             "events.jsonl": hashlib.sha256(("\n".join(events) + ("\n" if events else "")).encode()).hexdigest(),
@@ -323,6 +398,7 @@ def _render_trace_markdown(summary: dict[str, Any]) -> str:
         f"- Status: `{summary['status']}`; stage: `{summary['stage']}`; stop reason: `{summary['stop_reason']}`",
         f"- Goal text is omitted from this shareable export; SHA-256: `{summary['goal']['sha256']}`",
         f"- Scientific assessment: `{summary['scientific_assessment']}`; improvement status: `{summary['improvement_status']}`",
+        f"- Runtime binding: `{summary['runtime']['status']}`; fingerprint `{summary['runtime']['runtime_fingerprint'] or 'unknown'}`.",
         f"- Primary metric: `{metric['name']}` ({metric['direction']}); target `{metric['target']}`, minimum change `{metric['min_improvement']}`",
         "",
         "## Measurements",
@@ -371,7 +447,7 @@ def export_trace(store: CampaignStore, campaign_id: str, output: Path) -> Path:
             existing = json.loads(manifest.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             raise StoreError(f"refusing to replace a non-BananLoop trace directory: {output}") from None
-        if existing.get("format") != "bananloop-shareable-trace-v1":
+        if existing.get("format") not in {"bananloop-shareable-trace-v1", "bananloop-shareable-trace-v2"}:
             raise StoreError(f"refusing to replace a non-BananLoop trace directory: {output}")
         generated_names = {"events.jsonl", "summary.json", "report.md", "manifest.json"}
         if any(path.name not in generated_names for path in output.iterdir()):

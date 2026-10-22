@@ -1,12 +1,14 @@
 import json
 import hashlib
 from pathlib import Path
+import sys
 
 import pytest
 
 from bananloop.cli import cmd_trace_export, parser
+from bananloop.evaluator_binding import canonical_hash, make_binding, runtime_descriptor
 from bananloop.store import StoreError
-from bananloop.trace import export_trace
+from bananloop.trace import _runtime_projection, export_trace
 from test_engine import make_engine
 
 
@@ -47,11 +49,20 @@ def test_shareable_trace_is_deterministic_and_omits_sensitive_payloads(tmp_path)
                    for event in events)
         assert all("error" not in event and "label" not in event and "errors" not in event for event in events)
         summary = json.loads(first["summary.json"])
+        assert summary["schema_version"] == 2
         assert summary["goal"]["text"] == "omitted from shareable trace"
         assert summary["evaluation_receipts"]
+        runtime = summary["runtime"]
+        assert runtime["status"] == "VERIFIED"
+        assert runtime["binding_hash"] == store.evaluator_binding()["binding_hash"]
+        assert len(runtime["runtime_fingerprint"]) == 64
+        assert runtime["tiers"]["dev"]["status"] == "VERIFIED"
+        assert len(runtime["tiers"]["dev"]["dependency_fingerprint"]) == 64
+        assert "resolved_executable" not in json.dumps(runtime)
+        assert str(Path(sys.executable).resolve().parent) not in json.dumps(runtime)
         assert all("cases" not in json.dumps(summary) for _ in [0])
         manifest = json.loads(first["manifest.json"])
-        assert manifest["format"] == "bananloop-shareable-trace-v1"
+        assert manifest["format"] == "bananloop-shareable-trace-v2"
         assert set(manifest["files"]) == {"events.jsonl", "summary.json", "report.md"}
         assert all(hashlib.sha256(first[name]).hexdigest() == digest
                    for name, digest in manifest["files"].items())
@@ -119,3 +130,46 @@ def test_trace_export_command_reads_campaign_and_writes_bundle(tmp_path, capsys)
     assert {path.name for path in output.iterdir()} == {
         "events.jsonl", "summary.json", "report.md", "manifest.json",
     }
+
+
+def test_trace_refreshes_owned_v1_bundle_to_current_schema(tmp_path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.run()
+        output = tmp_path / "trace-v1"
+        export_trace(store, "campaign-test", output)
+        manifest_path = output / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["format"] = "bananloop-shareable-trace-v1"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        export_trace(store, "campaign-test", output)
+
+        upgraded = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert upgraded["format"] == "bananloop-shareable-trace-v2"
+        assert json.loads((output / "summary.json").read_text(encoding="utf-8"))["schema_version"] == 2
+    finally:
+        store.close()
+
+
+def test_trace_marks_wrapper_runtime_partial_instead_of_inferencing_python(tmp_path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        runtime = runtime_descriptor({"dev": ["sh", "-c", "python evaluator.py"]})
+        binding = make_binding(engine.spec, runtime)
+        encoded = binding.model_dump_json()
+        store.save_evaluator_binding(
+            binding.binding_id,
+            canonical_hash(binding.model_dump(mode="json")),
+            encoded,
+        )
+
+        projected = _runtime_projection(store)
+
+        assert projected["status"] == "PARTIAL"
+        assert projected["tiers"]["dev"]["configured"] is True
+        assert projected["tiers"]["dev"]["status"] == "UNKNOWN"
+        assert projected["tiers"]["dev"]["dependency_fingerprint"] is None
+        assert "/" not in projected["tiers"]["dev"]["executable_name"]
+    finally:
+        store.close()
