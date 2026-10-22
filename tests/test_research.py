@@ -303,6 +303,31 @@ def test_portfolio_selector_blocks_unknown_evidence_scope_and_unaffordable_candi
     assert result.stop_reason
 
 
+def test_portfolio_scope_accepts_symbol_locator_for_an_editable_file():
+    candidate = _portfolio_candidate(
+        "model-method",
+        "model-method",
+        hypothesis=Hypothesis(
+            hypothesis="change model builder",
+            rationale="target is inside the editable model file",
+            expected_effect="quality metric changes",
+            files_or_area=["src/model.py:build_model"],
+            falsification_condition="quality does not change",
+            mechanism_key="model-method",
+        ),
+    )
+    result = select_candidate(
+        HypothesisPortfolio(candidates=[candidate]),
+        spec=spec(editable_scope=["src/model.py"]),
+        state=_selection_state(planning_mode="exploit", dev_non_improve_streak=0),
+        experiments=[],
+        experiment_ordinal=1,
+        action_id="exp:1:propose",
+    )
+    assert result.selected_candidate_id == "model-method"
+    assert result.decisions[0].rejection_reasons == []
+
+
 def test_portfolio_budget_gates_reject_zero_and_reserve_actual_staged_costs():
     candidate = _portfolio_candidate(
         "understated", "understated", estimated_agent_calls=0,

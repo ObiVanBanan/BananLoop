@@ -20,6 +20,29 @@ _FAILURE_NAME = re.compile(
     r"miss|fail|error|wrong|drop|reject|timeout|no_result|unmatched|violation|selection",
     re.IGNORECASE,
 )
+_AREA_LOCATOR = re.compile(r"(?:[A-Za-z_]\w*(?:\.\w+)*|\d+(?:-\d+)?)\Z")
+
+
+def _area_matches_scope(area: str, pattern: str) -> bool:
+    def matches(path: str) -> bool:
+        return (
+            pattern == "**"
+            or fnmatch.fnmatchcase(path, pattern)
+            or (pattern.endswith("/**") and path == pattern[:-3])
+        )
+
+    if matches(area):
+        return True
+    # Agents sometimes qualify a repository path with a function or line
+    # locator (for example ``src/model.py:build_model``). Treat that suffix as
+    # context only when the actual path itself matches the approved scope.
+    path, separator, locator = area.rpartition(":")
+    return bool(
+        separator
+        and path
+        and _AREA_LOCATOR.fullmatch(locator)
+        and matches(path)
+    )
 
 
 def attempt_bucket(row: dict[str, Any]) -> str:
@@ -162,11 +185,7 @@ def candidate_rejection_reasons(
         if not normalized or normalized.startswith("/") or ".." in normalized.split("/"):
             reasons.append("UNSAFE_OR_UNGROUNDED_AREA")
             break
-        if not any(
-            pattern == "**" or fnmatch.fnmatchcase(normalized, pattern)
-            or (pattern.endswith("/**") and normalized == pattern[:-3])
-            for pattern in scopes
-        ):
+        if not any(_area_matches_scope(normalized, pattern) for pattern in scopes):
             reasons.append("OUT_OF_SCOPE")
             break
     if not hypothesis.files_or_area:
