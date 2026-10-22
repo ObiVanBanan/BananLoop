@@ -3,7 +3,7 @@ To set your Cloud Platform project in this session use `gcloud config set projec
 You can view your projects by running `gcloud projects list`.
 # Issue #49 R0 QA report
 
-**Status: incomplete.** This report records current evidence and the remaining R0 acceptance gates. It does not recommend merging PR #47 or closing issue #49.
+**Status: incomplete because hosted CI has not reached a runner.** The Bank Marketing E2E and current local pytest gates have evidence below. Do not merge PR #47 or close issue #49 until the remaining CI/review gate is resolved.
 
 - PR: [#47](https://github.com/ObiVanBanan/BananLoop/pull/47)
 - Current source branch: `codex/dev-failure-reflection-v3-20261021`
@@ -20,27 +20,36 @@ You can view your projects by running `gcloud projects list`.
 
 The scope fix addresses an observed `OUT_OF_SCOPE` rejection caused by a function locator appended to an otherwise editable path. It does not relax path traversal, absolute-path, or actual file-scope checks.
 
-## Bank Marketing campaign evidence
+## Bank Marketing campaign E2E
 
-The local campaign artifacts support useful partial evidence, but the exact R0 E2E acceptance is **not yet met in one reproducible campaign**:
+**Acceptance: met locally on one reproducible campaign.**
 
-| Campaign | Evidence | Limitation |
-|---|---|---|
-| `c-6efe75beb12d426d11e3d3bcb12f4e28` | Three scientific DEV experiments completed; all were rejected and the campaign ended at plateau. Terminal resume was checked: counters and evaluator/agent call totals did not change. | The aggregate-only evaluator emitted no `failure_signals` or `failure_examples`; this run therefore did not persist a causal failure capsule. |
-| `c-5e39c1df87de1932743263b4de6a1993` | Two scientific DEV rejections produced two generalized DEV-only capsules. The next planned experiment used a different mechanism family and cited prior DEV experiments. | Its implementation reached the evaluator but raised a `TypeError` before a score was produced. The campaign paused as infrastructure/implementation failure; this is not a third scientific experiment. |
-| `c-3deb7ddb27f3cff57cb1be8f7a395a16` | Diagnostic run exposed the scoped-symbol-locator issue; no science was measured. The locator handling is covered by the current regression test. | No campaign acceptance evidence. |
+- Campaign: `c-68cc0b1cec90818c229983ca7ddbbbb1`
+- Isolated Bank Marketing snapshot: commit `c078969`
+- BananLoop source under test: `7472ae3f9d1d409ab08cd0ecce3d53619ee1d0cb`
+- Outcome: `STOPPED/PLATEAU`; four scientific experiments, four attempts, 12 agent calls, 8 evaluator calls. No candidate passed the independent promotion requirements, so the baseline remained champion.
+- Approved budget: 4 experiments, 7 attempts, 18 agent calls, 16 evaluator calls. Observed counts remained within each limit.
 
-Safe resume was also exercised on `c-5e39c1df87de1932743263b4de6a1993` through the normal goal command, without `--retry-failed-action`. BananLoop stopped at the recorded FAILED evaluator action; the campaign remained `PAUSED_INFRA` with 2 experiments, 3 attempts, 8 agent calls, and 5 evaluator calls before and after resume. No failed evaluator action was executed again.
+| Experiment | DEV intervention | DEV PR-AUC delta | Decision |
+|---|---|---:|---|
+| 1 | Logistic regression regularization, C=0.1 | +0.00695671 | DEV accepted; then rejected by independent validation gate |
+| 2 | Regularization refinement, C=0.5 | +0.00170081 | Rejected as below the meaningful-improvement threshold |
+| 3 | Group rare categorical values | 0.00000000 | Rejected; no meaningful DEV effect |
+| 4 | Increase positive-class loss weight | -0.00346003 | Rejected; no meaningful DEV improvement |
 
-Across these runs, no single campaign proves **at least three scientific experiments plus DEV failure → persisted capsule → different hypothesis family → measured DEV result, followed by a scored retry/resume**. The operational failure remains distinct from a scientific rejection. Aggregate-only evidence remains explicitly unknown rather than being promoted to a root-cause claim.
+After experiment 2's DEV rejection, ANALYZE persisted two generalized DEV capsules with separate observation/inference fields. The experiment 3 proposal received both capsule structures, selected the new `feature_representation` family, targeted `capsule:metric_misalignment`, and referenced experiments 1 and 2. Its DEV result was then measured and rejected. Experiment 4 tested a third family, `class_asymmetric_objective`.
 
-Historical QA reports also describe Bank Marketing campaigns, including DEV-only reflection, but the runs above are the relevant current artifacts. Historical reports are not substituted for the acceptance gate.
+A structural audit of all four saved proposal requests found no validation, holdout, case-ID, or label key paths. All proposer-visible `failure_examples` arrays were empty; raw public DEV examples were supplied only to ANALYZE. The campaign made one terminal holdout evaluation after plateau; no holdout metrics, labels, or examples are included here.
+
+Durable resume was verified after terminal stop with `bananloop resume`: it returned `STOPPED/PLATEAU` with the same 4 experiments, 4 attempts, 12 agent calls, and 8 evaluator calls. No completed action was repeated.
+
+The campaign ended honestly without validated improvement. This is evidence for the R0 research loop and its isolation behavior, not evidence that the Bank Marketing model improved.
 
 ## GitHub Actions
 
-Code commit `7472ae3f9d1d409ab08cd0ecce3d53619ee1d0cb` is the source of PR head `40a97d1430e941bd749318ff556ba56d2b39cd0b` (the report-only follow-up commit). GitHub Actions run [39731715909](https://github.com/ObiVanBanan/BananLoop/actions/runs/39731715909) completed with all four matrix jobs failed. The job-steps lookup returned no steps for any job, and log downloads returned `BlobNotFound`; no hosted test result was produced. Earlier PR runs likewise failed before runner assignment (`runner_id=0`, no runner name, no steps).
+Latest observed run: [39732310076](https://github.com/ObiVanBanan/BananLoop/actions/runs/39732310076), on report-only commit `3b359050924f2c7822663dfe141d4ccc2231bfb5`, after the code commit `7472ae3`. All four matrix jobs (Ubuntu 3.11/3.12/3.13 and Windows 3.12) failed with empty step lists and no downloadable logs. An explicit rerun of run `39731801213` produced the same no-step failure. Prior runs reported `runner_id=0`, no runner name, and no steps.
 
-**Conclusion:** Linux and Windows hosted CI remain unverified. A completed run must show runner assignment and test steps for both operating systems before this gate can be marked passed.
+**Conclusion:** hosted Linux and Windows CI remain unverified because no job reached checkout or test execution. Local Linux pytest and earlier Windows results do not substitute for a runner-assigned run on the current code.
 
 ## Other R0 evidence
 
@@ -50,6 +59,7 @@ Code commit `7472ae3f9d1d409ab08cd0ecce3d53619ee1d0cb` is the source of PR head 
 
 ## Remaining R0 gates
 
-1. Obtain runner-assigned Linux and Windows matrix results for the current PR head.
-2. Complete a reproducible Bank Marketing campaign with at least three scientific experiments, DEV-only capsule-to-different-family-to-DEV lineage, and verified retry/resume, without feeding validation or final holdout evidence to adaptive research.
-3. Reassess PR #47 after those receipts; keep issue #49 open until its R0 acceptance conditions are satisfied.
+1. Obtain runner-assigned Linux and Windows Actions results for the current PR head.
+2. Reassess PR #47 after those results; keep #49 open until the CI gate and reviewer decision are resolved.
+
+The full Bank Marketing experiment/capsule/resume gate and current local pytest gate are now evidenced above.
