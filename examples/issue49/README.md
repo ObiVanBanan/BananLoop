@@ -19,3 +19,11 @@ PYTHONPATH=src python examples/issue49/run_performance_dogfood.py --work-dir /tm
 The evaluator compares a repeated nested scan with a one-pass dictionary index on frozen per-tier workloads. It reports p95 latency, throughput, correctness, and a within-run A/A split diagnostic. Inputs are synthetic and the result is a local fixture result, not a general performance claim.
 
 Evidence from the 2026-10-22 executions is recorded under `qa/issue49-*-dogfood-2026-10-22.json`.
+
+## Matched-budget portfolio comparison
+
+```sh
+PYTHONPATH=src python examples/issue49/run_matched_budget_comparison.py --work-dir /tmp/bananloop-issue49-matched
+```
+
+This compares the BananLoop portfolio path with a first-candidate loop on the same frozen synthetic fixture, evaluator, ordered proposals, and caps (2 agent calls, 6 evaluator calls, 1 experiment). The evaluator batches repeated lookups to reduce timer overhead and reports an A/A split diagnostic. Results are local evidence from one CPU fixture; they do not establish general agent success rates. Recorded runs are in `qa/issue49-matched-budget-2026-10-22-run*.json`.

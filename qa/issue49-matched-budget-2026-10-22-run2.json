@@ -1,0 +1,127 @@
+{
+  "claim_limit": "one synthetic CPU fixture only; this does not estimate general coding-agent success rates",
+  "fixture_commit": "a9e092e32695415106a2ae09982865b970786ad2",
+  "matched_budget_caps": {
+    "agent_calls": 2,
+    "evaluator_calls": 6,
+    "experiments": 1
+  },
+  "method": "controlled local comparison: BananLoop core selects from a two-candidate portfolio; naive loop takes the first candidate. Same fixture commit, frozen tier workloads, command agent, evaluator, target/gates, and maximum budgets.",
+  "naive_first_candidate_loop": {
+    "accepted_despite_baseline_aa_spread_exceeding_threshold": false,
+    "agent_calls": 2,
+    "baseline": {
+      "dev": {
+        "correctness": 1.0,
+        "latency_p95_ms": 10.1595264,
+        "throughput_rps": 28877.849246758033
+      },
+      "validation": {
+        "correctness": 1.0,
+        "latency_p95_ms": 12.2563494,
+        "throughput_rps": 28144.453407716675
+      }
+    },
+    "baseline_aa_half_delta_ms": 0.8579758000000002,
+    "candidate": {
+      "dev": {
+        "correctness": 1.0,
+        "latency_p95_ms": 42.3375966,
+        "throughput_rps": 10871.166353593193
+      },
+      "validation": {
+        "correctness": 1.0,
+        "latency_p95_ms": 21.1146098,
+        "throughput_rps": 17719.284300550244
+      }
+    },
+    "candidate_aa_half_delta_ms": 12.330417999999998,
+    "candidate_accepted": false,
+    "candidate_correctness": {
+      "dev": true,
+      "validation": true
+    },
+    "candidate_diff_sha256": "bf1e01ea264d0934f55896d620eddee18824029381e6492af1e5e1bbfd5b9cca",
+    "dev_delta_ms": -32.17807019999999,
+    "evaluator_calls": 5,
+    "final_holdout_champion": {
+      "correctness": 1.0,
+      "latency_p95_ms": 14.4326584,
+      "throughput_rps": 26498.78164812634
+    },
+    "measurement_sha256": {
+      "baseline": {
+        "dev": "0e2308de1dd9ff7c9f010560d1d62f794759b3bd3afef8d2d3b731eb18c4b40a",
+        "validation": "308ad7181c28fe8474cc003104acb4b15557d4b13637e2c73e95afb6aa926295"
+      },
+      "candidate": {
+        "dev": "67c3869902128af72451cccbf822ba057c5c97295ec452e4f0edf5752a543d72",
+        "validation": "9391a9e161d8c7d26eddc3f9fb20e08e8119148f6625ee7ab5f860805aa9fbbc"
+      }
+    },
+    "rejection_reasons": [
+      "DEV_MIN_IMPROVEMENT",
+      "VALIDATION_MIN_IMPROVEMENT",
+      "DEV_THROUGHPUT",
+      "VALIDATION_THROUGHPUT"
+    ],
+    "selected_candidate_id": "a-linear-scan-rewrite",
+    "validation_delta_ms": -8.8582604
+  },
+  "portfolio": {
+    "agent_calls": 2,
+    "champion_was_promoted": true,
+    "dev": [
+      {
+        "correctness": 1.0,
+        "latency_p95_ms": 8.678046,
+        "throughput_rps": 30357.746307701153
+      },
+      {
+        "correctness": 1.0,
+        "latency_p95_ms": 0.2515446,
+        "throughput_rps": 1299333.880244619
+      }
+    ],
+    "dev_aa_calibration": [
+      {
+        "aa_half_p95_abs_delta_ms": 0.7344736000000012
+      },
+      {
+        "aa_half_p95_abs_delta_ms": 0.10746180000000002
+      }
+    ],
+    "evaluator_calls": 5,
+    "holdout": {
+      "configured": true,
+      "evaluated": true,
+      "snapshot": "90418dae30a765c5ba984bc4aa6fa4efed30ac49",
+      "target_met": true,
+      "value": 0.260937
+    },
+    "improvement_status": "CHAMPION_IMPROVED",
+    "outcome": "GOAL_MET",
+    "receipts": [
+      "bfa403e8dfb60604c3dddb08d5b3582f09503813745dd1083b6c8c4fcf4cb986",
+      "b6a677224684064c7c177674f04aa369d417e10d8f631aa80f4d266455d383e2",
+      "fcc17a118828de4c056b3fd9318fbd9e6964569a833b1f3807fb173010674d57",
+      "9874ac166de3d669d7bab645537b14fb5ff148933c988af0524cdbeb0100289e",
+      "a8d20958fea5b1daa68f7091e03f29a58b1f31b4d31eac077e046c851f93aafe"
+    ],
+    "selected_candidate_id": "z-build-index-once",
+    "status": "GOAL_MET",
+    "stop_reason": "GOAL_MET",
+    "validation": {
+      "baseline": 8.749888,
+      "champion": 0.2391764,
+      "configured": true,
+      "delta": -8.5107116
+    }
+  },
+  "real_model_calls": 0,
+  "resources_observed": {
+    "cpu_affinity_count": 2,
+    "free_disk_bytes": 34168393728,
+    "memory_total_kib": 8138084
+  }
+}
