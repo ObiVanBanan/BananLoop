@@ -1998,6 +1998,59 @@ def test_one_bounded_repair_rechecks_candidate_before_dev_evaluation(tmp_path: P
         store.close()
 
 
+def test_completed_repair_replays_its_snapshot_without_a_second_agent_call(tmp_path: Path, monkeypatch):
+    class CountingRepairAgent(AgentAdapter):
+        def __init__(self):
+            self.calls = 0
+
+        def probe(self):
+            return {"available": True, "kind": "test"}
+
+        def execute(self, task, workspace, timeout):
+            self.calls += 1
+            (workspace / "model.py").write_text("value = 1\n", encoding="utf-8")
+            return {"summary": "repair", "changed_paths": ["model.py"],
+                    "verification_notes": "", "blockers": []}
+
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.spec.editable_scope.append("model.py")
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        model = engine.workspace.workspace / "model.py"
+        model.write_text("value = (\n", encoding="utf-8")
+        broken_snapshot = engine.workspace.snapshot("broken candidate")
+        store.update_experiment(experiment_id, candidate_snapshot=broken_snapshot)
+        store.set_stage(attempt_id, "VERIFY")
+        agent = CountingRepairAgent()
+        engine.agent = agent
+
+        original_update = store.update_experiment
+        fail_snapshot_persist = True
+
+        def interrupt_after_action(exp_id, **fields):
+            nonlocal fail_snapshot_persist
+            if fields.get("candidate_snapshot") and fail_snapshot_persist:
+                fail_snapshot_persist = False
+                raise RuntimeError("simulated interruption before experiment snapshot update")
+            return original_update(exp_id, **fields)
+
+        monkeypatch.setattr(store, "update_experiment", interrupt_after_action)
+        with pytest.raises(RuntimeError, match="simulated interruption"):
+            engine._stage_verify(attempt_id, experiment_id)
+        action = store.action(f"exp:{experiment_id}:repair:1")
+        assert action["status"] == "COMPLETED"
+        assert agent.calls == 1
+
+        monkeypatch.setattr(store, "update_experiment", original_update)
+        engine._stage_verify(attempt_id, experiment_id)
+
+        assert agent.calls == 1
+        assert store.experiment(experiment_id)["candidate_snapshot"] != broken_snapshot
+        assert store.attempt(attempt_id)["stage"] == "EVALUATE"
+    finally:
+        store.close()
+
+
 def test_pr_auc_analyzer_task_gets_target_metric_guidance_without_hidden_evidence(tmp_path: Path):
     store, engine, _, _ = make_engine(tmp_path)
     try:
