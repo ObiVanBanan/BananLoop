@@ -72,8 +72,16 @@ def make_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def make_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str]:
+def make_engine(
+    tmp_path: Path, *, smoke_source: str | None = None
+) -> tuple[CampaignStore, Engine, Path, str]:
     repo = make_repo(tmp_path)
+    smoke_command = []
+    if smoke_source is not None:
+        (repo / "smoke.py").write_text(smoke_source, encoding="utf-8")
+        git(["add", "smoke.py"], repo)
+        git(["commit", "-m", "add smoke evaluator"], repo)
+        smoke_command = [sys.executable, "smoke.py"]
     base = git(["rev-parse", "HEAD"], repo)
     paths = RuntimePaths.for_repo(repo, tmp_path / "state")
     paths.ensure()
@@ -83,10 +91,16 @@ def make_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str]:
         base_commit=base,
         evaluation_command=[sys.executable, "evaluator.py"],
         primary_metric=MetricSpec(name="quality", direction=Direction.MAXIMIZE, target=3, min_improvement=0.5),
+        smoke_command=smoke_command,
+        smoke_timeout_seconds=10 if smoke_command else None,
+        evaluation_assets=(
+            [EvaluationAsset(path="smoke.py", sha256=sha256_evaluation_asset(repo / "smoke.py"))]
+            if smoke_command else []
+        ),
         guardrails=[GuardrailSpec(metric="regressions", operator="<=", bound=0)],
         mandatory_checks=["tests"],
         editable_scope=["value.txt", "guard.txt"],
-        protected_paths=["evaluator.py", "agent.py"],
+        protected_paths=["evaluator.py", "agent.py", *( ["smoke.py"] if smoke_command else [])],
         budget=BudgetSpec(max_experiments=5, max_attempts=6, max_agent_calls=12, max_evaluator_calls=8, plateau_experiments=3),
         agent=AgentConfig(kind="command", command=[sys.executable, "agent.py"]),
     )
@@ -1998,6 +2012,113 @@ def test_one_bounded_repair_rechecks_candidate_before_dev_evaluation(tmp_path: P
         store.close()
 
 
+def test_bounded_repair_runs_frozen_smoke_before_dev(tmp_path: Path):
+    smoke = (
+        "import json\nfrom model import value\n"
+        "print(json.dumps({'status':'ok','metrics':{'quality':value}}))\n"
+    )
+
+    class RepairAgent(AgentAdapter):
+        def probe(self):
+            return {"available": True, "kind": "test"}
+
+        def execute(self, task, workspace, timeout):
+            assert task["role"] == "repair"
+            (workspace / "model.py").write_text("value = 1\n", encoding="utf-8")
+            return {
+                "summary": "fixed syntax error",
+                "changed_paths": ["model.py"],
+                "verification_notes": "",
+                "blockers": [],
+            }
+
+    store, engine, _, _ = make_engine(tmp_path, smoke_source=smoke)
+    try:
+        engine.spec.editable_scope.append("model.py")
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        evaluator_calls_before = store.campaign()["evaluator_calls"]
+        dev_evaluations_before = len(store.evaluations("dev"))
+        model = engine.workspace.workspace / "model.py"
+        model.write_text("value = (\n", encoding="utf-8")
+        candidate = engine.workspace.snapshot("candidate with syntax error")
+        store.update_experiment(experiment_id, candidate_snapshot=candidate)
+        store.set_stage(attempt_id, "VERIFY")
+        engine.agent = RepairAgent()
+
+        engine._stage_verify(attempt_id, experiment_id)
+
+        assert store.attempt(attempt_id)["stage"] == "SMOKE"
+        assert store.campaign()["evaluator_calls"] == evaluator_calls_before
+        engine._stage_smoke(attempt_id, experiment_id)
+
+        action = store.action(f"exp:{experiment_id}:smoke:1")
+        assert action["status"] == "COMPLETED", action.get("error")
+        assert json.loads(action["response_json"]) == {
+            "smoke_passed": True,
+            "snapshot": store.experiment(experiment_id)["candidate_snapshot"],
+        }
+        assert store.evaluation_receipt(action["id"]) is None
+        assert store.attempt(attempt_id)["stage"] == "EVALUATE"
+        assert store.campaign()["evaluator_calls"] == evaluator_calls_before + 1
+
+        # A restart after the durable smoke action completed reuses its result.
+        calls_after_smoke = store.campaign()["evaluator_calls"]
+        store.set_stage(attempt_id, "SMOKE")
+        engine._stage_smoke(attempt_id, experiment_id)
+        assert store.attempt(attempt_id)["stage"] == "EVALUATE"
+        assert store.campaign()["evaluator_calls"] == calls_after_smoke
+
+        engine._stage_evaluate(attempt_id, experiment_id)
+        assert len(store.evaluations("dev")) == dev_evaluations_before + 1
+    finally:
+        store.close()
+
+
+def test_failed_post_repair_smoke_rejects_without_dev_or_raw_error(tmp_path: Path):
+    smoke = "import sys\nprint('private-smoke-canary', file=sys.stderr)\nsys.exit(3)\n"
+
+    class RepairAgent(AgentAdapter):
+        def probe(self):
+            return {"available": True, "kind": "test"}
+
+        def execute(self, task, workspace, timeout):
+            (workspace / "model.py").write_text("value = 1\n", encoding="utf-8")
+            return {
+                "summary": "fixed syntax error",
+                "changed_paths": ["model.py"],
+                "verification_notes": "",
+                "blockers": [],
+            }
+
+    store, engine, _, _ = make_engine(tmp_path, smoke_source=smoke)
+    try:
+        engine.spec.editable_scope.append("model.py")
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        evaluator_calls_before = store.campaign()["evaluator_calls"]
+        dev_evaluations_before = len(store.evaluations("dev"))
+        (engine.workspace.workspace / "model.py").write_text("value = (\n", encoding="utf-8")
+        candidate = engine.workspace.snapshot("candidate with syntax error")
+        store.update_experiment(experiment_id, candidate_snapshot=candidate)
+        store.set_stage(attempt_id, "VERIFY")
+        engine.agent = RepairAgent()
+
+        engine._stage_verify(attempt_id, experiment_id)
+        engine._stage_smoke(attempt_id, experiment_id)
+
+        action = store.action(f"exp:{experiment_id}:smoke:1")
+        assert action["status"] == "FAILED"
+        assert "private-smoke-canary" not in (action["error"] or "")
+        assert store.attempt(attempt_id)["stage"] == "REJECT"
+        assert store.experiment(experiment_id)["failure_category"] == "IMPLEMENTATION_BLOCKED"
+        assert "POST_REPAIR_SMOKE_FAILED" in json.loads(
+            store.experiment(experiment_id)["decision_json"]
+        )["reasons"]
+        assert store.campaign()["evaluator_calls"] == evaluator_calls_before + 1
+        assert len(store.evaluations("dev")) == dev_evaluations_before
+    finally:
+        store.close()
+
+
 def test_completed_repair_replays_its_snapshot_without_a_second_agent_call(tmp_path: Path, monkeypatch):
     class CountingRepairAgent(AgentAdapter):
         def __init__(self):
@@ -2140,6 +2261,23 @@ def test_campaign_repair_budget_blocks_repairs_after_durable_attempt_limit(tmp_p
         assert store.experiment(experiment_id)["failure_category"] == "IMPLEMENTATION_BLOCKED"
         assert "repair budget exhausted" in store.experiment(experiment_id)["lesson"]
         assert store.campaign()["evaluator_calls"] == evaluator_calls_before
+    finally:
+        store.close()
+
+
+def test_default_repair_budget_preserves_legacy_approved_spec_hash(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        legacy_payload = engine.spec.model_dump(mode="json")
+        legacy_payload["budget"].pop("max_repair_attempts")
+        legacy_spec = CampaignSpec.model_validate(legacy_payload)
+        assert engine.spec.budget.max_repair_attempts == 1
+        assert engine.spec.approved_hash() == legacy_spec.approved_hash()
+
+        two_attempt_payload = engine.spec.model_dump(mode="json")
+        two_attempt_payload["budget"]["max_repair_attempts"] = 2
+        two_attempt_spec = CampaignSpec.model_validate(two_attempt_payload)
+        assert two_attempt_spec.approved_hash() != engine.spec.approved_hash()
     finally:
         store.close()
 

@@ -274,6 +274,8 @@ class CampaignSpec(BaseModel):
     project_context: str = ""
     evaluation_command: list[str]
     evaluator_timeout_seconds: int = Field(default=900, ge=1)
+    smoke_command: list[str] = Field(default_factory=list)
+    smoke_timeout_seconds: int | None = Field(default=None, ge=1, le=90)
     validation_command: list[str] = Field(default_factory=list)
     validation_timeout_seconds: int | None = Field(default=None, ge=1)
     holdout_command: list[str] = Field(default_factory=list)
@@ -372,7 +374,12 @@ class CampaignSpec(BaseModel):
             raise ValueError("validation_timeout_seconds requires validation_command")
         if self.holdout_timeout_seconds is not None and not self.holdout_command:
             raise ValueError("holdout_timeout_seconds requires holdout_command")
-        minimum_calls = 1 + int(bool(self.validation_command)) + int(bool(self.holdout_command))
+        if self.smoke_timeout_seconds is not None and not self.smoke_command:
+            raise ValueError("smoke_timeout_seconds requires smoke_command")
+        minimum_calls = (
+            1 + int(bool(self.validation_command)) + int(bool(self.holdout_command))
+            + self.budget.max_repair_attempts * int(bool(self.smoke_command))
+        )
         if self.budget.max_evaluator_calls < minimum_calls:
             raise ValueError(
                 "max_evaluator_calls is too small for baseline staged evaluation; "
@@ -396,6 +403,8 @@ class CampaignSpec(BaseModel):
         for key in ("max_evaluation_units", "evaluation_units_per_call"):
             if data["budget"][key] is None:
                 data["budget"].pop(key)
+        if data["budget"].get("max_repair_attempts", 1) == 1:
+            data["budget"].pop("max_repair_attempts", None)
         # Keep hashes compatible with v0.1 specs created before these fields existed.
         if not self.project_context:
             data.pop("project_context", None)
@@ -403,6 +412,10 @@ class CampaignSpec(BaseModel):
             data.pop("evaluator_timeout_seconds", None)
         if not self.validation_command:
             data.pop("validation_command", None)
+        if not self.smoke_command:
+            data.pop("smoke_command", None)
+        if self.smoke_timeout_seconds is None:
+            data.pop("smoke_timeout_seconds", None)
         if self.validation_timeout_seconds is None:
             data.pop("validation_timeout_seconds", None)
         if not self.holdout_command:

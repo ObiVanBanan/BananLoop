@@ -21,6 +21,6 @@ def pre_action_stop(campaign: dict, budget: BudgetSpec, kind: str) -> StopReason
         return StopReason.BUDGET_EXHAUSTED
     if kind == "agent" and campaign["agent_calls"] >= budget.max_agent_calls:
         return StopReason.BUDGET_EXHAUSTED
-    if kind == "evaluator" and campaign["evaluator_calls"] >= budget.max_evaluator_calls:
+    if kind in {"evaluator", "smoke"} and campaign["evaluator_calls"] >= budget.max_evaluator_calls:
         return StopReason.BUDGET_EXHAUSTED
     return None

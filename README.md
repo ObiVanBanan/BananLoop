@@ -279,8 +279,13 @@ BananLoop can own the full evaluation lifecycle instead of requiring a manual po
 - `--eval-cmd` is the **dev** evaluator. It runs on the baseline and every candidate and drives the ordinary iterative decision.
 - `--validation-eval-cmd` is a blind **validation** evaluator. It runs on the baseline and only on candidates that first pass the dev policy. A candidate is promoted only when the same metric/guardrail policy also improves against the current validation champion.
 - `--holdout-eval-cmd` is the **final holdout** evaluator. It runs once on the terminal champion after normal campaign termination. Its detailed result is never added to agent context or experiment history.
+- `--smoke-cmd` is an optional cheap evaluator used after a bounded implementation repair. It runs in a disposable checkout of that candidate; the result must be valid and contain the primary metric, but its metric values are discarded. Smoke calls consume evaluator/work budget and the command plus referenced assets are frozen with the campaign.
 - Validation/holdout commands may point at external datasets. Repository evaluator scripts/configs referenced by any tier are frozen and automatically hidden from the agent workspace.
 - When a holdout is configured, BananLoop reserves the final evaluator-call budget slot for it.
+
+The post-repair smoke timeout defaults to 90 seconds and can be lowered with
+`--smoke-timeout-seconds`. A campaign without an approved smoke command still
+repeats static preflight after repair, but does not claim a runtime smoke passed.
 
 `GOAL_MET` requires the final holdout to meet the target and mandatory guards.
 A valid final measurement below target ends as `STOPPED / FINAL_HOLDOUT_REJECTED`;

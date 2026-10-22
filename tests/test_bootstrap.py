@@ -97,6 +97,7 @@ def make_repo(tmp_path: Path) -> tuple[Path, str]:
         "'project_context':'value.txt is the production lever; evaluator.py scores it',"
         "'needs_input':[],"
         "'evaluation_command':[" + repr(sys.executable) + ",'.bananloop_eval/evaluator.py'],"
+        "'smoke_command':[" + repr(sys.executable) + ",'.bananloop_eval/evaluator.py'],"
         "'validation_command':[],"
         "'holdout_command':[],"
         "'primary_metric':{'name':'quality','direction':'maximize','target':1.0,'min_improvement':0.1},"
@@ -202,6 +203,8 @@ def test_repo_goal_bootstrap_creates_campaign_without_touching_source(tmp_path: 
     assert spec is not None
     assert spec.project_context.startswith("value.txt")
     assert spec.base_commit != source_base
+    assert spec.smoke_command == [sys.executable, ".bananloop_eval/evaluator.py"]
+    assert spec.smoke_timeout_seconds == 60
     assert ".bananloop_eval/evaluator.py" in {
         asset.path for asset in spec.evaluation_assets
     }
