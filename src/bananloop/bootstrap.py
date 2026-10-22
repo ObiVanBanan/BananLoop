@@ -846,6 +846,10 @@ def bootstrap_campaign(
         project_context=plan.project_context,
         evaluation_command=plan.evaluation_command,
         evaluator_timeout_seconds=plan.evaluator_timeout_seconds,
+        smoke_command=plan.smoke_command,
+        smoke_timeout_seconds=(
+            min(plan.evaluator_timeout_seconds, 90) if plan.smoke_command else None
+        ),
         validation_command=plan.validation_command,
         holdout_command=plan.holdout_command,
         evaluation_assets=assets,
