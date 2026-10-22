@@ -1,4 +1,5 @@
 {
+  "bananloop_core_commit": "2916e2b6dd9e7b218da5a70ddf7b5cab71332422",
   "campaign_budget": {
     "agent_calls": 4,
     "evaluation_units": 60,
@@ -10,7 +11,7 @@
     "agent": 2,
     "evaluator": 5
   },
-  "campaign_id": "state-31908fc30d406a309ce851e67e8c3ad3",
+  "campaign_id": "state-0772eda60e41592a6ae137f4a001de3c",
   "changed_paths": [
     "src/retrieval.py"
   ],
@@ -19,24 +20,24 @@
     {
       "false_match_rate": 1.0,
       "false_reject_rate": 0.0,
-      "latency_p95_ms": 2.369943,
+      "latency_p95_ms": 3.092178,
       "recall_at_1": 0.625
     },
     {
       "false_match_rate": 0.0,
       "false_reject_rate": 0.0,
-      "latency_p95_ms": 2.62268,
+      "latency_p95_ms": 3.253022,
       "recall_at_1": 1.0
     }
   ],
   "domain": "qdrant_service_backed_product_retrieval",
   "final_assessment": "ACCEPTED",
-  "fixture_commit": "0a1d01edcf1ff6fab2972889c5ead0f6d01fea19",
+  "fixture_commit": "d4b3ec2590e18bb262708b31b51263c8cc8b5fee",
   "hidden_evaluator_assets_absent_from_agent_workspace": true,
   "holdout": {
     "configured": true,
     "evaluated": true,
-    "snapshot": "6180843cafa40e78a369b9df2ea3aeb1ce2366ec",
+    "snapshot": "ccb9ba523c4e51b6f7fc660617b248194433aeff",
     "target_met": true,
     "value": 1.0
   },
@@ -47,27 +48,27 @@
   "receipts": [
     {
       "action_id": "baseline:evaluate",
-      "receipt_hash": "7500454fdffdff649891ce8f0e4c35d8255cedfabdfc86aba362a8977140e1df",
+      "receipt_hash": "2e4725fcd9439202a8a1da20936439fa665170ad34438701fcbad0d00d126ee2",
       "tier": "dev"
     },
     {
       "action_id": "baseline:validation",
-      "receipt_hash": "33411af7cd2bf3a6464e15aded1a27bced7fe32bf686a462121fac6ec79048ca",
+      "receipt_hash": "a09ecc80c2bccd15532f8df066f7c78ed7fea313d4391d109391e5150d5a720a",
       "tier": "validation"
     },
     {
       "action_id": "exp:1:evaluate",
-      "receipt_hash": "f77e5afe89224159e52f80719d559a1186c61c586db1daff4562dbcd61d88e60",
+      "receipt_hash": "4207c6604869e9a201ddcf869387cf27a6d37697dd12651dcffe16983ce0ed94",
       "tier": "dev"
     },
     {
       "action_id": "exp:1:validation",
-      "receipt_hash": "473f0c2155acf6da65bda90820a95e3d07f6c7d37efae828b09a98d76b075a8a",
+      "receipt_hash": "f22b95694137b9556dee28e3a8ebbc5ff6f7bf7dd288710094273e6334b16a99",
       "tier": "validation"
     },
     {
       "action_id": "final:holdout",
-      "receipt_hash": "83547eeef3410ae5c45a7bc9ecf4186be5c68611ed04ea5bead857ed382ea67b",
+      "receipt_hash": "c4001991946749eca7c4ea2f1b778d0a51d22996c5da54ec8623e06e59f6cc95",
       "tier": "holdout"
     }
   ],
@@ -78,7 +79,7 @@
     "open_reservations": 0,
     "reservation_count": 12,
     "unknown_outcomes": 0,
-    "wall_time_seconds": 1.792128
+    "wall_time_seconds": 1.9480609999999998
   },
   "status": "GOAL_MET",
   "stop_reason": "GOAL_MET",

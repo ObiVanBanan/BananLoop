@@ -362,6 +362,7 @@ def main() -> int:
     protocol = report["evaluation_protocol"]
     output = {
         "domain": "qdrant_service_backed_product_retrieval",
+        "bananloop_core_commit": run(["git", "rev-parse", "HEAD"], cwd=ROOT, env=env).stdout.strip(),
         "fixture_commit": run(["git", "rev-parse", "HEAD"], cwd=project, env=env).stdout.strip(),
         "qdrant": service,
         "status": status["status"], "stop_reason": status.get("stop_reason"),
