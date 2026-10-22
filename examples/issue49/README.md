@@ -19,6 +19,7 @@ PYTHONPATH=src python examples/issue49/run_performance_dogfood.py --work-dir /tm
 The evaluator compares a repeated nested scan with a one-pass dictionary index on frozen per-tier workloads. It reports p95 latency, throughput, correctness, and a within-run A/A split diagnostic. Inputs are synthetic and the result is a local fixture result, not a general performance claim.
 
 Evidence from the 2026-10-22 executions is recorded under `qa/issue49-*-dogfood-2026-10-22.json`.
+Aggregate-only exports reconstructed from the saved Bank Marketing, product matcher, and WineQT campaign stores are in `qa/issue49-real-project-campaign-aggregates-2026-10-22.json`. They contain protocol/evaluator/receipt fingerprints and no per-case hidden-tier data.
 
 ## Matched-budget portfolio comparison
 

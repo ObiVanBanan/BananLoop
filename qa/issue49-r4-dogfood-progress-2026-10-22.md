@@ -4,7 +4,15 @@ Run date: 2026-10-22 UTC. This is partial evidence for R4, not its completion re
 
 ## Evidence carried forward
 
-`real-project-autonomous-qa-2026-10-21.md` documents real Bank Marketing (ML), product matcher (retrieval), and WineQT campaigns with separate DEV/validation/final-holdout scores. Two saved Bank Marketing campaign specs use the Codex adapter. These runs include both promoted and rejected outcomes; they do not establish a general performance claim.
+`real-project-autonomous-qa-2026-10-21.md` documents real Bank Marketing (ML), product matcher (retrieval), and WineQT campaigns. I reconstructed aggregate-only reports from their durable campaign stores and verified each campaign spec, adapter, snapshots, split protocol hashes, evaluator binding, and receipt hashes. The export [issue49-real-project-campaign-aggregates-2026-10-22.json](issue49-real-project-campaign-aggregates-2026-10-22.json) omits per-case records and labels.
+
+| Campaign | Adapter | DEV baseline → champion | Validation baseline → champion | Final holdout (terminal aggregate) | Outcome / assessment |
+|---|---|---:|---:|---:|---|
+| Bank Marketing `c-226fc50bd99ad640be98ead83495700a` | Codex | PR-AUC 0.229681 → 0.229681 | 0.340177 → 0.340177 | 0.492159; baseline snapshot only | 5 scientific trials, 1 implementation-blocked attempt, no promotion; `DEV_ONLY` |
+| Product matcher `c-afbf21b4f610db2db0a97087313f9112` | Codex | accuracy 0.875 → 1.000 | 0.375 → 0.750 | 0.750; target not met | champion promoted after validation; terminal outcome `STOPPED`, assessment remains `DEV_ONLY` |
+| WineQT `c-6482e268b37321166b5ffbaf04807e43` | Codex | ROC-AUC 0.865591 → 0.865591 | 0.865591 → 0.865591 | 0.865591; target not met | 3 scientific trials, plateau, no promotion; `DEV_ONLY` |
+
+The Codex adapter is explicit in the two campaign specs; command adapter is used by the offline bug-fix/performance fixtures and the matched-budget comparator. This supplies same-core ML/retrieval, bug-fix, and performance evidence with both promoted and rejected outcomes. `DEV_ONLY` is preserved: the archived campaign reports do not prove independent business-level evaluator validity. These results do not establish a general success-rate or performance claim.
 
 ## New deterministic CPU dogfood
 
@@ -30,12 +38,11 @@ The performance fixture is a controlled synthetic algorithm comparison on one ho
 
 ## R4 still open
 
-- The matched-budget comparison against an actual naive coding-agent loop has not been run; existing issue #42 `compare.py` is a deterministic policy replay, not an end-to-end comparator.
-- RAG/service-backed dogfood and image-quality dogfood are not proven here.
-- The prior ML/retrieval campaigns need a consolidated same-core receipt table and environment/protocol fingerprint audit for the R4 gate.
+- Service-backed RAG and image-quality dogfood are not proven here. No external service/model was called for this offline QA increment.
+- The aggregate export includes base commit, campaign-spec hash, snapshots, evaluator-binding hash, per-tier protocol hashes, and receipt hashes. A full effective runtime/dependency fingerprint audit across the archived campaigns is still missing.
 - Hosted Linux/Windows CI has not supplied runnable steps/logs, so the new fixture also has only local Linux execution evidence so far.
 
-Therefore the #49 R4 checklist and DoD remain unchecked.
+Therefore the grouped ML/retrieval/RAG checkbox and the R4 DoD remain unchecked; the bug-fix, performance, adapter-diversity, and lightweight/matched-budget items now have evidence in this branch.
 
 ## Matched-budget portfolio versus first-candidate loop
 
