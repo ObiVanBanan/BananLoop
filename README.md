@@ -362,9 +362,10 @@ bananloop report --repo . --json --output campaign.json
 bananloop stop --repo .
 bananloop resume --repo .
 bananloop export --repo . --output ../champion-export
+bananloop trace export --repo . --campaign-id ID --output ../campaign-trace
 ```
 
-Use `--campaign-id ID` with run/resume/status/stop/report/export to select an
+Use `--campaign-id ID` with run/resume/status/stop/report/export/trace export to select an
 indexed campaign. Without it, commands use the active campaign shown by
 `campaigns list`. Repeating the same canonical goal resumes its indexed
 campaign; use `--request-id ID` on `goal`/`start` to make retries explicit, or
@@ -374,6 +375,17 @@ Use `--state-dir PATH` on all commands to keep campaign state in an explicit
 single-campaign directory (useful for CI/tests). Existing state at the old
 `~/.bananloop/projects/<repo-hash>/campaign.sqlite3` path stays in place and is
 listed as `legacy`.
+
+The portable trace is a read-only export for an operator or reviewer. It
+contains `events.jsonl`, `summary.json`, `report.md`, and a checksum manifest.
+To share a campaign, send `events.jsonl`, `summary.json`, and `report.md` (the
+manifest is useful for integrity checks). The shareable export omits raw goal
+text, agent rationales, evaluator output payloads, case inputs, labels, and
+per-case validation/holdout results; it records only a goal hash and aggregate
+metrics. Provider cost remains `unknown` unless the provider supplies metering.
+Choose an output path outside the source checkout when you do not want the
+export files in that checkout. BananLoop only refreshes a directory carrying
+its own trace manifest; other non-empty directories are refused.
 
 `stop` sends a durable cancellation request to the running supervisor. Managed
 local processes are polled for cancellation and the campaign deadline. The

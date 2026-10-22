@@ -1,0 +1,33 @@
+{
+  "campaign_id": "c-afbf21b4f610db2db0a97087313f9112",
+  "checks": {
+    "goal_text_omitted": true,
+    "manifest_hashes_match": true,
+    "no_case_records": true,
+    "synthetic_canary_absent": true,
+    "valid_jsonl": true
+  },
+  "event_count": 96,
+  "files": {
+    "events.jsonl": {
+      "bytes": 35217,
+      "sha256": "da2ffb0c4ec7f9a25c88cb7bcd2af59bdec8ffc0b207d4dca7dee8f8170ea238"
+    },
+    "manifest.json": {
+      "bytes": 380,
+      "sha256": "c7b02a92d02c11f4017b911a69c73852fc5a329edb85e0c23f845db8e38197a6"
+    },
+    "report.md": {
+      "bytes": 1699,
+      "sha256": "70526993c0b11b3b3a0a111966746bc5c58947d27caf75609a553d8088a8470d"
+    },
+    "summary.json": {
+      "bytes": 10022,
+      "sha256": "345c47e13d1fd85e347211d89edc4407985e80cdeff80e7c0baa69cf605a516c"
+    }
+  },
+  "receipt_count": 8,
+  "schema_version": 1,
+  "scientific_assessment": "DEV_ONLY",
+  "source_domain": "local product retrieval campaign"
+}

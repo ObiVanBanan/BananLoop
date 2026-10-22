@@ -104,3 +104,10 @@ When the campaign terminates, report the champion delta, experiments and
 verdicts, stop reason, and report/export paths when available. Distinguish
 campaign evidence from any historical or manual diagnostics. Preserve the
 exact `BananLoop campaign: <campaign_id>` marker in the final response.
+
+If the user wants a portable operator trace, run
+`bananloop trace export --repo . --campaign-id <campaign_id> --output <path>`.
+Share `events.jsonl`, `summary.json`, and `report.md`; include `manifest.json`
+when the reviewer wants checksum verification. The export is an allowlisted,
+read-only projection and deliberately omits raw prompts, evaluator payloads,
+per-case hidden-tier data, and costs the provider did not report.
