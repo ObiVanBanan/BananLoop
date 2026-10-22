@@ -352,6 +352,8 @@ def derive_dev_lesson(row: dict[str, Any], spec: CampaignSpec) -> DevResearchLes
 def agent_evaluation_view(
     spec: CampaignSpec,
     payload_json: str | None,
+    *,
+    source_tier: str = "dev",
 ) -> dict[str, Any] | None:
     """Return only DEV evidence explicitly allowed into adaptive agent context."""
     if not payload_json:
@@ -361,6 +363,44 @@ def agent_evaluation_view(
     payload = {key: value for key, value in raw.items() if key in {
         "schema_version", "status", "metrics", "checks", "diagnostics"
     }}
+    # Typed diagnostics are adaptive evidence only on public DEV, and only
+    # when both their declared capability and protocol provenance match.
+    payload["diagnostic_evidence"] = []
+    if source_tier == "dev" and isinstance(raw.get("diagnostic_evidence"), list):
+        capabilities = {
+            (cap.name, cap.kind.value, cap.metric)
+            for cap in spec.agent_visible_diagnostic_capabilities
+        }
+        protocol_sha256 = raw.get("protocol_sha256")
+        for item in raw["diagnostic_evidence"][:32]:
+            if not isinstance(item, dict):
+                continue
+            identity = (item.get("name"), item.get("kind"), item.get("metric"))
+            if (
+                set(item) - {"name", "kind", "metric", "value", "unit", "aggregation", "protocol_sha256"}
+                or
+                identity not in capabilities
+                or item.get("aggregation") != "aggregate"
+                or not protocol_sha256
+                or item.get("protocol_sha256") != protocol_sha256
+                or not isinstance(item.get("value"), (int, float))
+                or not math.isfinite(float(item["value"]))
+            ):
+                continue
+            safe_item = {
+                "name": item["name"],
+                "kind": item["kind"],
+                "metric": item["metric"],
+                "value": item["value"],
+                "aggregation": "aggregate",
+                "provenance": {
+                    "tier": "dev",
+                    "protocol_sha256": protocol_sha256,
+                },
+            }
+            if isinstance(item.get("unit"), str):
+                safe_item["unit"] = item["unit"]
+            payload["diagnostic_evidence"].append(safe_item)
     payload["artifacts"] = []
     # Raw per-failure DEV evidence is privileged input for the dedicated
     # analyzer role. Proposer/implementer context only receives generalized

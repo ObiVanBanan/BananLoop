@@ -16,6 +16,49 @@ class Direction(StrEnum):
     MINIMIZE = "minimize"
 
 
+class DiagnosticKind(StrEnum):
+    RANKING = "ranking"
+    CLASSIFICATION = "classification"
+    PERFORMANCE = "performance"
+    REGRESSION_TESTS = "regression_tests"
+
+
+class DiagnosticCapability(BaseModel):
+    """Frozen allowlist entry for one aggregate evaluator diagnostic."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_.-]*$")
+    kind: DiagnosticKind
+    metric: str = Field(min_length=1, max_length=100)
+
+
+class DiagnosticEvidence(BaseModel):
+    """One aggregate diagnostic tied to the frozen evaluator protocol.
+
+    The schema intentionally has no case ID, example, label, or arbitrary
+    provenance field. The protocol digest is the only provenance reference.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_.-]*$")
+    kind: DiagnosticKind
+    metric: str = Field(min_length=1, max_length=100)
+    value: float
+    unit: str | None = None
+    aggregation: Literal["aggregate"] = "aggregate"
+    protocol_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("value")
+    @classmethod
+    def finite_value(cls, value: float) -> float:
+        import math
+        if not math.isfinite(value):
+            raise ValueError("diagnostic evidence must be finite")
+        return value
+
+
 class CampaignStatus(StrEnum):
     READY = "READY"
     RUNNING = "RUNNING"
@@ -214,6 +257,7 @@ class CampaignSpec(BaseModel):
     agent_visible_context_paths: list[str] = Field(default_factory=list)
     agent_visible_metrics: list[str] = Field(default_factory=list)
     agent_visible_diagnostics: list[str] = Field(default_factory=list)
+    agent_visible_diagnostic_capabilities: list[DiagnosticCapability] = Field(default_factory=list)
     paired_comparison: PairedComparison | None = None
     protocol_manifests: dict[Literal["dev", "validation", "holdout"], ProtocolManifest] = Field(default_factory=dict)
     # Optional readiness metadata. None is omitted from approved_hash to keep
@@ -292,6 +336,9 @@ class CampaignSpec(BaseModel):
 
     @model_validator(mode="after")
     def validate_staged_evaluation_budget(self) -> "CampaignSpec":
+        capability_names = [item.name for item in self.agent_visible_diagnostic_capabilities]
+        if len(capability_names) != len(set(capability_names)):
+            raise ValueError("agent_visible_diagnostic_capabilities names must be unique")
         if (self.signal_sanity_status is None) != (self.signal_sanity_receipt_sha256 is None):
             raise ValueError("signal sanity status and receipt digest must be set together")
         if self.validation_timeout_seconds is not None and not self.validation_command:
@@ -347,6 +394,8 @@ class CampaignSpec(BaseModel):
             data.pop("agent_visible_metrics", None)
         if not self.agent_visible_diagnostics:
             data.pop("agent_visible_diagnostics", None)
+        if not self.agent_visible_diagnostic_capabilities:
+            data.pop("agent_visible_diagnostic_capabilities", None)
         if not self.non_regression:
             data.pop("non_regression", None)
         # Keep approved hashes stable for campaign specs created before agent profiles.
@@ -563,6 +612,7 @@ class EvaluationResult(BaseModel):
     # alongside numeric diagnostics. Consumers that compare diagnostics
     # already select finite numeric values only.
     diagnostics: dict[str, float | str] = Field(default_factory=dict)
+    diagnostic_evidence: list[DiagnosticEvidence] = Field(default_factory=list, max_length=32)
     failure_signals: list[DevFailureSignal] = Field(default_factory=list, max_length=8)
     failure_examples: list[DevFailureExample] = Field(default_factory=list, max_length=5)
     artifacts: list[str] = Field(default_factory=list)  # legacy references
@@ -570,6 +620,21 @@ class EvaluationResult(BaseModel):
     cases: list[CaseMeasurement] = Field(default_factory=list, max_length=10000)
     artifact_manifest: list[ArtifactRecord] = Field(default_factory=list, max_length=10000)
     resource_units: int | None = Field(default=None, ge=0)
+
+    @field_validator("diagnostic_evidence", mode="before")
+    @classmethod
+    def discard_invalid_diagnostic_evidence(cls, value: Any) -> list[DiagnosticEvidence]:
+        # Optional diagnostics must never make an otherwise valid primary
+        # measurement fail. The campaign-specific allowlist is applied later.
+        if not isinstance(value, list):
+            return []
+        accepted: list[DiagnosticEvidence] = []
+        for item in value[:32]:
+            try:
+                accepted.append(DiagnosticEvidence.model_validate(item))
+            except Exception:
+                continue
+        return accepted
 
     @model_validator(mode="after")
     def unique_cases(self):

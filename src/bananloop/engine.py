@@ -142,8 +142,10 @@ class Engine:
             if not self.workspace._matches(path, hidden)
         ]
 
-    def _agent_evaluation_view(self, payload_json: str | None) -> dict[str, Any] | None:
-        return agent_evaluation_view(self.spec, payload_json)
+    def _agent_evaluation_view(
+        self, payload_json: str | None, *, source_tier: str = "dev"
+    ) -> dict[str, Any] | None:
+        return agent_evaluation_view(self.spec, payload_json, source_tier=source_tier)
 
     def _agent_decision_view(self, decision_json: str | None) -> dict[str, Any] | None:
         if not decision_json:
@@ -1471,7 +1473,9 @@ class Engine:
         task["hypothesis"] = (
             json.loads(exp["hypothesis_json"]) if exp.get("hypothesis_json") else None
         )
-        task["dev_evaluation"] = self._agent_evaluation_view(exp.get("evaluation_json"))
+        task["dev_evaluation"] = self._agent_evaluation_view(
+            exp.get("evaluation_json"), source_tier="dev"
+        )
         task["dev_decision"] = self._agent_decision_view(exp.get("dev_decision_json"))
 
         safe_signals: list[dict[str, Any]] = []
@@ -1502,7 +1506,10 @@ class Engine:
             "explain_failed_hypothesis_against_dev_evidence": True,
             "suggest_a_discriminating_regression_test": True,
             "do_not_infer_causes_from_aggregate_scores_alone": True,
-            "primary_metric_semantics": metric_failure_guidance(self.spec.primary_metric.name),
+            "primary_metric_semantics": metric_failure_guidance(
+                self.spec.primary_metric.name,
+                diagnostic_evidence=(task["dev_evaluation"] or {}).get("diagnostic_evidence", []),
+            ),
             "explain_target_metric_not_just_auxiliary_cutoff_errors": True,
         }
         return task
@@ -1528,6 +1535,14 @@ class Engine:
                     query_tokens.append(token)
         query_tokens.sort(key=len, reverse=True)
         payload = analysis.model_dump(mode="json")
+        safe_evaluation = self._agent_evaluation_view(
+            candidate.model_dump_json(), source_tier="dev"
+        ) or {}
+        semantics = metric_failure_guidance(
+            self.spec.primary_metric.name,
+            diagnostic_evidence=safe_evaluation.get("diagnostic_evidence", []),
+        )
+        confidence_ceiling = semantics.get("causal_confidence_ceiling")
         for capsule in payload.get("capsules") or []:
             for field in (
                 "title",
@@ -1545,6 +1560,12 @@ class Engine:
                     if token in value:
                         value = value.replace(token, "<case-specific-query>")
                 capsule[field] = self._redact_failure_text(value)
+            if confidence_ceiling is not None:
+                capsule["confidence"] = min(float(capsule.get("confidence", 0.5)), float(confidence_ceiling))
+                if semantics.get("evidence_status", "").startswith("unknown_"):
+                    capsule["likely_mechanism"] = (
+                        "Unverified conjecture: " + str(capsule.get("likely_mechanism") or "")
+                    ).strip()
         return FailureAnalysisResult.model_validate(payload)
 
     def _route_after_dev_analysis(self, attempt_id: int, decision: dict[str, Any]) -> None:

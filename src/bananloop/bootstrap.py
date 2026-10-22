@@ -13,6 +13,7 @@ from .contracts import (
     AgentConfig,
     BudgetSpec,
     CampaignSpec,
+    DiagnosticCapability,
     EvaluationAsset,
     GuardrailSpec,
     MetricSpec,
@@ -112,6 +113,7 @@ class BootstrapPlan(BaseModel):
     protected_paths: list[str] = Field(default_factory=list)
     agent_visible_metrics: list[str] = Field(default_factory=list)
     agent_visible_diagnostics: list[str] = Field(default_factory=list)
+    agent_visible_diagnostic_capabilities: list[DiagnosticCapability] = Field(default_factory=list)
     paired_comparison: BootstrapPairedPlan = Field(default_factory=BootstrapPairedPlan)
     signal_sanity: BootstrapSignalSanity = Field(
         default_factory=lambda: BootstrapSignalSanity(
@@ -859,6 +861,7 @@ def bootstrap_campaign(
             plan.agent_visible_metrics or [plan.primary_metric.name]
         ),
         agent_visible_diagnostics=plan.agent_visible_diagnostics,
+        agent_visible_diagnostic_capabilities=plan.agent_visible_diagnostic_capabilities,
         paired_comparison=paired,
         protocol_manifests={
             tier: ProtocolManifest.model_validate(manifest)
