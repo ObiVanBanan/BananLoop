@@ -1,0 +1,81 @@
+{
+  "baseline_fails_dev_regression": true,
+  "campaign_calls": {
+    "agent": 2,
+    "evaluator": 5
+  },
+  "changed_paths": [
+    "src/discount.py"
+  ],
+  "dev_receipts": [
+    {
+      "action_id": "baseline:evaluate",
+      "receipt_hash": "2cc3990c565403b4e97d53605bee689539ef4d9fbed87e9085ae0bebe370cb5f"
+    },
+    {
+      "action_id": "exp:1:evaluate",
+      "receipt_hash": "ec94256f106e293f31ece75518b5d5a97e71c3930474eaf17210d8bcf94a3056"
+    }
+  ],
+  "domain": "bugfix_regression_reduction",
+  "final_assessment": "ACCEPTED",
+  "fixture_commit": "e9f22d627fcdcced56dbba42664818046bc75851",
+  "holdout": {
+    "configured": true,
+    "evaluated": true,
+    "snapshot": "c81b6b20ae55ad4d6c8959da417377e258c80f9e",
+    "target_met": true,
+    "value": 1.0
+  },
+  "measurements": [
+    {
+      "experiment_id": null,
+      "pass_rate": 0.0,
+      "regression_suite": false,
+      "tier": "dev"
+    },
+    {
+      "experiment_id": null,
+      "pass_rate": 0.0,
+      "regression_suite": false,
+      "tier": "validation"
+    },
+    {
+      "experiment_id": 1,
+      "pass_rate": 1.0,
+      "regression_suite": true,
+      "tier": "dev"
+    },
+    {
+      "experiment_id": 1,
+      "pass_rate": 1.0,
+      "regression_suite": true,
+      "tier": "validation"
+    },
+    {
+      "experiment_id": null,
+      "pass_rate": 1.0,
+      "regression_suite": true,
+      "tier": "holdout"
+    }
+  ],
+  "method": {
+    "fixture": "deterministic Python discount bug with separate DEV, validation, and holdout regression inputs",
+    "real_model_calls": 0,
+    "resources_observed": {
+      "cpu_affinity_count": 2,
+      "free_disk_gib": 32,
+      "memory_total_kib": 8138084
+    },
+    "scope_limit": "synthetic regression fixture, not an external production repository"
+  },
+  "real_model_calls": 0,
+  "status": "GOAL_MET",
+  "stop_reason": "GOAL_MET",
+  "validation": {
+    "baseline": 0.0,
+    "champion": 1.0,
+    "configured": true,
+    "delta": 1.0
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "campaign_budget": {
+    "agent_calls": 4,
+    "evaluator_calls": 6,
+    "experiments": 1
+  },
+  "campaign_calls": {
+    "agent": 2,
+    "evaluator": 5
+  },
+  "changed_paths": [
+    "src/bench.py"
+  ],
+  "dev_aa_calibration": [
+    {
+      "diagnostics": {
+        "aa_half_p95_abs_delta_ms": 2.1202959999999997
+      },
+      "experiment_id": null
+    },
+    {
+      "diagnostics": {
+        "aa_half_p95_abs_delta_ms": 0.038629
+      },
+      "experiment_id": 1
+    }
+  ],
+  "dev_metrics": [
+    {
+      "correctness": 1.0,
+      "latency_p95_ms": 9.737392,
+      "throughput_rps": 29706.475146380817
+    },
+    {
+      "correctness": 1.0,
+      "latency_p95_ms": 0.186147,
+      "throughput_rps": 1613822.9313479727
+    }
+  ],
+  "dev_receipts": [
+    {
+      "action_id": "baseline:evaluate",
+      "receipt_hash": "6067535052e60db43ce4eb534f1b797b17ffa8f44ccb659b50151433f8b20811"
+    },
+    {
+      "action_id": "exp:1:evaluate",
+      "receipt_hash": "9ef183fea9ef43eebd5b417a1b9a0c46616678ea44db73be60bca468f665a297"
+    }
+  ],
+  "domain": "cpu_performance_p95",
+  "final_assessment": "ACCEPTED",
+  "fixture_commit": "8451ea49a4966317018cf44dab421e5bcea3b407",
+  "holdout": {
+    "configured": true,
+    "evaluated": true,
+    "snapshot": "a5f1b530cf401bc14c89b79f8530a2c3cf2d9582",
+    "target_met": true,
+    "value": 0.185036
+  },
+  "method": {
+    "aa_calibration": "absolute difference between p95 of first and second 20 sample halves",
+    "fixture": "synthetic CPU lookup workload with 1200 rows and 240 fixed queries per tier",
+    "real_model_calls": 0,
+    "resources_observed": {
+      "cpu_affinity_count": 2,
+      "free_disk_gib": 32,
+      "memory_total_kib": 8138084
+    },
+    "samples_per_evaluation": 40,
+    "scope_limit": "one local host; not evidence of cross-machine speedup"
+  },
+  "real_model_calls": 0,
+  "selected_mechanism": "z-build-index-once",
+  "status": "GOAL_MET",
+  "stop_reason": "GOAL_MET",
+  "validation": {
+    "baseline": 13.384226,
+    "champion": 0.185728,
+    "configured": true,
+    "delta": -13.198498
+  }
+}
