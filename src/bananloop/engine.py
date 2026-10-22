@@ -627,7 +627,9 @@ class Engine:
         existing = self.store.latest_evaluation(snapshot, "holdout")
         if existing is not None:
             result = EvaluationResult.model_validate_json(existing["result_json"])
-            return self._holdout_assessment(result)
+            assessment = self._holdout_assessment(result)
+            self._record_holdout_decision(snapshot, result, assessment)
+            return assessment
 
         self.workspace.checkout(snapshot)
         integrity_violations = verify_evaluation_assets(
@@ -667,6 +669,7 @@ class Engine:
             tier="holdout",
         )
         assessment = self._holdout_assessment(result)
+        self._record_holdout_decision(snapshot, result, assessment)
         self.store.event(
             "FINAL_HOLDOUT_RECORDED",
             {
@@ -676,6 +679,27 @@ class Engine:
         )
         self.store.conn.commit()
         return assessment
+
+    def _record_holdout_decision(
+        self,
+        snapshot: str,
+        result: EvaluationResult,
+        assessment: dict[str, Any],
+    ) -> None:
+        metric_value = result.metrics[self.spec.primary_metric.name].value
+        self.store.record_decision(
+            None,
+            snapshot,
+            {
+                "accepted": bool(assessment["target_met"]),
+                "target_met": bool(assessment["target_met"]),
+                "champion_value": metric_value,
+                "delta": None,
+                "predicates": {"holdout_target": bool(assessment["target_met"])},
+                "reasons": ["HOLDOUT_TARGET_MET" if assessment["target_met"] else "HOLDOUT_TARGET_NOT_MET"],
+            },
+            tier="holdout",
+        )
 
     def _baseline(self) -> None:
         campaign = self.store.campaign()
@@ -1289,7 +1313,7 @@ class Engine:
                 "reasons": ["SCOPE_VIOLATION", *violations],
             }
             self.store.update_experiment(experiment_id, decision_json=json.dumps(decision), failure_category="SCOPE_VIOLATION", lesson="Candidate changed protected/out-of-scope paths")
-            self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
+            self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision, tier="pre_evaluation")
             self.store.set_stage(attempt_id, "REJECT")
         elif self.spec.forbidden_diff_patterns:
             leakage_violations = scan_forbidden_diff_patterns(
@@ -1318,6 +1342,7 @@ class Engine:
                     experiment_id,
                     exp["candidate_snapshot"],
                     decision,
+                    tier="pre_evaluation",
                 )
                 self.store.event(
                     "LEAKAGE_GUARD_REJECTED",
@@ -1439,7 +1464,7 @@ class Engine:
                     failure_category="IMPLEMENTATION_BLOCKED",
                     lesson="Python candidate preflight failed after one bounded repair attempt: " + "; ".join(preflight_errors)[:800],
                 )
-                self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
+                self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision, tier="pre_evaluation")
                 self.store.event(
                     "CANDIDATE_PREFLIGHT_FAILED",
                     {"experiment_id": experiment_id, "errors": preflight_errors[:8]},
@@ -1694,6 +1719,7 @@ class Engine:
             experiment_id,
             exp["candidate_snapshot"],
             decision.model_dump(mode="json"),
+            tier="dev",
         )
         verdict = "ACCEPT" if decision.accepted else "REJECT"
         self._progress(
@@ -1938,6 +1964,7 @@ class Engine:
                 experiment_id,
                 exp["candidate_snapshot"],
                 combined,
+                tier="validation",
             )
             self.store.set_stage(attempt_id, "REJECT")
         else:
@@ -1949,6 +1976,7 @@ class Engine:
                 experiment_id,
                 exp["candidate_snapshot"],
                 combined,
+                tier="validation",
             )
             self.store.set_stage(attempt_id, "PROMOTE")
         self._checkpoint(self.store.attempt(attempt_id)["stage"])

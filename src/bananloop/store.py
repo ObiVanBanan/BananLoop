@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .contracts import CampaignSpec, utc_now
+from .contracts import CampaignSpec, DecisionReceipt, utc_now
 
 
 SCHEMA = """
@@ -81,6 +81,14 @@ CREATE TABLE IF NOT EXISTS evaluator_bindings (
 CREATE TABLE IF NOT EXISTS evaluation_receipts (
   action_id TEXT PRIMARY KEY,
   receipt_hash TEXT NOT NULL,
+  receipt_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS decision_receipts (
+  receipt_hash TEXT PRIMARY KEY,
+  experiment_id INTEGER,
+  tier TEXT NOT NULL,
+  candidate_snapshot TEXT NOT NULL,
   receipt_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -558,19 +566,117 @@ class CampaignStore:
         ).fetchone()
         return dict(row) if row else None
 
-    def record_decision(self, experiment_id: int, snapshot: str, decision: dict[str, Any]) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO decisions(experiment_id,candidate_snapshot,decision_json,created_at)
-            VALUES(?,?,?,?)
-            ON CONFLICT(experiment_id) DO UPDATE SET
-              candidate_snapshot=excluded.candidate_snapshot,
-              decision_json=excluded.decision_json,
-              created_at=excluded.created_at
-            """,
-            (experiment_id, snapshot, json.dumps(decision, sort_keys=True), utc_now()),
-        )
+    def record_decision(
+        self,
+        experiment_id: int | None,
+        snapshot: str,
+        decision: dict[str, Any],
+        *,
+        tier: str = "dev",
+    ) -> None:
+        """Persist the current decision and an immutable integrity receipt for it."""
+        from .evaluator_binding import canonical_hash
+
+        campaign = self.campaign()
+        experiment = self.experiment(experiment_id) if experiment_id is not None else None
+        reference_snapshot = experiment["parent_snapshot"] if experiment else None
+        linked_tiers = {"pre_evaluation": set(), "dev": {"dev"},
+                        "validation": {"dev", "validation"}, "holdout": {"holdout"}}
+        allowed_tiers = linked_tiers.get(tier, {tier})
+        evaluator_receipts = []
+        for action in self.actions():
+            if action.get("experiment_id") != experiment_id and not (
+                tier == "holdout" and action.get("id") == "final:holdout"
+            ):
+                continue
+            request = json.loads(action.get("request_json") or "{}")
+            eval_tier = request.get("tier", "dev")
+            if eval_tier not in allowed_tiers or request.get("snapshot") != snapshot:
+                continue
+            stored = self.evaluation_receipt(action["id"])
+            if stored:
+                evaluator_receipts.append({
+                    "action_id": action["id"],
+                    "tier": eval_tier,
+                    "receipt_sha256": stored["receipt_hash"],
+                })
+        evaluator_receipts.sort(key=lambda item: (item["tier"], item["action_id"]))
+        binding = self.evaluator_binding()
+        predicates = decision.get("predicates") or {}
+        if tier == "validation" and isinstance(decision.get("validation"), dict):
+            predicates = decision["validation"].get("predicates") or predicates
+        if tier == "holdout":
+            predicates = {"target_met": bool(decision.get("target_met"))}
+        verdict = "ACCEPT" if decision.get("accepted", decision.get("target_met", False)) else "REJECT"
+        receipt = {
+            "schema_version": 1,
+            "experiment_id": experiment_id,
+            "tier": tier,
+            "candidate_snapshot": snapshot,
+            "reference": (
+                {
+                    "kind": "primary_metric_target",
+                    "metric": self.spec().primary_metric.name,
+                    "value": self.spec().primary_metric.target,
+                }
+                if tier == "holdout"
+                else {
+                    "kind": "champion",
+                    "snapshot": reference_snapshot,
+                    "value": decision.get("champion_value"),
+                }
+            ),
+            "spec_sha256": campaign["spec_hash"],
+            "evaluator_binding_sha256": binding["binding_hash"] if binding else None,
+            "evaluator_receipts": evaluator_receipts,
+            "delta": decision.get("delta"),
+            "predicate_results": predicates,
+            "verdict": verdict,
+            "reasons": decision.get("reasons", []),
+        }
+        receipt["receipt_sha256"] = canonical_hash(receipt)
+        receipt = DecisionReceipt.model_validate(receipt).model_dump(mode="json")
+        encoded_receipt = json.dumps(receipt, sort_keys=True)
+        prior = self.conn.execute(
+            "SELECT receipt_hash,receipt_json FROM decision_receipts WHERE experiment_id IS ? AND tier=? AND candidate_snapshot=?",
+            (experiment_id, tier, snapshot),
+        ).fetchone()
+        if prior and (prior["receipt_hash"] != receipt["receipt_sha256"] or prior["receipt_json"] != encoded_receipt):
+            raise StoreError(f"conflicting decision receipt for experiment {experiment_id} tier {tier}")
+        if experiment_id is not None:
+            self.conn.execute(
+                """
+                INSERT INTO decisions(experiment_id,candidate_snapshot,decision_json,created_at)
+                VALUES(?,?,?,?)
+                ON CONFLICT(experiment_id) DO UPDATE SET
+                  candidate_snapshot=excluded.candidate_snapshot,
+                  decision_json=excluded.decision_json,
+                  created_at=excluded.created_at
+                """,
+                (experiment_id, snapshot, json.dumps(decision, sort_keys=True), utc_now()),
+            )
+        if not prior:
+            self.conn.execute(
+                "INSERT INTO decision_receipts(receipt_hash,experiment_id,tier,candidate_snapshot,receipt_json,created_at) VALUES(?,?,?,?,?,?)",
+                (receipt["receipt_sha256"], experiment_id, tier, snapshot, encoded_receipt, utc_now()),
+            )
+            self.event("DECISION_RECEIPT_RECORDED", {
+                "experiment_id": experiment_id,
+                "tier": tier,
+                "receipt_sha256": receipt["receipt_sha256"],
+            })
         self.conn.commit()
+
+    def decision_receipts(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM decision_receipts ORDER BY created_at,receipt_hash"
+        )
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["receipt"] = json.loads(item.pop("receipt_json"))
+            result.append(item)
+        return result
 
     def experiments(self) -> list[dict[str, Any]]:
         return [dict(row) for row in self.conn.execute("SELECT * FROM experiments ORDER BY id")]

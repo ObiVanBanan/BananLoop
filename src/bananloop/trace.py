@@ -217,7 +217,11 @@ def _safe_experiments(report: dict[str, Any]) -> list[dict[str, Any]]:
     return safe
 
 
-def _safe_event(row: dict[str, Any], campaign_id: str, receipt_by_action: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _safe_event(
+    row: dict[str, Any], campaign_id: str,
+    receipt_by_action: dict[str, dict[str, Any]],
+    decision_receipt_hashes: set[str] | None = None,
+) -> dict[str, Any]:
     try:
         payload = json.loads(row["payload_json"])
     except (TypeError, json.JSONDecodeError):
@@ -265,6 +269,12 @@ def _safe_event(row: dict[str, Any], campaign_id: str, receipt_by_action: dict[s
         item["target_met"] = payload["target_met"]
     if action_id and action_id in receipt_by_action:
         item["receipt_sha256"] = receipt_by_action[action_id]
+    decision_hash = _hash_or_none(payload.get("receipt_sha256"))
+    if (row["event_type"] == "DECISION_RECEIPT_RECORDED" and decision_hash
+            and decision_hash in (decision_receipt_hashes or set())):
+        item["decision_receipt_sha256"] = decision_hash
+        if payload.get("tier") in {"pre_evaluation", "dev", "validation", "holdout"}:
+            item["decision_tier"] = payload["tier"]
     return item
 
 
@@ -290,6 +300,21 @@ def _build_trace(store: CampaignStore, campaign_id: str) -> dict[str, str]:
             "binding_hash": _hash_or_none(receipt.get("binding_hash")),
         }
         for receipt in report["evaluation_receipts"]
+    ]
+    decision_receipt_records = [
+        {
+            "experiment_id": item.get("experiment_id") if isinstance(item.get("experiment_id"), int) else None,
+            "tier": item.get("tier") if item.get("tier") in {"pre_evaluation", "dev", "validation", "holdout"} else "unknown",
+            "status": item.get("status") if item.get("status") in {"VERIFIED", "INVALID", "LEGACY_UNRECEIPTED"} else "UNKNOWN",
+            "receipt_sha256": _hash_or_none(item.get("receipt_hash")),
+            "candidate_snapshot": _hash_or_none(item.get("candidate_snapshot")),
+            "verdict": (item.get("receipt") or {}).get("verdict") if (item.get("receipt") or {}).get("verdict") in {"ACCEPT", "REJECT"} else "UNKNOWN",
+            "evaluation_receipts_sha256": sorted({
+                digest for ref in ((item.get("receipt") or {}).get("evaluator_receipts") or [])
+                if (digest := _hash_or_none(ref.get("receipt_sha256")))
+            }),
+        }
+        for item in report.get("decision_receipts", [])
     ]
     sanity = report.get("signal_sanity") or {}
     primary = spec.primary_metric
@@ -361,12 +386,14 @@ def _build_trace(store: CampaignStore, campaign_id: str) -> dict[str, str]:
         "agent_roles": _configured_roles(spec),
         "experiments": _safe_experiments(report),
         "evaluation_receipts": receipt_records,
+        "decision_receipts": decision_receipt_records,
     }
     receipt_by_action = {
         item["action_id"]: item["receipt_hash"]
         for item in receipt_records if item.get("action_id") and _hash_or_none(item.get("receipt_hash"))
     }
-    events = [json.dumps(_safe_event(row, campaign_id, receipt_by_action), sort_keys=True, ensure_ascii=False,
+    decision_hashes = {item["receipt_sha256"] for item in decision_receipt_records if item.get("receipt_sha256")}
+    events = [json.dumps(_safe_event(row, campaign_id, receipt_by_action, decision_hashes), sort_keys=True, ensure_ascii=False,
                          separators=(",", ":")) for row in store.events()]
     # The ordinary report can include user goal text and agent-authored rationales.
     # A shareable trace is built only from the allowlisted summary above.
@@ -422,6 +449,12 @@ def _render_trace_markdown(summary: dict[str, Any]) -> str:
     for item in summary["experiments"]:
         paths = ", ".join(f"`{p}`" for p in item["changed_paths"]) or "(none recorded)"
         lines.append(f"| {item['ordinal']} | `{item['status']}` | {paths} | {item['delta']} | {', '.join(item['verdict_reasons']) or item['failure_category'] or 'recorded'} |")
+    lines.extend(["", "## Decision receipt digests", "", "| Experiment | Tier | Status | Verdict | Receipt SHA-256 |", "|---:|---|---|---|---|"])
+    for item in summary.get("decision_receipts", []):
+        lines.append(
+            f"| {item['experiment_id'] if item['experiment_id'] is not None else 'final'} | "
+            f"`{item['tier']}` | `{item['status']}` | `{item['verdict']}` | `{item['receipt_sha256'] or '-'}` |"
+        )
     lines.extend([
         "",
         "## Budget and evidence",

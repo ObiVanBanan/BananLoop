@@ -52,6 +52,13 @@ def test_shareable_trace_is_deterministic_and_omits_sensitive_payloads(tmp_path)
         assert summary["schema_version"] == 2
         assert summary["goal"]["text"] == "omitted from shareable trace"
         assert summary["evaluation_receipts"]
+        assert summary["decision_receipts"]
+        assert all(set(item) == {
+            "experiment_id", "tier", "status", "receipt_sha256", "candidate_snapshot", "verdict",
+            "evaluation_receipts_sha256",
+        } for item in summary["decision_receipts"])
+        assert all("predicate_results" not in item and "reasons" not in item
+                   for item in summary["decision_receipts"])
         runtime = summary["runtime"]
         assert runtime["status"] == "VERIFIED"
         assert runtime["binding_hash"] == store.evaluator_binding()["binding_hash"]
