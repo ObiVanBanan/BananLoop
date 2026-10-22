@@ -56,3 +56,32 @@ def test_cancellation_stops_child_work(tmp_path: Path, reason):
     assert ready.exists()
     time.sleep(2.1)
     assert not escaped.exists(), "child kept running after its action was cancelled"
+
+
+def test_stop_while_child_ignores_large_stdin_is_prompt(tmp_path: Path):
+    """Stop must stay responsive when communicate() is blocked on pipe input.
+
+    This was not covered by the small request in the campaign stop test.
+    On Windows the child may ignore CTRL_BREAK and taskkill may be denied;
+    cleanup must still kill the direct process within the CLI stop budget.
+    """
+    ready = tmp_path / "stdin-not-read"
+    script = tmp_path / "sleep_without_reading.py"
+    script.write_text(
+        "import time\\nfrom pathlib import Path\\n"
+        + f"Path({str(ready)!r}).write_text('ready')\\n"
+        + "time.sleep(30)\\n",
+        encoding="utf-8",
+    )
+    control = lambda: "USER_STOPPED" if ready.exists() else None
+    started = time.monotonic()
+    with process_control(control):
+        with pytest.raises(ProcessCancelled) as excinfo:
+            run_process(
+                [sys.executable, str(script)],
+                cwd=tmp_path,
+                timeout=15,
+                input_text="x" * (2 * 1024 * 1024),
+            )
+    assert excinfo.value.reason == "USER_STOPPED"
+    assert time.monotonic() - started < 4.5, "stop spent too long cleaning up a blocked pipe"
