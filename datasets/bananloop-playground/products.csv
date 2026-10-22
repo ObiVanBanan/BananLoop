@@ -1,0 +1,9 @@
+product_id,name,family,dn,pn,material,joint
+LD-1001,Кран шаровой стальной фланцевый DN25 PN16,ball_valve,25,16,steel,flanged
+LD-1002,Кран шаровой стальной фланцевый DN80 PN16,ball_valve,80,16,steel,flanged
+LD-1003,Кран шаровой стальной фланцевый DN80 PN40,ball_valve,80,40,steel,flanged
+LD-1004,Кран шаровой латунный муфтовый DN25 PN16,ball_valve,25,16,brass,threaded
+LD-2001,Фланец плоский стальной DN100 PN16,flange,100,16,steel,flanged
+LD-2002,Фланец плоский стальной DN80 PN10,flange,80,10,steel,flanged
+LD-3001,Тройник стальной равнопроходной DN50,tee,50,,steel,welded
+LD-4001,Фильтр сетчатый латунный муфтовый DN25 PN16,filter,25,16,brass,threaded
