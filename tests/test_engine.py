@@ -2051,6 +2051,57 @@ def test_completed_repair_replays_its_snapshot_without_a_second_agent_call(tmp_p
         store.close()
 
 
+def test_failed_bounded_repair_rejects_without_dev_or_a_second_repair(tmp_path: Path):
+    class FailedRepairAgent(AgentAdapter):
+        def __init__(self):
+            self.calls = 0
+
+        def probe(self):
+            return {"available": True, "kind": "test"}
+
+        def execute(self, task, workspace, timeout):
+            self.calls += 1
+            assert task["role"] == "repair"
+            # The repair attempt completes but leaves the syntax defect intact.
+            return {
+                "summary": "could not repair the syntax error",
+                "changed_paths": [],
+                "verification_notes": "",
+                "blockers": ["the malformed expression remains"],
+            }
+
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.spec.editable_scope.append("model.py")
+        experiment_id, attempt_id = _prepare_execute_stage(store, engine)
+        model = engine.workspace.workspace / "model.py"
+        model.write_text("value = (\n", encoding="utf-8")
+        candidate = engine.workspace.snapshot("candidate with syntax error")
+        store.update_experiment(experiment_id, candidate_snapshot=candidate)
+        store.set_stage(attempt_id, "VERIFY")
+        agent = FailedRepairAgent()
+        engine.agent = agent
+        evaluator_calls_before = store.campaign()["evaluator_calls"]
+
+        engine._stage_verify(attempt_id, experiment_id)
+
+        action = store.action(f"exp:{experiment_id}:repair:1")
+        assert action["status"] == "COMPLETED"
+        assert agent.calls == 1
+        assert store.attempt(attempt_id)["stage"] == "REJECT"
+        experiment = store.experiment(experiment_id)
+        assert experiment["failure_category"] == "IMPLEMENTATION_BLOCKED"
+        assert "bounded repair attempt" in experiment["lesson"]
+        assert store.campaign()["evaluator_calls"] == evaluator_calls_before
+
+        # Reprocessing the terminal verification result cannot invoke another repair.
+        engine._stage_verify(attempt_id, experiment_id)
+        assert agent.calls == 1
+        assert store.campaign()["evaluator_calls"] == evaluator_calls_before
+    finally:
+        store.close()
+
+
 def test_pr_auc_analyzer_task_gets_target_metric_guidance_without_hidden_evidence(tmp_path: Path):
     store, engine, _, _ = make_engine(tmp_path)
     try:

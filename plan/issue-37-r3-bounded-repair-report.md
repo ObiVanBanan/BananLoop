@@ -20,8 +20,9 @@ This increment adds a machine-readable failure taxonomy and one campaign-level i
 - `PYTHONPATH=src pytest -q tests/test_failures.py tests/test_attempt_accounting.py tests/test_engine.py -k 'failure or api_preflight or implementation_blocker or noop_implementation'` passed.
 - `PYTHONPATH=src pytest -q tests/test_engine.py::test_one_bounded_repair_rechecks_candidate_before_dev_evaluation` passed.
 - Fault injection after a completed repair action but before the experiment snapshot update resumes from the stored repair snapshot without a second agent call.
+- `PYTHONPATH=src pytest -q tests/test_engine.py -k 'bounded_repair or repair_replays' tests/test_failures.py` passed after adding a failed-repair regression: a completed but ineffective repair is rejected, consumes no DEV evaluator call, and reprocessing VERIFY does not trigger a second repair.
 - Full `PYTHONPATH=src pytest -q` passed after the taxonomy integration and reached `[100%]` without failures.
 
 ## Remaining R3 work
 
-Recovery planning beyond this single bounded repair, fault-injection coverage for unsuccessful repairs and broader operational failures, and the remaining #37 approval/dashboard scope are still open. This report does not claim R3 complete.
+Recovery planning beyond this single bounded repair, fault-injection coverage for broader operational failures, and the remaining #37 approval/dashboard scope are still open. This report does not claim R3 complete.
