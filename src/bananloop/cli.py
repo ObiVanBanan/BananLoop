@@ -483,6 +483,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         data["campaign_id"] = _display_campaign_id(args, paths)
         data["initialized"] = True
         data["resources"] = store.resource_summary()
+        data["resources"]["model_tokens"] = store.model_token_summary()
         data["evaluations"] = build_report(store)["measurements"]
         research = store.research_state()
         if research:
