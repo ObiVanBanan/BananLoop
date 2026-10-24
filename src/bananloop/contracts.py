@@ -97,6 +97,20 @@ class BudgetSpec(BaseModel):
     max_experiments: int = Field(default=5, ge=1)
     max_attempts: int = Field(default=8, ge=1)
     max_agent_calls: int = Field(default=20, ge=1)
+    # Opt-in: no implied token cap for existing campaigns.
+    max_model_tokens: int | None = Field(default=None, ge=1)
+    model_token_reserve: int = Field(default=300000, ge=1)
+    model_token_stage_reserves: dict[str, int] = Field(default_factory=dict)
+
+    @field_validator("model_token_stage_reserves")
+    @classmethod
+    def valid_model_token_reserves(cls, value: dict[str, int]) -> dict[str, int]:
+        allowed = {"PROPOSE", "EXECUTE", "ANALYZE", "BOOTSTRAP"}
+        if any(stage not in allowed or isinstance(amount, bool) or not isinstance(amount, int) or amount < 1
+               for stage, amount in value.items()):
+            raise ValueError("model_token_stage_reserves must map supported agent stages to positive integers")
+        return value
+
     max_evaluator_calls: int = Field(default=10, ge=1)
     deadline_seconds: int = Field(default=3600, ge=1)
     plateau_experiments: int = Field(default=3, ge=1)
