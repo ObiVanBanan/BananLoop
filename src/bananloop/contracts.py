@@ -85,6 +85,10 @@ class PairedComparison(BaseModel):
 
 
 class BudgetSpec(BaseModel):
+    # Pydantic <2.10 reserves the entire "model_" namespace by default.
+    # Retain protection for actual BaseModel methods while allowing model_token_*.
+    model_config = ConfigDict(protected_namespaces=("model_validate", "model_dump"))
+
     max_evaluation_units: int | None = Field(default=None, ge=1)
     evaluation_units_per_call: int | None = Field(default=None, ge=1)
 
