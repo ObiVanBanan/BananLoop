@@ -1704,7 +1704,7 @@ def test_issue60_overshoot_never_applies_candidate(tmp_path: Path, monkeypatch):
             engine._invoke_agent({"role": "implement"}, timeout=30, apply_changes=True)
         assert store.model_tokens_reserved() == 300001
         assert store.model_token_summary()["receipts"][0]["charged_tokens"] == 300001
-        assert (repo / "value.txt").read_text() == "0\\n"
+        assert (repo / "value.txt").read_text().splitlines() == ["0"]
     finally:
         store.close()
 
