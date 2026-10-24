@@ -78,7 +78,12 @@ def test_empty_evaluation_assets_preserve_legacy_spec_hash():
         "mandatory_checks": [],
         "editable_scope": ["**"],
         "protected_paths": [],
-        "budget": BudgetSpec().model_dump(mode="json", exclude={"max_evaluation_units", "evaluation_units_per_call"}),
+        # Reconstruct the pre-#60 serialized budget, not today's BudgetSpec defaults.
+        # Otherwise a test of the historic hash accidentally hashes new fields.
+        "budget": BudgetSpec().model_dump(mode="json", exclude={
+            "max_evaluation_units", "evaluation_units_per_call",
+            "max_model_tokens", "model_token_reserve", "model_token_stage_reserves",
+        }),
         # Historical campaign specs predate the optional profile fields.
         "agent": {"kind": "codex", "command": [], "model": None, "extra_args": []},
     }
