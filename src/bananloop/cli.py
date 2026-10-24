@@ -187,6 +187,9 @@ def cmd_init(args: argparse.Namespace) -> int:
             max_experiments=args.max_experiments,
             max_attempts=args.max_attempts,
             max_agent_calls=args.max_agent_calls,
+            max_model_tokens=args.max_model_tokens,
+            model_token_reserve=args.model_token_reserve,
+            model_token_stage_reserves=dict(entry.split("=", 1) for entry in (args.token_reserve or [])),
             max_evaluator_calls=args.max_evaluator_calls,
             deadline_seconds=args.deadline_seconds,
             plateau_experiments=args.plateau,
@@ -738,6 +741,10 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--max-experiments", type=int, default=5)
     init.add_argument("--max-attempts", type=int, default=8)
     init.add_argument("--max-agent-calls", type=int, default=20)
+    init.add_argument("--max-model-tokens", type=int, help="opt-in charged input+output model tokens (Codex)")
+    init.add_argument("--model-token-reserve", type=int, default=300000, help="default pre-call token reservation")
+    init.add_argument("--token-reserve", action="append", metavar="STAGE=TOKEN_COUNT",
+                      help="override PROPOSE/EXECUTE/ANALYZE reservation, e.g. EXECUTE=300000")
     init.add_argument("--max-evaluator-calls", type=int, default=10)
     init.add_argument("--deadline-seconds", type=int, default=3600)
     init.add_argument("--plateau", type=int, default=3)
