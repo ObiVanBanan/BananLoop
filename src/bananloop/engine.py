@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from .agents import AgentAdapter, AgentError, CodexAdapter, CommandAgentAdapter, PiAdapter
 from .budget import deadline_reached, pre_action_stop
+from .token_budget import ModelTokenBudgetExceeded
 from .artifacts import retain_artifacts
 from .contracts import (
     CampaignSpec,
@@ -99,6 +100,7 @@ class Engine:
         self._retry_running_actions = False
         self._retry_failed_actions = False
         self._agent_timeout_seconds: int | None = None
+        self._active_model_token_action_id: str | None = None
         self.spec = store.spec()
         self._evaluator_binding: EvaluatorBinding | None = None
         trusted_env = project_environment(Path(self.spec.source_repo))
@@ -175,7 +177,28 @@ class Engine:
                 if role in self.spec.agent.roles
                 else self.agent
             )
-            result = adapter.execute(task, agent_workspace, timeout=timeout)
+            metered = self.spec.budget.max_model_tokens is not None
+            if metered:
+                if not isinstance(adapter, CodexAdapter):
+                    raise AgentError("model token cap requires a metered CodexAdapter; non-Codex usage is UNKNOWN")
+                adapter.meter_tokens = True
+            try:
+                result = adapter.execute(task, agent_workspace, timeout=timeout)
+            except Exception:
+                if metered and adapter.last_token_usage is not None:
+                    # Preserve reported usage even when the agent returned an error.
+                    self.store.settle_model_tokens(self._active_model_token_action_id, adapter.last_token_usage)
+                raise
+            if metered:
+                usage = adapter.last_token_usage
+                if usage is None:
+                    raise AgentError("model token usage UNKNOWN; refusing to apply unmetered candidate")
+                exceeded = self.store.settle_model_tokens(self._active_model_token_action_id, usage)
+                if exceeded:
+                    raise ModelTokenBudgetExceeded(
+                        f"token_budget_overshoot for {self._active_model_token_action_id}: "
+                        f"{self.store.model_tokens_reserved()} > {self.spec.budget.max_model_tokens}"
+                    )
             if apply_changes:
                 self.workspace.apply_agent_changes(agent_workspace, hidden)
             return result
@@ -266,11 +289,23 @@ class Engine:
         self.store.conn.commit()
         return self.store.campaign()
 
-    def _budget_or_stop(self, kind: str) -> bool:
+    def _budget_or_stop(self, kind: str, stage: str | None = None) -> bool:
         control_reason = self._control_reason()
         if control_reason:
             raise ProcessCancelled(control_reason)
         campaign = self.store.campaign()
+        if kind == "agent" and self.spec.budget.max_model_tokens is not None:
+            reserve = self.store.model_token_reserve_for_stage(stage or "PROPOSE")
+            available = self.spec.budget.max_model_tokens - self.store.model_tokens_reserved()
+            if reserve > available:
+                self.store.event("MODEL_TOKEN_RESERVE_BLOCKED", {
+                    "stage": stage, "required_tokens": reserve,
+                    "available_tokens": max(0, available),
+                    "reason": "insufficient_token_reserve",
+                })
+                self.store.conn.commit()
+                self._stop(StopReason.BUDGET_EXHAUSTED)
+                return True
         if kind in {"evaluator", "final_evaluator"}:
             reserve = int(kind != "final_evaluator" and self.holdout_evaluator is not None)
             if campaign["evaluator_calls"] + 1 + reserve > self.spec.budget.max_evaluator_calls:
@@ -348,7 +383,7 @@ class Engine:
             if kind != "agent":
                 self._ensure_evaluator_binding()
             if existing["status"] == "CANCELLED":
-                if self._budget_or_stop(kind):
+                if self._budget_or_stop(kind, stage):
                     raise CampaignHalted()
                 self._progress(f"{action_id}: retry cancelled action")
                 self.store.restart_action(action_id)
@@ -358,7 +393,7 @@ class Engine:
                         f"action {action_id} was running when process stopped; "
                         "resume with --retry-running-action only if you know the previous local process is gone"
                     )
-                if self._budget_or_stop(kind):
+                if self._budget_or_stop(kind, stage):
                     raise CampaignHalted()
                 self._progress(f"{action_id}: explicitly retry orphaned RUNNING action")
                 self.store.restart_action(action_id)
@@ -368,7 +403,7 @@ class Engine:
                         f"action {action_id} previously failed: {existing['error']}; "
                         "resume with --retry-failed-action to retry it"
                     )
-                if self._budget_or_stop(kind):
+                if self._budget_or_stop(kind, stage):
                     raise CampaignHalted()
                 self._progress(f"{action_id}: explicitly retry FAILED action")
                 self.store.restart_action(action_id)
@@ -379,10 +414,12 @@ class Engine:
         else:
             if kind != "agent":
                 self._ensure_evaluator_binding()
-            if self._budget_or_stop(kind):
+            if self._budget_or_stop(kind, stage):
                 raise CampaignHalted()
             self.store.start_action(action_id, experiment_id, stage, kind, request_hash, request)
         self._progress(f"{action_id}: invoke {kind}")
+        if kind == "agent":
+            self._active_model_token_action_id = action_id
         output_dir = self.store.path.parent / "artifacts" / hashlib.sha256(action_id.encode()).hexdigest()[:24]
         if kind != "agent":
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -452,6 +489,17 @@ class Engine:
                 tmp_sidecar.replace(sidecar)
                 response = result.model_dump(mode="json")
                 response["_evaluation_receipt"] = receipt.model_dump(mode="json")
+        except ModelTokenBudgetExceeded as exc:
+            self.store.fail_action(action_id, str(exc))
+            self.store.event("MODEL_TOKEN_OVERSHOOT", {
+                "action_id": action_id,
+                "stage": stage,
+                "consumed_tokens": self.store.model_tokens_reserved(),
+                "limit_tokens": self.spec.budget.max_model_tokens,
+            })
+            self.store.conn.commit()
+            self._stop(StopReason.BUDGET_EXHAUSTED)
+            raise CampaignHalted() from exc
         except ProcessCancelled as exc:
             self.store.cancel_action(action_id, exc.reason)
             raise
