@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, EvaluationAsset, MetricSpec
+from bananloop.contracts import AgentConfig, CampaignSpec, Direction, EvaluationAsset, MetricSpec
 from bananloop.integrity import (
     EvaluationIntegrityError,
     discover_evaluation_assets,
@@ -78,12 +78,16 @@ def test_empty_evaluation_assets_preserve_legacy_spec_hash():
         "mandatory_checks": [],
         "editable_scope": ["**"],
         "protected_paths": [],
-        # Reconstruct the pre-#60 serialized budget, not today's BudgetSpec defaults.
-        # Otherwise a test of the historic hash accidentally hashes new fields.
-        "budget": BudgetSpec().model_dump(mode="json", exclude={
-            "max_evaluation_units", "evaluation_units_per_call",
-            "max_model_tokens", "model_token_reserve", "model_token_stage_reserves",
-        }),
+        # Fixed pre-#60 budget snapshot. Do not derive this fixture from today's
+        # BudgetSpec: future fields must not change the historical spec hash.
+        "budget": {
+            "max_experiments": 5,
+            "max_attempts": 8,
+            "max_agent_calls": 20,
+            "max_evaluator_calls": 10,
+            "deadline_seconds": 3600,
+            "plateau_experiments": 3,
+        },
         # Historical campaign specs predate the optional profile fields.
         "agent": {"kind": "codex", "command": [], "model": None, "extra_args": []},
     }
