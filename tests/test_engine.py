@@ -1632,3 +1632,93 @@ def test_evaluation_request_records_candidate_materialization_proof(tmp_path: Pa
         assert report["experiments"][0]["candidate_proof"] == proof
     finally:
         store.close()
+
+
+def _issue60_capped_engine(tmp_path: Path, *, limit: int, reserve: int):
+    store, engine, repo, base = make_engine(tmp_path)
+    spec = engine.spec.model_copy(deep=True)
+    spec.budget.max_model_tokens = limit
+    spec.budget.model_token_reserve = reserve
+    store.update_campaign(spec_json=spec.model_dump_json(), spec_hash=spec.approved_hash())
+    engine.spec = spec
+    return store, engine, repo, base
+
+
+def test_issue60_reserve_rejected_before_model_invocation(tmp_path: Path):
+    store, engine, _, _ = _issue60_capped_engine(tmp_path, limit=299999, reserve=300000)
+    try:
+        assert engine._budget_or_stop("agent", "EXECUTE") is True
+        assert store.campaign()["stop_reason"] == "BUDGET_EXHAUSTED"
+        assert not store.actions()
+        records = [event for event in store.events()
+                   if event["event_type"] == "MODEL_TOKEN_RESERVE_BLOCKED"]
+        assert len(records) == 1
+        assert json.loads(records[0]["payload_json"])["required_tokens"] == 300000
+    finally:
+        store.close()
+
+
+def test_issue60_exact_reserve_usage_settlement_and_replay(tmp_path: Path):
+    store, engine, _, _ = _issue60_capped_engine(tmp_path, limit=300000, reserve=300000)
+    try:
+        assert not engine._budget_or_stop("agent", "EXECUTE")
+        store.start_action("exp:1:implement", None, "EXECUTE", "agent", "hash", {})
+        assert store.model_tokens_reserved() == 300000
+        usage = {"input_tokens": 250000, "output_tokens": 50000, "cached_input_tokens": 200000}
+        assert not store.settle_model_tokens("exp:1:implement", usage)
+        store.finish_action("exp:1:implement", {"summary": "candidate applied"})
+        assert store.model_tokens_reserved() == 300000
+        assert store.model_token_summary()["by_stage"]["EXECUTE"] == 300000
+        assert len(store.model_token_summary()["receipts"]) == 1
+        assert store.model_token_summary()["receipts"][0]["charged_tokens"] == 300000
+        assert store.action("exp:1:implement")["status"] == "COMPLETED"
+        with pytest.raises(Exception, match="unsettled"):
+            store.settle_model_tokens("exp:1:implement", usage)
+        assert store.model_tokens_reserved() == 300000
+    finally:
+        store.close()
+
+
+def test_issue60_overshoot_never_applies_candidate(tmp_path: Path, monkeypatch):
+    from bananloop.agents.codex import CodexAdapter
+    from bananloop.token_budget import ModelTokenBudgetExceeded
+
+    store, engine, repo, _ = _issue60_capped_engine(tmp_path, limit=300000, reserve=300000)
+    try:
+        store.start_action("exp:1:implement", None, "EXECUTE", "agent", "hash", {})
+        adapter = CodexAdapter()
+
+        def simulated_codex(task, workspace, timeout):
+            adapter.last_token_usage = {
+                "input_tokens": 300000, "output_tokens": 1, "cached_input_tokens": 250000}
+            return {"summary": "candidate", "changed_paths": ["value.txt"]}
+        monkeypatch.setattr(adapter, "execute", simulated_codex)
+        monkeypatch.setattr(engine.workspace, "prepare_agent_workspace", lambda hidden: repo)
+        monkeypatch.setattr(engine.workspace, "cleanup_agent_workspace", lambda: None)
+        def must_not_apply(*args, **kwargs):
+            raise AssertionError("budget-exceeded candidate applied")
+        monkeypatch.setattr(engine.workspace, "apply_agent_changes", must_not_apply)
+        engine.agent = adapter
+        engine._active_model_token_action_id = "exp:1:implement"
+        with pytest.raises(ModelTokenBudgetExceeded, match="token_budget_overshoot"):
+            engine._invoke_agent({"role": "implement"}, timeout=30, apply_changes=True)
+        assert store.model_tokens_reserved() == 300001
+        assert store.model_token_summary()["receipts"][0]["charged_tokens"] == 300001
+        assert (repo / "value.txt").read_text() == "0\\n"
+    finally:
+        store.close()
+
+
+def test_issue60_retry_consumes_new_reserve_without_erasing_previous_spend(tmp_path: Path):
+    store, engine, _, _ = _issue60_capped_engine(tmp_path, limit=900000, reserve=300000)
+    try:
+        store.start_action("exp:1:implement", None, "EXECUTE", "agent", "hash", {})
+        store.settle_model_tokens("exp:1:implement", {
+            "input_tokens": 120000, "output_tokens": 1000, "cached_input_tokens": 110000})
+        store.fail_action("exp:1:implement", "interrupted after charged execution")
+        assert store.model_tokens_reserved() == 121000
+        store.restart_action("exp:1:implement")
+        assert store.model_tokens_reserved() == 421000
+        assert len(store.model_token_summary()["receipts"]) == 1
+    finally:
+        store.close()
