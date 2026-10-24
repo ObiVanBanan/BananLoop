@@ -291,6 +291,10 @@ class CampaignSpec(BaseModel):
             raise ValueError("validation_timeout_seconds requires validation_command")
         if self.holdout_timeout_seconds is not None and not self.holdout_command:
             raise ValueError("holdout_timeout_seconds requires holdout_command")
+        if self.budget.max_model_tokens is not None:
+            for role in ("propose", "implement", "analyze"):
+                if self.agent.for_role(role).kind != "codex":
+                    raise ValueError("max_model_tokens requires Codex adapter for all model stages")
         minimum_calls = 1 + int(bool(self.validation_command)) + int(bool(self.holdout_command))
         if self.budget.max_evaluator_calls < minimum_calls:
             raise ValueError(
@@ -312,9 +316,15 @@ class CampaignSpec(BaseModel):
             data.pop("signal_sanity_status", None)
         if self.signal_sanity_receipt_sha256 is None:
             data.pop("signal_sanity_receipt_sha256", None)
-        for key in ("max_evaluation_units", "evaluation_units_per_call"):
+        for key in ("max_evaluation_units", "evaluation_units_per_call", "max_model_tokens"):
             if data["budget"][key] is None:
                 data["budget"].pop(key)
+        if self.budget.max_model_tokens is None:
+            # Old campaign hashes did not include these opt-in budget fields.
+            data["budget"].pop("model_token_reserve", None)
+            data["budget"].pop("model_token_stage_reserves", None)
+        elif not self.budget.model_token_stage_reserves:
+            data["budget"].pop("model_token_stage_reserves", None)
         # Keep hashes compatible with v0.1 specs created before these fields existed.
         if not self.project_context:
             data.pop("project_context", None)
