@@ -184,10 +184,16 @@ class Engine:
                 adapter.meter_tokens = True
             try:
                 result = adapter.execute(task, agent_workspace, timeout=timeout)
-            except Exception:
+            except Exception as exc:
                 if metered and adapter.last_token_usage is not None:
                     # Preserve reported usage even when the agent returned an error.
-                    self.store.settle_model_tokens(self._active_model_token_action_id, adapter.last_token_usage)
+                    exceeded = self.store.settle_model_tokens(
+                        self._active_model_token_action_id, adapter.last_token_usage)
+                    if exceeded:
+                        raise ModelTokenBudgetExceeded(
+                            f"token_budget_overshoot for {self._active_model_token_action_id}: "
+                            f"{self.store.model_tokens_reserved()} > {self.spec.budget.max_model_tokens}"
+                        ) from exc
                 raise
             if metered:
                 usage = adapter.last_token_usage
