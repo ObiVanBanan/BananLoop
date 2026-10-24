@@ -1639,6 +1639,7 @@ def _issue60_capped_engine(tmp_path: Path, *, limit: int, reserve: int):
     spec = engine.spec.model_copy(deep=True)
     spec.budget.max_model_tokens = limit
     spec.budget.model_token_reserve = reserve
+    spec.agent = AgentConfig(kind="codex")
     store.update_campaign(spec_json=spec.model_dump_json(), spec_hash=spec.approved_hash())
     engine.spec = spec
     return store, engine, repo, base
