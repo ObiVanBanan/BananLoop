@@ -181,6 +181,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         editable_scope=args.editable or ["**"],
         protected_paths=protected_paths,
         forbidden_diff_patterns=args.forbid_diff_regex or [],
+        fresh_perspective_on_reframe=args.fresh_perspective_on_reframe,
         budget=BudgetSpec(
             max_evaluation_units=args.max_evaluation_units,
             evaluation_units_per_call=args.evaluation_units_per_call,
@@ -364,6 +365,7 @@ def cmd_start(args: argparse.Namespace) -> int:
                         max_evaluator_calls=args.max_evaluator_calls,
                         deadline_seconds=args.deadline_seconds,
                         plateau_experiments=args.plateau,
+                        fresh_perspective_on_reframe=args.fresh_perspective_on_reframe,
                     )
         except CampaignLockError as exc:
             print(f"BananLoop error: {exc}", file=sys.stderr)
@@ -561,6 +563,8 @@ def parser() -> argparse.ArgumentParser:
     goal.add_argument("--state-dir")
     goal.add_argument("--request-id", help="idempotency key; use a new value to intentionally repeat a goal")
     goal.add_argument("--agent-profiles", help="TOML profile file for default and role-specific agent settings")
+    goal.add_argument("--fresh-perspective-on-reframe", action="store_true",
+                      help="run a context-isolated second proposer on DEV plateau")
     goal.add_argument(
         "--prepare-only",
         action="store_true",
@@ -635,6 +639,8 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--max-evaluator-calls", type=int, default=16)
     start.add_argument("--deadline-seconds", type=int, default=14400)
     start.add_argument("--plateau", type=int, default=3)
+    start.add_argument("--fresh-perspective-on-reframe", action="store_true",
+                       help="run a context-isolated second proposer on DEV plateau")
     start.add_argument("--allow-dirty", action="store_true")
     start.add_argument(
         "--prepare-only",
@@ -741,6 +747,8 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--max-evaluator-calls", type=int, default=10)
     init.add_argument("--deadline-seconds", type=int, default=3600)
     init.add_argument("--plateau", type=int, default=3)
+    init.add_argument("--fresh-perspective-on-reframe", action="store_true",
+                      help="run a context-isolated second proposer on DEV plateau")
     init.add_argument("--allow-dirty", action="store_true")
     init.add_argument("--interactive", action="store_true", help="run the interactive init wizard")
     init.add_argument("--yes", action="store_true", help="approve an interactive CampaignSpec without confirmation")

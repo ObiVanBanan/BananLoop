@@ -422,6 +422,14 @@ class CodexAdapter(AgentAdapter):
                 "only when you cannot implement the approved change or a real constraint prevents it. "
                 "Return the requested structured result after editing.\n\n"
             )
+        if role == "propose" and task.get("fresh_perspective"):
+            instruction += (
+                "This is an INDEPENDENT fresh-perspective proposal. Prior experiment history and "
+                "failure notes are intentionally omitted. Inspect the repository and propose genuinely "
+                "different mechanisms without assuming earlier hypotheses were correct. "
+                "Use INSUFFICIENT_EVIDENCE when no cited DEV evidence is supplied. "
+                "Do not invent prior test outcomes.\n\n"
+            )
         instruction += (
             "Before returning the structured response, remove only transient cache artifacts you created "
             "in this disposable workspace (for example .pytest_cache, __pycache__, and *.pyc). Do not "
