@@ -428,7 +428,7 @@ class CodexAdapter(AgentAdapter):
                 "failure notes are intentionally omitted. Inspect the repository and propose genuinely "
                 "different mechanisms without assuming earlier hypotheses were correct. "
                 "Use INSUFFICIENT_EVIDENCE when no cited DEV evidence is supplied. "
-                "Do not invent prior test outcomes.\\n\\n"
+                "Do not invent prior test outcomes.\n\n"
             )
         instruction += (
             "Before returning the structured response, remove only transient cache artifacts you created "

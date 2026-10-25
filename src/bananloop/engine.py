@@ -36,7 +36,10 @@ from .evaluator_binding import (
 from .leakage import scan_forbidden_diff_patterns
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
 from .process import ProcessCancelled, check_process_control, process_control
-from .fresh_perspective import build_fresh_proposal_task, merge_proposal_portfolios, should_request_fresh
+from .fresh_perspective import (
+    build_fresh_proposal_task, grounding_task_for_candidate,
+    merge_proposal_portfolios, should_request_fresh,
+)
 from .research import (
     attempt_bucket,
     agent_decision_view,
@@ -949,6 +952,7 @@ class Engine:
     def _stage_propose(self, attempt_id: int, experiment_id: int) -> None:
         self.workspace.checkout(self.store.campaign()["champion_snapshot"])
         task = self._task_context("propose", experiment_id)
+        independent_mechanism_key = None
         try:
             raw = self._action(
                 action_id=f"exp:{experiment_id}:propose",
@@ -995,11 +999,24 @@ class Engine:
                 fresh_raw = self.agent.normalize_result(fresh_task, fresh_raw)
                 fresh_portfolio = (HypothesisPortfolio(candidates=[]) if fresh_raw.get("status") == "NO_HYPOTHESIS"
                                    else normalize_portfolio(fresh_raw))
+                before_ids = {item.candidate_id for item in portfolio.candidates}
                 portfolio = merge_proposal_portfolios(portfolio, fresh_portfolio)
+                independent_mechanism_key = next(
+                    (item.hypothesis.mechanism_key for item in portfolio.candidates
+                     if item.candidate_id not in before_ids),
+                    None,
+                )
         except (AgentError, ValidationError, ValueError, UnknownActionOutcome, WorkspaceError) as exc:
             self.store.update_experiment(experiment_id, failure_category="AGENT_PROTOCOL_ERROR", lesson=str(exc)[:1000])
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(f"propose failed: {exc}") from exc
+
+        def grounded_candidate(hypothesis: Hypothesis, context: dict[str, Any]) -> str | None:
+            scoped_context = grounding_task_for_candidate(
+                context, mechanism_key=hypothesis.mechanism_key,
+                independent_mechanism_key=independent_mechanism_key,
+            )
+            return self._hypothesis_grounding_error(hypothesis, scoped_context)
 
         action_id = f"exp:{experiment_id}:propose"
         saved_event = next((
@@ -1023,7 +1040,7 @@ class Engine:
                 experiment_ordinal=int(self.store.experiment(experiment_id)["ordinal"]),
                 action_id=action_id,
                 task=task,
-                grounding_check=self._hypothesis_grounding_error,
+                grounding_check=grounded_candidate,
             )
             self.store.event("PORTFOLIO_DECISION", record.model_dump(mode="json"))
             self.store.conn.commit()
@@ -1053,7 +1070,7 @@ class Engine:
         hypothesis = selected.hypothesis
         self._refresh_research_state()
 
-        grounding_error = self._hypothesis_grounding_error(hypothesis, task)
+        grounding_error = grounded_candidate(hypothesis, task)
         if grounding_error:
             self.store.update_experiment(
                 experiment_id,

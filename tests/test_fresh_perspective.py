@@ -7,8 +7,8 @@ from bananloop.contracts import (
     HypothesisPortfolio, MetricSpec,
 )
 from bananloop.fresh_perspective import (
-    build_fresh_proposal_task, merge_proposal_portfolios,
-    should_request_fresh,
+    build_fresh_proposal_task, grounding_task_for_candidate,
+    merge_proposal_portfolios, should_request_fresh,
 )
 
 
@@ -99,3 +99,23 @@ def test_old_spec_hash_unchanged_and_experimental_mode_is_approved():
     experiment = CampaignSpec(**kwargs, fresh_perspective_on_reframe=True)
     assert baseline.approved_hash() == restored.approved_hash()
     assert experiment.approved_hash() != baseline.approved_hash()
+
+
+def test_only_fresh_candidate_may_omit_historic_failure_signal():
+    task = {"role": "propose", "research_state": {
+        "planning_mode": "reframe",
+        "failure_signals": [{"signal_key": "dev-error"}],
+        "experiment_evidence": [{"ordinal": 1}],
+    }}
+    fresh = grounding_task_for_candidate(
+        task, mechanism_key="new-algorithm",
+        independent_mechanism_key="new-algorithm",
+    )
+    other = grounding_task_for_candidate(
+        task, mechanism_key="old-mechanism",
+        independent_mechanism_key="new-algorithm",
+    )
+    assert fresh["research_state"]["failure_signals"] == []
+    assert fresh["research_state"]["experiment_evidence"] == [{"ordinal": 1}]
+    assert other is task
+    assert task["research_state"]["failure_signals"] == [{"signal_key": "dev-error"}]

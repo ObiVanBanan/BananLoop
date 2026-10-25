@@ -55,6 +55,26 @@ def build_fresh_proposal_task(task: dict[str, Any]) -> dict[str, Any]:
     return fresh
 
 
+
+def grounding_task_for_candidate(
+    task: dict[str, Any], *, mechanism_key: str,
+    independent_mechanism_key: str | None,
+) -> dict[str, Any]:
+    """Exempt only the ledger-isolated candidate from mandatory old DEV signals.
+
+    Other gates remain enforced. This is source-bound: the core identifies the
+    exact candidate supplied by its separate fresh-proposal action, not by a
+    model-controlled flag in the hypothesis.
+    """
+    if mechanism_key != independent_mechanism_key or independent_mechanism_key is None:
+        return task
+    independent_task = deepcopy(task)
+    state = dict(independent_task.get("research_state") or {})
+    state["failure_signals"] = []
+    independent_task["research_state"] = state
+    return independent_task
+
+
 def merge_proposal_portfolios(
     primary: HypothesisPortfolio, fresh: HypothesisPortfolio,
 ) -> HypothesisPortfolio:

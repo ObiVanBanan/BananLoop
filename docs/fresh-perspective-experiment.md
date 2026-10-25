@@ -11,8 +11,11 @@ the approved goal, code scope and measurement contract, but not failed experimen
 history, hypotheses, DEV failure capsules or prior analysis notes. It can inspect
 the same sanitized repository without making any edits. The supervisor adds at most
 one alternative mechanism to the candidate portfolio (four candidates maximum).
-All candidates pass the existing deterministic grounding, scope, evidence,
-redundancy, budget and DEV gates. The fresh call is checkpointed as a normal action;
+A candidate proven to originate from the fresh call is exempt **only** from
+the old DEV failure-signal citation requirement; it cannot cite signals it
+was never shown. All other candidates and all downstream checks retain the
+existing deterministic scope, evidence-reference, redundancy, budget and DEV
+gates. The fresh call is checkpointed as a normal action;
 a completed result is reused on resume. When fewer than two unreserved agent
 calls remain (fresh proposal + implementation), the extra proposal is skipped.
 Feature-off behavior is unchanged.
@@ -25,11 +28,11 @@ Example, after creating a trustworthy target repository and evaluation contract:
 
 ```powershell
 # Control, using your established init arguments:
-bananloop init --repo . --state-dir .bl-control <YOUR_EXISTING_INIT_ARGUMENTS>
+bananloop init --repo . --state-dir .bl-control YOUR_EXISTING_INIT_ARGUMENTS
 bananloop run --repo . --state-dir .bl-control
 
 # Treatment: the only additional flag is opt-in fresh perspective.
-bananloop init --repo . --state-dir .bl-fresh --fresh-perspective-on-reframe <YOUR_EXISTING_INIT_ARGUMENTS>
+bananloop init --repo . --state-dir .bl-fresh --fresh-perspective-on-reframe YOUR_EXISTING_INIT_ARGUMENTS
 bananloop run --repo . --state-dir .bl-fresh
 ```
 
