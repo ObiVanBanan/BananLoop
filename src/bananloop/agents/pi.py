@@ -199,6 +199,13 @@ class PiAdapter(AgentAdapter):
             )
         else:
             raise AgentError(f"unsupported Pi role: {role!r}")
+        if role == "propose" and task.get("fresh_perspective"):
+            instruction += (
+                " This is an INDEPENDENT fresh-perspective proposal: previous experiment "
+                "history and failure notes are intentionally omitted. Inspect the repository "
+                "and propose alternative mechanisms without inventing previous observations. "
+                "Use INSUFFICIENT_EVIDENCE when no DEV evidence is supplied."
+            )
         return instruction + "\n\nBANANLOOP TASK:\n" + json.dumps(task, ensure_ascii=False, indent=2)
 
     @staticmethod

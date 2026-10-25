@@ -36,6 +36,7 @@ from .evaluator_binding import (
 from .leakage import scan_forbidden_diff_patterns
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
 from .process import ProcessCancelled, check_process_control, process_control
+from .fresh_perspective import build_fresh_proposal_task, merge_proposal_portfolios, should_request_fresh
 from .research import (
     attempt_bucket,
     agent_decision_view,
@@ -962,13 +963,39 @@ class Engine:
                 ),
             )
             raw = self.agent.normalize_result(task, raw)
-            if raw.get("status") == "NO_HYPOTHESIS":
+            fresh_action_id = f"exp:{experiment_id}:propose-fresh"
+            has_fresh_action = self.store.action(fresh_action_id) is not None
+            campaign = self.store.campaign()
+            remaining_agent_calls = self.spec.budget.max_agent_calls - campaign["agent_calls"]
+            run_fresh = should_request_fresh(
+                task, enabled=self.spec.fresh_perspective_on_reframe,
+                remaining_agent_calls=remaining_agent_calls,
+                action_already_reserved=has_fresh_action,
+            )
+            if raw.get("status") == "NO_HYPOTHESIS" and not run_fresh:
                 self.store.update_experiment(experiment_id, failure_category="NO_HYPOTHESIS", lesson="Agent proposed no further hypothesis")
                 self.store.finish_attempt(attempt_id, experiment_id, status="NO_HYPOTHESIS", scientific=False, improved=False)
                 self._refresh_research_state()
                 self._stop(StopReason.NO_HYPOTHESIS)
                 return
-            portfolio = normalize_portfolio(raw)
+            portfolio = (HypothesisPortfolio(candidates=[]) if raw.get("status") == "NO_HYPOTHESIS"
+                         else normalize_portfolio(raw))
+            if run_fresh:
+                # A second isolated proposal is a separately reserved, resumable agent
+                # action. It never edits the workspace or receives past DEV failures.
+                fresh_task = build_fresh_proposal_task(task)
+                fresh_raw = self._action(
+                    action_id=fresh_action_id, experiment_id=experiment_id,
+                    stage="PROPOSE", kind="agent", request=fresh_task,
+                    invoke=lambda: self._invoke_agent(
+                        fresh_task, timeout=self._agent_timeout(900),
+                        apply_changes=False,
+                    ),
+                )
+                fresh_raw = self.agent.normalize_result(fresh_task, fresh_raw)
+                fresh_portfolio = (HypothesisPortfolio(candidates=[]) if fresh_raw.get("status") == "NO_HYPOTHESIS"
+                                   else normalize_portfolio(fresh_raw))
+                portfolio = merge_proposal_portfolios(portfolio, fresh_portfolio)
         except (AgentError, ValidationError, ValueError, UnknownActionOutcome, WorkspaceError) as exc:
             self.store.update_experiment(experiment_id, failure_category="AGENT_PROTOCOL_ERROR", lesson=str(exc)[:1000])
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)

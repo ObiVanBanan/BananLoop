@@ -227,6 +227,8 @@ class CampaignSpec(BaseModel):
     protected_paths: list[str] = Field(default_factory=list)
     forbidden_diff_patterns: list[str] = Field(default_factory=list)
     budget: BudgetSpec = Field(default_factory=BudgetSpec)
+    # Opt-in extra independent proposal when DEV history reaches reframe.
+    fresh_perspective_on_reframe: bool = False
     agent: AgentConfig = Field(default_factory=AgentConfig)
 
     @field_validator("forbidden_diff_patterns")
@@ -298,6 +300,8 @@ class CampaignSpec(BaseModel):
             data.pop("signal_sanity_status", None)
         if self.signal_sanity_receipt_sha256 is None:
             data.pop("signal_sanity_receipt_sha256", None)
+        if not self.fresh_perspective_on_reframe:
+            data.pop("fresh_perspective_on_reframe", None)
         for key in ("max_evaluation_units", "evaluation_units_per_call"):
             if data["budget"][key] is None:
                 data["budget"].pop(key)

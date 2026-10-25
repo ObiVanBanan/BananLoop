@@ -485,6 +485,7 @@ def bootstrap_campaign(
     max_evaluator_calls: int = 16,
     deadline_seconds: int = 14400,
     plateau_experiments: int = 3,
+    fresh_perspective_on_reframe: bool = False,
 ) -> tuple[BootstrapPlan, CampaignSpec | None]:
     """Turn repo + goal into an approved CampaignSpec without touching source checkout."""
 
@@ -776,6 +777,7 @@ def bootstrap_campaign(
         mandatory_checks=plan.mandatory_checks,
         editable_scope=plan.editable_scope or ["**"],
         protected_paths=protected,
+        fresh_perspective_on_reframe=fresh_perspective_on_reframe,
         budget=BudgetSpec(
             max_experiments=max_experiments,
             max_attempts=max_attempts,
