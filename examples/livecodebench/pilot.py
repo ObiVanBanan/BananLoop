@@ -112,6 +112,13 @@ def materialize(source_jsonl: Path, work_dir: Path, *, limit: int = 10) -> dict[
         readme += record["question_content"].strip() + "\n"
         if starter.strip():
             readme += "\n## Starter code\n\n" + starter + "\n"
+        readme += "\n## Public examples (training feedback only)\n"
+        for sample_index, sample in enumerate(samples[:12], 1):
+            readme += (
+                f"\n### Example {sample_index}\n"
+                f"Input:\n{sample['input']}\n"
+                f"Expected output:\n{sample['output']}\n"
+            )
         (repo / "README.md").write_text(readme, encoding="utf-8", newline="\n")
         (repo / "solution.py").write_text("# Implement stdin -> stdout solution here.\n",
                                            encoding="utf-8", newline="\n")
