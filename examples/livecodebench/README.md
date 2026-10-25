@@ -21,6 +21,26 @@ for later grading by the official LiveCodeBench checker.
 - Official LCB dataset is multi-GB. Download/prepare in a separate environment,
   and transfer **only sanitized public fields** to the experiment machine.
 
+
+## Preparing sanitized data
+
+The optional streaming exporter runs separately from any BananLoop agent.
+Install the datasets library in that *preparation environment*, inspect the
+official Hugging Face dataset history and pin a 40-character revision SHA.
+For example:
+
+```powershell
+python -m pip install datasets
+python examples/livecodebench/export_public.py --release release_v6 --revision YOUR_FULL_40_CHAR_DATASET_SHA --difficulty hard --limit 10 --out C:\benchdata\lcb-v6-public-only.jsonl
+```
+
+This exports only allowlisted public fields and selects stdin-style tasks.
+It attempts streaming rather than downloading the complete multi-GB release
+first, but the exact supported behavior depends on the installed datasets
+version and dataset backend. If the dataset cannot be streamed, prepare the
+public-only file elsewhere rather than exposing raw private cases to the
+experiment workspace.
+
 ## Windows PowerShell
 
 From the experimental checkout including PR #62:

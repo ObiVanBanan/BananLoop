@@ -104,3 +104,13 @@ def test_only_fresh_arm_has_opt_in_flag(tmp_path: Path, monkeypatch):
     assert "--fresh-perspective-on-reframe" not in calls[0]
     assert "--fresh-perspective-on-reframe" in calls[2]
     assert [call[1] for call in calls] == ["init", "run", "init", "run"]
+
+
+def test_streaming_export_projects_public_fields_only():
+    from examples.livecodebench.export_public import sanitized
+    raw = {**_row(), "private_test_cases": "SECRET_EXPECTED_OUTPUT"}
+    public = sanitized(raw, difficulty="hard")
+    assert public is not None
+    assert "private_test_cases" not in public
+    assert "SECRET_EXPECTED_OUTPUT" not in json.dumps(public)
+    assert sanitized(raw, difficulty="easy") is None
