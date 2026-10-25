@@ -28,7 +28,7 @@ def sanitized(record: dict, *, difficulty: str) -> dict | None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--release", default="release_v6")
+    parser.add_argument("--release", default="v6")
     parser.add_argument("--revision", required=True,
                         help="full pinned huggingface dataset Git commit SHA")
     parser.add_argument("--difficulty", choices=("hard", "medium", "easy", "any"),
