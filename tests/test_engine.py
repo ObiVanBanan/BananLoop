@@ -1693,3 +1693,74 @@ def test_aggregate_dev_rejection_stores_deterministic_reflection(tmp_path: Path)
         assert "123456" not in dumped
     finally:
         store.close()
+
+
+class RepairingProposalAgent(AgentAdapter):
+    def __init__(self):
+        self.calls = []
+
+    def probe(self):
+        return {"available": True}
+
+    def execute(self, task, workspace, timeout):
+        self.calls.append(task)
+        assert task["role"] == "propose"
+        is_repair = "portfolio_repair" in task
+        if is_repair:
+            assert task["portfolio_repair"]["allowed_editable_scope"] == [
+                "value.txt", "guard.txt"
+            ]
+            assert task["portfolio_repair"]["previous_rejections"][0][
+                "rejection_reasons"
+            ] == ["OUT_OF_SCOPE"]
+        return {
+            "candidates": [{
+                "candidate_id": "valid-repair" if is_repair else "invalid-scope",
+                "hypothesis": {
+                    "hypothesis": "improve the allowed file",
+                    "rationale": "evaluable DEV-only method",
+                    "expected_effect": "quality improvement",
+                    "files_or_area": ["value.txt"] if is_repair else ["missing_dir/random.py"],
+                    "falsification_condition": "DEV score does not improve",
+                    "mechanism_key": "repairable-mechanism",
+                },
+                "evidence_refs": ["INSUFFICIENT_EVIDENCE"],
+                "predicted_observable": "DEV score increases",
+                "discriminating_test": "run frozen DEV evaluation",
+                "scope_eligibility": True,
+                "rationale": "test a bounded candidate",
+                "uncertainty": "DEV improvement unknown",
+            }],
+        }
+
+
+def test_no_admissible_portfolio_gets_one_bounded_correction(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        agent = RepairingProposalAgent()
+        engine.agent = agent
+        engine._stage_propose(attempt_id, experiment_id)
+        assert store.attempt(attempt_id)["stage"] == "EXECUTE"
+        assert len(agent.calls) == 2
+        assert store.campaign()["agent_calls"] == 2
+        records = [
+            x for x in store.events() if x["event_type"] in (
+                "PORTFOLIO_DECISION", "PORTFOLIO_REPAIR_DECISION",
+            )
+        ]
+        assert len(records) == 2
+        original = json.loads(records[0]["payload_json"])
+        repaired = json.loads(records[1]["payload_json"])
+        assert original["selected_candidate_id"] is None
+        assert repaired["selected_candidate_id"] == "valid-repair"
+        assert store.experiment(experiment_id)["hypothesis_json"] is not None
+        # A saved repair must never be invoked again after a supervisor retry.
+        store.set_stage(attempt_id, "PROPOSE")
+        engine._stage_propose(attempt_id, experiment_id)
+        assert len(agent.calls) == 2
+    finally:
+        store.close()
