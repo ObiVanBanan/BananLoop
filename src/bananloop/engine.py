@@ -48,6 +48,7 @@ from .research import (
     redundancy_reason,
     normalize_portfolio,
     select_candidate,
+    synthesize_dev_failure_analysis,
 )
 from .store import CampaignStore
 from .workspace import WorkspaceError, WorkspaceManager
@@ -1594,6 +1595,27 @@ class Engine:
                     decision.model_dump(mode="json"),
                 )
         else:
+            # ARE-style evaluators often provide aggregate reward with no
+            # failure_signals. Store a deterministic, uncertainty-aware DEV
+            # capsule instead of silently skipping reflection. The model does
+            # not get an extra call or any hidden/case-level evaluator data.
+            analysis = synthesize_dev_failure_analysis(
+                self.spec,
+                decision.model_dump(mode="json"),
+                champion_dev_json=campaign["champion_json"],
+                candidate_dev_json=exp["evaluation_json"],
+            )
+            if analysis is not None:
+                self.store.update_experiment(
+                    experiment_id,
+                    failure_analysis_json=analysis.model_dump_json(),
+                )
+                self.store.event("DEV_FAILURE_DIAGNOSIS_RECORDED", {
+                    "experiment_id": experiment_id,
+                    "failure_class": analysis.capsules[0].failure_class,
+                    "source": "allowlisted_dev_decision",
+                })
+                self.store.conn.commit()
             self._route_after_dev_analysis(
                 attempt_id,
                 decision.model_dump(mode="json"),

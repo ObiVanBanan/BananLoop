@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from .contracts import (
     CampaignSpec, CandidateDecision, DevExperimentEvidence, DevFailureSummary,
-    DevResearchLesson, FailureCapsule, Hypothesis, HypothesisCandidate,
+    DevResearchLesson, FailureAnalysisResult, FailureCapsule, Hypothesis, HypothesisCandidate,
     HypothesisPortfolio, MechanismEvidence, PortfolioRecord, ResearchState,
 )
 
@@ -82,6 +82,19 @@ def planning_mode(non_improve_streak: int, plateau_experiments: int) -> str:
     if non_improve_streak >= max(1, plateau_experiments - 1):
         return "reframe"
     return "explore"
+
+
+
+def effective_reframe_threshold(spec: CampaignSpec) -> int:
+    """Enter research reframe while there is still room to test a new family.
+
+    This only affects proposal strategy. Scientific acceptance, plateau stopping,
+    evaluator usage and frozen campaign budgets remain unchanged.
+    """
+    configured = spec.budget.plateau_experiments
+    if spec.budget.max_experiments <= 2:
+        return configured
+    return min(configured, max(2, spec.budget.max_experiments - 2))
 
 
 def capsule_evidence_ref(capsule: FailureCapsule) -> str:
@@ -436,6 +449,88 @@ def agent_decision_view(
     return view
 
 
+
+def synthesize_dev_failure_analysis(
+    spec: CampaignSpec,
+    decision: dict[str, Any],
+    *,
+    champion_dev_json: str | None = None,
+    candidate_dev_json: str | None = None,
+) -> FailureAnalysisResult | None:
+    """Persist an honest, DEV-only diagnosis when the evaluator supplied no cases.
+
+    A score regression does not identify its cause. Use only the approved,
+    allowlisted DEV decision view: no hidden inputs, raw examples, validation
+    results or unrestricted evaluator diagnostics may enter proposer memory.
+    No model call, evaluator call or alteration of the acceptance gate occurs.
+    """
+    visible = agent_decision_view(spec, decision) or {}
+    if visible.get("accepted"):
+        return None
+    reasons = tuple(visible.get("reasons") or ())
+    predicates = visible.get("predicates") or {}
+    if any(reason.startswith("CHECK_FAILED:") for reason in reasons) or any(
+        key.startswith("check:") and value is False
+        for key, value in predicates.items()
+    ):
+        category = "DEV_CHECK_FAILURE"
+        observation = "A mandatory DEV check failed; quality cannot be inferred."
+        next_step = "Fix the failed DEV check and rerun it before optimizing the score."
+    elif any(reason.startswith(("GUARDRAIL_FAILED:", "REGRESSION:")) for reason in reasons):
+        category = "DEV_GUARD_FAILURE"
+        observation = "The candidate failed an approved DEV guardrail."
+        next_step = "Isolate the failing DEV guardrail before another optimization."
+    else:
+        delta = visible.get("delta")
+        if isinstance(delta, (int, float)) and math.isfinite(delta):
+            category = "DEV_METRIC_REGRESSION" if delta < 0 else "DEV_INSUFFICIENT_GAIN"
+        else:
+            category = "DEV_UNEXPLAINED_REJECTION"
+        observation = "The measured DEV candidate was not promoted."
+        next_step = (
+            "Run a bounded DEV-only discriminator comparing the proposed "
+            "mechanism against implementation or configuration error."
+        )
+
+    numeric = [
+        visible.get(key) for key in ("primary_value", "champion_value", "delta")
+    ]
+    if all(isinstance(value, (int, float)) and math.isfinite(value) for value in numeric):
+        current, champion, delta = numeric
+        observation += (
+            f" Candidate primary={current:.6g}, champion={champion:.6g}, "
+            f"delta={delta:+.6g}."
+        )
+    # Only explicitly allowlisted aggregate DEV diagnostics may distinguish
+    # candidates whose official reward is clipped to the same value.
+    champion_view = agent_evaluation_view(spec, champion_dev_json) or {}
+    candidate_view = agent_evaluation_view(spec, candidate_dev_json) or {}
+    old_diagnostics = champion_view.get("diagnostics") or {}
+    new_diagnostics = candidate_view.get("diagnostics") or {}
+    for key in sorted(new_diagnostics.keys() & old_diagnostics.keys())[:4]:
+        previous, current = old_diagnostics[key], new_diagnostics[key]
+        if all(isinstance(value, (int, float)) and math.isfinite(value)
+               for value in (previous, current)):
+            observation += (
+                f" DEV diagnostic {key}: candidate={current:.6g}, "
+                f"champion={previous:.6g}, delta={current - previous:+.6g}."
+            )
+    capsule = FailureCapsule(
+        title="Aggregate DEV failure; root cause not established",
+        failure_class=category,
+        stage="dev",
+        observation=observation,
+        likely_mechanism="UNKNOWN",
+        general_rule=(
+            "A DEV outcome is evidence about a candidate, not proof of a "
+            "specific causal mechanism. Keep untested explanations uncertain."
+        ),
+        suggested_regression=next_step,
+        confidence=0.0,
+    )
+    return FailureAnalysisResult(capsules=[capsule])
+
+
 def classify_dev_outcome(
     spec: CampaignSpec,
     row: dict[str, Any],
@@ -702,7 +797,7 @@ def build_research_state(
         "evaluator_calls": max(0, spec.budget.max_evaluator_calls - int(campaign["evaluator_calls"])),
         "dev_experiments_until_reframe": max(
             0,
-            spec.budget.plateau_experiments - 1 - dev_non_improve_streak,
+            effective_reframe_threshold(spec) - 1 - dev_non_improve_streak,
         ),
     }
     if remaining_work_units is not None:
@@ -728,7 +823,7 @@ def build_research_state(
     return ResearchState(
         planning_mode=planning_mode(
             dev_non_improve_streak,
-            spec.budget.plateau_experiments,
+            effective_reframe_threshold(spec),
         ),
         dev_non_improve_streak=dev_non_improve_streak,
         failure_counts=dict(sorted(failure_counts.items())),
