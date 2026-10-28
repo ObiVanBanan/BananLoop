@@ -451,7 +451,11 @@ def agent_decision_view(
 
 
 def synthesize_dev_failure_analysis(
-    spec: CampaignSpec, decision: dict[str, Any],
+    spec: CampaignSpec,
+    decision: dict[str, Any],
+    *,
+    champion_dev_json: str | None = None,
+    candidate_dev_json: str | None = None,
 ) -> FailureAnalysisResult | None:
     """Persist an honest, DEV-only diagnosis when the evaluator supplied no cases.
 
@@ -497,6 +501,20 @@ def synthesize_dev_failure_analysis(
             f" Candidate primary={current:.6g}, champion={champion:.6g}, "
             f"delta={delta:+.6g}."
         )
+    # Only explicitly allowlisted aggregate DEV diagnostics may distinguish
+    # candidates whose official reward is clipped to the same value.
+    champion_view = agent_evaluation_view(spec, champion_dev_json) or {}
+    candidate_view = agent_evaluation_view(spec, candidate_dev_json) or {}
+    old_diagnostics = champion_view.get("diagnostics") or {}
+    new_diagnostics = candidate_view.get("diagnostics") or {}
+    for key in sorted(new_diagnostics.keys() & old_diagnostics.keys())[:4]:
+        previous, current = old_diagnostics[key], new_diagnostics[key]
+        if all(isinstance(value, (int, float)) and math.isfinite(value)
+               for value in (previous, current)):
+            observation += (
+                f" DEV diagnostic {key}: candidate={current:.6g}, "
+                f"champion={previous:.6g}, delta={current - previous:+.6g}."
+            )
     capsule = FailureCapsule(
         title="Aggregate DEV failure; root cause not established",
         failure_class=category,
