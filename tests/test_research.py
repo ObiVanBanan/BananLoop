@@ -20,6 +20,8 @@ from bananloop.research import (
     build_research_state,
     capsule_evidence_ref,
     planning_mode,
+    effective_reframe_threshold,
+    synthesize_dev_failure_analysis,
     redundancy_reason,
     normalize_portfolio,
     select_candidate,
@@ -522,3 +524,121 @@ def test_dogfood_partial_gain_preserves_dev_failure_mechanism_evidence():
     assert "private_failure_count" not in rendered
     assert "private case identity" not in rendered
     assert "hidden tier" not in rendered
+
+
+def test_auto_diagnosis_persists_unknown_cause_without_hidden_data():
+    s = spec(agent_visible_metrics=["quality"])
+    analysis = synthesize_dev_failure_analysis(s, {
+        "accepted": False,
+        "primary_value": 0.1,
+        "champion_value": 0.6,
+        "delta": -0.5,
+        "predicates": {"minimum_improvement": False},
+        "reasons": ["PRIMARY_NOT_IMPROVED", "VALIDATION:PRIVATE_RESULT"],
+        "validation": {"secret_answer": "DO_NOT_LEAK"},
+    })
+    assert analysis is not None
+    capsule = analysis.capsules[0]
+    assert capsule.failure_class == "DEV_METRIC_REGRESSION"
+    assert capsule.likely_mechanism == "UNKNOWN"
+    assert capsule.confidence == 0.0
+    assert "delta=-0.5" in capsule.observation
+    assert "PRIVATE" not in analysis.model_dump_json()
+    assert "DO_NOT_LEAK" not in analysis.model_dump_json()
+    assert synthesize_dev_failure_analysis(s, {"accepted": True}) is None
+
+
+def test_auto_diagnosis_respects_primary_metric_visibility():
+    s = spec(agent_visible_metrics=["other_metric"])
+    analysis = synthesize_dev_failure_analysis(s, {
+        "accepted": False,
+        "primary_value": 123456.0,
+        "champion_value": 1.0,
+        "delta": 123455.0,
+        "reasons": ["PRIMARY_NOT_IMPROVED"],
+    })
+    assert analysis is not None
+    assert "123456" not in analysis.model_dump_json()
+    assert analysis.capsules[0].failure_class == "DEV_UNEXPLAINED_REJECTION"
+
+
+def test_auto_diagnosis_separates_check_failures_from_metric_regressions():
+    s = spec()
+    analysis = synthesize_dev_failure_analysis(s, {
+        "accepted": False,
+        "primary_value": 0.7,
+        "champion_value": 0.6,
+        "delta": 0.1,
+        "predicates": {"check:valid": False},
+        "reasons": ["CHECK_FAILED:valid"],
+    })
+    assert analysis.capsules[0].failure_class == "DEV_CHECK_FAILURE"
+    assert "not proof" in analysis.capsules[0].general_rule
+
+
+def test_bounded_reframe_reachable_in_six_round_campaign():
+    s = spec(budget=BudgetSpec(
+        max_experiments=6, max_attempts=12, max_agent_calls=20,
+        max_evaluator_calls=15, plateau_experiments=7,
+    ))
+    assert effective_reframe_threshold(s) == 4
+    rows = [
+        {
+            "ordinal": i, "status": "REJECTED",
+            "hypothesis_json": json.dumps({
+                "mechanism_key": f"mechanism-{i}",
+                "relation": "new",
+            }),
+            "evaluation_json": json.dumps({
+                "status": "ok", "metrics": {"quality": 0.0}
+            }),
+            "dev_decision_json": json.dumps({
+                "accepted": False, "delta": -0.01,
+                "primary_value": 0.0, "champion_value": 0.01,
+                "reasons": ["PRIMARY_NOT_IMPROVED"],
+            }),
+            "decision_json": json.dumps({
+                "accepted": False, "delta": -0.01,
+                "reasons": ["PRIMARY_NOT_IMPROVED"],
+            }),
+        }
+        for i in range(1, 4)
+    ]
+    state = build_research_state(s, campaign(experiment_count=3), rows)
+    assert state.planning_mode == "reframe"
+    assert state.remaining_budget["experiments"] == 3
+    assert state.remaining_budget["dev_experiments_until_reframe"] == 0
+
+
+def test_auto_diagnosis_survives_rejected_trial_and_enters_proposer_memory():
+    s = spec()
+    analysis = synthesize_dev_failure_analysis(s, {
+        "accepted": False, "primary_value": 0.2,
+        "champion_value": 0.4, "delta": -0.2,
+        "reasons": ["PRIMARY_NOT_IMPROVED"],
+    })
+    row = {
+        "ordinal": 1, "status": "REJECTED", "failure_category": None,
+        "hypothesis_json": json.dumps({
+            "mechanism_key": "neighbor-damping",
+        }),
+        "evaluation_json": json.dumps({
+            "status": "ok", "metrics": {"quality": 0.2},
+            "diagnostics": {"hidden_holdout": 555},
+        }),
+        "dev_decision_json": json.dumps({
+            "accepted": False, "primary_value": 0.2,
+            "champion_value": 0.4, "delta": -0.2,
+            "reasons": ["PRIMARY_NOT_IMPROVED"],
+        }),
+        "decision_json": json.dumps({"accepted": False}),
+        "failure_analysis_json": analysis.model_dump_json(),
+    }
+    history = build_history(s, [row])
+    assert history[0]["failure_capsules"][0]["failure_class"] == "DEV_METRIC_REGRESSION"
+    assert "hidden_holdout" not in json.dumps(history)
+    research = build_research_state(s, campaign(), [row])
+    assert research.recent_failure_capsules[0].likely_mechanism == "UNKNOWN"
+    assert any(f.signal_key == "capsule:DEV_METRIC_REGRESSION" for f in research.failure_signals)
+
+
