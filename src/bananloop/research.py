@@ -868,7 +868,7 @@ def build_research_state(
     portfolios: list[PortfolioRecord] = []
     blocked_stop = ""
     for event in events or []:
-        if event.get("event_type") != "PORTFOLIO_DECISION":
+        if event.get("event_type") not in {"PORTFOLIO_DECISION", "PORTFOLIO_REPAIR_DECISION"}:
             if event.get("event_type") == "PLATEAU_REFRAME_BLOCKED":
                 try:
                     blocked_stop = str(json.loads(event["payload_json"]).get("reason", ""))
