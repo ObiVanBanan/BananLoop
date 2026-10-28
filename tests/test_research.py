@@ -642,3 +642,37 @@ def test_auto_diagnosis_survives_rejected_trial_and_enters_proposer_memory():
     assert any(f.signal_key == "capsule:DEV_METRIC_REGRESSION" for f in research.failure_signals)
 
 
+
+
+def test_raw_dev_metric_requires_opt_in_and_helps_with_clipped_reward():
+    champion = json.dumps({
+        "status": "ok",
+        "metrics": {"quality": 0.0},
+        "diagnostics": {"primary_raw_metric": -3.0, "hidden_case": 123456},
+    })
+    candidate = json.dumps({
+        "status": "ok",
+        "metrics": {"quality": 0.0},
+        "diagnostics": {"primary_raw_metric": 0.15, "hidden_case": 789101},
+    })
+    decision = {
+        "accepted": False, "primary_value": 0.0,
+        "champion_value": 0.0, "delta": 0.0,
+        "reasons": ["PRIMARY_NOT_IMPROVED"],
+    }
+    hidden = synthesize_dev_failure_analysis(
+        spec(), decision, champion_dev_json=champion,
+        candidate_dev_json=candidate,
+    )
+    assert "primary_raw_metric" not in hidden.model_dump_json()
+    visible = synthesize_dev_failure_analysis(
+        spec(agent_visible_diagnostics=["primary_raw_metric"]),
+        decision,
+        champion_dev_json=champion, candidate_dev_json=candidate,
+    )
+    text = visible.model_dump_json()
+    assert "primary_raw_metric" in text
+    assert "delta=+3.15" in text
+    assert "hidden_case" not in text
+    assert "123456" not in text
+    assert "789101" not in text
