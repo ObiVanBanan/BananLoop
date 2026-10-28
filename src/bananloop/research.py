@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from .contracts import (
     CampaignSpec, CandidateDecision, DevExperimentEvidence, DevFailureSummary,
-    DevResearchLesson, FailureCapsule, Hypothesis, HypothesisCandidate,
+    DevResearchLesson, FailureAnalysisResult, FailureCapsule, Hypothesis, HypothesisCandidate,
     HypothesisPortfolio, MechanismEvidence, PortfolioRecord, ResearchState,
 )
 
