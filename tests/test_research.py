@@ -747,3 +747,20 @@ def test_real_causal_capsule_still_becomes_actionable_signal():
     state = build_research_state(s, campaign(), [row])
     assert any(signal.signal_key == "capsule:KNOWN_DEV_CONSTRAINT"
                for signal in state.failure_signals)
+
+
+def test_repaired_portfolio_is_visible_to_reframe_planner():
+    from bananloop.contracts import PortfolioRecord
+    s = spec()
+    events = [{
+        "event_type": "PORTFOLIO_REPAIR_DECISION",
+        "payload_json": PortfolioRecord(
+            experiment_ordinal=2, action_id="exp:2:propose-repair",
+            strategy="reframe", selected_candidate_id="fixed-idea",
+        ).model_dump_json(),
+    }]
+    state = build_research_state(s, campaign(), [], events=events)
+    assert len(state.portfolios) == 1
+    assert state.portfolios[0].selected_candidate_id == "fixed-idea"
+    assert state.portfolios[0].strategy == "reframe"
+
