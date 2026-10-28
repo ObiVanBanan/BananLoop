@@ -1645,3 +1645,51 @@ def test_evaluation_request_records_candidate_materialization_proof(tmp_path: Pa
         assert report["experiments"][0]["candidate_proof"] == proof
     finally:
         store.close()
+
+
+def test_aggregate_dev_rejection_stores_deterministic_reflection(tmp_path: Path):
+    """Ordinary reward-only evaluators must not silently skip reflection."""
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        current = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(current["champion_snapshot"])
+        hypothesis = Hypothesis(
+            hypothesis="test a different DEV mechanism",
+            rationale="baseline may be suboptimal",
+            expected_effect="quality increases",
+            files_or_area=["value.txt"],
+            falsification_condition="no DEV improvement",
+            mechanism_key="aggregate-dev-test",
+        )
+        candidate = EvaluationResult.model_validate({
+            "status": "ok",
+            "metrics": {"quality": -1.0, "regressions": 0.0},
+            "checks": {"tests": True},
+            "diagnostics": {"private_holdout": 123456},
+        })
+        store.update_experiment(
+            experiment_id,
+            hypothesis_json=hypothesis.model_dump_json(),
+            candidate_snapshot=current["champion_snapshot"],
+            evaluation_json=candidate.model_dump_json(),
+        )
+        store.set_stage(attempt_id, "DECIDE")
+        engine._stage_decide(attempt_id, experiment_id)
+
+        assert store.attempt(attempt_id)["stage"] == "REJECT"
+        record = store.experiment(experiment_id)
+        analysis = json.loads(record["failure_analysis_json"])
+        assert analysis["capsules"][0]["failure_class"] == "DEV_METRIC_REGRESSION"
+        assert analysis["capsules"][0]["likely_mechanism"] == "UNKNOWN"
+        assert "private_holdout" not in json.dumps(analysis)
+        engine._stage_reject(attempt_id, experiment_id)
+        engine._stage_record(attempt_id, experiment_id)
+        task = engine._task_context("propose", 999)
+        dumped = json.dumps(task)
+        assert "DEV_METRIC_REGRESSION" in dumped
+        assert "private_holdout" not in dumped
+        assert "123456" not in dumped
+    finally:
+        store.close()
