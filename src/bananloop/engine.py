@@ -1600,7 +1600,10 @@ class Engine:
             # capsule instead of silently skipping reflection. The model does
             # not get an extra call or any hidden/case-level evaluator data.
             analysis = synthesize_dev_failure_analysis(
-                self.spec, decision.model_dump(mode="json"),
+                self.spec,
+                decision.model_dump(mode="json"),
+                champion_dev_json=campaign["champion_json"],
+                candidate_dev_json=exp["evaluation_json"],
             )
             if analysis is not None:
                 self.store.update_experiment(
