@@ -307,6 +307,61 @@ def select_candidate(
         selected_candidate_id=selected, stop_reason=stop_reason)
 
 
+
+def repairable_portfolio_failure(record: PortfolioRecord) -> bool:
+    """Whether a failed portfolio warrants *one* fresh adviser correction.
+
+    Never retry when the only blockers are budget exhaustion or hard policy
+    violations (e.g., evidence leakage). The core selector is still applied
+    from scratch to the returned suggestions.
+    """
+    if record.selected_candidate_id is not None:
+        return False
+    allowed = {
+        "OUT_OF_SCOPE",
+        "UNSAFE_OR_UNGROUNDED_AREA",
+        "UNTESTABLE_NO_AFFECTED_AREA",
+        "UNTESTABLE_NO_OBSERVABLE_OR_DISCRIMINATOR",
+        "MISSING_EVIDENCE_OR_INSUFFICIENT_EVIDENCE_MARKER",
+        "REPEAT_WITHOUT_NEW_DISCRIMINATING_EVIDENCE",
+    }
+    return any(
+        reason in allowed or reason.startswith("UNGROUNDED_EVIDENCE:")
+        for decision in record.decisions
+        for reason in decision.rejection_reasons
+    )
+
+
+def portfolio_repair_context(record: PortfolioRecord, spec: CampaignSpec) -> dict[str, Any]:
+    """Give a fresh proposer exact machine rejections, without rewriting any hypothesis."""
+    decisions = [
+        {"candidate_id": decision.candidate_id, "rejection_reasons": decision.rejection_reasons}
+        for decision in [*record.decisions, *record.invalid_candidates]
+        if not decision.admissible
+    ]
+    return {
+        "attempt": 1,
+        "limit": 1,
+        "allowed_editable_scope": spec.editable_scope,
+        "previous_candidates": [candidate.model_dump(mode="json")
+                                for candidate in record.candidates],
+        "previous_rejections": decisions,
+        "instruction": (
+            "The previous portfolio produced NO admissible candidate. "
+            "Return up to 4 corrected, independently valid candidates using the SAME "
+            "portfolio schema. files_or_area must contain literal repository paths "
+            "inside allowed_editable_scope, not prose labels or unapproved paths. "
+            "If relevant prior DEV experiments are supplied, set "
+            "hypothesis.prior_experiment_refs to their integer ordinals AND include "
+            "matching exp:<ordinal> evidence_refs; never invent references. "
+            "When only aggregate score evidence exists, the cause is UNKNOWN: "
+            "state a falsifiable proposed mechanism rather than claiming proof. "
+            "Do not change protected files or request evaluation/holdout inputs. "
+            "If no authorized bounded proposal is possible, return an empty candidates list."
+        ),
+    }
+
+
 def derive_dev_lesson(row: dict[str, Any], spec: CampaignSpec) -> DevResearchLesson | None:
     """Summarize one scientific DEV measurement, excluding operational failures."""
     if attempt_bucket(row) != "scientific_trials":
@@ -674,6 +729,11 @@ def summarize_dev_failures(
         if row.get("status") == "ACTIVE":
             continue
         for capsule in _failure_capsules_from_row(row):
+            # A deterministic aggregate-loss observation is not an actionable
+            # causal failure signal. Keep it in recent_failure_capsules and
+            # experiment_evidence, but do not force proposer to invent causes.
+            if capsule.confidence <= 0 and capsule.likely_mechanism.strip().upper() == "UNKNOWN":
+                continue
             # Free-form case identifiers cannot become planning signal keys.
             if not re.fullmatch(r"[A-Za-z_][A-Za-z_-]{0,79}", capsule.failure_class):
                 continue

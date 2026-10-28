@@ -676,3 +676,74 @@ def test_raw_dev_metric_requires_opt_in_and_helps_with_clipped_reward():
     assert "hidden_case" not in text
     assert "123456" not in text
     assert "789101" not in text
+
+
+def test_unknown_cause_capsule_remains_memory_not_enforced_failure_signal():
+    s = spec(agent_visible_metrics=["quality"])
+    analysis = synthesize_dev_failure_analysis(s, {
+        "accepted": False, "primary_value": 0.0,
+        "champion_value": 0.25, "delta": -0.25,
+        "reasons": ["PRIMARY_NOT_IMPROVED"],
+    })
+    row = {
+        "ordinal": 1, "status": "REJECTED", "failure_category": None,
+        "hypothesis_json": json.dumps({"mechanism_key": "unknown-cause-test"}),
+        "evaluation_json": json.dumps({"status": "ok", "metrics": {"quality": 0.0}}),
+        "dev_decision_json": json.dumps({
+            "accepted": False, "primary_value": 0.0,
+            "champion_value": 0.25, "delta": -0.25,
+            "reasons": ["PRIMARY_NOT_IMPROVED"],
+        }),
+        "failure_analysis_json": analysis.model_dump_json(),
+    }
+    state = build_research_state(s, campaign(), [row])
+    assert state.failure_signals == []
+    assert state.experiment_evidence[0].ordinal == 1
+    assert state.recent_failure_capsules[0].likely_mechanism == "UNKNOWN"
+    assert build_history(s, [row])[0]["failure_capsules"][0]["confidence"] == 0.0
+
+
+def test_repairable_portfolio_never_weakens_scope_or_budget_policy():
+    from bananloop.contracts import CandidateDecision, PortfolioRecord
+    from bananloop.research import repairable_portfolio_failure, portfolio_repair_context
+    record = PortfolioRecord(
+        experiment_ordinal=1, action_id="exp:1:propose", strategy="exploit",
+        decisions=[CandidateDecision(
+            candidate_id="bad-path", admissible=False,
+            rejection_reasons=["OUT_OF_SCOPE"],
+        )],
+    )
+    assert repairable_portfolio_failure(record)
+    context = portfolio_repair_context(record, spec(editable_scope=["output/**"]))
+    assert context["attempt"] == context["limit"] == 1
+    assert context["allowed_editable_scope"] == ["output/**"]
+    assert context["previous_rejections"][0]["rejection_reasons"] == ["OUT_OF_SCOPE"]
+    denied = record.model_copy(update={
+        "decisions": [CandidateDecision(
+            candidate_id="no-budget", admissible=False,
+            rejection_reasons=["INSUFFICIENT_AGENT_BUDGET"],
+        )]
+    })
+    assert not repairable_portfolio_failure(denied)
+    valid = record.model_copy(update={"selected_candidate_id": "good"})
+    assert not repairable_portfolio_failure(valid)
+
+
+def test_real_causal_capsule_still_becomes_actionable_signal():
+    s = spec(agent_visible_metrics=["quality"])
+    row = {
+        "ordinal": 1, "status": "REJECTED", "failure_category": None,
+        "hypothesis_json": json.dumps({"mechanism_key": "causal-failure"}),
+        "evaluation_json": json.dumps({"status": "ok", "metrics": {"quality": 0.0}}),
+        "failure_analysis_json": json.dumps({"capsules": [{
+            "title": "Valid DEV mismatch",
+            "failure_class": "KNOWN_DEV_CONSTRAINT",
+            "observation": "normalized aggregates disagree",
+            "likely_mechanism": "normalization mismatch",
+            "general_rule": "compare aggregate normalization paths",
+            "confidence": 0.9,
+        }]}),
+    }
+    state = build_research_state(s, campaign(), [row])
+    assert any(signal.signal_key == "capsule:KNOWN_DEV_CONSTRAINT"
+               for signal in state.failure_signals)

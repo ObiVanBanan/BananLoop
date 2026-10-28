@@ -34,3 +34,40 @@ For A/B, use the same frozen evaluator for each arm, equal token and
 wall-clock budgets, and a new untouched holdout. Record proposer and implement
 usage separately. Measure accepted DEV score against cumulative tokens in
 addition to final score.
+
+
+## Hotfix V2: bounded proposal repair and evidence semantics
+- **GVS5H-inspired fresh perspective:** after an all-invalid portfolio caused by
+  correctable scope/grounding errors, the engine makes **at most one** additional
+  proposer call in a disposable workspace. It supplies exact machine rejection
+  reasons, the frozen approved editable scope, and the previous proposals.
+  The same strict validator runs again, with no scope-policy relaxation.
+- **Arbor-inspired evidence separation:** a synthetic aggregate-DEV capsule with
+  `confidence=0` and `likely_mechanism=UNKNOWN` stays in the durable research
+  history but is not treated as a causal `failure_signal` that the next
+  hypothesis must explain. Actual high-confidence DEV capsules continue to
+  participate in evidence-based planning.
+- **Durability:** original and repaired portfolios are stored as separate
+  `PORTFOLIO_DECISION` / `PORTFOLIO_REPAIR_DECISION` events. The repair
+  action ID is stable (`exp:N:propose-repair`) and replays safely.
+- **Cost:** the repair is strictly one extra agent call when otherwise the
+  campaign would stop before executing a valid experiment. Token ceilings are
+  still a separate, outstanding benchmark concern. Never run an unrestricted
+  10-task A/B until explicit resource budgets are frozen.
+- References:
+  [GVS5H](https://github.com/slee-persis/GVS5H)
+  (fresh-context workers with a shared ledger),
+  [Arbor](https://github.com/RUC-NLPIR/Arbor)
+  (Idea Tree with observed outcomes distinct from inferred insights).
+
+### Provenance of fixes
+The uploaded 2026-10-28 AutoResearchExam trace contained:
+- Shortest Valid CI: 3 candidates with `files_or_area=["output/interval.py",
+  "output helper modules"]`, all rejected by `OUT_OF_SCOPE`.
+- ACT Tensor: 3 rejected candidates with references `exp:1` in
+  `evidence_refs` but empty `hypothesis.prior_experiment_refs`; all rejected
+  as ungrounded. The new bounded correction requests both fields explicitly.
+
+Do not assume this hotfix improves official benchmark quality. First run the
+targeted pytest suite, then short CPU-only smoke campaigns. Re-evaluate with
+equal frozen compute, token budgets and no shared local memory across arms.

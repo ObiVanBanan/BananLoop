@@ -48,6 +48,8 @@ from .research import (
     redundancy_reason,
     normalize_portfolio,
     select_candidate,
+    repairable_portfolio_failure,
+    portfolio_repair_context,
     synthesize_dev_failure_analysis,
 )
 from .store import CampaignStore
@@ -1004,6 +1006,75 @@ class Engine:
             self.store.event("PORTFOLIO_DECISION", record.model_dump(mode="json"))
             self.store.conn.commit()
             self._checkpoint("PORTFOLIO_SAVED")
+        if record.selected_candidate_id is None and repairable_portfolio_failure(record):
+            # GVS5H-style fresh proposer view: exact feedback + a bounded second
+            # proposal, with no edits/evaluator access and no loose scope bypass.
+            # The original PORTFOLIO_DECISION stays durable for audits.
+            repair_id = f"exp:{experiment_id}:propose-repair"
+            saved_repair = next((
+                event for event in self.store.events()
+                if event.get("event_type") == "PORTFOLIO_REPAIR_DECISION"
+                and json.loads(event["payload_json"]).get("action_id") == repair_id
+            ), None)
+            if saved_repair is not None:
+                corrected_record = PortfolioRecord.model_validate(
+                    json.loads(saved_repair["payload_json"])
+                )
+                corrected_portfolio = HypothesisPortfolio(candidates=corrected_record.candidates)
+            elif (self.store.action(repair_id) is not None or
+                  pre_action_stop(self.store.campaign(), self.spec.budget, "agent") is None):
+                repair_task = {
+                    **task,
+                    "portfolio_repair": portfolio_repair_context(record, self.spec),
+                }
+                try:
+                    repair_raw = self._action(
+                        action_id=repair_id,
+                        experiment_id=experiment_id,
+                        stage="PROPOSE",
+                        kind="agent",
+                        request=repair_task,
+                        invoke=lambda: self._invoke_agent(
+                            repair_task,
+                            timeout=self._agent_timeout(900),
+                            apply_changes=False,
+                        ),
+                    )
+                    repair_raw = self.agent.normalize_result(repair_task, repair_raw)
+                    corrected_portfolio = normalize_portfolio(repair_raw)
+                except (ValidationError, ValueError) as exc:
+                    # Bad model output is a failed bounded proposal, not an
+                    # excuse to relax core scope / evidence / budget gates.
+                    corrected_portfolio = HypothesisPortfolio(candidates=[])
+                    self.store.event("PORTFOLIO_REPAIR_MALFORMED", {
+                        "experiment_id": experiment_id,
+                        "reason": str(exc)[:300],
+                    })
+                    self.store.conn.commit()
+                corrected_record = select_candidate(
+                    corrected_portfolio,
+                    spec=self.spec,
+                    state=ResearchState.model_validate(self._refresh_research_state()),
+                    experiments=[row for row in self.store.experiments() if row["id"] != experiment_id],
+                    experiment_ordinal=int(self.store.experiment(experiment_id)["ordinal"]),
+                    action_id=repair_id,
+                    task=repair_task,
+                    grounding_check=self._hypothesis_grounding_error,
+                )
+                self.store.event(
+                    "PORTFOLIO_REPAIR_DECISION",
+                    corrected_record.model_dump(mode="json"),
+                )
+                self.store.conn.commit()
+                self._checkpoint("PORTFOLIO_REPAIR_SAVED")
+            else:
+                corrected_record = None
+                corrected_portfolio = None
+
+            if corrected_record is not None:
+                record = corrected_record
+                portfolio = corrected_portfolio
+
         if record.selected_candidate_id is None:
             ungrounded = next((
                 reason.removeprefix("UNGROUNDED_EVIDENCE: ")
