@@ -13,6 +13,7 @@ to avoid Windows MAX_PATH errors. The following commands assume the current
 directory is the BananLoop checkout:
 
 ```powershell
+$BananLoopRepo = (Get-Location).Path
 New-Item -ItemType Directory -Force C:\bl-cal | Out-Null
 Copy-Item examples/calibration/mini_matcher C:\bl-cal\matcher -Recurse
 Set-Location C:\bl-cal\matcher
@@ -21,7 +22,7 @@ git config user.name "Calibration"
 git config user.email "calibration@localhost"
 git add .
 git commit -m "mini matcher baseline"
-Set-Location <path-to-BananLoop-checkout>
+Set-Location $BananLoopRepo
 
 bananloop init --repo C:\bl-cal\matcher --state-dir C:\bl-cal\matcher-state `
   --goal "Read TASK.md and improve analog matching on DEV" `
@@ -37,7 +38,7 @@ bananloop report --repo C:\bl-cal\matcher --state-dir C:\bl-cal\matcher-state `
   --json --output C:\bl-cal\matcher-report.json
 ```
 
-Replace `<path-to-BananLoop-checkout>` with the actual checkout path.
+The script restores the original BananLoop checkout from `$BananLoopRepo`.
 You can instead run the CLI from any directory if it is installed on PATH.
 
 **Do not set token ceilings.** Experiment and agent-call counts bound the
