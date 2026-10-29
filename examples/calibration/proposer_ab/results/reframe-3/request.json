@@ -1,0 +1,223 @@
+{
+  "schema_version": 1,
+  "role": "propose",
+  "goal": "Improve exact-match technical position matching on the public CPU DEV task.",
+  "project_context": "Python matcher in solution.py uses normalized token overlap. CPU-only; likely error classes include synonyms, negation, acronym expansion, and word order.",
+  "primary_metric": {
+    "name": "quality",
+    "direction": "maximize",
+    "target": 1.0,
+    "min_improvement": 0.001,
+    "unit": null,
+    "minimum": null,
+    "maximum": null
+  },
+  "guardrails": [],
+  "non_regression": [],
+  "editable_scope": [
+    "solution.py"
+  ],
+  "protected_paths": [
+    "evaluator.py"
+  ],
+  "agent_visible_training_paths": [],
+  "agent_visible_context_paths": [],
+  "baseline": {
+    "status": "ok",
+    "metrics": {
+      "quality": 0.5
+    },
+    "checks": {}
+  },
+  "champion": {
+    "status": "ok",
+    "metrics": {
+      "quality": 0.5
+    },
+    "checks": {}
+  },
+  "champion_snapshot": "fixture-baseline",
+  "history": [
+    {
+      "ordinal": 1,
+      "status": "REJECTED",
+      "dev_outcome": "DEV_PARTIAL_IMPROVEMENT",
+      "dev_delta": 0.0002,
+      "mechanism_key": "token-normalization",
+      "rejection_reasons": [
+        "MINIMUM_IMPROVEMENT_NOT_MET"
+      ]
+    },
+    {
+      "ordinal": 2,
+      "status": "REJECTED",
+      "dev_outcome": "DEV_PARTIAL_IMPROVEMENT",
+      "dev_delta": 0.0003,
+      "mechanism_key": "stopword-filtering",
+      "rejection_reasons": [
+        "MINIMUM_IMPROVEMENT_NOT_MET"
+      ]
+    },
+    {
+      "ordinal": 3,
+      "status": "REJECTED",
+      "dev_outcome": "DEV_PARTIAL_IMPROVEMENT",
+      "dev_delta": 0.0004,
+      "mechanism_key": "overlap-tie-break",
+      "rejection_reasons": [
+        "MINIMUM_IMPROVEMENT_NOT_MET"
+      ]
+    }
+  ],
+  "research_state": {
+    "schema_version": 1,
+    "planning_mode": "reframe",
+    "dev_non_improve_streak": 0,
+    "champion_stagnation_streak": 3,
+    "failure_counts": {
+      "DEV_PARTIAL_IMPROVEMENT": 3
+    },
+    "mechanisms": [
+      {
+        "mechanism_key": "overlap-tie-break",
+        "experiment_ordinals": [
+          3
+        ],
+        "dev_outcomes": {
+          "DEV_PARTIAL_IMPROVEMENT": 1
+        },
+        "last_relation": "new"
+      },
+      {
+        "mechanism_key": "stopword-filtering",
+        "experiment_ordinals": [
+          2
+        ],
+        "dev_outcomes": {
+          "DEV_PARTIAL_IMPROVEMENT": 1
+        },
+        "last_relation": "new"
+      },
+      {
+        "mechanism_key": "token-normalization",
+        "experiment_ordinals": [
+          1
+        ],
+        "dev_outcomes": {
+          "DEV_PARTIAL_IMPROVEMENT": 1
+        },
+        "last_relation": "new"
+      }
+    ],
+    "recent_lessons": [
+      "token-normalization: DEV primary quality improved, but promotion thresholds or guards were not met.",
+      "stopword-filtering: DEV primary quality improved, but promotion thresholds or guards were not met.",
+      "overlap-tie-break: DEV primary quality improved, but promotion thresholds or guards were not met."
+    ],
+    "recent_failure_capsules": [],
+    "failure_signals": [],
+    "experiment_evidence": [
+      {
+        "ordinal": 1,
+        "mechanism_key": "token-normalization",
+        "dev_outcome": "DEV_PARTIAL_IMPROVEMENT",
+        "primary_delta": 0.0002,
+        "failure_signal_deltas": {},
+        "rejection_reasons": []
+      },
+      {
+        "ordinal": 2,
+        "mechanism_key": "stopword-filtering",
+        "dev_outcome": "DEV_PARTIAL_IMPROVEMENT",
+        "primary_delta": 0.0003,
+        "failure_signal_deltas": {},
+        "rejection_reasons": []
+      },
+      {
+        "ordinal": 3,
+        "mechanism_key": "overlap-tie-break",
+        "dev_outcome": "DEV_PARTIAL_IMPROVEMENT",
+        "primary_delta": 0.0004,
+        "failure_signal_deltas": {},
+        "rejection_reasons": []
+      }
+    ],
+    "remaining_budget": {
+      "experiments": 5,
+      "attempts": 9,
+      "agent_calls": 21,
+      "evaluator_calls": 14,
+      "dev_experiments_until_reframe": 0
+    },
+    "portfolios": [],
+    "dev_lessons": [
+      {
+        "experiment_ordinal": 1,
+        "mechanism_key": "token-normalization",
+        "observation": "DEV outcome DEV_PARTIAL_IMPROVEMENT; primary delta 0.0002.",
+        "interpretation": "supported",
+        "inference": "The result is consistent with the stated mechanism.",
+        "next_discriminator": "quality does not rise",
+        "evidence_refs": [
+          "exp:1"
+        ]
+      },
+      {
+        "experiment_ordinal": 2,
+        "mechanism_key": "stopword-filtering",
+        "observation": "DEV outcome DEV_PARTIAL_IMPROVEMENT; primary delta 0.0003.",
+        "interpretation": "supported",
+        "inference": "The result is consistent with the stated mechanism.",
+        "next_discriminator": "quality does not rise",
+        "evidence_refs": [
+          "exp:2"
+        ]
+      },
+      {
+        "experiment_ordinal": 3,
+        "mechanism_key": "overlap-tie-break",
+        "observation": "DEV outcome DEV_PARTIAL_IMPROVEMENT; primary delta 0.0004.",
+        "interpretation": "supported",
+        "inference": "The result is consistent with the stated mechanism.",
+        "next_discriminator": "quality does not rise",
+        "evidence_refs": [
+          "exp:3"
+        ]
+      }
+    ],
+    "stop_explanation": ""
+  },
+  "planning_mode": "reframe",
+  "portfolio_contract": {
+    "max_candidates": 4,
+    "candidate_fields": [
+      "candidate_id",
+      "hypothesis",
+      "evidence_refs",
+      "suspected_failure_mode",
+      "predicted_observable",
+      "discriminating_test",
+      "scope_eligibility",
+      "estimated_agent_calls",
+      "estimated_evaluator_calls",
+      "estimated_work_units",
+      "rationale",
+      "uncertainty",
+      "inference=agent_inference"
+    ]
+  },
+  "planning_requirements": {
+    "exploit": "build on strongest DEV-supported mechanism",
+    "explore": "test a different mechanism family",
+    "reframe": "challenge current framing and choose a new mechanism family",
+    "champion_progress": "positive DEV deltas did not promote champion",
+    "causal_link": "cite prior experiment ordinal and explain measured result"
+  },
+  "experiment_id": "synthetic-proposer-ab",
+  "task_document": {
+    "status": "available",
+    "path": "TASK.md",
+    "content": "# Technical position matcher\n\nImprove `solution.py`, which matches short technical position statements to\ntheir canonical engineering concepts. The intended metric is exact-match\nquality on a fixed CPU-only DEV set. Editable scope is only `solution.py`.\nUse the provided public task description and DEV research context to propose a\nfalsifiable next mechanism. Do not claim measured results that are not present\nin the request. The proposer is only asked for hypotheses; this harness does\nnot implement candidates or run evaluation.\n\nCurrent implementation uses normalized token overlap. Potential error classes\ninclude synonyms, negation, acronym expansion, and compositional word order.\n",
+    "sha256": "ebecd6b2774af89952474694a4b58f9a5214d4e48f670af22fda97b84bf74581"
+  }
+}

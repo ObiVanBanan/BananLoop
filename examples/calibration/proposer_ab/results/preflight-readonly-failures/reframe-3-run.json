@@ -1,0 +1,8 @@
+{
+  "condition": "reframe",
+  "replicate": 3,
+  "duration_seconds": 0.848904790999768,
+  "usage": null,
+  "error": "AgentError: process failed with exit code 1: ['/home/thesonikpk/.local/bin/codex', 'exec', '--ephemeral', '--sandbox', 'read-only', '--skip-git-repo-check', '--output-schema', '/tmp/bananloop-codex-irvb9jmv/schema.json', '-o', '/tmp/bananloop-codex-irvb9jmv/result.json', '-m', 'gpt-6-luna', '-']\nstderr:\nWARNING: proceeding, even though we could not create PATH aliases: Read-only file system (os error 30)\nError: failed to initialize in-process app-server client: Read-only file system (os error 30)",
+  "response_received": false
+}
