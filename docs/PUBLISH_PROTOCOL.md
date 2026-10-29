@@ -125,7 +125,7 @@ Fill in this receipt before any publish action:
 | Release owner approval | NOT GIVEN |
 | Decision | BLOCKED UNTIL EVIDENCE IS ENTERED |
 
-Attach exact logs or a sanitized evidence file, including negative findings and known limitations. Each `NOT RUN` or `NOT VERIFIED` row blocks a claim of complete release readiness; a maintainer may explicitly accept a documented preview risk, but it cannot be silently turned into green.
+Attach exact logs or a sanitized evidence file, including negative findings and known limitations. Any **required private-preview** check marked `NOT RUN` or `NOT VERIFIED` blocks a claim of complete readiness; a maintainer may explicitly accept a documented preview risk, but it cannot silently become green. The separately listed **future public** history scan does **not** block this private preview, but will block any public-opening decision.
 
 ## 7. Optional private tag / GitHub Release — only after explicit approval
 
