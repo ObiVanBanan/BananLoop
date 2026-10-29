@@ -190,6 +190,11 @@ def test_end_to_end_accept_reject_accept_and_source_unchanged(tmp_path: Path):
         ]
         assert [item["selected_candidate_id"] for item in portfolio_events] == ["step-1", "step-2", "step-3"]
         assert all(len(item["candidates"]) == 2 for item in portfolio_events)
+        assert all(
+            next(decision for decision in item["decisions"]
+                 if decision["candidate_id"] == item["selected_candidate_id"])["selection_reason"]
+            for item in portfolio_events
+        )
         report = build_report(store)
         assert len(report["research_state"]["portfolios"]) == 3
         markdown = render_markdown(report)
@@ -214,6 +219,7 @@ def test_resume_after_durable_stage_does_not_restart_experiment(tmp_path: Path, 
         assert c1["agent_calls"] == 1
         saved = [event for event in store.events() if event["event_type"] == "PORTFOLIO_DECISION"]
         assert len(saved) == 1
+        saved_decision = saved[0]["payload_json"]
         assert store.action("exp:1:propose")["status"] == "COMPLETED"
         monkeypatch.delenv("BANANLOOP_TEST_STOP_AFTER_STAGE")
         out = engine.run(resume=True)
@@ -222,6 +228,9 @@ def test_resume_after_durable_stage_does_not_restart_experiment(tmp_path: Path, 
         assert out["attempt_count"] == 3
         assert out["agent_calls"] == 6
         assert len([event for event in store.events() if event["event_type"] == "PORTFOLIO_DECISION"]) == 3
+        resumed_first = next(event for event in store.events()
+                             if event["event_type"] == "PORTFOLIO_DECISION")
+        assert resumed_first["payload_json"] == saved_decision
         experiments = store.experiments()
         assert [e["status"] for e in experiments] == ["ACCEPTED", "REJECTED", "ACCEPTED"]
         first_eval = json.loads(experiments[0]["evaluation_json"])
