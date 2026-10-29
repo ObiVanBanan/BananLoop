@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/bananloop-banner.svg" alt="BananLoop — a friendly banana astronaut among ASCII planets" width="100%" /></p>
+<p align="center"><img src="assets/bananloop-banner.svg" alt="BananLoop — friendly banana astronaut in a pixel-art space scene with planets and terminal details" width="100%" /></p>
 
 # BananLoop
 
@@ -10,7 +10,7 @@
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square)
 [![License: MIT](https://img.shields.io/badge/License-MIT-55a87a?style=flat-square)](LICENSE)
 
-[Quick start](#quick-start) · [Live-style demo](#see-the-loop-in-action) · [How it works](#how-it-works) · [Expert mode](#expert-mode) · [Roadmap](docs/ROADMAP.md)
+[Quick start](#quick-start) · [Recorded demo](#see-the-loop-in-action) · [Architecture](#how-it-works) · [Use cases](#use-cases) · [Expert mode](#expert-mode) · [Roadmap](docs/ROADMAP.md)
 
 
 ## Give your coding agent a goal. BananLoop keeps going.
@@ -21,17 +21,22 @@ Instead of forgetting what failed or accepting an agent's self-reported success,
 
 **For:** developers using Codex and other supported coding-agent backends to improve quality, performance, reliability, retrieval, or other measurable behavior. Research is one use case—not the only one.
 
-### Built for the loop
+## Built for the loop
 
-| Capability | What it means |
-| --- | --- |
-| **Goal-driven loop** | Keep iterating toward an approved measurable objective. |
-| **Fresh context** | Separate role execution and optional fresh-perspective proposal/repair, without a single endless chat transcript. |
-| **Research memory** | DEV-only history, failure signals, hypothesis genealogy, and strategy shifts between exploit/explore/reframe. |
-| **Model per role** | Configure different agent models for bootstrap, proposal, selection, implementation, and analysis. |
-| **Independent evaluation** | Supervisor-owned evaluator, reproducible candidate snapshots, gates, and guardrails. |
-| **Budget & resume** | Track attempts, agent calls, evaluator calls, and restore durable action state. |
-| **Semantic selection (opt-in)** | Compare admissible hypotheses with an LLM while deterministic gates remain authoritative. |
+<table>
+<tr>
+<td width="33%" valign="top"><strong>🎯 Goal-driven experiments</strong><br/>Start from a measurable objective and a bounded campaign.</td>
+<td width="33%" valign="top"><strong>↻ Fresh context</strong><br/>Keep role prompts focused without carrying an endless chat transcript.</td>
+<td width="33%" valign="top"><strong>▤ Research memory</strong><br/>Retain DEV-only evidence and lessons from rejected experiments.</td>
+</tr>
+<tr>
+<td valign="top"><strong>⚙ Model per role</strong><br/>Configure supported models for proposal, selection, implementation and analysis.</td>
+<td valign="top"><strong>▥ Independent evaluation</strong><br/>Enforce the frozen evaluator, scope gates and promotion rules.</td>
+<td valign="top"><strong>⏸ Resume & budget</strong><br/>Record durable actions, restore campaigns and bound agent/evaluator calls.</td>
+</tr>
+</table>
+
+**Opt-in LLM selector:** choose among eligible hypotheses; it cannot bypass the supervisor's deterministic hard gates.
 
 > **Research Preview:** BananLoop is an experimental developer tool, not a guarantee of improvement. The evaluation contract must be independently trustworthy. Treat the default local workspace isolation as a protection against ordinary accidental leakage, **not** a security boundary for running hostile code.
 
@@ -106,6 +111,20 @@ Continue with the copy-and-run CLI sequence in the [fixture walkthrough](docs/DE
 
 **Recorded independent smoke (October 29, 2026, one mini-matcher campaign):**
 
+```text
+  BANANLOOP / MINI MATCHER        RECORDED DEV-ONLY RESULT
+  ------------------------------------------------------
+  Baseline quality                          0.4375
+  Proposed hypotheses                      2 eligible
+  Selected mechanism        normalized_attribute_extraction
+  DEV score after implementation            1.0000
+  Promotion                                 ACCEPTED
+  Agent calls                               3
+  Evaluator calls                           2
+  ------------------------------------------------------
+  Single fixture run — not a public benchmark score.
+```
+
 | Stage | DEV quality |
 | --- | ---: |
 | Baseline | 0.4375 |
@@ -169,7 +188,7 @@ Backends available in the codebase include **Codex CLI**, **Pi RPC**, and a gene
 
 **Planned, not shipped:** a visual research UI with a hypothesis tree and metric charts; human-approved major architecture pivots; richer multi-step research plans and benchmark coverage.
 
-Read the [roadmap](docs/ROADMAP.md) and [release status](CHANGELOG.md).
+Read the [roadmap](docs/ROADMAP.md), [release status](CHANGELOG.md), and [publication protocol](docs/PUBLISH_PROTOCOL.md).
 
 ## Community & security
 
