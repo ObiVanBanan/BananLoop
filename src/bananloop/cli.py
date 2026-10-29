@@ -192,7 +192,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             plateau_experiments=args.plateau,
         ),
         agent=agent,
-        selection_mode=args.selector_mode,
+        selection_mode=getattr(args, "selector_mode", "deterministic"),
     )
     if interactive and not args.yes:
         if not confirm_spec(spec.model_dump(mode="json")):
@@ -365,7 +365,7 @@ def cmd_start(args: argparse.Namespace) -> int:
                         max_evaluator_calls=args.max_evaluator_calls,
                         deadline_seconds=args.deadline_seconds,
                         plateau_experiments=args.plateau,
-                        selection_mode=args.selector_mode,
+                        selection_mode=getattr(args, "selector_mode", "deterministic"),
                     )
         except CampaignLockError as exc:
             print(f"BananLoop error: {exc}", file=sys.stderr)
@@ -583,6 +583,8 @@ def parser() -> argparse.ArgumentParser:
     goal.add_argument("--state-dir")
     goal.add_argument("--request-id", help="idempotency key; use a new value to intentionally repeat a goal")
     goal.add_argument("--agent-profiles", help="TOML profile file for default and role-specific agent settings")
+    goal.add_argument("--selector-mode", choices=["deterministic", "llm"], default="deterministic",
+                      help="opt-in LLM comparison of admissible proposals")
     goal.add_argument(
         "--prepare-only",
         action="store_true",
@@ -676,6 +678,8 @@ def parser() -> argparse.ArgumentParser:
     prepare.add_argument("--goal", required=True)
     prepare.add_argument("--state-dir")
     prepare.add_argument("--agent-profiles", help="optional agent settings TOML")
+    prepare.add_argument("--selector-mode", choices=["deterministic", "llm"], default="deterministic",
+                         help="opt-in LLM comparison after preparation")
     prepare.add_argument("--request-id", help="idempotency key for preparation")
     prepare.set_defaults(
         func=cmd_start,
