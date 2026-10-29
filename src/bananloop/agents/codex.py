@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import shutil
@@ -223,6 +224,28 @@ SELECTION_SCHEMA = {
     "additionalProperties": False,
 }
 
+def selection_schema_for_task(task: dict[str, Any]) -> dict[str, Any]:
+    """Constrain Codex structured output to the public eligible ID/ref vocabulary.
+
+    This reduces hallucinated free-form references; the engine still enforces
+    per-candidate evidence linkage and hard admissibility independently.
+    """
+    schema = copy.deepcopy(SELECTION_SCHEMA)
+    eligible = task.get("eligible_candidates") or []
+    ids = sorted({str(c["candidate_id"]) for c in eligible if isinstance(c, dict) and c.get("candidate_id")})
+    refs = sorted({
+        ref for c in eligible if isinstance(c, dict)
+        for ref in c.get("evidence_refs", []) if isinstance(ref, str)
+    })
+    if ids:
+        schema["properties"]["selected_candidate_id"]["enum"] = ids
+    if refs:
+        schema["properties"]["evidence_refs"]["items"]["enum"] = refs
+    else:
+        schema["properties"]["evidence_refs"]["maxItems"] = 0
+    return schema
+
+
 FAILURE_ANALYSIS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -313,7 +336,7 @@ class CodexAdapter(AgentAdapter):
         elif role == "propose":
             schema = HYPOTHESIS_SCHEMA
         elif role == "select":
-            schema = SELECTION_SCHEMA
+            schema = selection_schema_for_task(task)
         elif role == "analyze":
             schema = FAILURE_ANALYSIS_SCHEMA
         else:
