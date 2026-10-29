@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/bananloop-banner.svg" alt="BananLoop — friendly banana astronaut in a pixel-art space scene with planets and terminal details" width="100%" /></p>
+<p align="center"><img src="assets/bananloop-banner.png" alt="BananLoop — friendly banana explorer and ASCII planets in a pixel-art space scene" width="100%" /></p>
 
 # BananLoop
 
@@ -6,11 +6,13 @@
 
 **Fresh context. Persistent memory. Measurable progress.**
 
-[![Research Preview](https://img.shields.io/badge/v0.1.0-Research_Preview-f4bd35?style=flat-square)](CHANGELOG.md)
+**Status:** private `v0.1.0` Research Preview **candidate** — no tag or GitHub Release has been published.
+
+[![Private Preview Candidate](https://img.shields.io/badge/v0.1.0-private_preview_candidate-f4bd35?style=flat-square)](CHANGELOG.md)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square)
 [![License: MIT](https://img.shields.io/badge/License-MIT-55a87a?style=flat-square)](LICENSE)
 
-[Quick start](#quick-start) · [Recorded demo](#see-the-loop-in-action) · [Architecture](#how-it-works) · [Use cases](#use-cases) · [Expert mode](#expert-mode) · [Roadmap](docs/ROADMAP.md)
+[Why BananLoop?](#why-bananloop) · [Architecture](#how-it-works) · [Quick start](#quick-start) · [Recorded demo](#see-the-loop-in-action) · [Benchmarks](#benchmark-status) · [Expert mode](#expert-mode) · [Roadmap](docs/ROADMAP.md)
 
 
 ## Give your coding agent a goal. BananLoop keeps going.
@@ -20,6 +22,19 @@
 Instead of forgetting what failed or accepting an agent's self-reported success, it maintains a **durable experiment history**, keeps a **validated champion**, and enforces **evaluation boundaries**.
 
 **For:** developers using Codex and other supported coding-agent backends to improve quality, performance, reliability, retrieval, or other measurable behavior. Research is one use case—not the only one.
+
+## Why BananLoop?
+
+**A coding agent writes and revises code. BananLoop manages the experiment around it.** You still use Codex or another supported agent, but the approval of a change depends on reproducible evidence rather than the agent declaring its own work successful.
+
+| An ordinary coding-agent workflow | With BananLoop as supervisor |
+| --- | --- |
+| You or the agent decide what to try next | Hypotheses and research lessons persist across bounded experiments |
+| Tests and outcomes may be managed ad hoc | An approved evaluator and guardrails determine eligibility and promotion |
+| Useful failures can disappear into a conversation | Rejected candidates, explanations and the best eligible champion are recorded |
+| Recovery and resource limits depend on the workflow | Campaign actions, call budgets and resumability are handled explicitly |
+
+BananLoop is best for **repeatable, measurable improvement** — retrieval quality, regression reduction, performance, or another executable objective. It is **not** intended to replace Codex for a quick one-off edit, invent a trustworthy evaluator, or guarantee an improvement. The same agent might perform better or worse under the harness; this must be measured, not assumed.
 
 ## Built for the loop
 
@@ -42,6 +57,11 @@ Instead of forgetting what failed or accepting an agent's self-reported success,
 
 ## How it works
 
+<p align="center"><img src="assets/bananloop-how-it-works.png" alt="Workflow: goal, hypothesis proposal, gates, selection, implementation, independent evaluation, accept or reject, then learn and repeat" width="100%" /></p>
+
+<details>
+<summary>View text-only architecture diagram</summary>
+
 ```text
                         ┌──────────── GOAL ────────────┐
                         │ What should improve? How do  │
@@ -58,6 +78,8 @@ Instead of forgetting what failed or accepting an agent's self-reported success,
   │DEV memory│     │keep/reject │    │DEV / validation / holdout│
   └──────────┘     └────────────┘    └─────────────────────────┘
 ```
+
+</details>
 
 The **coding agent** proposes and implements. The **BananLoop supervisor** freezes the evaluation contract, checks scope, records outcomes, and decides whether a candidate may replace the current champion. The selector is advisory; it cannot bypass the deterministic gates.
 
@@ -133,6 +155,14 @@ Continue with the copy-and-run CLI sequence in the [fixture walkthrough](docs/DE
 
 The QA run used Luna with the opt-in semantic selector, three agent calls, and two evaluator calls. This is a **single DEV-only fixture result**, not official benchmark leadership or evidence of better outcomes than standalone coding agents. See [the full demonstration and limitations](docs/DEMO.md).
 
+## Benchmark status
+
+**Exploratory signal, not a verified advantage:** a prior internal ten-task AutoResearchExam DEV comparison was reported as **7 wins for BananLoop vs 3 for ordinary Codex**. The run consumed substantially different resources, and the underlying per-run evidence has not yet been linked and independently reverified in this release branch. It is **not** a matched-budget result or final HOLDOUT proof.
+
+A separate LiveCodeBench hard-60 public-example pilot compared **BananLoop Control vs BananLoop Fresh**, not standalone Codex; it cannot answer the head-to-head question. Before approving the private preview, the team will repeat a **paired, independently scored Codex Direct vs Codex + BananLoop** comparison, documenting tokens/cost, validity and failures whether BananLoop wins or loses.
+
+Details, prior pilots and outstanding acceptance checks: [Benchmark evidence register](docs/BENCHMARK_STATUS.md).
+
 ## Expert mode
 
 Bring an existing evaluator contract if you want complete control:
@@ -186,9 +216,9 @@ Backends available in the codebase include **Codex CLI**, **Pi RPC**, and a gene
 
 ## What comes next
 
-**Planned, not shipped:** a visual research UI with a hypothesis tree and metric charts; human-approved major architecture pivots; richer multi-step research plans and benchmark coverage.
+**Planned, not shipped:** a visual research UI with a hypothesis tree and metric charts; human-approved major architecture pivots (target: v0.2.0); richer multi-step research plans and benchmark coverage. The first private preview prioritizes measured reliability over new features.
 
-Read the [roadmap](docs/ROADMAP.md), [release status](CHANGELOG.md), and [publication protocol](docs/PUBLISH_PROTOCOL.md).
+Read the [roadmap](docs/ROADMAP.md), [release status](CHANGELOG.md), [preview description](docs/RELEASE_COPY.md), and [private-preview release protocol](docs/PUBLISH_PROTOCOL.md).
 
 ## Community & security
 
