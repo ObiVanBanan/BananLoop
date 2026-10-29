@@ -17,10 +17,22 @@ or claim tests passed without evidence. Do not run AutoResearchExam yet.
 - Do not introduce hard model-token budgets. Record usage when available.
 
 ## 1. Quick regressions
-Run:
+Run from the repository root. The project uses a `src/` layout, so if the
+package is not installed editable, add `src` to PYTHONPATH:
+
 ```powershell
-python -m pytest tests/test_research.py tests/test_engine.py -q
+# PowerShell
+$env:PYTHONPATH = "src"
+python -m compileall -q src
+python -m pytest tests/test_research.py tests/test_engine.py tests/test_calibration_fixture.py -q
 python -m pytest -q
+```
+
+```bash
+# Linux / WSL
+PYTHONPATH=src python -m compileall -q src
+PYTHONPATH=src python -m pytest tests/test_research.py tests/test_engine.py tests/test_calibration_fixture.py -q
+PYTHONPATH=src python -m pytest -q
 ```
 If the full suite fails because of Windows paths, save the traceback and rerun
 the failing test in a short local checkout. Do not mark the failure as passed.
