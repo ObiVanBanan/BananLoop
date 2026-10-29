@@ -37,6 +37,7 @@ from .evaluator_binding import (
 from .leakage import scan_forbidden_diff_patterns
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
 from .process import ProcessCancelled, check_process_control, process_control
+from .semantic_selection import apply_semantic_choice
 from .research import (
     attempt_bucket,
     agent_decision_view,
@@ -993,6 +994,135 @@ class Engine:
             )
         return proof
 
+    def _record_semantic_selection(self, payload: dict[str, Any]) -> None:
+        """Avoid duplicating the same audit event on a pre-decision resume."""
+        if any(
+            json.loads(event["payload_json"]) == payload
+            for event in self.store.events()
+            if event["event_type"] == "PORTFOLIO_SELECTION"
+        ):
+            return
+        self.store.event("PORTFOLIO_SELECTION", payload)
+
+    def _select_semantically(
+        self, record: PortfolioRecord, task: dict[str, Any], experiment_id: int,
+    ) -> PortfolioRecord:
+        """Opt-in advisory comparison; core gates remain authoritative.
+
+        The judge action is durable. A resumed proposal reuses its frozen
+        input and result, never re-queries an uncertain running agent.
+        """
+        if self.spec.selection_mode != "llm":
+            return record
+
+        action_id = f"{record.action_id}:semantic-select"
+        existing = self.store.action(action_id)
+        if existing is not None:
+            # An action started before an interruption must retain its exact
+            # pre-judge admissibility decisions and input on replay.
+            judge_task = json.loads(existing["request_json"])
+            frozen = PortfolioRecord.model_validate(judge_task["base_record"])
+            if frozen.candidates != record.candidates or frozen.action_id != record.action_id:
+                raise EngineError("semantic selector frozen portfolio mismatch")
+            record = frozen
+        else:
+            if record.selected_candidate_id is None:
+                return record
+            admissible = {d.candidate_id for d in record.decisions if d.admissible}
+            if len(admissible) < 2:
+                return record
+            eligible = [c for c in record.candidates if c.candidate_id in admissible]
+            campaign = self.store.campaign()
+            remaining_calls = self.spec.budget.max_agent_calls - campaign["agent_calls"]
+            # Keep the judge from stealing calls reserved for implementation.
+            # If even one currently eligible plan could become unaffordable,
+            # use the existing selector rather than silently weaken its gates.
+            needed_for_implementation = max(max(1, c.estimated_agent_calls) for c in eligible)
+            if (remaining_calls < 1 + needed_for_implementation
+                    or pre_action_stop(campaign, self.spec.budget, "agent") is not None):
+                self._record_semantic_selection({
+                    "action_id": action_id, "status": "SKIPPED",
+                    "reason": "insufficient budget for judge plus implementation",
+                    "deterministic_candidate_id": record.selected_candidate_id,
+                })
+                return record
+
+            agent_request = {
+                "schema_version": 1,
+                "role": "select",
+                "goal": task["goal"],
+                "project_context": task.get("project_context", ""),
+                "task_document": task.get("task_document"),
+                "planning_mode": task.get("planning_mode"),
+                "primary_metric": task.get("primary_metric"),
+                "baseline": task.get("baseline"),
+                "champion": task.get("champion"),
+                "history": task.get("history", []),
+                "research_state": task.get("research_state", {}),
+                "eligible_candidates": [c.model_dump(mode="json") for c in eligible],
+                "selection_contract": {
+                    "only_select_existing_eligible_id": True,
+                    "do_not_modify_files": True,
+                    "compare_all_candidates": True,
+                    "dev_only": True,
+                    "scores_are_predictions_not_measurements": True,
+                    # The judge may explain TASK.md/history in prose but these
+                    # are the ONLY machine evidence references it may emit.
+                    "allowed_evidence_refs_by_candidate": {
+                        c.candidate_id: list(c.evidence_refs) for c in eligible
+                    },
+                },
+            }
+            # The durable action contains the exact agent-visible payload plus
+            # the private core decision. The agent sees ONLY eligible candidates,
+            # not rejected proposer ideas or core-internal selection records.
+            judge_task = {
+                "agent_visible_request": agent_request,
+                "base_record": record.model_dump(mode="json"),
+            }
+
+        if existing is not None and existing["status"] == "FAILED" and not self._retry_failed_actions:
+            self._record_semantic_selection({
+                "action_id": action_id, "status": "FALLBACK",
+                "reason": "previous judge action failed; deterministic selection retained",
+                "deterministic_candidate_id": record.selected_candidate_id,
+            })
+            return record
+
+        try:
+            raw = self._action(
+                action_id=action_id,
+                experiment_id=experiment_id,
+                stage="PROPOSE",
+                kind="agent",
+                request=judge_task,
+                invoke=lambda: self._invoke_agent(
+                    judge_task["agent_visible_request"],
+                    timeout=self._agent_timeout(900),
+                    apply_changes=False,
+                ),
+            )
+            selected, choice = apply_semantic_choice(record, raw)
+        except (AgentError, ValidationError, ValueError) as exc:
+            # A malformed/failed judge cannot bypass the core's decision.
+            # Orphaned RUNNING actions and integrity errors are NOT swallowed.
+            self._record_semantic_selection({
+                "action_id": action_id, "status": "FALLBACK",
+                "reason": type(exc).__name__,
+                "deterministic_candidate_id": record.selected_candidate_id,
+            })
+            return record
+
+        self._record_semantic_selection({
+            "action_id": action_id, "status": "SELECTED",
+            "selected_candidate_id": selected.selected_candidate_id,
+            "deterministic_candidate_id": record.selected_candidate_id,
+            "reason": choice.reason,
+            "evidence_refs": choice.evidence_refs,
+            "main_risk": choice.main_risk,
+        })
+        return selected
+
     def _stage_propose(self, attempt_id: int, experiment_id: int) -> None:
         self.workspace.checkout(self.store.campaign()["champion_snapshot"])
         task = self._task_context("propose", experiment_id)
@@ -1060,6 +1190,7 @@ class Engine:
                 task=task,
                 grounding_check=self._hypothesis_grounding_error,
             )
+            record = self._select_semantically(record, task, experiment_id)
             self.store.event("PORTFOLIO_DECISION", record.model_dump(mode="json"))
             self.store.conn.commit()
             self._checkpoint("PORTFOLIO_SAVED")
@@ -1118,6 +1249,7 @@ class Engine:
                     task=repair_task,
                     grounding_check=self._hypothesis_grounding_error,
                 )
+                corrected_record = self._select_semantically(corrected_record, repair_task, experiment_id)
                 self.store.event(
                     "PORTFOLIO_REPAIR_DECISION",
                     corrected_record.model_dump(mode="json"),

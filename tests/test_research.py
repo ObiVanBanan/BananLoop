@@ -14,6 +14,7 @@ from bananloop.contracts import (
     MetricSpec,
     ResearchState,
 )
+from bananloop.semantic_selection import apply_semantic_choice
 from bananloop.research import (
     agent_evaluation_view,
     build_history,
@@ -913,3 +914,51 @@ def test_champion_stagnation_does_not_count_unevaluated_trials():
     state = build_research_state(s, campaign(), [blocked])
     assert state.champion_stagnation_streak == 0
     assert state.dev_non_improve_streak == 0
+
+
+def test_semantic_selector_overrides_ranking_only_with_admissible_id():
+    portfolio = HypothesisPortfolio(candidates=[
+        _portfolio_candidate("alpha", "synonyms"),
+        _portfolio_candidate("beta", "negation"),
+    ])
+    base = select_candidate(portfolio, spec=spec(), state=_selection_state(), experiments=[],
+                            experiment_ordinal=1, action_id="exp:1:propose")
+    alternative = next(c for c in portfolio.candidates if c.candidate_id != base.selected_candidate_id)
+    selected, choice = apply_semantic_choice(base, {
+        "selected_candidate_id": alternative.candidate_id,
+        "reason": "This predicts a different causal fix to an unresolved DEV error.",
+        "evidence_refs": ["INSUFFICIENT_EVIDENCE"],
+        "main_risk": "New matching logic might trigger regressions.",
+    })
+    assert selected.selected_candidate_id == alternative.candidate_id
+    assert selected.candidates == base.candidates
+    assert choice.main_risk
+    assert all(d.admissible for d in selected.decisions)
+    assert base.selected_candidate_id != selected.selected_candidate_id
+
+
+def test_semantic_selector_rejects_ineligible_and_fabricated_evidence():
+    import pytest
+
+    portfolio = HypothesisPortfolio(candidates=[
+        _portfolio_candidate("good", "safe"),
+        _portfolio_candidate("bad", "unsafe", scope_eligibility=False),
+    ])
+    base = select_candidate(portfolio, spec=spec(), state=_selection_state(), experiments=[],
+                            experiment_ordinal=1, action_id="exp:1:propose")
+    response = {
+        "selected_candidate_id": "bad",
+        "reason": "Prefer this one despite its invalid scope.",
+        "evidence_refs": [],
+        "main_risk": "Scope.",
+    }
+    with pytest.raises(ValueError, match="ineligible"):
+        apply_semantic_choice(base, response)
+    response["selected_candidate_id"] = "good"
+    response["evidence_refs"] = ["exp:9999"]
+    with pytest.raises(ValueError, match="fabricated"):
+        apply_semantic_choice(base, response)
+    response["evidence_refs"] = ["INSUFFICIENT_EVIDENCE"]
+    response["unapproved_field"] = "arbitrary"
+    with pytest.raises(ValueError):
+        apply_semantic_choice(base, response)

@@ -242,3 +242,17 @@ def test_prepare_alias_enables_preflight_without_running_experiments():
     assert args.goal == "Improve PR-AUC"
     assert args.max_experiments == 4
     assert args.agent is None
+
+
+def test_opt_in_semantic_selector_cli_modes():
+    from bananloop.cli import parser
+
+    for command, prefix in (
+        ("start", ["--goal", "improve"]),
+        ("goal", ["improve"]),
+        ("prepare", ["--goal", "improve"]),
+        ("init", ["--goal", "improve", "--eval-cmd", "python eval.py"]),
+    ):
+        args = parser().parse_args([command, *prefix, "--selector-mode", "llm"])
+        assert args.selector_mode == "llm"
+    assert parser().parse_args(["goal", "improve"]).selector_mode == "deterministic"

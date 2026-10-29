@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import shutil
@@ -211,6 +212,40 @@ HYPOTHESIS_SCHEMA = {
     "required": ["candidates", *LEGACY_HYPOTHESIS_SCHEMA["required"]],
     "additionalProperties": False,
 }
+SELECTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "selected_candidate_id": {"type": "string", "minLength": 1, "maxLength": 80},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 1200},
+        "evidence_refs": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
+        "main_risk": {"type": "string", "minLength": 1, "maxLength": 500},
+    },
+    "required": ["selected_candidate_id", "reason", "evidence_refs", "main_risk"],
+    "additionalProperties": False,
+}
+
+def selection_schema_for_task(task: dict[str, Any]) -> dict[str, Any]:
+    """Constrain Codex structured output to the public eligible ID/ref vocabulary.
+
+    This reduces hallucinated free-form references; the engine still enforces
+    per-candidate evidence linkage and hard admissibility independently.
+    """
+    schema = copy.deepcopy(SELECTION_SCHEMA)
+    eligible = task.get("eligible_candidates") or []
+    ids = sorted({str(c["candidate_id"]) for c in eligible if isinstance(c, dict) and c.get("candidate_id")})
+    refs = sorted({
+        ref for c in eligible if isinstance(c, dict)
+        for ref in c.get("evidence_refs", []) if isinstance(ref, str)
+    })
+    if ids:
+        schema["properties"]["selected_candidate_id"]["enum"] = ids
+    if refs:
+        schema["properties"]["evidence_refs"]["items"]["enum"] = refs
+    else:
+        schema["properties"]["evidence_refs"]["maxItems"] = 0
+    return schema
+
+
 FAILURE_ANALYSIS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -300,6 +335,8 @@ class CodexAdapter(AgentAdapter):
             schema = BOOTSTRAP_SCHEMA
         elif role == "propose":
             schema = HYPOTHESIS_SCHEMA
+        elif role == "select":
+            schema = selection_schema_for_task(task)
         elif role == "analyze":
             schema = FAILURE_ANALYSIS_SCHEMA
         else:
@@ -405,6 +442,31 @@ class CodexAdapter(AgentAdapter):
                 "Avoid repeating a mechanism unless "
                 "you explicitly mark the hypothesis as refine, retry, or supersede and reference the prior "
                 "experiment ordinal. Do not modify files. Return {candidates:[...]} or legacy single Hypothesis JSON.\n\n"
+            )
+        elif role == "select":
+            instruction = (
+                "You are the independent BananLoop semantic portfolio selector. "
+                "Compare ALL eligible_candidates with each other against the public TASK.md, "
+                "goal, project_context, planning_mode and DEV-only history. "
+                "Previous partial gains do not imply champion promotion. "
+                "Choose exactly ONE candidate_id from eligible_candidates; do not invent IDs. "
+                "Prioritize a plausible causal mechanism addressing unresolved observed errors, "
+                "falsifiability, feasibility, regression risk and expected gain relative to cost. "
+                "Consider materially different mechanism families; do not select by candidate ID, "
+                "alphabetic order or prose length. The deterministic core alone decides admissibility. "
+                "Never infer hidden validation/holdout outcomes, invent reward gains or claim you executed a test. "
+                "The evidence_refs output is a MACHINE-READABLE list of identifiers, NOT prose or citations. "
+                "After selecting an eligible candidate, copy evidence_refs values verbatim ONLY from "
+                "selection_contract.allowed_evidence_refs_by_candidate[selected_candidate_id]; "
+                "they must be exact JSON strings such as 'exp:1', 'signal:foo', "
+                "'capsule:0123456789abcdef', or 'INSUFFICIENT_EVIDENCE'. "
+                "Do NOT write 'TASK.md: ...', 'exp:1: ...', an explanation, or a paraphrase into evidence_refs. "
+                "Discuss TASK.md and experiment details in reason, not evidence_refs. "
+                "An empty evidence_refs list is valid when you cite no machine-readable reference. "
+                "If you cannot copy an allowed ID exactly, return an empty list rather than inventing one. "
+                "Do not modify files or run evaluators. Return only selected_candidate_id, "
+                "reason, evidence_refs, and main_risk in the structured schema. "
+                "These are predictions, not measured outcomes.\n\n"
             )
         elif role == "analyze":
             instruction = (

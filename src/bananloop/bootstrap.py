@@ -573,6 +573,7 @@ def bootstrap_campaign(
     max_evaluator_calls: int = 16,
     deadline_seconds: int = 14400,
     plateau_experiments: int = 3,
+    selection_mode: str = "deterministic",
 ) -> tuple[BootstrapPlan, CampaignSpec | None]:
     """Turn repo + goal into an approved CampaignSpec without touching source checkout."""
 
@@ -878,6 +879,7 @@ def bootstrap_campaign(
             plateau_experiments=plateau_experiments,
         ),
         agent=agent_config,
+        selection_mode=selection_mode,
     )
 
     store = CampaignStore(paths.db)

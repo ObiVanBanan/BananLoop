@@ -72,7 +72,9 @@ def make_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def make_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str]:
+def make_engine(
+    tmp_path: Path, *, selection_mode: str = "deterministic", max_agent_calls: int = 12,
+) -> tuple[CampaignStore, Engine, Path, str]:
     repo = make_repo(tmp_path)
     base = git(["rev-parse", "HEAD"], repo)
     paths = RuntimePaths.for_repo(repo, tmp_path / "state")
@@ -87,8 +89,9 @@ def make_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str]:
         mandatory_checks=["tests"],
         editable_scope=["value.txt", "guard.txt"],
         protected_paths=["evaluator.py", "agent.py"],
-        budget=BudgetSpec(max_experiments=5, max_attempts=6, max_agent_calls=12, max_evaluator_calls=8, plateau_experiments=3),
+        budget=BudgetSpec(max_experiments=5, max_attempts=6, max_agent_calls=max_agent_calls, max_evaluator_calls=8, plateau_experiments=3),
         agent=AgentConfig(kind="command", command=[sys.executable, "agent.py"]),
+        selection_mode=selection_mode,
     )
     store = CampaignStore(paths.db)
     store.initialize(spec)
@@ -1822,5 +1825,317 @@ def test_task_md_oversize_fails_closed(tmp_path: Path):
         task = engine._task_context("propose", 999)
         assert task["task_document"]["status"] == "too_large"
         assert "content" not in task["task_document"]
+    finally:
+        store.close()
+
+
+def test_llm_selector_chooses_core_admissible_alternative_and_persists(tmp_path: Path, monkeypatch):
+    store, engine, _, _ = make_engine(tmp_path, selection_mode="llm")
+    original = engine._invoke_agent
+    select_calls = []
+
+    def invoke(task, *, timeout, apply_changes):
+        if task.get("role") == "select":
+            assert not apply_changes
+            assert "base_record" not in task
+            assert task["role"] == "select"
+            assert all(item["candidate_id"] in {"step-1", "alt-1"} for item in task["eligible_candidates"])
+            assert not any(item.get("candidate_id") == "unknown" for item in task["eligible_candidates"])
+            assert "validation" not in task and "holdout" not in task
+            select_calls.append(task)
+            candidate = next(item for item in task["eligible_candidates"]
+                             if item["candidate_id"].startswith("alt-"))
+            return {"selected_candidate_id": candidate["candidate_id"],
+                    "reason": "Try a distinct admissible mechanism first.",
+                    "evidence_refs": candidate["evidence_refs"],
+                    "main_risk": "May not help on DEV."}
+        return original(task, timeout=timeout, apply_changes=apply_changes)
+
+    monkeypatch.setattr(engine, "_invoke_agent", invoke)
+    try:
+        monkeypatch.setenv("BANANLOOP_TEST_STOP_AFTER_STAGE", "PORTFOLIO_SAVED")
+        with pytest.raises(ControlledInterruption):
+            engine.run()
+        action = store.action("exp:1:propose:semantic-select")
+        assert action and action["status"] == "COMPLETED"
+        assert len(select_calls) == 1
+        frozen = json.loads(action["request_json"])["base_record"]
+        assert frozen["selected_candidate_id"] == "step-1"
+        first = next(e for e in store.events() if e["event_type"] == "PORTFOLIO_DECISION")
+        assert json.loads(first["payload_json"])["selected_candidate_id"] == "alt-1"
+
+        monkeypatch.delenv("BANANLOOP_TEST_STOP_AFTER_STAGE")
+        out = engine.run(resume=True)
+        assert out["status"] == "GOAL_MET"
+        assert len(select_calls) == 1
+        assert out["agent_calls"] == 3
+        assert json.loads(store.experiments()[0]["hypothesis_json"])["mechanism_key"] == "alt-1"
+        selected = [json.loads(e["payload_json"]) for e in store.events()
+                    if e["event_type"] == "PORTFOLIO_SELECTION"]
+        assert len(selected) == 1 and selected[0]["status"] == "SELECTED"
+        assert selected[0]["selected_candidate_id"] == "alt-1"
+    finally:
+        store.close()
+
+
+def test_llm_selector_invalid_id_falls_back_to_core(tmp_path: Path, monkeypatch):
+    store, engine, _, _ = make_engine(tmp_path, selection_mode="llm")
+    original = engine._invoke_agent
+
+    def invoke(task, *, timeout, apply_changes):
+        if task.get("role") == "select":
+            return {"selected_candidate_id": "not-an-eligible-id",
+                    "reason": "Incorrect ID.", "evidence_refs": [],
+                    "main_risk": "Invalid."}
+        return original(task, timeout=timeout, apply_changes=apply_changes)
+
+    monkeypatch.setattr(engine, "_invoke_agent", invoke)
+    try:
+        result = engine.run()
+        assert result["status"] == "GOAL_MET"
+        assert json.loads(store.experiments()[0]["hypothesis_json"])["mechanism_key"] == "step-1"
+        selection = [json.loads(e["payload_json"]) for e in store.events()
+                     if e["event_type"] == "PORTFOLIO_SELECTION"]
+        assert selection and selection[0]["status"] == "FALLBACK"
+        assert selection[0]["deterministic_candidate_id"] == "step-1"
+    finally:
+        store.close()
+
+
+def test_llm_selector_skips_when_budget_cannot_fund_judge_and_implementation(tmp_path: Path):
+    store, engine, _, _ = make_engine(
+        tmp_path, selection_mode="llm", max_agent_calls=2,
+    )
+    try:
+        result = engine.run()
+        assert result["agent_calls"] == 2
+        assert store.action("exp:1:propose:semantic-select") is None
+        skipped = [json.loads(e["payload_json"]) for e in store.events()
+                   if e["event_type"] == "PORTFOLIO_SELECTION"]
+        assert skipped and skipped[0]["status"] == "SKIPPED"
+        assert json.loads(store.experiments()[0]["hypothesis_json"])["mechanism_key"] == "step-1"
+    finally:
+        store.close()
+
+
+def test_llm_selector_default_preserves_legacy_campaign_hash():
+    original = CampaignSpec(
+        goal="task", source_repo=".", base_commit="base", evaluation_command=["eval"],
+        primary_metric=MetricSpec(name="quality", direction=Direction.MAXIMIZE,
+                                  target=1.0, min_improvement=0.1),
+    )
+    explicit = original.model_copy(update={"selection_mode": "deterministic"})
+    assert original.approved_hash() == explicit.approved_hash()
+    assert original.approved_hash() != original.model_copy(
+        update={"selection_mode": "llm"}).approved_hash()
+
+
+def test_llm_selector_hides_protected_candidate_from_judge(tmp_path: Path, monkeypatch):
+    store, engine, repo, _ = make_engine(tmp_path, selection_mode="llm")
+    original = engine._invoke_agent
+    observed = []
+
+    def invoke(task, *, timeout, apply_changes):
+        if task["role"] == "propose":
+            raw = original(task, timeout=timeout, apply_changes=apply_changes)
+            bad = json.loads(json.dumps(raw["candidates"][-1]))
+            bad["candidate_id"] = "bad-evaluator-edit"
+            bad["hypothesis"]["files_or_area"] = ["evaluator.py"]
+            raw["candidates"].append(bad)
+            return raw
+        if task["role"] == "select":
+            observed.append(task)
+            assert "base_record" not in task
+            assert "bad-evaluator-edit" not in {
+                c["candidate_id"] for c in task["eligible_candidates"]
+            }
+            assert all(
+                "evaluator.py" not in c["hypothesis"]["files_or_area"]
+                for c in task["eligible_candidates"]
+            )
+            approved = task["eligible_candidates"][0]
+            return {
+                "selected_candidate_id": approved["candidate_id"],
+                "reason": "Approved bounded hypothesis.",
+                "evidence_refs": approved["evidence_refs"],
+                "main_risk": "Possible no improvement.",
+            }
+        return original(task, timeout=timeout, apply_changes=apply_changes)
+
+    monkeypatch.setattr(engine, "_invoke_agent", invoke)
+    original_evaluator = (repo / "evaluator.py").read_bytes()
+    try:
+        outcome = engine.run()
+        assert outcome["status"] == "GOAL_MET"
+        assert observed
+        decisions = [
+            json.loads(e["payload_json"]) for e in store.events()
+            if e["event_type"] == "PORTFOLIO_DECISION"
+        ]
+        for record in decisions:
+            bad = next(d for d in record["decisions"]
+                       if d["candidate_id"] == "bad-evaluator-edit")
+            assert not bad["admissible"]
+            assert "OUT_OF_SCOPE" in bad["rejection_reasons"]
+            assert record["selected_candidate_id"] != "bad-evaluator-edit"
+        assert (repo / "evaluator.py").read_bytes() == original_evaluator
+    finally:
+        store.close()
+
+
+def test_llm_selector_one_eligible_candidate_bypasses_judge(tmp_path: Path, monkeypatch):
+    store, engine, _, _ = make_engine(tmp_path, selection_mode="llm")
+    original = engine._invoke_agent
+
+    def invoke(task, *, timeout, apply_changes):
+        if task["role"] == "propose":
+            raw = original(task, timeout=timeout, apply_changes=apply_changes)
+            raw["candidates"][1]["scope_eligibility"] = False
+            return raw
+        if task["role"] == "select":
+            raise AssertionError("single eligible candidate must not invoke judge")
+        return original(task, timeout=timeout, apply_changes=apply_changes)
+
+    monkeypatch.setattr(engine, "_invoke_agent", invoke)
+    try:
+        outcome = engine.run()
+        assert outcome["status"] == "GOAL_MET"
+        assert not [a for a in store.actions() if a["id"].endswith(":semantic-select")]
+        assert not [e for e in store.events() if e["event_type"] == "PORTFOLIO_SELECTION"]
+        records = [
+            json.loads(e["payload_json"]) for e in store.events()
+            if e["event_type"] == "PORTFOLIO_DECISION"
+        ]
+        assert records and all(sum(d["admissible"] for d in r["decisions"]) == 1
+                               for r in records)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("failure", [
+    "missing_fields", "invalid_refs", "annotated_refs", "malformed_json", "runtime_error",
+])
+def test_llm_selector_invalid_responses_always_fall_back(tmp_path: Path, monkeypatch, failure):
+    from bananloop.agents.base import AgentError
+
+    store, engine, _, _ = make_engine(tmp_path, selection_mode="llm")
+    original = engine._invoke_agent
+
+    def invoke(task, *, timeout, apply_changes):
+        if task["role"] == "select":
+            if failure == "runtime_error":
+                raise AgentError("model could not initialize")
+            if failure == "malformed_json":
+                raise AgentError("invalid JSON from model")
+            if failure == "missing_fields":
+                return {"selected_candidate_id": "alt-1"}
+            if failure == "invalid_refs":
+                return {"selected_candidate_id": "alt-1", "reason": "Reason.",
+                        "evidence_refs": ["exp:9999"], "main_risk": "Risk."}
+            return {"selected_candidate_id": "alt-1", "reason": "Reason.",
+                    "evidence_refs": ["exp:1: observed partial gain"],
+                    "main_risk": "Risk."}
+        return original(task, timeout=timeout, apply_changes=apply_changes)
+
+    monkeypatch.setattr(engine, "_invoke_agent", invoke)
+    try:
+        outcome = engine.run()
+        assert outcome["status"] == "GOAL_MET"
+        assert json.loads(store.experiments()[0]["hypothesis_json"])["mechanism_key"] == "step-1"
+        events = [
+            json.loads(e["payload_json"]) for e in store.events()
+            if e["event_type"] == "PORTFOLIO_SELECTION"
+        ]
+        assert events and all(e["status"] == "FALLBACK" for e in events)
+        for event in events:
+            assert event["deterministic_candidate_id"].startswith("step-")
+    finally:
+        store.close()
+
+
+def test_llm_selector_pre_portfolio_decision_resume_reuses_judge(tmp_path: Path, monkeypatch):
+    store, engine, _, _ = make_engine(tmp_path, selection_mode="llm")
+    original_invoke = engine._invoke_agent
+    original_event = store.event
+    calls = []
+    interruption = {"pending": True}
+
+    def invoke(task, *, timeout, apply_changes):
+        if task["role"] == "select":
+            calls.append(1)
+            candidate = next(c for c in task["eligible_candidates"]
+                             if c["candidate_id"].startswith("alt-"))
+            return {
+                "selected_candidate_id": candidate["candidate_id"],
+                "reason": "Use alternative mechanism.",
+                "evidence_refs": candidate["evidence_refs"],
+                "main_risk": "Possible regression.",
+            }
+        return original_invoke(task, timeout=timeout, apply_changes=apply_changes)
+
+    def event(event_type, payload):
+        if event_type == "PORTFOLIO_DECISION" and interruption["pending"]:
+            interruption["pending"] = False
+            raise ControlledInterruption("after semantic action, before portfolio commit")
+        return original_event(event_type, payload)
+
+    monkeypatch.setattr(engine, "_invoke_agent", invoke)
+    monkeypatch.setattr(store, "event", event)
+    try:
+        with pytest.raises(ControlledInterruption):
+            engine.run()
+        assert len(calls) == 1
+        assert store.action("exp:1:propose:semantic-select")["status"] == "COMPLETED"
+        assert not [e for e in store.events() if e["event_type"] == "PORTFOLIO_DECISION"]
+
+        outcome = engine.run(resume=True)
+        assert outcome["status"] == "GOAL_MET"
+        assert len(calls) == 1
+        record = next(json.loads(e["payload_json"]) for e in store.events()
+                      if e["event_type"] == "PORTFOLIO_DECISION")
+        assert record["selected_candidate_id"] == "alt-1"
+        assert json.loads(store.experiments()[0]["hypothesis_json"])["mechanism_key"] == "alt-1"
+    finally:
+        store.close()
+
+
+def test_llm_selector_orphan_running_requires_explicit_retry(tmp_path: Path, monkeypatch):
+    store, engine, _, _ = make_engine(tmp_path, selection_mode="llm")
+    original_start = store.start_action
+    original_invoke = engine._invoke_agent
+    counters = {"started": 0, "select_calls": 0}
+
+    def start(action_id, experiment_id, stage, kind, request_hash, request=None):
+        original_start(action_id, experiment_id, stage, kind, request_hash, request)
+        if action_id.endswith(":semantic-select") and counters["started"] == 0:
+            counters["started"] += 1
+            raise ControlledInterruption("simulate crash with RUNNING judge action")
+
+    def invoke(task, *, timeout, apply_changes):
+        if task["role"] == "select":
+            counters["select_calls"] += 1
+            candidate = task["eligible_candidates"][0]
+            return {
+                "selected_candidate_id": candidate["candidate_id"],
+                "reason": "Bounded supported choice.",
+                "evidence_refs": candidate["evidence_refs"],
+                "main_risk": "Potential no improvement.",
+            }
+        return original_invoke(task, timeout=timeout, apply_changes=apply_changes)
+
+    monkeypatch.setattr(store, "start_action", start)
+    monkeypatch.setattr(engine, "_invoke_agent", invoke)
+    try:
+        with pytest.raises(ControlledInterruption):
+            engine.run()
+        assert store.action("exp:1:propose:semantic-select")["status"] == "RUNNING"
+        assert counters["select_calls"] == 0
+        with pytest.raises(UnknownActionOutcome):
+            engine.run(resume=True)
+        assert counters["select_calls"] == 0
+        outcome = engine.run(resume=True, retry_running_actions=True)
+        assert outcome["status"] == "GOAL_MET"
+        assert counters["select_calls"] >= 1
+        assert store.action("exp:1:propose:semantic-select")["status"] == "COMPLETED"
     finally:
         store.close()

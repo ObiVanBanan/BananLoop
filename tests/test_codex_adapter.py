@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from bananloop.agents.codex import BOOTSTRAP_SCHEMA, HYPOTHESIS_SCHEMA, CodexAdapter
+from bananloop.agents.codex import BOOTSTRAP_SCHEMA, HYPOTHESIS_SCHEMA, CodexAdapter, SELECTION_SCHEMA, selection_schema_for_task
 
 
 def test_bootstrap_protocol_manifest_schema_is_strict_and_total():
@@ -188,3 +188,60 @@ def test_codex_uses_role_scoped_sandbox(tmp_path: Path, monkeypatch):
     assert seen[0][seen[0].index("--sandbox") + 1] == "workspace-write"
     assert seen[1][seen[1].index("--sandbox") + 1] == "read-only"
     assert all("--ephemeral" in argv for argv in seen)
+
+
+def test_semantic_selection_schema_restricts_model_to_eligible_ids_and_exact_refs():
+    request = {"role": "select", "eligible_candidates": [
+        {"candidate_id": "negation", "evidence_refs": ["exp:1", "exp:2"]},
+        {"candidate_id": "synonym", "evidence_refs": ["exp:3", "INSUFFICIENT_EVIDENCE"]},
+    ]}
+    schema = selection_schema_for_task(request)
+    assert schema["properties"]["selected_candidate_id"]["enum"] == ["negation", "synonym"]
+    assert schema["properties"]["evidence_refs"]["items"]["enum"] == [
+        "INSUFFICIENT_EVIDENCE", "exp:1", "exp:2", "exp:3"
+    ]
+    assert "enum" not in SELECTION_SCHEMA["properties"]["selected_candidate_id"]
+    assert "enum" not in SELECTION_SCHEMA["properties"]["evidence_refs"]["items"]
+
+
+def test_codex_select_prompt_and_schema_allow_exact_refs_not_annotated_prose(tmp_path: Path, monkeypatch):
+    adapter = CodexAdapter(model="gpt-6-luna")
+    monkeypatch.setattr(adapter, "_resolved_command", lambda: ["codex"])
+    recorded = {}
+
+    def fake_run_process(argv, *, cwd, timeout, check=True, input_text=None, **kwargs):
+        recorded["prompt"] = input_text
+        recorded["schema"] = json.loads(
+            Path(argv[argv.index("--output-schema") + 1]).read_text(encoding="utf-8")
+        )
+        recorded["sandbox"] = argv[argv.index("--sandbox") + 1]
+        Path(argv[argv.index("-o") + 1]).write_text(
+            json.dumps({
+                "selected_candidate_id": "negation",
+                "reason": "An unresolved polarity mismatch is plausible.",
+                "evidence_refs": ["exp:1"],
+                "main_risk": "Regression on positive queries.",
+            }),
+            encoding="utf-8",
+        )
+        return None
+
+    monkeypatch.setattr("bananloop.agents.codex.run_process", fake_run_process)
+    response = adapter.execute({
+        "role": "select",
+        "eligible_candidates": [
+            {"candidate_id": "negation", "evidence_refs": ["exp:1"]},
+            {"candidate_id": "synonyms", "evidence_refs": ["exp:2"]},
+        ],
+        "selection_contract": {
+            "allowed_evidence_refs_by_candidate": {
+                "negation": ["exp:1"], "synonyms": ["exp:2"]
+            },
+        },
+    }, tmp_path, timeout=30)
+    assert response["evidence_refs"] == ["exp:1"]
+    assert recorded["sandbox"] == "read-only"
+    assert "MACHINE-READABLE" in recorded["prompt"]
+    assert "exp:1: ..." in recorded["prompt"]
+    assert recorded["schema"]["properties"]["selected_candidate_id"]["enum"] == ["negation", "synonyms"]
+    assert recorded["schema"]["properties"]["evidence_refs"]["items"]["enum"] == ["exp:1", "exp:2"]
