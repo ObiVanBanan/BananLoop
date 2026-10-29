@@ -9,9 +9,9 @@ The repository includes a small deterministic command-agent fixture. It creates 
 3. rejected candidate quality 2 because guardrail regressions=1;
 4. accepted candidate quality 3 (the new champion).
 
-Run from the BananLoop checkout (after installing \`python -m pip install -e .\`):
+Run from the BananLoop checkout (after installing `python -m pip install -e .`):
 
-\`\`\`bash
+```bash
 python examples/fixture/create_fixture.py /tmp/bananloop-fixture
 
 bananloop init \
@@ -38,22 +38,22 @@ bananloop init \
 bananloop run --repo /tmp/bananloop-fixture
 bananloop status --repo /tmp/bananloop-fixture
 bananloop report --repo /tmp/bananloop-fixture
-\`\`\`
+```
 
 The original fixture repository remains unchanged. BananLoop uses its managed workspace. See the [full CLI guide](reference/cli-and-campaigns.md) for Windows equivalents and advanced options.
 
 ## Option B — independent Luna smoke evidence
 
-A QA agent tested the opt-in semantic selector on \`examples/calibration/mini_matcher\` on October 29, 2026. This was one fresh CPU-only campaign:
+A QA agent tested the opt-in semantic selector on `examples/calibration/mini_matcher` on October 29, 2026. This was one fresh CPU-only campaign:
 
 | Property | Observed |
 | --- | --- |
-| Model | \`gpt-6-luna\` |
+| Model | `gpt-6-luna` |
 | Proposer candidates | 2, both admissible |
-| Selected mechanism | \`normalized_attribute_extraction\` |
-| Selector evidence | \`INSUFFICIENT_EVIDENCE\` |
+| Selected mechanism | `normalized_attribute_extraction` |
+| Selector evidence | `INSUFFICIENT_EVIDENCE` |
 | Fallback | No |
-| DEV quality | \`0.4375 → 1.0\` |
+| DEV quality | `0.4375 → 1.0` |
 | Agent calls | 3 |
 | Evaluator calls | 2 |
 | Outcome | Accepted and promoted |
