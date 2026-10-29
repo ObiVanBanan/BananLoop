@@ -6,10 +6,10 @@ BananLoop is a Research Preview. Issues, bug reproductions, benchmark fixtures, 
 
 - Python 3.11+ and Git.
 - A clean, isolated checkout; do not run test campaigns inside your main project checkout.
-- Install: \`python -m pip install -e ".[test]"\`.
-- Run tests: \`python -m pytest -q -o addopts=''\`.
-- Run static compilation: \`python -m compileall -q src\`.
-- Run \`git diff --check\` before submitting a PR.
+- Install: `python -m pip install -e ".[test]"`.
+- Run tests: `python -m pytest -q -o addopts=''`.
+- Run static compilation: `python -m compileall -q src`.
+- Run `git diff --check` before submitting a PR.
 
 ## Conventions
 
