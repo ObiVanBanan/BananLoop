@@ -48,7 +48,7 @@ Save `C:\bl-cal\matcher-report.json`, run logs and campaign SQLite.
 
 Before accepting the result, inspect the first proposal action request:
 `task_document.status` must be `available`, and the embedded `sha256` must
-equal the SHA-256 of the public root TASK.md. The model must not see evaluator.py.
+equal the SHA-256 of the public root TASK.md. The model must not see evaluator.py. The evaluator must be frozen via --eval-asset evaluator.py.
 
 ## 4. Report format
 Return **one compact factual report** with:
