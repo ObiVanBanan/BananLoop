@@ -1002,7 +1002,7 @@ class Engine:
         The judge action is durable. A resumed proposal reuses its frozen
         input and result, never re-queries an uncertain running agent.
         """
-        if self.spec.selection_mode != "llm" or record.selected_candidate_id is None:
+        if self.spec.selection_mode != "llm":
             return record
 
         action_id = f"{record.action_id}:semantic-select"
@@ -1016,6 +1016,8 @@ class Engine:
                 raise EngineError("semantic selector frozen portfolio mismatch")
             record = frozen
         else:
+            if record.selected_candidate_id is None:
+                return record
             admissible = {d.candidate_id for d in record.decisions if d.admissible}
             if len(admissible) < 2:
                 return record
