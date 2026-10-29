@@ -1,6 +1,6 @@
 # v0.1.0 Research Preview — release checklist
 
-The preview is intended for early developers to try on trusted repositories. This checklist is an operational release gate; file creation alone does not mean the version is published. Follow the reproducible [publication protocol](PUBLISH_PROTOCOL.md) and record evidence before tagging.
+**Release decision (2026-10-29): private Research Preview only.** Keep repository visibility private; no public launch, announcement, package or automatic tag. A reproducible head-to-head against ordinary iterative Codex is mandatory **before** inviting preview users or approving a private release. Follow the [publication protocol](PUBLISH_PROTOCOL.md) and record exact-SHA evidence. Writing documentation is not a release.
 
 ## Code / evaluation
 
@@ -11,21 +11,29 @@ The preview is intended for early developers to try on trusted repositories. Thi
 - [ ] Review private evaluator and HOLDOUT isolation using the final tree.
 - [ ] Resolve CI infrastructure/billing issue, or explicitly document verified substitute checks before publishing.
 
+## Head-to-head benchmark — release blocker
+
+- [ ] Freeze a fair **Codex Direct vs Codex + BananLoop** paired protocol (same model, task, evaluator and available DEV feedback; direct Codex may iterate).
+- [ ] Run and archive the repeat with exact source/model/evaluator SHAs, task IDs, seeds, per-arm accounting and eligibility decisions.
+- [ ] Independently score frozen final artifacts without feeding validation/HOLDOUT observations into agent planning.
+- [ ] Report win/tie/loss outcomes, quality, model tokens/cost, wall time, known budget/protocol mismatches and failures. **No superiority claim is required to release; honest evidence is required.**
+- [ ] Update the [benchmark evidence register](BENCHMARK_STATUS.md) and attach sanitized proof of the new run. Earlier reported exploratory AutoResearchExam 7:3 DEV results are **not** sufficient.
+
 ## GitHub presentation
 
 - [x] Distinctive banner, short marketing README, honest DEV demo.
 - [x] MIT license, contributing guide, security policy, code of conduct.
 - [x] Issue and PR templates, changelog, roadmap.
 - [ ] Verify README/banner display in GitHub dark **and** light theme, including mobile width; use [visual handoff](VISUAL_DIRECTION.md) without treating illustration as measured UI.
-- [ ] Set repository About description and topics (maintainer GitHub settings).
-- [ ] If desired, intentionally change repository visibility from private to public after reviewing secrets/history.
-- [ ] Check all historical branches, tags, PRs, workflow artifacts and commit history for credentials before making repository public (history-aware scan and credential rotation if needed).
+- [ ] Review/copy the [suggested GitHub About text and preview notes](RELEASE_COPY.md) into repository settings when approved.
+- [ ] Confirm repo remains **private**; review collaborator access and redact leaked credentials, personal paths or protected evaluation data before granting any preview access.
+- [ ] Keep a comprehensive history-wide secrets and rights audit as an explicit prerequisite for any **future public** opening; do not change visibility as part of v0.1.0.
 
-## Publish
+## Approve private preview
 
-- [ ] Confirm release owner wants to publish `v0.1.0` as a tag and GitHub Release.
-- [ ] Create annotated `v0.1.0` tag from audited main SHA.
-- [ ] Publish GitHub Release titled “BananLoop v0.1.0 — Research Preview”, with `CHANGELOG.md` summary and truthful limitations.
-- [ ] Run benchmarks and publish their actual environment, budgets, seeds and DEV/validation/holdout scopes separately from preview demo.
+- [ ] Record the exact final `main` SHA and obtain explicit owner approval after all mandatory checks.
+- [ ] Approve the audience, private access/invitations and distribution method. **No public GitHub Release or visibility change.**
+- [ ] Optionally, after separate approval, create a private `v0.1.0` tag and GitHub Release referencing the approved SHA. Do not imply PyPI distribution.
+- [ ] Update README/CHANGELOG from the final measured report; distinguish exploratory DEV signals from independently evaluated comparisons.
 
-No continuous benchmark winner or general Codex performance advantage has been established by the mini matcher fixture.
+**No cost-matched or independently held-out superiority over ordinary Codex has yet been established by the mini matcher or exploratory DEV comparisons.**
