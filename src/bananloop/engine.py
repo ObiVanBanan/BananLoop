@@ -1056,6 +1056,11 @@ class Engine:
                     "compare_all_candidates": True,
                     "dev_only": True,
                     "scores_are_predictions_not_measurements": True,
+                    # The judge may explain TASK.md/history in prose but these
+                    # are the ONLY machine evidence references it may emit.
+                    "allowed_evidence_refs_by_candidate": {
+                        c.candidate_id: list(c.evidence_refs) for c in eligible
+                    },
                 },
             }
             # The durable action contains the exact agent-visible payload plus
