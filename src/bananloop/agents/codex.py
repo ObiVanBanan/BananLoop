@@ -211,6 +211,18 @@ HYPOTHESIS_SCHEMA = {
     "required": ["candidates", *LEGACY_HYPOTHESIS_SCHEMA["required"]],
     "additionalProperties": False,
 }
+SELECTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "selected_candidate_id": {"type": "string", "minLength": 1, "maxLength": 80},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 1200},
+        "evidence_refs": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
+        "main_risk": {"type": "string", "minLength": 1, "maxLength": 500},
+    },
+    "required": ["selected_candidate_id", "reason", "evidence_refs", "main_risk"],
+    "additionalProperties": False,
+}
+
 FAILURE_ANALYSIS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -300,6 +312,8 @@ class CodexAdapter(AgentAdapter):
             schema = BOOTSTRAP_SCHEMA
         elif role == "propose":
             schema = HYPOTHESIS_SCHEMA
+        elif role == "select":
+            schema = SELECTION_SCHEMA
         elif role == "analyze":
             schema = FAILURE_ANALYSIS_SCHEMA
         else:
@@ -405,6 +419,22 @@ class CodexAdapter(AgentAdapter):
                 "Avoid repeating a mechanism unless "
                 "you explicitly mark the hypothesis as refine, retry, or supersede and reference the prior "
                 "experiment ordinal. Do not modify files. Return {candidates:[...]} or legacy single Hypothesis JSON.\n\n"
+            )
+        elif role == "select":
+            instruction = (
+                "You are the independent BananLoop semantic portfolio selector. "
+                "Compare ALL eligible_candidates with each other against the public TASK.md, "
+                "goal, project_context, planning_mode and DEV-only history. "
+                "Previous partial gains do not imply champion promotion. "
+                "Choose exactly ONE candidate_id from eligible_candidates; do not invent IDs. "
+                "Prioritize a plausible causal mechanism addressing unresolved observed errors, "
+                "falsifiability, feasibility, regression risk and expected gain relative to cost. "
+                "Consider materially different mechanism families; do not select by candidate ID, "
+                "alphabetic order or prose length. The deterministic core alone decides admissibility. "
+                "Never infer hidden validation/holdout outcomes, invent reward gains or claim you executed a test. "
+                "Do not modify files or run evaluators. Return only selected_candidate_id, "
+                "reason, evidence_refs (only refs already supplied with the chosen candidate), "
+                "and main_risk in the structured schema. These are predictions, not measured outcomes.\n\n"
             )
         elif role == "analyze":
             instruction = (
