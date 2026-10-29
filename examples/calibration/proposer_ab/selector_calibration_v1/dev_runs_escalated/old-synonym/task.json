@@ -1,0 +1,53 @@
+{
+  "role": "implement",
+  "goal": "Improve exact-match technical position matching on the public CPU DEV task.",
+  "project_context": "CPU-only Python matcher; editable production file is solution.py.",
+  "editable_scope": [
+    "solution.py"
+  ],
+  "protected_paths": [
+    "evaluator.py"
+  ],
+  "hypothesis": {
+    "candidate_id": "synonym-canonicalization",
+    "hypothesis": {
+      "hypothesis": "Add a small, explicit synonym-to-canonical-token mapping in solution.py so common technical paraphrases contribute to the same concept match; this will improve exact-match quality by at least 0.001 on the CPU DEV set.",
+      "rationale": "The task identifies synonyms as a possible error class, while the supplied experiments only measure partial gains from token normalization, stopword filtering, and overlap tie-breaking. Canonicalizing known paraphrases tests a different mechanism family.",
+      "expected_effect": "Quality increases by at least 0.001 versus the current champion.",
+      "files_or_area": [
+        "solution.py"
+      ],
+      "falsification_condition": "The DEV quality delta is below 0.001, or synonym canonicalization introduces enough false matches to prevent that gain.",
+      "mechanism_key": "synonym-canonicalization",
+      "relation": "new",
+      "prior_experiment_refs": [
+        1,
+        2,
+        3
+      ],
+      "novelty_rationale": "Experiments 1, 2, and 3 improved DEV quality by 0.0002, 0.0003, and 0.0004 respectively, but each remained below the 0.001 promotion threshold. Those are partial gains consistent with their stated mechanisms, not evidence that the mechanisms failed. This proposal tests explicit synonym canonicalization, which none of those experiments measured.",
+      "target_failure_signal": "",
+      "failure_mechanism": ""
+    },
+    "evidence_refs": [
+      "exp:1",
+      "exp:2",
+      "exp:3"
+    ],
+    "suspected_failure_mode": "Equivalent technical terms may have little or no token overlap, causing the matcher to miss semantically equivalent positions.",
+    "predicted_observable": "DEV errors involving known paraphrases decrease, and overall quality rises by at least 0.001.",
+    "discriminating_test": "Evaluate a synonym mapping against the current champion on the same DEV set; check whether gains concentrate on paraphrase cases and whether total quality improves by at least 0.001.",
+    "scope_eligibility": true,
+    "estimated_agent_calls": 2,
+    "estimated_evaluator_calls": 1,
+    "estimated_work_units": null,
+    "rationale": "Targets the task’s stated synonym error class through an explicit lexical mapping in the sole editable file.",
+    "uncertainty": "The request does not provide DEV examples or show whether synonym errors are common enough to clear the promotion threshold.",
+    "inference": "agent_inference"
+  },
+  "task_document": {
+    "status": "available",
+    "path": "TASK.md",
+    "content": "# Technical position matcher\n\nImprove `solution.py`, which matches short technical position statements to\ntheir canonical engineering concepts. The intended metric is exact-match\nquality on a fixed CPU-only DEV set. Editable scope is only `solution.py`.\nUse the provided public task description and DEV research context to propose a\nfalsifiable next mechanism. Do not claim measured results that are not present\nin the request. The proposer is only asked for hypotheses; this harness does\nnot implement candidates or run evaluation.\n\nCurrent implementation uses normalized token overlap. Potential error classes\ninclude synonyms, negation, acronym expansion, and compositional word order.\n"
+  }
+}

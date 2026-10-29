@@ -1,0 +1,8 @@
+{
+  "summary": "Added adjacent-word phrase overlap as a tie-breaker after token overlap to distinguish statements with similar words in different orders.",
+  "changed_paths": [
+    "solution.py"
+  ],
+  "verification_notes": "Reviewed the edited file and confirmed no transient cache artifacts were created. Did not run evaluation; the supervisor runs configured evaluator and validation commands independently.",
+  "blockers": []
+}

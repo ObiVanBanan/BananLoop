@@ -1,0 +1,8 @@
+{
+  "summary": "Implemented negation-aware matching in `solution.py`. Nearby negation cues mark terms as negated, and shared terms with opposite polarity receive a score penalty.",
+  "changed_paths": [
+    "solution.py"
+  ],
+  "verification_notes": "Reviewed the resulting implementation. Evaluator and validation commands were not run, as requested; no transient cache artifacts were created.",
+  "blockers": []
+}

@@ -1,0 +1,53 @@
+{
+  "role": "implement",
+  "goal": "Improve exact-match technical position matching on the public CPU DEV task.",
+  "project_context": "CPU-only Python matcher; editable production file is solution.py.",
+  "editable_scope": [
+    "solution.py"
+  ],
+  "protected_paths": [
+    "evaluator.py"
+  ],
+  "hypothesis": {
+    "candidate_id": "negation-polarity",
+    "hypothesis": {
+      "hypothesis": "Add explicit handling for negation cues and their nearby technical terms in solution.py so statements with opposite polarity do not receive misleadingly similar overlap scores; this will improve exact-match quality by at least 0.001 on the CPU DEV set.",
+      "rationale": "The task names negation as a possible error class. Token overlap can count shared terms despite a polarity reversal, which a polarity-aware feature could address.",
+      "expected_effect": "Quality increases by at least 0.001 versus the current champion, with fewer errors on negated statements.",
+      "files_or_area": [
+        "solution.py"
+      ],
+      "falsification_condition": "The DEV quality delta is below 0.001, or polarity handling fails to reduce negation-related errors.",
+      "mechanism_key": "negation-polarity",
+      "relation": "new",
+      "prior_experiment_refs": [
+        1,
+        2,
+        3
+      ],
+      "novelty_rationale": "Experiments 1–3 reported partial DEV improvements of 0.0002–0.0004, below the required 0.001. Their results support that the tested mechanisms moved quality slightly; they do not test or disprove polarity-aware matching. This proposal changes the matching signal to account for negation.",
+      "target_failure_signal": "",
+      "failure_mechanism": ""
+    },
+    "evidence_refs": [
+      "exp:1",
+      "exp:2",
+      "exp:3"
+    ],
+    "suspected_failure_mode": "Shared content tokens may outweigh a negation cue, making statements with opposite meanings appear similar.",
+    "predicted_observable": "Negation-related DEV mismatches decrease and overall quality rises by at least 0.001.",
+    "discriminating_test": "Compare the current champion with a polarity-aware variant on the same DEV set; inspect negation cases and require a total quality delta of at least 0.001.",
+    "scope_eligibility": true,
+    "estimated_agent_calls": 2,
+    "estimated_evaluator_calls": 1,
+    "estimated_work_units": null,
+    "rationale": "Tests whether representing polarity directly resolves a semantic distinction that plain token overlap can obscure.",
+    "uncertainty": "No supplied DEV breakdown establishes the frequency or impact of negation errors.",
+    "inference": "agent_inference"
+  },
+  "task_document": {
+    "status": "available",
+    "path": "TASK.md",
+    "content": "# Technical position matcher\n\nImprove `solution.py`, which matches short technical position statements to\ntheir canonical engineering concepts. The intended metric is exact-match\nquality on a fixed CPU-only DEV set. Editable scope is only `solution.py`.\nUse the provided public task description and DEV research context to propose a\nfalsifiable next mechanism. Do not claim measured results that are not present\nin the request. The proposer is only asked for hypotheses; this harness does\nnot implement candidates or run evaluation.\n\nCurrent implementation uses normalized token overlap. Potential error classes\ninclude synonyms, negation, acronym expansion, and compositional word order.\n"
+  }
+}

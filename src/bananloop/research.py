@@ -278,8 +278,17 @@ def select_candidate(
                 rejection_reasons=list(dict.fromkeys(reasons)), criterion_scores=scores,
                 selection_reason="; ".join(dict.fromkeys(reasons))))
         else:
+            # Candidate IDs are transport identifiers, not evidence of quality.
+            # Use a stable digest of the full candidate content (excluding ID)
+            # only after every existing selection criterion ties. This removes
+            # name and input-order bias without assigning scientific meaning to
+            # the tie-break itself.
+            content = candidate.model_dump(mode="json", exclude={"candidate_id"})
+            content_digest = hashlib.sha256(json.dumps(
+                content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            ).encode("utf-8")).hexdigest()
             eligible.append(((strategy_priority, evidence_score, scores["falsifiability"], 1,
-                              scores["lower_estimated_cost"], candidate.candidate_id), candidate))
+                              scores["lower_estimated_cost"], content_digest), candidate))
             decisions.append(CandidateDecision(candidate_id=candidate.candidate_id, admissible=True,
                                                 criterion_scores=scores))
     trigger = [
@@ -298,7 +307,8 @@ def select_candidate(
             if decision.candidate_id == selected:
                 decision.selection_reason = (
                     "Selected by deterministic ordering: strategy-aware mechanism novelty, DEV evidence, "
-                    "falsifiability, budget feasibility, estimated cost, stable candidate ID."
+                    "falsifiability, budget feasibility, estimated cost, then a neutral stable content hash "
+                    "(candidate ID excluded; hash is not a quality score)."
                 )
             elif decision.admissible:
                 decision.selection_reason = "Ranked below selected candidate by the recorded deterministic criteria."

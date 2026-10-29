@@ -1,0 +1,64 @@
+{
+  "runs": [
+    {
+      "hypothesis": "synonym-canonicalization",
+      "mechanism": "synonym-canonicalization",
+      "implementer_calls": 1,
+      "implementer_response": {
+        "summary": "Added explicit synonym canonicalization for common technical terms and multiword paraphrases in `solution.py`, retaining original tokens for overlap matching.",
+        "changed_paths": [
+          "solution.py"
+        ],
+        "verification_notes": "Reviewed the change against the public task requirements. Did not run tests or evaluation commands; the supervisor will run configured checks independently.",
+        "blockers": []
+      },
+      "tokens": null,
+      "tokens_unavailable_reason": "CodexAdapter structured implementation response does not expose token usage.",
+      "dev_reward": 0.5,
+      "elapsed_seconds": 26.782673900999725,
+      "error": null,
+      "evaluator_error": null,
+      "unexpected_workspace_files": []
+    },
+    {
+      "hypothesis": "ordered-composition",
+      "mechanism": "ordered-composition",
+      "implementer_calls": 1,
+      "implementer_response": {
+        "summary": "Added adjacent-word phrase overlap as a tie-breaker after token overlap to distinguish statements with similar words in different orders.",
+        "changed_paths": [
+          "solution.py"
+        ],
+        "verification_notes": "Reviewed the edited file and confirmed no transient cache artifacts were created. Did not run evaluation; the supervisor runs configured evaluator and validation commands independently.",
+        "blockers": []
+      },
+      "tokens": null,
+      "tokens_unavailable_reason": "CodexAdapter structured implementation response does not expose token usage.",
+      "dev_reward": 0.5,
+      "elapsed_seconds": 16.04224136099947,
+      "error": null,
+      "evaluator_error": null,
+      "unexpected_workspace_files": []
+    },
+    {
+      "hypothesis": "negation-polarity",
+      "mechanism": "negation-polarity",
+      "implementer_calls": 1,
+      "implementer_response": {
+        "summary": "Implemented negation-aware matching in `solution.py`. Nearby negation cues mark terms as negated, and shared terms with opposite polarity receive a score penalty.",
+        "changed_paths": [
+          "solution.py"
+        ],
+        "verification_notes": "Reviewed the resulting implementation. Evaluator and validation commands were not run, as requested; no transient cache artifacts were created.",
+        "blockers": []
+      },
+      "tokens": null,
+      "tokens_unavailable_reason": "CodexAdapter structured implementation response does not expose token usage.",
+      "dev_reward": 0.625,
+      "elapsed_seconds": 24.14324581999972,
+      "error": null,
+      "evaluator_error": null,
+      "unexpected_workspace_files": []
+    }
+  ]
+}

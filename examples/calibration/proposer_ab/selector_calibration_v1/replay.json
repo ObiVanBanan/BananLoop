@@ -1,0 +1,624 @@
+{
+  "schema_version": 1,
+  "selector": "content-hash-tiebreak",
+  "runs": [
+    {
+      "run": "exploit-1",
+      "strategy": "exploit",
+      "original_winner": "negation-aware-overlap",
+      "original_winner_mechanism": "negation-aware-overlap",
+      "original_winner_criterion_scores": {
+        "dev_evidence": 0,
+        "mechanism_novelty": 1,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -4
+      },
+      "original_winner_ordered_criteria": {
+        "strategy_aware_novelty": -1,
+        "dev_evidence": 0,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -4,
+        "final_tie_break": "negation-aware-overlap"
+      },
+      "new_winner": "compositional-order-scoring",
+      "new_winner_mechanism": "compositional-order-scoring",
+      "new_winner_content_key": "9e9e5227f6f3e3633d4703cab1036caa18baa385fb6824333692ddb297f34838",
+      "new_winner_criterion_scores": {
+        "dev_evidence": 0,
+        "mechanism_novelty": 1,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -4
+      },
+      "new_winner_ordered_criteria": {
+        "strategy_aware_novelty": -1,
+        "dev_evidence": 0,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -4,
+        "final_tie_break": "9e9e5227f6f3e3633d4703cab1036caa18baa385fb6824333692ddb297f34838"
+      },
+      "mechanism_changed": true,
+      "rename_changes_winner_content": true,
+      "rename_replay": {
+        "candidate_id_mapping": {
+          "engineering-acronym-expansion": "alpha",
+          "negation-aware-overlap": "bravo",
+          "compositional-order-scoring": "charlie"
+        },
+        "winner_after_renaming": "charlie",
+        "winner_content_key": "9e9e5227f6f3e3633d4703cab1036caa18baa385fb6824333692ddb297f34838",
+        "winner_mechanism": "compositional-order-scoring",
+        "winner_criterion_scores": {
+          "dev_evidence": 0,
+          "mechanism_novelty": 1,
+          "falsifiability": 1,
+          "budget_feasibility": 1,
+          "lower_estimated_cost": -4
+        }
+      },
+      "candidate_order_winner": "negation-aware-overlap",
+      "candidate_order_changes_winner_content": false,
+      "eligibility_gates_preserved": true,
+      "new_ineligible_decision_selected": false,
+      "decisions": [
+        {
+          "candidate_id": "engineering-acronym-expansion",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 0,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -4
+          },
+          "selection_reason": "Ranked below selected candidate by the recorded deterministic criteria."
+        },
+        {
+          "candidate_id": "negation-aware-overlap",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 0,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -4
+          },
+          "selection_reason": "Ranked below selected candidate by the recorded deterministic criteria."
+        },
+        {
+          "candidate_id": "compositional-order-scoring",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 0,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -4
+          },
+          "selection_reason": "Selected by deterministic ordering: strategy-aware mechanism novelty, DEV evidence, falsifiability, budget feasibility, estimated cost, then a neutral stable content hash (candidate ID excluded; hash is not a quality score)."
+        }
+      ]
+    },
+    {
+      "run": "exploit-2",
+      "strategy": "exploit",
+      "original_winner": "technical-alias-expansion",
+      "original_winner_mechanism": "technical-alias-expansion",
+      "original_winner_criterion_scores": {
+        "dev_evidence": 3,
+        "mechanism_novelty": 1,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -4
+      },
+      "original_winner_ordered_criteria": {
+        "strategy_aware_novelty": -1,
+        "dev_evidence": 3,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -4,
+        "final_tie_break": "technical-alias-expansion"
+      },
+      "new_winner": "technical-alias-expansion",
+      "new_winner_mechanism": "technical-alias-expansion",
+      "new_winner_content_key": "e6e7970d5cf0028c17d269cfb0d11618181c551df7a7a24dc10c92a0b688a62f",
+      "new_winner_criterion_scores": {
+        "dev_evidence": 3,
+        "mechanism_novelty": 1,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -4
+      },
+      "new_winner_ordered_criteria": {
+        "strategy_aware_novelty": -1,
+        "dev_evidence": 3,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -4,
+        "final_tie_break": "e6e7970d5cf0028c17d269cfb0d11618181c551df7a7a24dc10c92a0b688a62f"
+      },
+      "mechanism_changed": false,
+      "rename_changes_winner_content": true,
+      "rename_replay": {
+        "candidate_id_mapping": {
+          "directional-token-order": "alpha",
+          "negation-aware-overlap": "charlie",
+          "technical-alias-expansion": "bravo"
+        },
+        "winner_after_renaming": "charlie",
+        "winner_content_key": "64210e558c27c19c2a347379c896aa7e312aae3129fe02829629d09764b9d0a7",
+        "winner_mechanism": "negation-aware-overlap",
+        "winner_criterion_scores": {
+          "dev_evidence": 3,
+          "mechanism_novelty": 1,
+          "falsifiability": 1,
+          "budget_feasibility": 1,
+          "lower_estimated_cost": -4
+        }
+      },
+      "candidate_order_winner": "technical-alias-expansion",
+      "candidate_order_changes_winner_content": false,
+      "eligibility_gates_preserved": true,
+      "new_ineligible_decision_selected": false,
+      "decisions": [
+        {
+          "candidate_id": "directional-token-order",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 1,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -4
+          },
+          "selection_reason": "Ranked below selected candidate by the recorded deterministic criteria."
+        },
+        {
+          "candidate_id": "negation-aware-overlap",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 3,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -4
+          },
+          "selection_reason": "Ranked below selected candidate by the recorded deterministic criteria."
+        },
+        {
+          "candidate_id": "technical-alias-expansion",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 3,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -4
+          },
+          "selection_reason": "Selected by deterministic ordering: strategy-aware mechanism novelty, DEV evidence, falsifiability, budget feasibility, estimated cost, then a neutral stable content hash (candidate ID excluded; hash is not a quality score)."
+        }
+      ]
+    },
+    {
+      "run": "exploit-3",
+      "strategy": "exploit",
+      "original_winner": "synonym-lexicon-matching",
+      "original_winner_mechanism": "synonym-lexicon-matching",
+      "original_winner_criterion_scores": {
+        "dev_evidence": 3,
+        "mechanism_novelty": 1,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3
+      },
+      "original_winner_ordered_criteria": {
+        "strategy_aware_novelty": -1,
+        "dev_evidence": 3,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3,
+        "final_tie_break": "synonym-lexicon-matching"
+      },
+      "new_winner": "acronym-expansion-matching",
+      "new_winner_mechanism": "acronym-expansion-matching",
+      "new_winner_content_key": "fd6149ff3dd0bba6c9f80115f20106bd7a219ebcc45d02a71b0429a2184279d3",
+      "new_winner_criterion_scores": {
+        "dev_evidence": 3,
+        "mechanism_novelty": 1,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3
+      },
+      "new_winner_ordered_criteria": {
+        "strategy_aware_novelty": -1,
+        "dev_evidence": 3,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3,
+        "final_tie_break": "fd6149ff3dd0bba6c9f80115f20106bd7a219ebcc45d02a71b0429a2184279d3"
+      },
+      "mechanism_changed": true,
+      "rename_changes_winner_content": true,
+      "rename_replay": {
+        "candidate_id_mapping": {
+          "synonym-lexicon-matching": "alpha",
+          "negation-aware-scoring": "bravo",
+          "acronym-expansion-matching": "charlie"
+        },
+        "winner_after_renaming": "charlie",
+        "winner_content_key": "fd6149ff3dd0bba6c9f80115f20106bd7a219ebcc45d02a71b0429a2184279d3",
+        "winner_mechanism": "acronym-expansion-matching",
+        "winner_criterion_scores": {
+          "dev_evidence": 3,
+          "mechanism_novelty": 1,
+          "falsifiability": 1,
+          "budget_feasibility": 1,
+          "lower_estimated_cost": -3
+        }
+      },
+      "candidate_order_winner": "synonym-lexicon-matching",
+      "candidate_order_changes_winner_content": false,
+      "eligibility_gates_preserved": true,
+      "new_ineligible_decision_selected": false,
+      "decisions": [
+        {
+          "candidate_id": "synonym-lexicon-matching",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 3,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -3
+          },
+          "selection_reason": "Ranked below selected candidate by the recorded deterministic criteria."
+        },
+        {
+          "candidate_id": "negation-aware-scoring",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 3,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -3
+          },
+          "selection_reason": "Ranked below selected candidate by the recorded deterministic criteria."
+        },
+        {
+          "candidate_id": "acronym-expansion-matching",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 3,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -3
+          },
+          "selection_reason": "Selected by deterministic ordering: strategy-aware mechanism novelty, DEV evidence, falsifiability, budget feasibility, estimated cost, then a neutral stable content hash (candidate ID excluded; hash is not a quality score)."
+        }
+      ]
+    },
+    {
+      "run": "reframe-1",
+      "strategy": "reframe",
+      "original_winner": "synonym-canonicalization",
+      "original_winner_mechanism": "synonym-canonicalization",
+      "original_winner_criterion_scores": {
+        "dev_evidence": 3,
+        "mechanism_novelty": 1,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3
+      },
+      "original_winner_ordered_criteria": {
+        "strategy_aware_novelty": 1,
+        "dev_evidence": 3,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3,
+        "final_tie_break": "synonym-canonicalization"
+      },
+      "new_winner": "ordered-composition",
+      "new_winner_mechanism": "ordered-composition",
+      "new_winner_content_key": "f0628a83e4aaa69269848572fa42c2304397f0598416037d0239a6479897711d",
+      "new_winner_criterion_scores": {
+        "dev_evidence": 3,
+        "mechanism_novelty": 1,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3
+      },
+      "new_winner_ordered_criteria": {
+        "strategy_aware_novelty": 1,
+        "dev_evidence": 3,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3,
+        "final_tie_break": "f0628a83e4aaa69269848572fa42c2304397f0598416037d0239a6479897711d"
+      },
+      "mechanism_changed": true,
+      "rename_changes_winner_content": true,
+      "rename_replay": {
+        "candidate_id_mapping": {
+          "synonym-canonicalization": "alpha",
+          "negation-polarity": "bravo",
+          "ordered-composition": "charlie"
+        },
+        "winner_after_renaming": "charlie",
+        "winner_content_key": "f0628a83e4aaa69269848572fa42c2304397f0598416037d0239a6479897711d",
+        "winner_mechanism": "ordered-composition",
+        "winner_criterion_scores": {
+          "dev_evidence": 3,
+          "mechanism_novelty": 1,
+          "falsifiability": 1,
+          "budget_feasibility": 1,
+          "lower_estimated_cost": -3
+        }
+      },
+      "candidate_order_winner": "synonym-canonicalization",
+      "candidate_order_changes_winner_content": false,
+      "eligibility_gates_preserved": true,
+      "new_ineligible_decision_selected": false,
+      "decisions": [
+        {
+          "candidate_id": "synonym-canonicalization",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 3,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -3
+          },
+          "selection_reason": "Ranked below selected candidate by the recorded deterministic criteria."
+        },
+        {
+          "candidate_id": "negation-polarity",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 3,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -3
+          },
+          "selection_reason": "Ranked below selected candidate by the recorded deterministic criteria."
+        },
+        {
+          "candidate_id": "ordered-composition",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 3,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -3
+          },
+          "selection_reason": "Selected by deterministic ordering: strategy-aware mechanism novelty, DEV evidence, falsifiability, budget feasibility, estimated cost, then a neutral stable content hash (candidate ID excluded; hash is not a quality score)."
+        }
+      ]
+    },
+    {
+      "run": "reframe-2",
+      "strategy": "reframe",
+      "original_winner": "synonym-alias-lexicon",
+      "original_winner_mechanism": "synonym-alias-mapping",
+      "original_winner_criterion_scores": {
+        "dev_evidence": 3,
+        "mechanism_novelty": 1,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3
+      },
+      "original_winner_ordered_criteria": {
+        "strategy_aware_novelty": 1,
+        "dev_evidence": 3,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3,
+        "final_tie_break": "synonym-alias-lexicon"
+      },
+      "new_winner": "synonym-alias-lexicon",
+      "new_winner_mechanism": "synonym-alias-mapping",
+      "new_winner_content_key": "dcb83507472b8e81e8166537371d6085fc3cdc5c24228433739723f117c90660",
+      "new_winner_criterion_scores": {
+        "dev_evidence": 3,
+        "mechanism_novelty": 1,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3
+      },
+      "new_winner_ordered_criteria": {
+        "strategy_aware_novelty": 1,
+        "dev_evidence": 3,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3,
+        "final_tie_break": "dcb83507472b8e81e8166537371d6085fc3cdc5c24228433739723f117c90660"
+      },
+      "mechanism_changed": false,
+      "rename_changes_winner_content": true,
+      "rename_replay": {
+        "candidate_id_mapping": {
+          "synonym-alias-lexicon": "alpha",
+          "negation-aware-overlap": "bravo",
+          "acronym-expansion-matching": "charlie"
+        },
+        "winner_after_renaming": "charlie",
+        "winner_content_key": "a1f5d180f3c94cc0efe949f00dfc23b572db0744fc51b692cbac2c3bdf9a0f1e",
+        "winner_mechanism": "acronym-expansion",
+        "winner_criterion_scores": {
+          "dev_evidence": 3,
+          "mechanism_novelty": 1,
+          "falsifiability": 1,
+          "budget_feasibility": 1,
+          "lower_estimated_cost": -3
+        }
+      },
+      "candidate_order_winner": "synonym-alias-lexicon",
+      "candidate_order_changes_winner_content": false,
+      "eligibility_gates_preserved": true,
+      "new_ineligible_decision_selected": false,
+      "decisions": [
+        {
+          "candidate_id": "synonym-alias-lexicon",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 3,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -3
+          },
+          "selection_reason": "Selected by deterministic ordering: strategy-aware mechanism novelty, DEV evidence, falsifiability, budget feasibility, estimated cost, then a neutral stable content hash (candidate ID excluded; hash is not a quality score)."
+        },
+        {
+          "candidate_id": "negation-aware-overlap",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 3,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -3
+          },
+          "selection_reason": "Ranked below selected candidate by the recorded deterministic criteria."
+        },
+        {
+          "candidate_id": "acronym-expansion-matching",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 3,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -3
+          },
+          "selection_reason": "Ranked below selected candidate by the recorded deterministic criteria."
+        }
+      ]
+    },
+    {
+      "run": "reframe-3",
+      "strategy": "reframe",
+      "original_winner": "synonym-alias-expansion",
+      "original_winner_mechanism": "synonym-alias-expansion",
+      "original_winner_criterion_scores": {
+        "dev_evidence": 0,
+        "mechanism_novelty": 1,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3
+      },
+      "original_winner_ordered_criteria": {
+        "strategy_aware_novelty": 1,
+        "dev_evidence": 0,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3,
+        "final_tie_break": "synonym-alias-expansion"
+      },
+      "new_winner": "order-sensitive-composition",
+      "new_winner_mechanism": "order-sensitive-composition",
+      "new_winner_content_key": "bbb365de2e2be4f6dd73205a04613052cd93dea76d306eb824db41a621e59a96",
+      "new_winner_criterion_scores": {
+        "dev_evidence": 0,
+        "mechanism_novelty": 1,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3
+      },
+      "new_winner_ordered_criteria": {
+        "strategy_aware_novelty": 1,
+        "dev_evidence": 0,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3,
+        "final_tie_break": "bbb365de2e2be4f6dd73205a04613052cd93dea76d306eb824db41a621e59a96"
+      },
+      "mechanism_changed": true,
+      "rename_changes_winner_content": true,
+      "rename_replay": {
+        "candidate_id_mapping": {
+          "synonym-alias-expansion": "alpha",
+          "negation-aware-token-matching": "bravo",
+          "order-sensitive-composition": "charlie"
+        },
+        "winner_after_renaming": "charlie",
+        "winner_content_key": "bbb365de2e2be4f6dd73205a04613052cd93dea76d306eb824db41a621e59a96",
+        "winner_mechanism": "order-sensitive-composition",
+        "winner_criterion_scores": {
+          "dev_evidence": 0,
+          "mechanism_novelty": 1,
+          "falsifiability": 1,
+          "budget_feasibility": 1,
+          "lower_estimated_cost": -3
+        }
+      },
+      "candidate_order_winner": "synonym-alias-expansion",
+      "candidate_order_changes_winner_content": false,
+      "eligibility_gates_preserved": true,
+      "new_ineligible_decision_selected": false,
+      "decisions": [
+        {
+          "candidate_id": "synonym-alias-expansion",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 0,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -3
+          },
+          "selection_reason": "Ranked below selected candidate by the recorded deterministic criteria."
+        },
+        {
+          "candidate_id": "negation-aware-token-matching",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 0,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -3
+          },
+          "selection_reason": "Ranked below selected candidate by the recorded deterministic criteria."
+        },
+        {
+          "candidate_id": "order-sensitive-composition",
+          "admissible": true,
+          "rejection_reasons": [],
+          "criterion_scores": {
+            "dev_evidence": 0,
+            "mechanism_novelty": 1,
+            "falsifiability": 1,
+            "budget_feasibility": 1,
+            "lower_estimated_cost": -3
+          },
+          "selection_reason": "Selected by deterministic ordering: strategy-aware mechanism novelty, DEV evidence, falsifiability, budget feasibility, estimated cost, then a neutral stable content hash (candidate ID excluded; hash is not a quality score)."
+        }
+      ]
+    }
+  ]
+}

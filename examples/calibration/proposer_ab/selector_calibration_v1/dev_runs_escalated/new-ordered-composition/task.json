@@ -1,0 +1,53 @@
+{
+  "role": "implement",
+  "goal": "Improve exact-match technical position matching on the public CPU DEV task.",
+  "project_context": "CPU-only Python matcher; editable production file is solution.py.",
+  "editable_scope": [
+    "solution.py"
+  ],
+  "protected_paths": [
+    "evaluator.py"
+  ],
+  "hypothesis": {
+    "candidate_id": "ordered-composition",
+    "hypothesis": {
+      "hypothesis": "Add a bounded word-order or local phrase feature in solution.py so technical terms whose meaning depends on composition are distinguished from statements with the same words in a different arrangement; this will improve exact-match quality by at least 0.001 on the CPU DEV set.",
+      "rationale": "The task identifies compositional word order as a possible error class. A phrase or order-sensitive signal tests whether token-set matching loses meaning encoded by term arrangement.",
+      "expected_effect": "Quality increases by at least 0.001 versus the current champion, with fewer order-sensitive composition errors.",
+      "files_or_area": [
+        "solution.py"
+      ],
+      "falsification_condition": "The DEV quality delta is below 0.001, or order-sensitive features do not reduce composition-related mismatches.",
+      "mechanism_key": "ordered-composition",
+      "relation": "new",
+      "prior_experiment_refs": [
+        1,
+        2,
+        3
+      ],
+      "novelty_rationale": "The measured partial gains in experiments 1, 2, and 3 were 0.0002, 0.0003, and 0.0004, all below the promotion threshold. These observations show small gains from normalization, filtering, and overlap tie-breaking, not a failed mechanism. None tested order-sensitive composition, so this proposal changes the representation used for matching.",
+      "target_failure_signal": "",
+      "failure_mechanism": ""
+    },
+    "evidence_refs": [
+      "exp:1",
+      "exp:2",
+      "exp:3"
+    ],
+    "suspected_failure_mode": "Token overlap may ignore term order and local composition, conflating statements that use similar words to express different concepts.",
+    "predicted_observable": "Order-sensitive composition mismatches decrease and overall quality rises by at least 0.001.",
+    "discriminating_test": "Evaluate a phrase/order-sensitive variant against the current champion on the same DEV set; check composition cases and require a total quality delta of at least 0.001.",
+    "scope_eligibility": true,
+    "estimated_agent_calls": 2,
+    "estimated_evaluator_calls": 1,
+    "estimated_work_units": null,
+    "rationale": "Tests a representation change for compositional meaning, distinct from lexical normalization and overlap scoring tweaks.",
+    "uncertainty": "The supplied context gives no examples or frequency estimates for word-order errors.",
+    "inference": "agent_inference"
+  },
+  "task_document": {
+    "status": "available",
+    "path": "TASK.md",
+    "content": "# Technical position matcher\n\nImprove `solution.py`, which matches short technical position statements to\ntheir canonical engineering concepts. The intended metric is exact-match\nquality on a fixed CPU-only DEV set. Editable scope is only `solution.py`.\nUse the provided public task description and DEV research context to propose a\nfalsifiable next mechanism. Do not claim measured results that are not present\nin the request. The proposer is only asked for hypotheses; this harness does\nnot implement candidates or run evaluation.\n\nCurrent implementation uses normalized token overlap. Potential error classes\ninclude synonyms, negation, acronym expansion, and compositional word order.\n"
+  }
+}

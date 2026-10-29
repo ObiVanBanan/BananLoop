@@ -245,6 +245,78 @@ def test_portfolio_selector_is_deterministic_and_prefers_new_mechanism_on_refram
     assert "REDUNDANT_MECHANISM" in rejected.rejection_reasons
 
 
+def test_selector_tie_break_is_independent_of_candidate_id_and_json_order():
+    candidates = [
+        _portfolio_candidate("alpha", "mechanism-a"),
+        _portfolio_candidate("beta", "mechanism-b"),
+        _portfolio_candidate("gamma", "mechanism-c"),
+    ]
+    state = _selection_state()
+    def choose(items):
+        return select_candidate(HypothesisPortfolio(candidates=items), spec=spec(), state=state,
+                                experiments=[], experiment_ordinal=1, action_id="exp:1:propose")
+    def selected_content(record):
+        candidate = next(item for item in record.candidates
+                         if item.candidate_id == record.selected_candidate_id)
+        return candidate.model_dump(mode="json", exclude={"candidate_id"})
+
+    expected = selected_content(choose(candidates))
+    renamed = [item.model_copy(update={"candidate_id": f"renamed-{index}"})
+               for index, item in enumerate(candidates)]
+    assert selected_content(choose(renamed)) == expected
+    assert selected_content(choose(list(reversed(candidates)))) == expected
+    assert selected_content(choose(candidates)) == selected_content(choose(candidates))
+
+
+def test_selector_existing_strategy_and_evidence_scores_still_dominate_hash_tie_break():
+    known = _portfolio_candidate("z-known", "supported")
+    novel = _portfolio_candidate("a-novel", "new")
+    state = _selection_state(mechanisms=[
+        {"mechanism_key": "supported", "experiment_ordinals": [1], "dev_outcomes": {}}
+    ])
+    experiments = [{"ordinal": 1, "hypothesis_json": json.dumps({"mechanism_key": "other"})}]
+    record = select_candidate(HypothesisPortfolio(candidates=[novel, known]), spec=spec(), state=state,
+                               experiments=experiments, experiment_ordinal=2, action_id="exp:2:propose")
+    assert record.selected_candidate_id == "a-novel"  # reframe prioritizes novelty
+
+    exploit = state.model_copy(update={"planning_mode": "exploit"})
+    record = select_candidate(HypothesisPortfolio(candidates=[novel, known]), spec=spec(), state=exploit,
+                              experiments=experiments, experiment_ordinal=2, action_id="exp:2:propose")
+    assert record.selected_candidate_id == "z-known"  # exploit retains known-mechanism priority
+
+    stronger_evidence = _portfolio_candidate("strong-evidence", "equal-family", evidence_refs=["exp:1"])
+    stronger_evidence = stronger_evidence.model_copy(update={
+        "hypothesis": stronger_evidence.hypothesis.model_copy(update={"prior_experiment_refs": [1]})
+    })
+    weak_evidence = _portfolio_candidate("weak-evidence", "equal-family")
+    from bananloop.contracts import DevExperimentEvidence
+    evidence_state = state.model_copy(update={
+        "experiment_evidence": [DevExperimentEvidence(ordinal=1, mechanism_key="other", dev_outcome="DEV_NO_IMPROVEMENT")]
+    })
+    # Explore has equal novelty priority for known and new mechanisms, exposing
+    # the existing DEV evidence criterion before the neutral hash tie-break.
+    explore = evidence_state.model_copy(update={"planning_mode": "explore"})
+    record = select_candidate(HypothesisPortfolio(candidates=[weak_evidence, stronger_evidence]), spec=spec(),
+                              state=explore, experiments=experiments, experiment_ordinal=2,
+                              action_id="exp:2:propose")
+    evidence_scores = {item.candidate_id: item.criterion_scores["dev_evidence"]
+                       for item in record.decisions}
+    assert evidence_scores["strong-evidence"] > evidence_scores["weak-evidence"]
+    assert record.selected_candidate_id == "strong-evidence"
+
+
+def test_selector_rejections_remain_ineligible_with_tied_valid_candidates():
+    valid = _portfolio_candidate("valid", "valid-mechanism")
+    invalid = _portfolio_candidate("invalid", "invalid-mechanism", scope_eligibility=False)
+    record = select_candidate(HypothesisPortfolio(candidates=[valid, invalid]), spec=spec(),
+                              state=_selection_state(), experiments=[], experiment_ordinal=1,
+                              action_id="exp:1:propose")
+    assert record.selected_candidate_id == "valid"
+    rejected = next(item for item in record.decisions if item.candidate_id == "invalid")
+    assert not rejected.admissible
+    assert "AGENT_SCOPE_INELIGIBLE" in rejected.rejection_reasons
+
+
 def test_repeated_no_effect_reframe_selects_materially_different_mechanism():
     repeated = _portfolio_candidate(
         "refine-cache", "cache",
