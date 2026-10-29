@@ -115,3 +115,52 @@ model errors, action/event trace, fallback counts, time and observed usage
 protected files, or benchmark data. Do **not** claim that the semantic
 selector is scientifically better based on one miniature run; a later
 paired control/treatment benchmark is needed.
+
+
+## Follow-up QA after evidence-reference replay finding (2026-10-29)
+
+The first independent QA observed `324 passed` on SHA
+`2ad9f211530e0524b5decc72d28603d5018801c3`, one successful Luna
+smoke, and **2/6** replay choices rejected because the judge produced
+annotated references like `"exp:1: ..."` or `"TASK.md: ..."`.
+The validator correctly rejected these strings; **do not loosen it**.
+
+The follow-up patch adds:
+- A public per-candidate exact-reference allowlist in `selection_contract`.
+- Explicit instructions distinguishing `reason` prose from `evidence_refs` IDs.
+- Codex structured JSON schema enums for all eligible candidate IDs and
+  source-defined DEV evidence references (the Python validator still enforces
+  per-candidate membership).
+- Fault-injection tests for protected candidates, one eligible candidate,
+  malformed/mismatched responses, crash before final decision and orphan RUNNING
+  judge actions. Identical audit events are deduplicated on pre-decision resume.
+
+**Required verification:** run `compileall`, `tests/test_codex_adapter.py`,
+`tests/test_engine.py`, `tests/test_research.py`, `tests/test_cli.py`,
+`tests/test_agent_profiles.py`, and the entire pytest suite on the **new HEAD**,
+not on the earlier `2ad9f211` snapshot. No source modifications during QA.
+
+Then replay exactly the same six archived portfolios with Luna as judge.
+A changed prompt/JSON schema requires fresh judge calls; do not re-label the
+historical JSON as though it came from the new version. For each run report
+whether the model returned `selected_candidate_id` from the eligible list
+and `evidence_refs` only from the selected candidate's source references.
+The two previous failure cases `exploit-2` and `reframe-2` must be included.
+Keep source portfolios, task text and the DEV history unchanged.
+
+**Failure thresholds:**
+- A prohibited file reaches the judge, an ineligible ID gets implemented,
+  or hidden evaluator/validation/holdout content is exposed: P0.
+- Duplicate judge call on resume with completed action, incorrect budget
+  reservation, or automatic re-execution of an orphan RUNNING action: P1.
+- An invalid evidence ref causes safe deterministic fallback: P2 functional
+  selection loss, not a gate bypass.
+- A model transport failure/sandbox failure: infrastructure, with full logs.
+
+A replay of an old (pre-patch) model response should still fail the validator
+when references are annotated; this is EXPECTED and guards against accidental
+weakening. Preserve the old JSON for regression proof.
+
+Save SQLite, action requests/responses, `PORTFOLIO_SELECTION` events, test
+logs, exact SHA, and per-run model usage when available. Leave PR #70 Draft
+until both deterministic fault injection and live evidence-reference replay pass.
