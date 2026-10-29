@@ -57,3 +57,16 @@ def test_empty_profile_fields_preserve_approved_hash():
         old_payload["agent"].pop(key, None)
     old_spec = CampaignSpec.model_validate(old_payload)
     assert spec.approved_hash() == old_spec.approved_hash()
+
+
+def test_select_role_uses_independent_model_profile(tmp_path: Path):
+    path = tmp_path / "agents.toml"
+    path.write_text(
+        '[default]\nkind="codex"\nmodel="gpt-default"\n'
+        '[roles.select]\nmodel="gpt-selector"\n',
+        encoding="utf-8",
+    )
+    profiles = load_agent_profiles(path)
+    config = AgentConfig(**profiles["default"], roles=profiles["roles"])
+    assert config.for_role("propose").model == "gpt-default"
+    assert config.for_role("select").model == "gpt-selector"
