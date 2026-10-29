@@ -388,7 +388,7 @@ class CodexAdapter(AgentAdapter):
                 "Propose a bounded portfolio of 2-3 materially different, falsifiable hypotheses (never more than 4) for this measurable campaign. "
                 "If task_document.status is available, treat task_document.content as the authoritative public TASK.md; "
                 "do not substitute generic hypotheses if the disposable workspace cannot open TASK.md. "
-                "Use the supplied research_state, its aggregate failure_signals and experiment_evidence, 
+                "Use the supplied research_state, its aggregate failure_signals and experiment_evidence, "
                 "and planning_mode. If failure_signals exist, target one supplied signal_key and explain "
                 "the causal failure_mechanism; use empty strings for both fields otherwise. "
                 "When experiment_evidence exists, cite a prior ordinal and explain in novelty_rationale "
