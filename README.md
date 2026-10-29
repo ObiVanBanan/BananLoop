@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/bananloop-banner.svg" alt="BananLoop — a friendly banana astronaut among ASCII planets" width="100%" /></p>
+<p align="center"><img src="assets/bananloop-banner.png" alt="BananLoop — a friendly banana astronaut among ASCII planets" width="100%" /></p>
 
 # BananLoop
 
@@ -37,23 +37,7 @@ Instead of forgetting what failed or accepting an agent's self-reported success,
 
 ## How it works
 
-```text
-                        ┌──────────── GOAL ────────────┐
-                        │ What should improve? How do  │
-                        │ we measure and constrain it? │
-                        └──────────────┬───────────────┘
-                                       ▼
-  ┌──────────┐   ┌─────────┐   ┌────────────┐   ┌──────────────┐
-  │ PROPOSE  ├──►│  GATES  ├──►│   SELECT   ├──►│  IMPLEMENT   │
-  │hypotheses│   │hard rules│  │ next test  │   │ candidate    │
-  └────▲─────┘   └─────────┘   └────────────┘   └──────┬───────┘
-       │                                               ▼
-  ┌────┴─────┐     ┌────────────┐    ┌─────────────────────────┐
-  │  LEARN   │◄────┤  DECIDE    │◄───┤  INDEPENDENT EVALUATOR  │
-  │DEV memory│     │keep/reject │    │DEV / validation / holdout│
-  └──────────┘     └────────────┘    └─────────────────────────┘
-```
-
+<p align="center"><img src="assets/bananloop-how-it-works.png" alt="BananLoop research loop: goal, propose, gates, select, implement, independent evaluation, decide, learn, and repeat" width="100%" /></p>
 The **coding agent** proposes and implements. The **BananLoop supervisor** freezes the evaluation contract, checks scope, records outcomes, and decides whether a candidate may replace the current champion. The selector is advisory; it cannot bypass the deterministic gates.
 
 ## Quick start
