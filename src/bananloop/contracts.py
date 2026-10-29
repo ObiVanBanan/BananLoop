@@ -229,6 +229,9 @@ class CampaignSpec(BaseModel):
     forbidden_diff_patterns: list[str] = Field(default_factory=list)
     budget: BudgetSpec = Field(default_factory=BudgetSpec)
     agent: AgentConfig = Field(default_factory=AgentConfig)
+    # Opt-in semantic ranking after the existing deterministic admissibility gates.
+    # Default is omitted from approved_hash for historical campaign compatibility.
+    selection_mode: Literal["deterministic", "llm"] = "deterministic"
 
     @field_validator("forbidden_diff_patterns")
     @classmethod
@@ -349,6 +352,8 @@ class CampaignSpec(BaseModel):
             data.pop("agent_visible_diagnostics", None)
         if not self.non_regression:
             data.pop("non_regression", None)
+        if self.selection_mode == "deterministic":
+            data.pop("selection_mode", None)
         # Keep approved hashes stable for campaign specs created before agent profiles.
         agent_data = data["agent"]
         for key in ("reasoning_effort", "provider"):
@@ -434,6 +439,17 @@ class PortfolioRecord(BaseModel):
     invalid_candidates: list[CandidateDecision] = Field(default_factory=list, max_length=4)
     selected_candidate_id: str | None = None
     stop_reason: str = ""
+
+
+class PortfolioChoice(BaseModel):
+    """LLM preference is advisory; the engine verifies the chosen ID and public evidence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    selected_candidate_id: str = Field(min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=1200)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=8)
+    main_risk: str = Field(min_length=1, max_length=500)
 
 
 class DevResearchLesson(BaseModel):
