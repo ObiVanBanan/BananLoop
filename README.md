@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/bananloop-banner.svg" alt="BananLoop — a friendly banana astronaut among ASCII planets" width="100%" /></p>
+<p align="center"><img src="assets/bananloop-banner.png" alt="BananLoop — a friendly banana astronaut among ASCII planets" width="100%" /></p>
 
 # BananLoop
 
