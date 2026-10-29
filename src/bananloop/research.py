@@ -282,7 +282,10 @@ def select_candidate(
                               scores["lower_estimated_cost"], candidate.candidate_id), candidate))
             decisions.append(CandidateDecision(candidate_id=candidate.candidate_id, admissible=True,
                                                 criterion_scores=scores))
-    trigger = [f"DEV non-improve streak={state.dev_non_improve_streak}"]
+    trigger = [
+        f"DEV non-improve streak={state.dev_non_improve_streak}",
+        f"Champion stagnation streak={state.champion_stagnation_streak}",
+    ]
     if state.experiment_evidence:
         latest = state.experiment_evidence[-1]
         trigger.append(f"DEV experiment {latest.ordinal}: {latest.dev_outcome}")
@@ -841,6 +844,7 @@ def build_research_state(
         failure_capsules.extend(_failure_capsules_from_row(row))
 
     dev_non_improve_streak = 0
+    champion_stagnation_streak = 0
     for row in experiments:
         if attempt_bucket(row) != "scientific_trials":
             continue
@@ -849,7 +853,15 @@ def build_research_state(
             dev_non_improve_streak = 0
         else:
             dev_non_improve_streak += 1
+        # A DEV gain is useful evidence but does not mean the frozen champion
+        # moved. In particular, validation-rejected DEV candidates do not
+        # count as promotions. Operational failures are not scientific trials.
+        if row.get("status") == "ACCEPTED":
+            champion_stagnation_streak = 0
+        else:
+            champion_stagnation_streak += 1
 
+    planning_streak = max(dev_non_improve_streak, champion_stagnation_streak)
     remaining = {
         "experiments": max(0, spec.budget.max_experiments - int(campaign["experiment_count"])),
         "attempts": max(0, spec.budget.max_attempts - int(campaign["attempt_count"])),
@@ -857,7 +869,7 @@ def build_research_state(
         "evaluator_calls": max(0, spec.budget.max_evaluator_calls - int(campaign["evaluator_calls"])),
         "dev_experiments_until_reframe": max(
             0,
-            effective_reframe_threshold(spec) - 1 - dev_non_improve_streak,
+            effective_reframe_threshold(spec) - 1 - planning_streak,
         ),
     }
     if remaining_work_units is not None:
@@ -882,10 +894,11 @@ def build_research_state(
     dev_lessons = [lesson for row in experiments if (lesson := derive_dev_lesson(row, spec)) is not None]
     return ResearchState(
         planning_mode=planning_mode(
-            dev_non_improve_streak,
+            planning_streak,
             effective_reframe_threshold(spec),
         ),
         dev_non_improve_streak=dev_non_improve_streak,
+        champion_stagnation_streak=champion_stagnation_streak,
         failure_counts=dict(sorted(failure_counts.items())),
         mechanisms=[
             MechanismEvidence.model_validate(value)

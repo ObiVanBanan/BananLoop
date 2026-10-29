@@ -133,7 +133,8 @@ def test_validation_evidence_never_enters_adaptive_research_state():
 
     state = build_research_state(s, campaign(non_improve_streak=99), [row])
     assert state.dev_non_improve_streak == 0
-    assert state.planning_mode == "exploit"
+    assert state.champion_stagnation_streak == 1
+    assert state.planning_mode == "explore"
     assert state.failure_counts == {"DEV_IMPROVEMENT": 1}
     assert "VALIDATION" not in state.model_dump_json()
 
@@ -508,7 +509,8 @@ def test_dogfood_partial_gain_preserves_dev_failure_mechanism_evidence():
     ), rows)
     assert state.failure_counts == {"DEV_NO_EFFECT": 2, "DEV_PARTIAL_IMPROVEMENT": 1}
     assert state.dev_non_improve_streak == 0
-    assert state.planning_mode == "exploit"
+    assert state.champion_stagnation_streak == 3
+    assert state.planning_mode == "reframe"
     assert [item.signal_key for item in state.failure_signals[:2]] == [
         "metric:retrieval_miss_count", "metric:rerank_selection_count",
     ]
@@ -639,7 +641,8 @@ def test_auto_diagnosis_survives_rejected_trial_and_enters_proposer_memory():
     assert "hidden_holdout" not in json.dumps(history)
     research = build_research_state(s, campaign(), [row])
     assert research.recent_failure_capsules[0].likely_mechanism == "UNKNOWN"
-    assert any(f.signal_key == "capsule:DEV_METRIC_REGRESSION" for f in research.failure_signals)
+    assert research.failure_signals == []
+    assert research.recent_failure_capsules[0].failure_class == "DEV_METRIC_REGRESSION"
 
 
 
@@ -764,3 +767,77 @@ def test_repaired_portfolio_is_visible_to_reframe_planner():
     assert state.portfolios[0].selected_candidate_id == "fixed-idea"
     assert state.portfolios[0].strategy == "reframe"
 
+
+
+def test_champion_stagnation_reframes_after_repeated_partial_dev_gains():
+    """A tiny positive DEV delta does not imply a new champion."""
+    s = spec(budget=BudgetSpec(
+        max_experiments=6, max_attempts=10, max_agent_calls=20,
+        max_evaluator_calls=10, plateau_experiments=7,
+    ))
+    rows = [{
+        "ordinal": i,
+        "status": "REJECTED",
+        "failure_category": "PRIMARY_NOT_IMPROVED",
+        "hypothesis_json": json.dumps({"mechanism_key": f"partial-{i}"}),
+        "evaluation_json": json.dumps({"status": "ok", "metrics": {"quality": 0.2 + 0.0001*i}}),
+        "dev_decision_json": json.dumps({
+            "accepted": False,
+            "primary_value": 0.2 + 0.0001*i,
+            "champion_value": 0.2,
+            "delta": 0.0001*i,
+            "reasons": ["PRIMARY_NOT_IMPROVED"],
+        }),
+        "decision_json": json.dumps({"accepted": False}),
+    } for i in range(1, 4)]
+    state = build_research_state(s, campaign(experiment_count=3), rows)
+    assert state.dev_non_improve_streak == 0
+    assert state.champion_stagnation_streak == 3
+    assert state.planning_mode == "reframe"
+    assert state.remaining_budget["dev_experiments_until_reframe"] == 0
+
+
+def test_champion_stagnation_resets_only_after_real_promotion():
+    s = spec()
+    rejected = {
+        "ordinal": 1, "status": "REJECTED",
+        "hypothesis_json": json.dumps({"mechanism_key": "partially-better"}),
+        "evaluation_json": json.dumps({"status": "ok", "metrics": {"quality": 0.2}}),
+        "dev_decision_json": json.dumps({
+            "accepted": False, "primary_value": 0.2,
+            "champion_value": 0.1, "delta": 0.1,
+            "reasons": ["PRIMARY_NOT_IMPROVED"],
+        }),
+        "decision_json": json.dumps({"accepted": False}),
+    }
+    promoted = {
+        **rejected,
+        "ordinal": 2, "status": "ACCEPTED",
+        "hypothesis_json": json.dumps({"mechanism_key": "real-promotion"}),
+        "dev_decision_json": json.dumps({
+            "accepted": True, "primary_value": 0.4,
+            "champion_value": 0.1, "delta": 0.3,
+            "reasons": ["ACCEPTED"],
+        }),
+        "decision_json": json.dumps({"accepted": True}),
+    }
+    blocked = {
+        "ordinal": 3, "status": "IMPLEMENTATION_BLOCKED",
+        "failure_category": "IMPLEMENTATION_BLOCKED",
+        "hypothesis_json": json.dumps({"mechanism_key": "blocked"}),
+    }
+    state = build_research_state(s, campaign(experiment_count=3), [rejected, promoted, blocked])
+    assert state.champion_stagnation_streak == 0
+    assert state.planning_mode == "exploit"
+
+
+def test_champion_stagnation_does_not_count_unevaluated_trials():
+    s = spec()
+    blocked = {
+        "ordinal": 1, "status": "NO_CHANGES",
+        "failure_category": "NO_CHANGES",
+        "hypothesis_json": json.dumps({"mechanism_key": "noop"}),
+    }
+    state = build_research_state(s, campaign(), [blocked])
+    assert state.champion_stagnation_streak == 0
+    assert state.dev_non_improve_streak == 0

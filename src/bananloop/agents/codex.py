@@ -386,6 +386,8 @@ class CodexAdapter(AgentAdapter):
         elif role == "propose":
             instruction = (
                 "Propose a bounded portfolio of 2-3 materially different, falsifiable hypotheses (never more than 4) for this measurable campaign. "
+                "If task_document.status is available, treat task_document.content as the authoritative public TASK.md; "
+                "do not substitute generic hypotheses if the disposable workspace cannot open TASK.md. "
                 "Use the supplied research_state, its aggregate failure_signals and experiment_evidence, "
                 "and planning_mode. If failure_signals exist, target one supplied signal_key and explain "
                 "the causal failure_mechanism; use empty strings for both fields otherwise. "
@@ -418,6 +420,7 @@ class CodexAdapter(AgentAdapter):
         else:
             instruction = (
                 "Implement exactly the approved hypothesis in the current repository. "
+                "If task_document.status is available, use its embedded public requirements even when temporary TASK.md reading fails. "
                 "Modify only the allowed editable scope. Do not modify evaluator/protected artifacts. "
                 "Do not decide whether the result is better; BananLoop will evaluate it independently. "
                 "The supervisor runs configured evaluator and validation commands independently. Do not mark "

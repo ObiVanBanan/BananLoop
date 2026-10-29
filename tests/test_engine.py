@@ -1764,3 +1764,54 @@ def test_no_admissible_portfolio_gets_one_bounded_correction(tmp_path: Path):
         assert len(agent.calls) == 2
     finally:
         store.close()
+
+
+def test_task_md_is_embedded_from_trusted_workspace(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        task_path = engine.workspace.workspace / "TASK.md"
+        content = "Solve a concrete regression problem. Do not edit evaluator.py.\n"
+        task_path.write_text(content, encoding="utf-8")
+        task = engine._task_context("propose", 999)
+        assert task["task_document"]["status"] == "available"
+        assert task["task_document"]["path"] == "TASK.md"
+        assert task["task_document"]["content"] == content
+        assert len(task["task_document"]["sha256"]) == 64
+        assert engine._task_context("implement", 999)["task_document"]["content"] == content
+        engine.spec.agent_hidden_paths = ["TASK.md"]
+        hidden = engine._task_context("propose", 999)
+        assert "task_document" not in hidden
+    finally:
+        store.close()
+
+
+def test_missing_required_task_document_pauses_before_agent_call(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        engine._baseline()
+        campaign = store.campaign()
+        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+        engine.spec.goal = "Read TASK.md before proposing a solution"
+        with pytest.raises(engine_module.CampaignHalted):
+            engine._stage_propose(attempt_id, experiment_id)
+        assert store.campaign()["status"] == "PAUSED_NEEDS_INPUT"
+        assert store.campaign()["agent_calls"] == 0
+        assert store.action(f"exp:{experiment_id}:propose") is None
+        assert any(e["event_type"] == "TASK_DOCUMENT_UNAVAILABLE" for e in store.events())
+    finally:
+        store.close()
+
+
+def test_task_md_oversize_fails_closed(tmp_path: Path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        engine.workspace.ensure(engine.spec.base_commit)
+        task_path = engine.workspace.workspace / "TASK.md"
+        task_path.write_bytes(b"a" * 32769)
+        task = engine._task_context("propose", 999)
+        assert task["task_document"]["status"] == "too_large"
+        assert "content" not in task["task_document"]
+    finally:
+        store.close()
