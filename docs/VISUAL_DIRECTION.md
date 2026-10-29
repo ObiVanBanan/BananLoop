@@ -33,8 +33,10 @@ Avoid writing `pip install bananloop` unless a distribution has been successfull
 
 ## Art delivery and review
 
-The owner will manually upload and approve the replacement hero image. Until that file exists in the repository, keep README pointing to the existing committed `assets/bananloop-banner.svg` to avoid a broken image. Do not silently overwrite an image on behalf of the owner.
+The owner will manually upload and approve the replacement hero image. The current approved hero is `assets/bananloop-banner.png` in `main`. Keep README pointing to that committed PNG unless the owner explicitly approves and commits a replacement. Do not restore the obsolete SVG asset during rebase. Do not silently overwrite an image on behalf of the owner.
 
 Suggested exported hero ratio: around **1600:450** (wide), dark- and light-GitHub-safe with sufficient text contrast; also verify the image at **mobile widths**. Source image may be raster PNG/WebP; use SVG only when the asset is actually vector, not when simply wrapping a raster.
+
+Keep the committed `assets/bananloop-how-it-works.png` architecture illustration alongside an optional text-only diagram; do not substitute a dense ASCII diagram for the readable image on narrow/mobile displays.
 
 Review visuals for trademark rights, accessible alt text and factual claims before final promotion.
