@@ -25,7 +25,7 @@ calls.
 ## Frozen DEV context and isolation
 
 Baseline/champion are both 0.5000. The request contains three synthetic prior
-DEV records with measured fixture values 0.5002, 0.5003, and 0.5004. Their
+DEV records with preassigned synthetic fixture values 0.5002, 0.5003, and 0.5004. Their
 deltas (+0.0002, +0.0003, +0.0004) are positive but below the configured
 `min_improvement=0.001`; every record is marked rejected and champion remains
 0.5000. The state builder reports `dev_non_improve_streak=0`,
