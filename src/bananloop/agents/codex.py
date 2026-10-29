@@ -432,9 +432,18 @@ class CodexAdapter(AgentAdapter):
                 "Consider materially different mechanism families; do not select by candidate ID, "
                 "alphabetic order or prose length. The deterministic core alone decides admissibility. "
                 "Never infer hidden validation/holdout outcomes, invent reward gains or claim you executed a test. "
+                "The evidence_refs output is a MACHINE-READABLE list of identifiers, NOT prose or citations. "
+                "After selecting an eligible candidate, copy evidence_refs values verbatim ONLY from "
+                "selection_contract.allowed_evidence_refs_by_candidate[selected_candidate_id]; "
+                "they must be exact JSON strings such as 'exp:1', 'signal:foo', "
+                "'capsule:0123456789abcdef', or 'INSUFFICIENT_EVIDENCE'. "
+                "Do NOT write 'TASK.md: ...', 'exp:1: ...', an explanation, or a paraphrase into evidence_refs. "
+                "Discuss TASK.md and experiment details in reason, not evidence_refs. "
+                "An empty evidence_refs list is valid when you cite no machine-readable reference. "
+                "If you cannot copy an allowed ID exactly, return an empty list rather than inventing one. "
                 "Do not modify files or run evaluators. Return only selected_candidate_id, "
-                "reason, evidence_refs (only refs already supplied with the chosen candidate), "
-                "and main_risk in the structured schema. These are predictions, not measured outcomes.\n\n"
+                "reason, evidence_refs, and main_risk in the structured schema. "
+                "These are predictions, not measured outcomes.\n\n"
             )
         elif role == "analyze":
             instruction = (
