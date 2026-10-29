@@ -1037,7 +1037,7 @@ class Engine:
                 })
                 return record
 
-            judge_task = {
+            agent_request = {
                 "schema_version": 1,
                 "role": "select",
                 "goal": task["goal"],
@@ -1050,7 +1050,6 @@ class Engine:
                 "history": task.get("history", []),
                 "research_state": task.get("research_state", {}),
                 "eligible_candidates": [c.model_dump(mode="json") for c in eligible],
-                "base_record": record.model_dump(mode="json"),
                 "selection_contract": {
                     "only_select_existing_eligible_id": True,
                     "do_not_modify_files": True,
@@ -1058,6 +1057,13 @@ class Engine:
                     "dev_only": True,
                     "scores_are_predictions_not_measurements": True,
                 },
+            }
+            # The durable action contains the exact agent-visible payload plus
+            # the private core decision. The agent sees ONLY eligible candidates,
+            # not rejected proposer ideas or core-internal selection records.
+            judge_task = {
+                "agent_visible_request": agent_request,
+                "base_record": record.model_dump(mode="json"),
             }
 
         if existing is not None and existing["status"] == "FAILED" and not self._retry_failed_actions:
@@ -1076,7 +1082,7 @@ class Engine:
                 kind="agent",
                 request=judge_task,
                 invoke=lambda: self._invoke_agent(
-                    judge_task,
+                    judge_task["agent_visible_request"],
                     timeout=self._agent_timeout(900),
                     apply_changes=False,
                 ),
