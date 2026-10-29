@@ -1837,6 +1837,9 @@ def test_llm_selector_chooses_core_admissible_alternative_and_persists(tmp_path:
     def invoke(task, *, timeout, apply_changes):
         if task.get("role") == "select":
             assert not apply_changes
+            assert "base_record" not in task
+            assert task["role"] == "select"
+            assert all(item["candidate_id"] in {"step-1", "alt-1"} for item in task["eligible_candidates"])
             assert not any(item.get("candidate_id") == "unknown" for item in task["eligible_candidates"])
             assert "validation" not in task and "holdout" not in task
             select_calls.append(task)
