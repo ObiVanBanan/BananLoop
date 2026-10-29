@@ -1,6 +1,4 @@
-<div align="center">
-
-![BananLoop — your coding agent, upgraded](assets/bananloop-banner.svg)
+<p align="center"><img src="assets/bananloop-banner.svg" alt="BananLoop — a friendly banana astronaut among ASCII planets" width="100%" /></p>
 
 # BananLoop
 
@@ -14,7 +12,6 @@
 
 [Quick start](#quick-start) · [Live-style demo](#see-the-loop-in-action) · [How it works](#how-it-works) · [Expert mode](#expert-mode) · [Roadmap](docs/ROADMAP.md)
 
-</div>
 
 ## Give your coding agent a goal. BananLoop keeps going.
 
@@ -40,7 +37,7 @@ Instead of forgetting what failed or accepting an agent's self-reported success,
 
 ## How it works
 
-\`\`\`text
+```text
                         ┌──────────── GOAL ────────────┐
                         │ What should improve? How do  │
                         │ we measure and constrain it? │
@@ -55,7 +52,7 @@ Instead of forgetting what failed or accepting an agent's self-reported success,
   │  LEARN   │◄────┤  DECIDE    │◄───┤  INDEPENDENT EVALUATOR  │
   │DEV memory│     │keep/reject │    │DEV / validation / holdout│
   └──────────┘     └────────────┘    └─────────────────────────┘
-\`\`\`
+```
 
 The **coding agent** proposes and implements. The **BananLoop supervisor** freezes the evaluation contract, checks scope, records outcomes, and decides whether a candidate may replace the current champion. The selector is advisory; it cannot bypass the deterministic gates.
 
@@ -63,27 +60,27 @@ The **coding agent** proposes and implements. The **BananLoop supervisor** freez
 
 **Requirements:** Python 3.11+, Git, and an installed/authenticated supported coding-agent CLI (Codex by default). Install BananLoop from this repository—there is no claim of a published PyPI package.
 
-\`\`\`bash
+```bash
 git clone https://github.com/ObiVanBanan/BananLoop.git
 cd BananLoop
 python -m pip install -e .
-\`\`\`
+```
 
 From **your own project's repository**:
 
-\`\`\`bash
+```bash
 cd /path/to/your-project
 bananloop doctor --json
 bananloop goal "Improve the measured quality of this project without regressions"
-\`\`\`
+```
 
 The goal command prepares an evaluator and starts a bounded campaign. If the project lacks a trustworthy evaluation oracle, BananLoop may pause and ask for operator input instead of inventing ground truth.
 
 **See settings before spending experiment calls:**
 
-\`\`\`bash
+```bash
 bananloop prepare --repo . --goal "Improve measured quality without regressions"
-\`\`\`
+```
 
 ### Simple vs. Expert
 
@@ -101,9 +98,9 @@ The repository includes a **deterministic fixture** that demonstrates accept →
 
 **Reproducible offline fixture (no LLM required):**
 
-\`\`\`bash
+```bash
 python examples/fixture/create_fixture.py /tmp/bananloop-fixture
-\`\`\`
+```
 
 Continue with the copy-and-run CLI sequence in the [fixture walkthrough](docs/DEMO.md).
 
@@ -121,7 +118,7 @@ The QA run used Luna with the opt-in semantic selector, three agent calls, and t
 
 Bring an existing evaluator contract if you want complete control:
 
-\`\`\`bash
+```bash
 bananloop init \
   --repo /path/to/project \
   --goal "Improve measured quality without regressions" \
@@ -138,13 +135,13 @@ bananloop init \
 
 bananloop run --repo /path/to/project
 bananloop report --repo /path/to/project
-\`\`\`
+```
 
-**Optional semantic hypothesis selector:** add \`--selector-mode llm\` to initialization (the default is \`deterministic\`). It reads the approved proposal portfolio and must return a gate-approved candidate ID and source-backed DEV evidence references.
+**Optional semantic hypothesis selector:** add `--selector-mode llm` to initialization (the default is `deterministic`). It reads the approved proposal portfolio and must return a gate-approved candidate ID and source-backed DEV evidence references.
 
-**Role-specific models:** write a TOML profile, then pass \`--agent-profiles path/to/agents.toml\` during setup:
+**Role-specific models:** write a TOML profile, then pass `--agent-profiles path/to/agents.toml` during setup:
 
-\`\`\`toml
+```toml
 [default]
 kind = "codex"
 
@@ -156,7 +153,7 @@ model = "your-selector-model"
 
 [roles.implement]
 model = "your-implementation-model"
-\`\`\`
+```
 
 Backends available in the codebase include **Codex CLI**, **Pi RPC**, and a generic JSON command adapter. Compatibility depends on installed providers and model access. See the [full configuration reference](docs/reference/cli-and-campaigns.md).
 
