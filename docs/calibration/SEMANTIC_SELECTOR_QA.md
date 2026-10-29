@@ -55,7 +55,7 @@ cp -r examples/calibration/mini_matcher /tmp/bl-semantic-smoke/matcher
  git config user.name QA && git config user.email qa@example.invalid &&
  git add . && git commit -m baseline)
 
-PYTHONPATH=src python -m bananloop init \
+PYTHONPATH=src python -m bananloop.cli init \
  --repo /tmp/bl-semantic-smoke/matcher \
  --state-dir /tmp/bl-semantic-smoke/state \
  --goal "Read TASK.md and improve analog matching on DEV" \
@@ -68,11 +68,11 @@ PYTHONPATH=src python -m bananloop init \
  --max-experiments 2 --max-attempts 3 \
  --max-agent-calls 9 --max-evaluator-calls 5 --plateau 3
 
-PYTHONPATH=src python -m bananloop run \
+PYTHONPATH=src python -m bananloop.cli run \
  --repo /tmp/bl-semantic-smoke/matcher \
  --state-dir /tmp/bl-semantic-smoke/state
 
-PYTHONPATH=src python -m bananloop report \
+PYTHONPATH=src python -m bananloop.cli report \
  --repo /tmp/bl-semantic-smoke/matcher \
  --state-dir /tmp/bl-semantic-smoke/state --json
 ```
