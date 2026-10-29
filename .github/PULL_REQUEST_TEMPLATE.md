@@ -8,9 +8,9 @@ Closes #
 
 ## Verification
 
-- [ ] \`python -m compileall -q src\`
-- [ ] \`python -m pytest -q -o addopts=''\`
-- [ ] \`git diff --check\`
+- [ ] `python -m compileall -q src`
+- [ ] `python -m pytest -q -o addopts=''`
+- [ ] `git diff --check`
 - [ ] Disposable fixture/integration smoke (if relevant)
 
 **Exact SHA / environment / command / result:**
