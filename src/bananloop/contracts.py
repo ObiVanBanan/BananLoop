@@ -640,6 +640,7 @@ class ResearchState(BaseModel):
     schema_version: int = 1
     planning_mode: Literal["exploit", "explore", "reframe"] = "exploit"
     dev_non_improve_streak: int = Field(default=0, ge=0)
+    champion_stagnation_streak: int = Field(default=0, ge=0)
     failure_counts: dict[str, int] = Field(default_factory=dict)
     mechanisms: list[MechanismEvidence] = Field(default_factory=list)
     recent_lessons: list[str] = Field(default_factory=list)

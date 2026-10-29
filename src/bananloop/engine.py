@@ -808,6 +808,36 @@ class Engine:
         self.store.set_research_state(payload)
         return payload
 
+
+    def _task_document(self) -> dict[str, Any] | None:
+        """Provide safe root TASK.md directly, without depending on agent temp paths.
+
+        Files already hidden from the agent must never be copied into prompts.
+        No arbitrary path from a model prompt is opened by this helper.
+        """
+        if self.workspace._matches("TASK.md", self._agent_hidden_paths()):
+            return {"status": "hidden"} if "task.md" in self.spec.goal.casefold() else None
+        filename = self.workspace.workspace / "TASK.md"
+        try:
+            if not filename.exists():
+                return {"status": "missing"} if "task.md" in self.spec.goal.casefold() else None
+            if filename.is_symlink() or not filename.is_file():
+                return {"status": "unsafe"}
+            # Reject large task files rather than silently omitting requirements.
+            with filename.open("rb") as task_file:
+                raw = task_file.read(32769)
+            if len(raw) > 32768:
+                return {"status": "too_large", "max_bytes": 32768}
+            text = raw.decode("utf-8-sig")
+        except (OSError, UnicodeError):
+            return {"status": "unreadable"}
+        return {
+            "status": "available",
+            "path": "TASK.md",
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "content": text,
+        }
+
     def _task_context(self, role: str, experiment_id: int) -> dict[str, Any]:
         action_role = "analyze-dev-failures" if role == "analyze" else role
         action = self.store.action(f"exp:{experiment_id}:{action_role}")
@@ -825,7 +855,7 @@ class Engine:
             for capsule in research_state.get("recent_failure_capsules", [])
         ]
         campaign = self.store.campaign()
-        return {
+        payload = {
             "schema_version": 1,
             "role": role,
             "goal": self.spec.goal,
@@ -867,6 +897,14 @@ class Engine:
                 "exploit": "build on the strongest DEV-supported mechanism without duplicating prior work",
                 "explore": "test a materially different mechanism family from recent failed attempts",
                 "reframe": "challenge the current framing and choose a new mechanism family before plateau",
+                "champion_progress": (
+                    "research_state.dev_non_improve_streak tracks scientific DEV feedback, "
+                    "while research_state.champion_stagnation_streak counts evaluated "
+                    "trials since the last accepted champion. A small positive DEV delta "
+                    "is evidence, not a champion promotion. After repeated no-promotion "
+                    "trials consider a different algorithm family; a justified refinement "
+                    "is still allowed."
+                ),
                 "genealogy": (
                     "If reusing a mechanism_key, set relation to refine/retry/supersede "
                     "and cite a matching prior experiment ordinal."
@@ -881,6 +919,11 @@ class Engine:
             },
             "experiment_id": experiment_id,
         }
+        if role in {"propose", "implement"}:
+            task_document = self._task_document()
+            if task_document is not None:
+                payload["task_document"] = task_document
+        return payload
 
     @staticmethod
     def _hypothesis_grounding_error(
@@ -953,6 +996,20 @@ class Engine:
     def _stage_propose(self, attempt_id: int, experiment_id: int) -> None:
         self.workspace.checkout(self.store.campaign()["champion_snapshot"])
         task = self._task_context("propose", experiment_id)
+        # No speculative planning when the approved goal explicitly relies on
+        # TASK.md but that source is missing, hidden, oversized or unreadable.
+        # Already-started proposal actions keep their frozen request on replay.
+        if (self.store.action(f"exp:{experiment_id}:propose") is None
+                and "task.md" in self.spec.goal.casefold()
+                and (task.get("task_document") or {}).get("status") != "available"):
+            reason = (task.get("task_document") or {}).get("status", "missing")
+            self.store.event("TASK_DOCUMENT_UNAVAILABLE", {
+                "experiment_id": experiment_id,
+                "reason": reason,
+            })
+            self.store.conn.commit()
+            self._stop(StopReason.PAUSED_NEEDS_INPUT, CampaignStatus.PAUSED_NEEDS_INPUT)
+            raise CampaignHalted()
         try:
             raw = self._action(
                 action_id=f"exp:{experiment_id}:propose",
