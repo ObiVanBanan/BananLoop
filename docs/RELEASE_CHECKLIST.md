@@ -1,6 +1,6 @@
 # v0.1.0 Research Preview — release checklist
 
-The preview is intended for early developers to try on trusted repositories. This checklist is an operational release gate; file creation alone does not mean the version is published.
+The preview is intended for early developers to try on trusted repositories. This checklist is an operational release gate; file creation alone does not mean the version is published. Follow the reproducible [publication protocol](PUBLISH_PROTOCOL.md) and record evidence before tagging.
 
 ## Code / evaluation
 
@@ -16,10 +16,10 @@ The preview is intended for early developers to try on trusted repositories. Thi
 - [x] Distinctive banner, short marketing README, honest DEV demo.
 - [x] MIT license, contributing guide, security policy, code of conduct.
 - [x] Issue and PR templates, changelog, roadmap.
-- [ ] Verify README/banner display in GitHub dark **and** light theme.
+- [ ] Verify README/banner display in GitHub dark **and** light theme, including mobile width; use [visual handoff](VISUAL_DIRECTION.md) without treating illustration as measured UI.
 - [ ] Set repository About description and topics (maintainer GitHub settings).
 - [ ] If desired, intentionally change repository visibility from private to public after reviewing secrets/history.
-- [ ] Check all historical branches, tags, PRs and commit history for credentials before making repository public.
+- [ ] Check all historical branches, tags, PRs, workflow artifacts and commit history for credentials before making repository public (history-aware scan and credential rotation if needed).
 
 ## Publish
 
