@@ -72,7 +72,9 @@ def make_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def make_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str]:
+def make_engine(
+    tmp_path: Path, *, selection_mode: str = "deterministic", max_agent_calls: int = 12,
+) -> tuple[CampaignStore, Engine, Path, str]:
     repo = make_repo(tmp_path)
     base = git(["rev-parse", "HEAD"], repo)
     paths = RuntimePaths.for_repo(repo, tmp_path / "state")
@@ -87,8 +89,9 @@ def make_engine(tmp_path: Path) -> tuple[CampaignStore, Engine, Path, str]:
         mandatory_checks=["tests"],
         editable_scope=["value.txt", "guard.txt"],
         protected_paths=["evaluator.py", "agent.py"],
-        budget=BudgetSpec(max_experiments=5, max_attempts=6, max_agent_calls=12, max_evaluator_calls=8, plateau_experiments=3),
+        budget=BudgetSpec(max_experiments=5, max_attempts=6, max_agent_calls=max_agent_calls, max_evaluator_calls=8, plateau_experiments=3),
         agent=AgentConfig(kind="command", command=[sys.executable, "agent.py"]),
+        selection_mode=selection_mode,
     )
     store = CampaignStore(paths.db)
     store.initialize(spec)
@@ -1824,3 +1827,101 @@ def test_task_md_oversize_fails_closed(tmp_path: Path):
         assert "content" not in task["task_document"]
     finally:
         store.close()
+
+
+def test_llm_selector_chooses_core_admissible_alternative_and_persists(tmp_path: Path, monkeypatch):
+    store, engine, _, _ = make_engine(tmp_path, selection_mode="llm")
+    original = engine._invoke_agent
+    select_calls = []
+
+    def invoke(task, *, timeout, apply_changes):
+        if task.get("role") == "select":
+            assert not apply_changes
+            assert not any(item.get("candidate_id") == "unknown" for item in task["eligible_candidates"])
+            assert "validation" not in task and "holdout" not in task
+            select_calls.append(task)
+            candidate = next(item for item in task["eligible_candidates"]
+                             if item["candidate_id"].startswith("alt-"))
+            return {"selected_candidate_id": candidate["candidate_id"],
+                    "reason": "Try a distinct admissible mechanism first.",
+                    "evidence_refs": candidate["evidence_refs"],
+                    "main_risk": "May not help on DEV."}
+        return original(task, timeout=timeout, apply_changes=apply_changes)
+
+    monkeypatch.setattr(engine, "_invoke_agent", invoke)
+    try:
+        monkeypatch.setenv("BANANLOOP_TEST_STOP_AFTER_STAGE", "PORTFOLIO_SAVED")
+        with pytest.raises(ControlledInterruption):
+            engine.run()
+        action = store.action("exp:1:propose:semantic-select")
+        assert action and action["status"] == "COMPLETED"
+        assert len(select_calls) == 1
+        frozen = json.loads(action["request_json"])["base_record"]
+        assert frozen["selected_candidate_id"] == "step-1"
+        first = next(e for e in store.events() if e["event_type"] == "PORTFOLIO_DECISION")
+        assert json.loads(first["payload_json"])["selected_candidate_id"] == "alt-1"
+
+        monkeypatch.delenv("BANANLOOP_TEST_STOP_AFTER_STAGE")
+        out = engine.run(resume=True)
+        assert out["status"] == "GOAL_MET"
+        assert len(select_calls) == 1
+        assert out["agent_calls"] == 3
+        assert json.loads(store.experiments()[0]["hypothesis_json"])["mechanism_key"] == "alt-1"
+        selected = [json.loads(e["payload_json"]) for e in store.events()
+                    if e["event_type"] == "PORTFOLIO_SELECTION"]
+        assert len(selected) == 1 and selected[0]["status"] == "SELECTED"
+        assert selected[0]["selected_candidate_id"] == "alt-1"
+    finally:
+        store.close()
+
+
+def test_llm_selector_invalid_id_falls_back_to_core(tmp_path: Path, monkeypatch):
+    store, engine, _, _ = make_engine(tmp_path, selection_mode="llm")
+    original = engine._invoke_agent
+
+    def invoke(task, *, timeout, apply_changes):
+        if task.get("role") == "select":
+            return {"selected_candidate_id": "not-an-eligible-id",
+                    "reason": "Incorrect ID.", "evidence_refs": [],
+                    "main_risk": "Invalid."}
+        return original(task, timeout=timeout, apply_changes=apply_changes)
+
+    monkeypatch.setattr(engine, "_invoke_agent", invoke)
+    try:
+        result = engine.run()
+        assert result["status"] == "GOAL_MET"
+        assert json.loads(store.experiments()[0]["hypothesis_json"])["mechanism_key"] == "step-1"
+        selection = [json.loads(e["payload_json"]) for e in store.events()
+                     if e["event_type"] == "PORTFOLIO_SELECTION"]
+        assert selection and selection[0]["status"] == "FALLBACK"
+        assert selection[0]["deterministic_candidate_id"] == "step-1"
+    finally:
+        store.close()
+
+
+def test_llm_selector_skips_when_budget_cannot_fund_judge_and_implementation(tmp_path: Path):
+    store, engine, _, _ = make_engine(
+        tmp_path, selection_mode="llm", max_agent_calls=2,
+    )
+    try:
+        result = engine.run()
+        assert result["agent_calls"] == 2
+        assert store.action("exp:1:propose:semantic-select") is None
+        skipped = [json.loads(e["payload_json"]) for e in store.events()
+                   if e["event_type"] == "PORTFOLIO_SELECTION"]
+        assert skipped and skipped[0]["status"] == "SKIPPED"
+        assert json.loads(store.experiments()[0]["hypothesis_json"])["mechanism_key"] == "step-1"
+    finally:
+        store.close()
+
+
+def test_llm_selector_default_preserves_legacy_campaign_hash():
+    original = CampaignSpec(
+        goal="task", source_repo=".", base_commit="base", evaluation_command=["eval"],
+        primary_metric=MetricSpec(name="quality", direction=Direction.MAXIMIZE,
+                                  target=1.0, min_improvement=0.1),
+    )
+    explicit = original.model_copy(update={"selection_mode": "deterministic"})
+    assert original.approved_hash() == explicit.approved_hash()
+    assert original.approved_hash() != original.model_copy(
+        update={"selection_mode": "llm"}).approved_hash()
