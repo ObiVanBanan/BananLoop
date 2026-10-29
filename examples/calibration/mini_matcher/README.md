@@ -28,7 +28,7 @@ bananloop init --repo C:\bl-cal\matcher --state-dir C:\bl-cal\matcher-state `
   --goal "Read TASK.md and improve analog matching on DEV" `
   --eval-cmd "python evaluator.py" --metric quality --direction maximize `
   --target 0.99 --min-improvement 0.02 --check cases_valid `
-  --editable matcher.py --protect evaluator.py --agent-hide evaluator.py `
+  --editable matcher.py --protect evaluator.py --eval-asset evaluator.py --agent-hide evaluator.py `
   --agent codex --model gpt-6-luna `
   --max-experiments 3 --max-attempts 5 --max-agent-calls 10 `
   --max-evaluator-calls 6 --deadline-seconds 21600 --plateau 3
