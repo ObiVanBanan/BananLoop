@@ -994,6 +994,16 @@ class Engine:
             )
         return proof
 
+    def _record_semantic_selection(self, payload: dict[str, Any]) -> None:
+        """Avoid duplicating the same audit event on a pre-decision resume."""
+        if any(
+            json.loads(event["payload_json"]) == payload
+            for event in self.store.events()
+            if event["event_type"] == "PORTFOLIO_SELECTION"
+        ):
+            return
+        self.store.event("PORTFOLIO_SELECTION", payload)
+
     def _select_semantically(
         self, record: PortfolioRecord, task: dict[str, Any], experiment_id: int,
     ) -> PortfolioRecord:
@@ -1030,7 +1040,7 @@ class Engine:
             needed_for_implementation = max(max(1, c.estimated_agent_calls) for c in eligible)
             if (remaining_calls < 1 + needed_for_implementation
                     or pre_action_stop(campaign, self.spec.budget, "agent") is not None):
-                self.store.event("PORTFOLIO_SELECTION", {
+                self._record_semantic_selection({
                     "action_id": action_id, "status": "SKIPPED",
                     "reason": "insufficient budget for judge plus implementation",
                     "deterministic_candidate_id": record.selected_candidate_id,
@@ -1072,7 +1082,7 @@ class Engine:
             }
 
         if existing is not None and existing["status"] == "FAILED" and not self._retry_failed_actions:
-            self.store.event("PORTFOLIO_SELECTION", {
+            self._record_semantic_selection({
                 "action_id": action_id, "status": "FALLBACK",
                 "reason": "previous judge action failed; deterministic selection retained",
                 "deterministic_candidate_id": record.selected_candidate_id,
@@ -1096,14 +1106,14 @@ class Engine:
         except (AgentError, ValidationError, ValueError) as exc:
             # A malformed/failed judge cannot bypass the core's decision.
             # Orphaned RUNNING actions and integrity errors are NOT swallowed.
-            self.store.event("PORTFOLIO_SELECTION", {
+            self._record_semantic_selection({
                 "action_id": action_id, "status": "FALLBACK",
                 "reason": type(exc).__name__,
                 "deterministic_candidate_id": record.selected_candidate_id,
             })
             return record
 
-        self.store.event("PORTFOLIO_SELECTION", {
+        self._record_semantic_selection({
             "action_id": action_id, "status": "SELECTED",
             "selected_candidate_id": selected.selected_candidate_id,
             "deterministic_candidate_id": record.selected_candidate_id,
