@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from bananloop.bootstrap import BootstrapError, BootstrapPlan, BootstrapSignalSanity, _bind_plan_runtime, _bootstrap_contract_error, _bootstrap_path, _bootstrap_task, _validate_agent_visible_training_paths, bootstrap_campaign
+from bananloop.bootstrap import BootstrapError, BootstrapPlan, BootstrapSignalSanity, _bind_plan_runtime, _bootstrap_contract_error, _bootstrap_path, _bootstrap_task, _validate_agent_visible_context_paths, _validate_agent_visible_training_paths, bootstrap_campaign
 from bananloop.contracts import AgentConfig, RuntimePaths
 from bananloop.store import CampaignStore
 from bananloop.wizard import _parse_py_launcher_paths, discover_project
@@ -34,6 +34,17 @@ def test_agent_visible_training_paths_are_limited_to_discovered_training_resourc
             _validate_agent_visible_training_paths(
                 [path],
                 ["data/train.csv", "data/eval.csv"],
+            )
+
+
+def test_agent_visible_context_paths_allow_catalog_but_reject_label_bearing_resources():
+    assert _validate_agent_visible_context_paths(
+        ["data/products.csv"], ["data/products.csv", "data/queries.csv"]
+    ) == ["data/products.csv"]
+    for path in ("data/queries.csv", "data/labels.csv", "../products.csv", "outside/catalog.csv"):
+        with pytest.raises(BootstrapError, match="non-evaluation context"):
+            _validate_agent_visible_context_paths(
+                [path], ["data/products.csv", "data/queries.csv", "data/labels.csv"]
             )
 
 
@@ -535,6 +546,32 @@ def test_bootstrap_contract_repairs_request_for_discovered_resource(
     assert resource_kind in error
 
 
+def test_bootstrap_contract_honors_explicit_read_only_resource_visibility(tmp_path: Path):
+    repo = tmp_path / "repo"
+    (repo / "data").mkdir(parents=True)
+    (repo / "data" / "products.csv").write_text("id,name\n", encoding="utf-8")
+    (repo / "data" / "queries.csv").write_text("query,label\n", encoding="utf-8")
+    task = _bootstrap_task(
+        repo,
+        "Improve matching; expose data/products.csv as read-only project context; "
+        "hide data/queries.csv from implementers.",
+        "deadbeef",
+        AgentConfig(kind="codex"),
+    )
+    plan = BootstrapPlan.model_validate(
+        _bootstrap_payload(status="ready", needs_input=[], summary="fixed matcher")
+    )
+
+    error = _bootstrap_contract_error(plan, task)
+
+    assert error is not None
+    assert "data/products.csv" in error
+    plan.agent_visible_context_paths = ["data/products.csv"]
+    assert _bootstrap_contract_error(plan, task) is None
+    plan.agent_visible_context_paths = ["data/queries.csv"]
+    assert _bootstrap_contract_error(plan, task) is not None
+
+
 def test_bootstrap_contract_still_requests_missing_secret_even_when_env_file_exists(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -765,7 +802,12 @@ def test_noisy_readiness_diagnostics_reach_bounded_repair_and_exhaust_without_ca
         )
 
     record = json.loads((paths.root / "bootstrap-plan.json").read_text(encoding="utf-8"))
-    assert len(record["bootstrap_attempts"]) == 3
+    assert len(record["bootstrap_attempts"]) == 5
+    assert [attempt["attempt"] for attempt in record["bootstrap_attempts"]] == [1, 2, 3, 4, 5]
+    assert all(
+        attempt["readiness"]["status"] == "FAILED"
+        for attempt in record["bootstrap_attempts"]
+    )
     first = record["bootstrap_attempts"][0]["readiness"]
     assert first["status"] == "FAILED"
     assert first["calibration"]["repeat_count"] == 3

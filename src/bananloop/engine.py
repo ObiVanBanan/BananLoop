@@ -11,6 +11,7 @@ from typing import Any, Callable
 from pydantic import ValidationError
 
 from .agents import AgentAdapter, AgentError, CodexAdapter, CommandAgentAdapter, PiAdapter
+from .candidate_preflight import python_syntax_errors
 from .budget import deadline_reached, pre_action_stop
 from .artifacts import retain_artifacts
 from .contracts import (
@@ -36,6 +37,7 @@ from .evaluator_binding import (
 from .leakage import scan_forbidden_diff_patterns
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
 from .process import ProcessCancelled, check_process_control, process_control
+from .semantic_selection import apply_semantic_choice
 from .research import (
     attempt_bucket,
     agent_decision_view,
@@ -47,6 +49,9 @@ from .research import (
     redundancy_reason,
     normalize_portfolio,
     select_candidate,
+    repairable_portfolio_failure,
+    portfolio_repair_context,
+    synthesize_dev_failure_analysis,
 )
 from .store import CampaignStore
 from .workspace import WorkspaceError, WorkspaceManager
@@ -125,10 +130,10 @@ class Engine:
         return self._agent_timeout_seconds or default
 
     def _agent_hidden_paths(self) -> list[str]:
-        visible_training = set(self.spec.agent_visible_training_paths)
+        visible_paths = set(self.spec.agent_visible_training_paths) | set(self.spec.agent_visible_context_paths)
         frozen = [
             asset.path for asset in self.spec.evaluation_assets
-            if asset.path not in visible_training
+            if asset.path not in visible_paths
         ]
         return list(dict.fromkeys([*self.spec.agent_hidden_paths, *frozen]))
 
@@ -654,7 +659,7 @@ class Engine:
             ).model_dump(mode="json"),
         )
         result = EvaluationResult.model_validate(raw)
-        validate_evaluation(self.spec, result)
+        validate_evaluation(self.spec, result, tier="holdout")
         self.store.record_evaluation(
             None,
             snapshot,
@@ -804,6 +809,36 @@ class Engine:
         self.store.set_research_state(payload)
         return payload
 
+
+    def _task_document(self) -> dict[str, Any] | None:
+        """Provide safe root TASK.md directly, without depending on agent temp paths.
+
+        Files already hidden from the agent must never be copied into prompts.
+        No arbitrary path from a model prompt is opened by this helper.
+        """
+        if self.workspace._matches("TASK.md", self._agent_hidden_paths()):
+            return {"status": "hidden"} if "task.md" in self.spec.goal.casefold() else None
+        filename = self.workspace.workspace / "TASK.md"
+        try:
+            if not filename.exists():
+                return {"status": "missing"} if "task.md" in self.spec.goal.casefold() else None
+            if filename.is_symlink() or not filename.is_file():
+                return {"status": "unsafe"}
+            # Reject large task files rather than silently omitting requirements.
+            with filename.open("rb") as task_file:
+                raw = task_file.read(32769)
+            if len(raw) > 32768:
+                return {"status": "too_large", "max_bytes": 32768}
+            text = raw.decode("utf-8-sig")
+        except (OSError, UnicodeError):
+            return {"status": "unreadable"}
+        return {
+            "status": "available",
+            "path": "TASK.md",
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "content": text,
+        }
+
     def _task_context(self, role: str, experiment_id: int) -> dict[str, Any]:
         action_role = "analyze-dev-failures" if role == "analyze" else role
         action = self.store.action(f"exp:{experiment_id}:{action_role}")
@@ -821,7 +856,7 @@ class Engine:
             for capsule in research_state.get("recent_failure_capsules", [])
         ]
         campaign = self.store.campaign()
-        return {
+        payload = {
             "schema_version": 1,
             "role": role,
             "goal": self.spec.goal,
@@ -840,6 +875,7 @@ class Engine:
             "editable_scope": self.spec.editable_scope,
             "protected_paths": self._agent_protected_paths(),
             "agent_visible_training_paths": self.spec.agent_visible_training_paths,
+            "agent_visible_context_paths": self.spec.agent_visible_context_paths,
             "baseline": self._agent_evaluation_view(campaign["baseline_json"]),
             "champion": self._agent_evaluation_view(campaign["champion_json"]),
             "champion_snapshot": campaign["champion_snapshot"],
@@ -862,6 +898,14 @@ class Engine:
                 "exploit": "build on the strongest DEV-supported mechanism without duplicating prior work",
                 "explore": "test a materially different mechanism family from recent failed attempts",
                 "reframe": "challenge the current framing and choose a new mechanism family before plateau",
+                "champion_progress": (
+                    "research_state.dev_non_improve_streak tracks scientific DEV feedback, "
+                    "while research_state.champion_stagnation_streak counts evaluated "
+                    "trials since the last accepted champion. A small positive DEV delta "
+                    "is evidence, not a champion promotion. After repeated no-promotion "
+                    "trials consider a different algorithm family; a justified refinement "
+                    "is still allowed."
+                ),
                 "genealogy": (
                     "If reusing a mechanism_key, set relation to refine/retry/supersede "
                     "and cite a matching prior experiment ordinal."
@@ -876,6 +920,11 @@ class Engine:
             },
             "experiment_id": experiment_id,
         }
+        if role in {"propose", "implement"}:
+            task_document = self._task_document()
+            if task_document is not None:
+                payload["task_document"] = task_document
+        return payload
 
     @staticmethod
     def _hypothesis_grounding_error(
@@ -945,9 +994,152 @@ class Engine:
             )
         return proof
 
+    def _record_semantic_selection(self, payload: dict[str, Any]) -> None:
+        """Avoid duplicating the same audit event on a pre-decision resume."""
+        if any(
+            json.loads(event["payload_json"]) == payload
+            for event in self.store.events()
+            if event["event_type"] == "PORTFOLIO_SELECTION"
+        ):
+            return
+        self.store.event("PORTFOLIO_SELECTION", payload)
+
+    def _select_semantically(
+        self, record: PortfolioRecord, task: dict[str, Any], experiment_id: int,
+    ) -> PortfolioRecord:
+        """Opt-in advisory comparison; core gates remain authoritative.
+
+        The judge action is durable. A resumed proposal reuses its frozen
+        input and result, never re-queries an uncertain running agent.
+        """
+        if self.spec.selection_mode != "llm":
+            return record
+
+        action_id = f"{record.action_id}:semantic-select"
+        existing = self.store.action(action_id)
+        if existing is not None:
+            # An action started before an interruption must retain its exact
+            # pre-judge admissibility decisions and input on replay.
+            judge_task = json.loads(existing["request_json"])
+            frozen = PortfolioRecord.model_validate(judge_task["base_record"])
+            if frozen.candidates != record.candidates or frozen.action_id != record.action_id:
+                raise EngineError("semantic selector frozen portfolio mismatch")
+            record = frozen
+        else:
+            if record.selected_candidate_id is None:
+                return record
+            admissible = {d.candidate_id for d in record.decisions if d.admissible}
+            if len(admissible) < 2:
+                return record
+            eligible = [c for c in record.candidates if c.candidate_id in admissible]
+            campaign = self.store.campaign()
+            remaining_calls = self.spec.budget.max_agent_calls - campaign["agent_calls"]
+            # Keep the judge from stealing calls reserved for implementation.
+            # If even one currently eligible plan could become unaffordable,
+            # use the existing selector rather than silently weaken its gates.
+            needed_for_implementation = max(max(1, c.estimated_agent_calls) for c in eligible)
+            if (remaining_calls < 1 + needed_for_implementation
+                    or pre_action_stop(campaign, self.spec.budget, "agent") is not None):
+                self._record_semantic_selection({
+                    "action_id": action_id, "status": "SKIPPED",
+                    "reason": "insufficient budget for judge plus implementation",
+                    "deterministic_candidate_id": record.selected_candidate_id,
+                })
+                return record
+
+            agent_request = {
+                "schema_version": 1,
+                "role": "select",
+                "goal": task["goal"],
+                "project_context": task.get("project_context", ""),
+                "task_document": task.get("task_document"),
+                "planning_mode": task.get("planning_mode"),
+                "primary_metric": task.get("primary_metric"),
+                "baseline": task.get("baseline"),
+                "champion": task.get("champion"),
+                "history": task.get("history", []),
+                "research_state": task.get("research_state", {}),
+                "eligible_candidates": [c.model_dump(mode="json") for c in eligible],
+                "selection_contract": {
+                    "only_select_existing_eligible_id": True,
+                    "do_not_modify_files": True,
+                    "compare_all_candidates": True,
+                    "dev_only": True,
+                    "scores_are_predictions_not_measurements": True,
+                    # The judge may explain TASK.md/history in prose but these
+                    # are the ONLY machine evidence references it may emit.
+                    "allowed_evidence_refs_by_candidate": {
+                        c.candidate_id: list(c.evidence_refs) for c in eligible
+                    },
+                },
+            }
+            # The durable action contains the exact agent-visible payload plus
+            # the private core decision. The agent sees ONLY eligible candidates,
+            # not rejected proposer ideas or core-internal selection records.
+            judge_task = {
+                "agent_visible_request": agent_request,
+                "base_record": record.model_dump(mode="json"),
+            }
+
+        if existing is not None and existing["status"] == "FAILED" and not self._retry_failed_actions:
+            self._record_semantic_selection({
+                "action_id": action_id, "status": "FALLBACK",
+                "reason": "previous judge action failed; deterministic selection retained",
+                "deterministic_candidate_id": record.selected_candidate_id,
+            })
+            return record
+
+        try:
+            raw = self._action(
+                action_id=action_id,
+                experiment_id=experiment_id,
+                stage="PROPOSE",
+                kind="agent",
+                request=judge_task,
+                invoke=lambda: self._invoke_agent(
+                    judge_task["agent_visible_request"],
+                    timeout=self._agent_timeout(900),
+                    apply_changes=False,
+                ),
+            )
+            selected, choice = apply_semantic_choice(record, raw)
+        except (AgentError, ValidationError, ValueError) as exc:
+            # A malformed/failed judge cannot bypass the core's decision.
+            # Orphaned RUNNING actions and integrity errors are NOT swallowed.
+            self._record_semantic_selection({
+                "action_id": action_id, "status": "FALLBACK",
+                "reason": type(exc).__name__,
+                "deterministic_candidate_id": record.selected_candidate_id,
+            })
+            return record
+
+        self._record_semantic_selection({
+            "action_id": action_id, "status": "SELECTED",
+            "selected_candidate_id": selected.selected_candidate_id,
+            "deterministic_candidate_id": record.selected_candidate_id,
+            "reason": choice.reason,
+            "evidence_refs": choice.evidence_refs,
+            "main_risk": choice.main_risk,
+        })
+        return selected
+
     def _stage_propose(self, attempt_id: int, experiment_id: int) -> None:
         self.workspace.checkout(self.store.campaign()["champion_snapshot"])
         task = self._task_context("propose", experiment_id)
+        # No speculative planning when the approved goal explicitly relies on
+        # TASK.md but that source is missing, hidden, oversized or unreadable.
+        # Already-started proposal actions keep their frozen request on replay.
+        if (self.store.action(f"exp:{experiment_id}:propose") is None
+                and "task.md" in self.spec.goal.casefold()
+                and (task.get("task_document") or {}).get("status") != "available"):
+            reason = (task.get("task_document") or {}).get("status", "missing")
+            self.store.event("TASK_DOCUMENT_UNAVAILABLE", {
+                "experiment_id": experiment_id,
+                "reason": reason,
+            })
+            self.store.conn.commit()
+            self._stop(StopReason.PAUSED_NEEDS_INPUT, CampaignStatus.PAUSED_NEEDS_INPUT)
+            raise CampaignHalted()
         try:
             raw = self._action(
                 action_id=f"exp:{experiment_id}:propose",
@@ -998,9 +1190,80 @@ class Engine:
                 task=task,
                 grounding_check=self._hypothesis_grounding_error,
             )
+            record = self._select_semantically(record, task, experiment_id)
             self.store.event("PORTFOLIO_DECISION", record.model_dump(mode="json"))
             self.store.conn.commit()
             self._checkpoint("PORTFOLIO_SAVED")
+        if record.selected_candidate_id is None and repairable_portfolio_failure(record):
+            # GVS5H-style fresh proposer view: exact feedback + a bounded second
+            # proposal, with no edits/evaluator access and no loose scope bypass.
+            # The original PORTFOLIO_DECISION stays durable for audits.
+            repair_id = f"exp:{experiment_id}:propose-repair"
+            saved_repair = next((
+                event for event in self.store.events()
+                if event.get("event_type") == "PORTFOLIO_REPAIR_DECISION"
+                and json.loads(event["payload_json"]).get("action_id") == repair_id
+            ), None)
+            if saved_repair is not None:
+                corrected_record = PortfolioRecord.model_validate(
+                    json.loads(saved_repair["payload_json"])
+                )
+                corrected_portfolio = HypothesisPortfolio(candidates=corrected_record.candidates)
+            elif (self.store.action(repair_id) is not None or
+                  pre_action_stop(self.store.campaign(), self.spec.budget, "agent") is None):
+                repair_task = {
+                    **task,
+                    "portfolio_repair": portfolio_repair_context(record, self.spec),
+                }
+                try:
+                    repair_raw = self._action(
+                        action_id=repair_id,
+                        experiment_id=experiment_id,
+                        stage="PROPOSE",
+                        kind="agent",
+                        request=repair_task,
+                        invoke=lambda: self._invoke_agent(
+                            repair_task,
+                            timeout=self._agent_timeout(900),
+                            apply_changes=False,
+                        ),
+                    )
+                    repair_raw = self.agent.normalize_result(repair_task, repair_raw)
+                    corrected_portfolio = normalize_portfolio(repair_raw)
+                except (ValidationError, ValueError) as exc:
+                    # Bad model output is a failed bounded proposal, not an
+                    # excuse to relax core scope / evidence / budget gates.
+                    corrected_portfolio = HypothesisPortfolio(candidates=[])
+                    self.store.event("PORTFOLIO_REPAIR_MALFORMED", {
+                        "experiment_id": experiment_id,
+                        "reason": str(exc)[:300],
+                    })
+                    self.store.conn.commit()
+                corrected_record = select_candidate(
+                    corrected_portfolio,
+                    spec=self.spec,
+                    state=ResearchState.model_validate(self._refresh_research_state()),
+                    experiments=[row for row in self.store.experiments() if row["id"] != experiment_id],
+                    experiment_ordinal=int(self.store.experiment(experiment_id)["ordinal"]),
+                    action_id=repair_id,
+                    task=repair_task,
+                    grounding_check=self._hypothesis_grounding_error,
+                )
+                corrected_record = self._select_semantically(corrected_record, repair_task, experiment_id)
+                self.store.event(
+                    "PORTFOLIO_REPAIR_DECISION",
+                    corrected_record.model_dump(mode="json"),
+                )
+                self.store.conn.commit()
+                self._checkpoint("PORTFOLIO_REPAIR_SAVED")
+            else:
+                corrected_record = None
+                corrected_portfolio = None
+
+            if corrected_record is not None:
+                record = corrected_record
+                portfolio = corrected_portfolio
+
         if record.selected_candidate_id is None:
             ungrounded = next((
                 reason.removeprefix("UNGROUNDED_EVIDENCE: ")
@@ -1315,6 +1578,30 @@ class Engine:
                 self.store.set_stage(attempt_id, "EVALUATE")
         else:
             self.store.set_stage(attempt_id, "EVALUATE")
+        if self.store.attempt(attempt_id)["stage"] == "EVALUATE":
+            syntax_errors = python_syntax_errors(self.workspace.workspace, changed)
+            if syntax_errors:
+                decision = {
+                    "accepted": False,
+                    "primary_value": None,
+                    "champion_value": None,
+                    "delta": None,
+                    "predicates": {"candidate_python_syntax": False},
+                    "reasons": ["CANDIDATE_PREFLIGHT_FAILED"],
+                }
+                self.store.update_experiment(
+                    experiment_id,
+                    decision_json=json.dumps(decision),
+                    failure_category="IMPLEMENTATION_BLOCKED",
+                    lesson="Python candidate syntax preflight: " + "; ".join(syntax_errors)[:800],
+                )
+                self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
+                self.store.event(
+                    "CANDIDATE_PREFLIGHT_FAILED",
+                    {"experiment_id": experiment_id, "errors": syntax_errors[:8]},
+                )
+                self.store.conn.commit()
+                self.store.set_stage(attempt_id, "REJECT")
         self._checkpoint(self.store.attempt(attempt_id)["stage"])
 
     def _stage_evaluate(self, attempt_id: int, experiment_id: int) -> None:
@@ -1568,6 +1855,27 @@ class Engine:
                     decision.model_dump(mode="json"),
                 )
         else:
+            # ARE-style evaluators often provide aggregate reward with no
+            # failure_signals. Store a deterministic, uncertainty-aware DEV
+            # capsule instead of silently skipping reflection. The model does
+            # not get an extra call or any hidden/case-level evaluator data.
+            analysis = synthesize_dev_failure_analysis(
+                self.spec,
+                decision.model_dump(mode="json"),
+                champion_dev_json=campaign["champion_json"],
+                candidate_dev_json=exp["evaluation_json"],
+            )
+            if analysis is not None:
+                self.store.update_experiment(
+                    experiment_id,
+                    failure_analysis_json=analysis.model_dump_json(),
+                )
+                self.store.event("DEV_FAILURE_DIAGNOSIS_RECORDED", {
+                    "experiment_id": experiment_id,
+                    "failure_class": analysis.capsules[0].failure_class,
+                    "source": "allowlisted_dev_decision",
+                })
+                self.store.conn.commit()
             self._route_after_dev_analysis(
                 attempt_id,
                 decision.model_dump(mode="json"),

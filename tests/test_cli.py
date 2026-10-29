@@ -213,3 +213,46 @@ def test_status_of_reserved_campaign_does_not_create_campaign_db(tmp_path, capsy
     assert payload["campaign_id"] == entry.campaign_id
     assert payload["initialized"] is False
     assert not paths.db.exists()
+
+
+def test_status_evaluation_summary_omits_case_level_records():
+    from bananloop.cli import _status_evaluation_summary
+
+    result = _status_evaluation_summary([{
+        "experiment_id": 3,
+        "tier": "holdout",
+        "result": {
+            "metrics": {"accuracy": {"value": 0.75}},
+            "checks": {"complete": {"passed": True}},
+            "cases": [{"case_id": "hidden-case", "metrics": {"label": 1}}],
+            "diagnostics": {"private": "detail"},
+        },
+    }])
+
+    assert result == [{
+        "experiment_id": 3,
+        "tier": "holdout",
+        "metrics": {"accuracy": 0.75},
+        "checks": {"complete": True},
+    }]
+
+def test_prepare_alias_enables_preflight_without_running_experiments():
+    args = parser().parse_args(["prepare", "--repo", ".", "--goal", "Improve PR-AUC"])
+    assert args.prepare_only is True
+    assert args.goal == "Improve PR-AUC"
+    assert args.max_experiments == 4
+    assert args.agent is None
+
+
+def test_opt_in_semantic_selector_cli_modes():
+    from bananloop.cli import parser
+
+    for command, prefix in (
+        ("start", ["--goal", "improve"]),
+        ("goal", ["improve"]),
+        ("prepare", ["--goal", "improve"]),
+        ("init", ["--goal", "improve", "--eval-cmd", "python eval.py"]),
+    ):
+        args = parser().parse_args([command, *prefix, "--selector-mode", "llm"])
+        assert args.selector_mode == "llm"
+    assert parser().parse_args(["goal", "improve"]).selector_mode == "deterministic"

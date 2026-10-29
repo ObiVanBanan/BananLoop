@@ -1,0 +1,20 @@
+{
+  "hypothesis": "synonym-canonicalization",
+  "mechanism": "synonym-canonicalization",
+  "implementer_calls": 1,
+  "implementer_response": {
+    "summary": "Added explicit synonym canonicalization for common technical terms and multiword paraphrases in `solution.py`, retaining original tokens for overlap matching.",
+    "changed_paths": [
+      "solution.py"
+    ],
+    "verification_notes": "Reviewed the change against the public task requirements. Did not run tests or evaluation commands; the supervisor will run configured checks independently.",
+    "blockers": []
+  },
+  "tokens": null,
+  "tokens_unavailable_reason": "CodexAdapter structured implementation response does not expose token usage.",
+  "dev_reward": 0.5,
+  "elapsed_seconds": 26.782673900999725,
+  "error": null,
+  "evaluator_error": null,
+  "unexpected_workspace_files": []
+}

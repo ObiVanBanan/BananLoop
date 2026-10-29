@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from .contracts import (
     CampaignSpec, CandidateDecision, DevExperimentEvidence, DevFailureSummary,
-    DevResearchLesson, FailureCapsule, Hypothesis, HypothesisCandidate,
+    DevResearchLesson, FailureAnalysisResult, FailureCapsule, Hypothesis, HypothesisCandidate,
     HypothesisPortfolio, MechanismEvidence, PortfolioRecord, ResearchState,
 )
 
@@ -82,6 +82,19 @@ def planning_mode(non_improve_streak: int, plateau_experiments: int) -> str:
     if non_improve_streak >= max(1, plateau_experiments - 1):
         return "reframe"
     return "explore"
+
+
+
+def effective_reframe_threshold(spec: CampaignSpec) -> int:
+    """Enter research reframe while there is still room to test a new family.
+
+    This only affects proposal strategy. Scientific acceptance, plateau stopping,
+    evaluator usage and frozen campaign budgets remain unchanged.
+    """
+    configured = spec.budget.plateau_experiments
+    if spec.budget.max_experiments <= 2:
+        return configured
+    return min(configured, max(2, spec.budget.max_experiments - 2))
 
 
 def capsule_evidence_ref(capsule: FailureCapsule) -> str:
@@ -265,11 +278,23 @@ def select_candidate(
                 rejection_reasons=list(dict.fromkeys(reasons)), criterion_scores=scores,
                 selection_reason="; ".join(dict.fromkeys(reasons))))
         else:
+            # Candidate IDs are transport identifiers, not evidence of quality.
+            # Use a stable digest of the full candidate content (excluding ID)
+            # only after every existing selection criterion ties. This removes
+            # name and input-order bias without assigning scientific meaning to
+            # the tie-break itself.
+            content = candidate.model_dump(mode="json", exclude={"candidate_id"})
+            content_digest = hashlib.sha256(json.dumps(
+                content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            ).encode("utf-8")).hexdigest()
             eligible.append(((strategy_priority, evidence_score, scores["falsifiability"], 1,
-                              scores["lower_estimated_cost"], candidate.candidate_id), candidate))
+                              scores["lower_estimated_cost"], content_digest), candidate))
             decisions.append(CandidateDecision(candidate_id=candidate.candidate_id, admissible=True,
                                                 criterion_scores=scores))
-    trigger = [f"DEV non-improve streak={state.dev_non_improve_streak}"]
+    trigger = [
+        f"DEV non-improve streak={state.dev_non_improve_streak}",
+        f"Champion stagnation streak={state.champion_stagnation_streak}",
+    ]
     if state.experiment_evidence:
         latest = state.experiment_evidence[-1]
         trigger.append(f"DEV experiment {latest.ordinal}: {latest.dev_outcome}")
@@ -282,7 +307,8 @@ def select_candidate(
             if decision.candidate_id == selected:
                 decision.selection_reason = (
                     "Selected by deterministic ordering: strategy-aware mechanism novelty, DEV evidence, "
-                    "falsifiability, budget feasibility, estimated cost, stable candidate ID."
+                    "falsifiability, budget feasibility, estimated cost, then a neutral stable content hash "
+                    "(candidate ID excluded; hash is not a quality score)."
                 )
             elif decision.admissible:
                 decision.selection_reason = "Ranked below selected candidate by the recorded deterministic criteria."
@@ -292,6 +318,61 @@ def select_candidate(
         strategy=state.planning_mode, trigger_evidence=trigger, candidates=portfolio.candidates,
         decisions=decisions, invalid_candidates=invalid_decisions,
         selected_candidate_id=selected, stop_reason=stop_reason)
+
+
+
+def repairable_portfolio_failure(record: PortfolioRecord) -> bool:
+    """Whether a failed portfolio warrants *one* fresh adviser correction.
+
+    Never retry when the only blockers are budget exhaustion or hard policy
+    violations (e.g., evidence leakage). The core selector is still applied
+    from scratch to the returned suggestions.
+    """
+    if record.selected_candidate_id is not None:
+        return False
+    allowed = {
+        "OUT_OF_SCOPE",
+        "UNSAFE_OR_UNGROUNDED_AREA",
+        "UNTESTABLE_NO_AFFECTED_AREA",
+        "UNTESTABLE_NO_OBSERVABLE_OR_DISCRIMINATOR",
+        "MISSING_EVIDENCE_OR_INSUFFICIENT_EVIDENCE_MARKER",
+        "REPEAT_WITHOUT_NEW_DISCRIMINATING_EVIDENCE",
+    }
+    return any(
+        reason in allowed or reason.startswith("UNGROUNDED_EVIDENCE:")
+        for decision in record.decisions
+        for reason in decision.rejection_reasons
+    )
+
+
+def portfolio_repair_context(record: PortfolioRecord, spec: CampaignSpec) -> dict[str, Any]:
+    """Give a fresh proposer exact machine rejections, without rewriting any hypothesis."""
+    decisions = [
+        {"candidate_id": decision.candidate_id, "rejection_reasons": decision.rejection_reasons}
+        for decision in [*record.decisions, *record.invalid_candidates]
+        if not decision.admissible
+    ]
+    return {
+        "attempt": 1,
+        "limit": 1,
+        "allowed_editable_scope": spec.editable_scope,
+        "previous_candidates": [candidate.model_dump(mode="json")
+                                for candidate in record.candidates],
+        "previous_rejections": decisions,
+        "instruction": (
+            "The previous portfolio produced NO admissible candidate. "
+            "Return up to 4 corrected, independently valid candidates using the SAME "
+            "portfolio schema. files_or_area must contain literal repository paths "
+            "inside allowed_editable_scope, not prose labels or unapproved paths. "
+            "If relevant prior DEV experiments are supplied, set "
+            "hypothesis.prior_experiment_refs to their integer ordinals AND include "
+            "matching exp:<ordinal> evidence_refs; never invent references. "
+            "When only aggregate score evidence exists, the cause is UNKNOWN: "
+            "state a falsifiable proposed mechanism rather than claiming proof. "
+            "Do not change protected files or request evaluation/holdout inputs. "
+            "If no authorized bounded proposal is possible, return an empty candidates list."
+        ),
+    }
 
 
 def derive_dev_lesson(row: dict[str, Any], spec: CampaignSpec) -> DevResearchLesson | None:
@@ -434,6 +515,88 @@ def agent_decision_view(
                 reasons.append(reason)
     view["reasons"] = reasons
     return view
+
+
+
+def synthesize_dev_failure_analysis(
+    spec: CampaignSpec,
+    decision: dict[str, Any],
+    *,
+    champion_dev_json: str | None = None,
+    candidate_dev_json: str | None = None,
+) -> FailureAnalysisResult | None:
+    """Persist an honest, DEV-only diagnosis when the evaluator supplied no cases.
+
+    A score regression does not identify its cause. Use only the approved,
+    allowlisted DEV decision view: no hidden inputs, raw examples, validation
+    results or unrestricted evaluator diagnostics may enter proposer memory.
+    No model call, evaluator call or alteration of the acceptance gate occurs.
+    """
+    visible = agent_decision_view(spec, decision) or {}
+    if visible.get("accepted"):
+        return None
+    reasons = tuple(visible.get("reasons") or ())
+    predicates = visible.get("predicates") or {}
+    if any(reason.startswith("CHECK_FAILED:") for reason in reasons) or any(
+        key.startswith("check:") and value is False
+        for key, value in predicates.items()
+    ):
+        category = "DEV_CHECK_FAILURE"
+        observation = "A mandatory DEV check failed; quality cannot be inferred."
+        next_step = "Fix the failed DEV check and rerun it before optimizing the score."
+    elif any(reason.startswith(("GUARDRAIL_FAILED:", "REGRESSION:")) for reason in reasons):
+        category = "DEV_GUARD_FAILURE"
+        observation = "The candidate failed an approved DEV guardrail."
+        next_step = "Isolate the failing DEV guardrail before another optimization."
+    else:
+        delta = visible.get("delta")
+        if isinstance(delta, (int, float)) and math.isfinite(delta):
+            category = "DEV_METRIC_REGRESSION" if delta < 0 else "DEV_INSUFFICIENT_GAIN"
+        else:
+            category = "DEV_UNEXPLAINED_REJECTION"
+        observation = "The measured DEV candidate was not promoted."
+        next_step = (
+            "Run a bounded DEV-only discriminator comparing the proposed "
+            "mechanism against implementation or configuration error."
+        )
+
+    numeric = [
+        visible.get(key) for key in ("primary_value", "champion_value", "delta")
+    ]
+    if all(isinstance(value, (int, float)) and math.isfinite(value) for value in numeric):
+        current, champion, delta = numeric
+        observation += (
+            f" Candidate primary={current:.6g}, champion={champion:.6g}, "
+            f"delta={delta:+.6g}."
+        )
+    # Only explicitly allowlisted aggregate DEV diagnostics may distinguish
+    # candidates whose official reward is clipped to the same value.
+    champion_view = agent_evaluation_view(spec, champion_dev_json) or {}
+    candidate_view = agent_evaluation_view(spec, candidate_dev_json) or {}
+    old_diagnostics = champion_view.get("diagnostics") or {}
+    new_diagnostics = candidate_view.get("diagnostics") or {}
+    for key in sorted(new_diagnostics.keys() & old_diagnostics.keys())[:4]:
+        previous, current = old_diagnostics[key], new_diagnostics[key]
+        if all(isinstance(value, (int, float)) and math.isfinite(value)
+               for value in (previous, current)):
+            observation += (
+                f" DEV diagnostic {key}: candidate={current:.6g}, "
+                f"champion={previous:.6g}, delta={current - previous:+.6g}."
+            )
+    capsule = FailureCapsule(
+        title="Aggregate DEV failure; root cause not established",
+        failure_class=category,
+        stage="dev",
+        observation=observation,
+        likely_mechanism="UNKNOWN",
+        general_rule=(
+            "A DEV outcome is evidence about a candidate, not proof of a "
+            "specific causal mechanism. Keep untested explanations uncertain."
+        ),
+        suggested_regression=next_step,
+        confidence=0.0,
+    )
+    return FailureAnalysisResult(capsules=[capsule])
 
 
 def classify_dev_outcome(
@@ -579,6 +742,11 @@ def summarize_dev_failures(
         if row.get("status") == "ACTIVE":
             continue
         for capsule in _failure_capsules_from_row(row):
+            # A deterministic aggregate-loss observation is not an actionable
+            # causal failure signal. Keep it in recent_failure_capsules and
+            # experiment_evidence, but do not force proposer to invent causes.
+            if capsule.confidence <= 0 and capsule.likely_mechanism.strip().upper() == "UNKNOWN":
+                continue
             # Free-form case identifiers cannot become planning signal keys.
             if not re.fullmatch(r"[A-Za-z_][A-Za-z_-]{0,79}", capsule.failure_class):
                 continue
@@ -686,6 +854,7 @@ def build_research_state(
         failure_capsules.extend(_failure_capsules_from_row(row))
 
     dev_non_improve_streak = 0
+    champion_stagnation_streak = 0
     for row in experiments:
         if attempt_bucket(row) != "scientific_trials":
             continue
@@ -694,7 +863,15 @@ def build_research_state(
             dev_non_improve_streak = 0
         else:
             dev_non_improve_streak += 1
+        # A DEV gain is useful evidence but does not mean the frozen champion
+        # moved. In particular, validation-rejected DEV candidates do not
+        # count as promotions. Operational failures are not scientific trials.
+        if row.get("status") == "ACCEPTED":
+            champion_stagnation_streak = 0
+        else:
+            champion_stagnation_streak += 1
 
+    planning_streak = max(dev_non_improve_streak, champion_stagnation_streak)
     remaining = {
         "experiments": max(0, spec.budget.max_experiments - int(campaign["experiment_count"])),
         "attempts": max(0, spec.budget.max_attempts - int(campaign["attempt_count"])),
@@ -702,7 +879,7 @@ def build_research_state(
         "evaluator_calls": max(0, spec.budget.max_evaluator_calls - int(campaign["evaluator_calls"])),
         "dev_experiments_until_reframe": max(
             0,
-            spec.budget.plateau_experiments - 1 - dev_non_improve_streak,
+            effective_reframe_threshold(spec) - 1 - planning_streak,
         ),
     }
     if remaining_work_units is not None:
@@ -713,7 +890,7 @@ def build_research_state(
     portfolios: list[PortfolioRecord] = []
     blocked_stop = ""
     for event in events or []:
-        if event.get("event_type") != "PORTFOLIO_DECISION":
+        if event.get("event_type") not in {"PORTFOLIO_DECISION", "PORTFOLIO_REPAIR_DECISION"}:
             if event.get("event_type") == "PLATEAU_REFRAME_BLOCKED":
                 try:
                     blocked_stop = str(json.loads(event["payload_json"]).get("reason", ""))
@@ -727,10 +904,11 @@ def build_research_state(
     dev_lessons = [lesson for row in experiments if (lesson := derive_dev_lesson(row, spec)) is not None]
     return ResearchState(
         planning_mode=planning_mode(
-            dev_non_improve_streak,
-            spec.budget.plateau_experiments,
+            planning_streak,
+            effective_reframe_threshold(spec),
         ),
         dev_non_improve_streak=dev_non_improve_streak,
+        champion_stagnation_streak=champion_stagnation_streak,
         failure_counts=dict(sorted(failure_counts.items())),
         mechanisms=[
             MechanismEvidence.model_validate(value)

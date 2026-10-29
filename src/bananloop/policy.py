@@ -10,12 +10,31 @@ class InvalidEvaluation(ValueError):
     pass
 
 
+def _tier_metric_name(name: str, tier: str) -> str:
+    """Resolve validation-prefixed policy metrics on the validation result."""
+    if tier == "validation":
+        for prefix in ("validation_", "validation."):
+            if name.startswith(prefix):
+                return name.removeprefix(prefix)
+    return name
+
+
+def _validation_only(name: str) -> bool:
+    return name.startswith(("validation_", "validation."))
+
+
 def metric_value(result: EvaluationResult, name: str) -> float:
     if result.status != "ok":
         raise InvalidEvaluation(f"evaluation status is {result.status}")
-    if name not in result.metrics:
+    if name in result.metrics:
+        value = result.metrics[name].value
+    elif name in result.diagnostics and isinstance(result.diagnostics[name], (int, float)):
+        # Numeric evaluator diagnostics can be guardrail inputs too (for
+        # example elapsed_seconds). Keep them separate from quality metrics,
+        # while applying the same finite-value check and comparison logic.
+        value = float(result.diagnostics[name])
+    else:
         raise InvalidEvaluation(f"missing required metric: {name}")
-    value = result.metrics[name].value
     if not math.isfinite(value):
         raise InvalidEvaluation(f"metric {name} is not finite")
     return value
@@ -60,9 +79,15 @@ def validate_evaluation(
         if actual_unit not in (None, metric.unit):
             raise InvalidEvaluation(f"metric {metric.name} unit mismatch: {actual_unit!r}")
     for guard in spec.guardrails:
-        metric_value(result, guard.metric)
+        if _validation_only(guard.metric) and tier != "validation":
+            continue
+        metric_value(result, _tier_metric_name(guard.metric, tier))
     for guard in spec.non_regression:
-        metric_value(result, guard.metric)
+        # Validation-prefixed guards describe the separate validation tier;
+        # they are not expected in the DEV evaluator's result.
+        if _validation_only(guard.metric) and tier != "validation":
+            continue
+        metric_value(result, _tier_metric_name(guard.metric, tier))
     for check in spec.mandatory_checks:
         if check not in result.checks:
             raise InvalidEvaluation(f"missing mandatory check: {check}")
@@ -120,13 +145,19 @@ def decide(
     if not predicates["minimum_improvement"]:
         reasons.append("PRIMARY_NOT_IMPROVED")
     for guard in spec.guardrails:
-        passed = _compare(metric_value(candidate, guard.metric), guard)
+        if _validation_only(guard.metric) and tier != "validation":
+            continue
+        metric_name = _tier_metric_name(guard.metric, tier)
+        passed = _compare(metric_value(candidate, metric_name), guard)
         predicates[f"guard:{guard.metric}{guard.operator}{guard.bound}"] = passed
         if not passed:
             reasons.append(f"GUARDRAIL_FAILED:{guard.metric}")
     for guard in spec.non_regression:
-        champion_value = metric_value(champion, guard.metric)
-        candidate_value = metric_value(candidate, guard.metric)
+        if _validation_only(guard.metric) and tier != "validation":
+            continue
+        metric_name = _tier_metric_name(guard.metric, tier)
+        champion_value = metric_value(champion, metric_name)
+        candidate_value = metric_value(candidate, metric_name)
         if guard.direction == Direction.MAXIMIZE:
             passed = candidate_value >= champion_value - guard.tolerance
         else:
@@ -187,7 +218,10 @@ def target_met(spec: CampaignSpec, result: EvaluationResult, *, tier: str = "dev
     if not metric_ok:
         return False
     for guard in spec.guardrails:
-        if not _compare(metric_value(result, guard.metric), guard):
+        if _validation_only(guard.metric) and tier != "validation":
+            continue
+        metric_name = _tier_metric_name(guard.metric, tier)
+        if not _compare(metric_value(result, metric_name), guard):
             return False
     if spec.paired_comparison:
         for guard in spec.paired_comparison.guardrails:

@@ -68,6 +68,19 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
     )
     baseline_value = metric_value(baseline, spec.primary_metric.name) if baseline else None
     final_value = metric_value(champion, spec.primary_metric.name) if champion else None
+    champion_was_promoted = (
+        bool(baseline and champion)
+        and campaign["baseline_snapshot"] != campaign["champion_snapshot"]
+        and any(item["status"] == "ACCEPTED" for item in experiments)
+    )
+    if baseline is None:
+        improvement_status = "NOT_EVALUATED"
+    elif champion_was_promoted:
+        improvement_status = "CHAMPION_IMPROVED"
+    elif target_met(spec, baseline):
+        improvement_status = "BASELINE_ALREADY_MET_TARGET"
+    else:
+        improvement_status = "NO_VALIDATED_IMPROVEMENT"
     protocol_manifests = {
         tier: {
             "protocol_sha256": manifest.protocol_sha256,
@@ -205,6 +218,8 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
             })
     return {
         "campaign_outcome": campaign["status"],
+        "improvement_status": improvement_status,
+        "champion_was_promoted": champion_was_promoted,
         "stop_reason": campaign["stop_reason"],
         "final_assessment": final_assessment,
         "goal": spec.goal,
@@ -279,6 +294,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "# BananLoop Campaign Report",
         "",
         f"- Outcome: **{report['campaign_outcome']}**",
+        f"- Actual improvement: **{report['improvement_status']}** (promoted candidate: {report['champion_was_promoted']})",
         f"- Stop reason: **{report['stop_reason'] or '-'}**",
         f"- Final assessment: **{report['final_assessment']}**",
         f"- Goal: {report['goal']}",

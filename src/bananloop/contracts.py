@@ -211,6 +211,7 @@ class CampaignSpec(BaseModel):
     evaluation_assets: list[EvaluationAsset] = Field(default_factory=list)
     agent_hidden_paths: list[str] = Field(default_factory=list)
     agent_visible_training_paths: list[str] = Field(default_factory=list)
+    agent_visible_context_paths: list[str] = Field(default_factory=list)
     agent_visible_metrics: list[str] = Field(default_factory=list)
     agent_visible_diagnostics: list[str] = Field(default_factory=list)
     paired_comparison: PairedComparison | None = None
@@ -228,6 +229,9 @@ class CampaignSpec(BaseModel):
     forbidden_diff_patterns: list[str] = Field(default_factory=list)
     budget: BudgetSpec = Field(default_factory=BudgetSpec)
     agent: AgentConfig = Field(default_factory=AgentConfig)
+    # Opt-in semantic ranking after the existing deterministic admissibility gates.
+    # Default is omitted from approved_hash for historical campaign compatibility.
+    selection_mode: Literal["deterministic", "llm"] = "deterministic"
 
     @field_validator("forbidden_diff_patterns")
     @classmethod
@@ -267,6 +271,26 @@ class CampaignSpec(BaseModel):
                 )
         if len(value) != len(set(value)):
             raise ValueError("agent_visible_training_paths must be unique")
+        return value
+
+    @field_validator("agent_visible_context_paths")
+    @classmethod
+    def context_paths_are_safe(cls, value: list[str]) -> list[str]:
+        unsafe_name = re.compile(
+            r"(?i)(?:^|[/_.-])(?:eval|evaluation|test|validation|holdout|gold|reference|"
+            r"query|queries|label|labels|answer|answers|expected|target)(?:$|[/_.-])"
+        )
+        for path in value:
+            normalized = path.replace("\\", "/")
+            if (
+                not normalized
+                or normalized.startswith("/")
+                or any(part in {"", ".", ".."} for part in normalized.split("/"))
+                or unsafe_name.search(normalized)
+            ):
+                raise ValueError("agent_visible_context_paths cannot include unsafe or label-bearing paths")
+        if len(value) != len(set(value)):
+            raise ValueError("agent_visible_context_paths must be unique")
         return value
 
     @model_validator(mode="after")
@@ -320,12 +344,16 @@ class CampaignSpec(BaseModel):
             data.pop("agent_hidden_paths", None)
         if not self.agent_visible_training_paths:
             data.pop("agent_visible_training_paths", None)
+        if not self.agent_visible_context_paths:
+            data.pop("agent_visible_context_paths", None)
         if not self.agent_visible_metrics:
             data.pop("agent_visible_metrics", None)
         if not self.agent_visible_diagnostics:
             data.pop("agent_visible_diagnostics", None)
         if not self.non_regression:
             data.pop("non_regression", None)
+        if self.selection_mode == "deterministic":
+            data.pop("selection_mode", None)
         # Keep approved hashes stable for campaign specs created before agent profiles.
         agent_data = data["agent"]
         for key in ("reasoning_effort", "provider"):
@@ -411,6 +439,17 @@ class PortfolioRecord(BaseModel):
     invalid_candidates: list[CandidateDecision] = Field(default_factory=list, max_length=4)
     selected_candidate_id: str | None = None
     stop_reason: str = ""
+
+
+class PortfolioChoice(BaseModel):
+    """LLM preference is advisory; the engine verifies the chosen ID and public evidence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    selected_candidate_id: str = Field(min_length=1, max_length=80)
+    reason: str = Field(min_length=1, max_length=1200)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=8)
+    main_risk: str = Field(min_length=1, max_length=500)
 
 
 class DevResearchLesson(BaseModel):
@@ -503,14 +542,17 @@ class CaseMeasurement(BaseModel):
     repetition: int = Field(default=0, ge=0)
     # Covers input, reference, seed and fixed settings; evaluator-owned.
     input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    metrics: dict[str, float]
+    # Aggregate-only evaluators may emit case identities solely to attest that
+    # frozen protocol inputs stayed fixed. Paired comparisons validate the
+    # configured per-case metric in readiness before they can use these cases.
+    metrics: dict[str, float] = Field(default_factory=dict)
 
     @field_validator("metrics")
     @classmethod
     def finite_metrics(cls, value):
         import math
-        if not value or not all(math.isfinite(v) for v in value.values()):
-            raise ValueError("case measurements must be nonempty and finite")
+        if not all(math.isfinite(v) for v in value.values()):
+            raise ValueError("case measurements must be finite")
         return value
 
 
@@ -530,7 +572,10 @@ class EvaluationResult(BaseModel):
     status: Literal["ok", "invalid", "infra_error", "cancelled"] = "ok"
     metrics: dict[str, MetricValue]
     checks: dict[str, CheckValue] = Field(default_factory=dict)
-    diagnostics: dict[str, float] = Field(default_factory=dict)
+    # Evaluators may include categorical context such as `split: "dev"`
+    # alongside numeric diagnostics. Consumers that compare diagnostics
+    # already select finite numeric values only.
+    diagnostics: dict[str, float | str] = Field(default_factory=dict)
     failure_signals: list[DevFailureSignal] = Field(default_factory=list, max_length=8)
     failure_examples: list[DevFailureExample] = Field(default_factory=list, max_length=5)
     artifacts: list[str] = Field(default_factory=list)  # legacy references
@@ -611,6 +656,7 @@ class ResearchState(BaseModel):
     schema_version: int = 1
     planning_mode: Literal["exploit", "explore", "reframe"] = "exploit"
     dev_non_improve_streak: int = Field(default=0, ge=0)
+    champion_stagnation_streak: int = Field(default=0, ge=0)
     failure_counts: dict[str, int] = Field(default_factory=dict)
     mechanisms: list[MechanismEvidence] = Field(default_factory=list)
     recent_lessons: list[str] = Field(default_factory=list)

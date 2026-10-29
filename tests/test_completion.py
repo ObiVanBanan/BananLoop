@@ -347,3 +347,24 @@ def test_multiple_paired_bounds_cannot_overwrite_failed_predicate(tmp_path):
         assert guards == [False, True]
     finally:
         store.close()
+
+
+def test_baseline_target_does_not_claim_champion_improvement(tmp_path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        spec = store.spec()
+        spec.primary_metric.target = 0.0
+        store.update_campaign(
+            spec_json=spec.model_dump_json(), spec_hash=spec.approved_hash()
+        )
+        engine.spec = spec
+        result = engine.run()
+        assert result["status"] == "GOAL_MET"
+        assert result["agent_calls"] == 0
+        report = build_report(store)
+        assert report["improvement_status"] == "BASELINE_ALREADY_MET_TARGET"
+        assert report["champion_was_promoted"] is False
+        assert report["baseline_snapshot"] == report["champion_snapshot"]
+        assert "BASELINE_ALREADY_MET_TARGET" in render_markdown(report)
+    finally:
+        store.close()

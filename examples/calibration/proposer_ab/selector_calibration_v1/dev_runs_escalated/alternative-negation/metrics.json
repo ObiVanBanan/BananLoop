@@ -1,0 +1,20 @@
+{
+  "hypothesis": "negation-polarity",
+  "mechanism": "negation-polarity",
+  "implementer_calls": 1,
+  "implementer_response": {
+    "summary": "Implemented negation-aware matching in `solution.py`. Nearby negation cues mark terms as negated, and shared terms with opposite polarity receive a score penalty.",
+    "changed_paths": [
+      "solution.py"
+    ],
+    "verification_notes": "Reviewed the resulting implementation. Evaluator and validation commands were not run, as requested; no transient cache artifacts were created.",
+    "blockers": []
+  },
+  "tokens": null,
+  "tokens_unavailable_reason": "CodexAdapter structured implementation response does not expose token usage.",
+  "dev_reward": 0.625,
+  "elapsed_seconds": 24.14324581999972,
+  "error": null,
+  "evaluator_error": null,
+  "unexpected_workspace_files": []
+}

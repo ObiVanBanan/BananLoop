@@ -1,0 +1,8 @@
+{
+  "summary": "Added explicit synonym canonicalization for common technical terms and multiword paraphrases in `solution.py`, retaining original tokens for overlap matching.",
+  "changed_paths": [
+    "solution.py"
+  ],
+  "verification_notes": "Reviewed the change against the public task requirements. Did not run tests or evaluation commands; the supervisor will run configured checks independently.",
+  "blockers": []
+}

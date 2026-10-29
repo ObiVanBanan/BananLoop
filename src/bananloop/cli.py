@@ -192,6 +192,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             plateau_experiments=args.plateau,
         ),
         agent=agent,
+        selection_mode=getattr(args, "selector_mode", "deterministic"),
     )
     if interactive and not args.yes:
         if not confirm_spec(spec.model_dump(mode="json")):
@@ -364,6 +365,7 @@ def cmd_start(args: argparse.Namespace) -> int:
                         max_evaluator_calls=args.max_evaluator_calls,
                         deadline_seconds=args.deadline_seconds,
                         plateau_experiments=args.plateau,
+                        selection_mode=getattr(args, "selector_mode", "deterministic"),
                     )
         except CampaignLockError as exc:
             print(f"BananLoop error: {exc}", file=sys.stderr)
@@ -480,7 +482,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         data["campaign_id"] = _display_campaign_id(args, paths)
         data["initialized"] = True
         data["resources"] = store.resource_summary()
-        data["evaluations"] = build_report(store)["measurements"]
+        data["evaluations"] = _status_evaluation_summary(build_report(store)["measurements"])
         research = store.research_state()
         if research:
             data["planning_mode"] = research.get("planning_mode")
@@ -488,6 +490,26 @@ def cmd_status(args: argparse.Namespace) -> int:
     finally:
         store.close()
     return 0
+
+
+def _status_evaluation_summary(measurements: list[dict]) -> list[dict]:
+    """Keep status output aggregate-only; full reports have a separate command."""
+    summary = []
+    for item in measurements:
+        result = item.get("result") or {}
+        summary.append({
+            "experiment_id": item.get("experiment_id"),
+            "tier": item.get("tier"),
+            "metrics": {
+                name: metric.get("value")
+                for name, metric in (result.get("metrics") or {}).items()
+            },
+            "checks": {
+                name: check.get("passed")
+                for name, check in (result.get("checks") or {}).items()
+            },
+        })
+    return summary
 
 
 def cmd_stop(args: argparse.Namespace) -> int:
@@ -561,6 +583,8 @@ def parser() -> argparse.ArgumentParser:
     goal.add_argument("--state-dir")
     goal.add_argument("--request-id", help="idempotency key; use a new value to intentionally repeat a goal")
     goal.add_argument("--agent-profiles", help="TOML profile file for default and role-specific agent settings")
+    goal.add_argument("--selector-mode", choices=["deterministic", "llm"], default="deterministic",
+                      help="opt-in LLM comparison of admissible proposals")
     goal.add_argument(
         "--prepare-only",
         action="store_true",
@@ -583,6 +607,7 @@ def parser() -> argparse.ArgumentParser:
         max_evaluator_calls=16,
         deadline_seconds=14400,
         plateau=3,
+        selector_mode="deterministic",
         allow_dirty=False,
     )
 
@@ -635,6 +660,8 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--max-evaluator-calls", type=int, default=16)
     start.add_argument("--deadline-seconds", type=int, default=14400)
     start.add_argument("--plateau", type=int, default=3)
+    start.add_argument("--selector-mode", choices=["deterministic", "llm"], default="deterministic",
+                       help="portfolio ranking: heuristic default or opt-in LLM semantic selection")
     start.add_argument("--allow-dirty", action="store_true")
     start.add_argument(
         "--prepare-only",
@@ -642,6 +669,39 @@ def parser() -> argparse.ArgumentParser:
         help="build and persist CampaignSpec but do not start optimization",
     )
     start.set_defaults(func=cmd_start)
+
+    prepare = sub.add_parser(
+        "prepare",
+        help="prepare a repository, verify its evaluator, and stop before experiments",
+    )
+    prepare.add_argument("--repo", default=".")
+    prepare.add_argument("--goal", required=True)
+    prepare.add_argument("--state-dir")
+    prepare.add_argument("--agent-profiles", help="optional agent settings TOML")
+    prepare.add_argument("--selector-mode", choices=["deterministic", "llm"], default="deterministic",
+                         help="opt-in LLM comparison after preparation")
+    prepare.add_argument("--request-id", help="idempotency key for preparation")
+    prepare.set_defaults(
+        func=cmd_start,
+        prepare_only=True,
+        agent=None,
+        agent_cmd=None,
+        model=None,
+        provider=None,
+        thinking=None,
+        codex_arg=None,
+        pi_arg=None,
+        bootstrap_timeout_seconds=1200,
+        agent_timeout_seconds=None,
+        max_experiments=4,
+        max_attempts=7,
+        max_agent_calls=18,
+        max_evaluator_calls=16,
+        deadline_seconds=14400,
+        plateau=3,
+        selector_mode="deterministic",
+        allow_dirty=False,
+    )
 
     init = sub.add_parser("init", help="approve and persist a campaign specification")
     init.add_argument("--repo", default=".")
@@ -741,6 +801,8 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--max-evaluator-calls", type=int, default=10)
     init.add_argument("--deadline-seconds", type=int, default=3600)
     init.add_argument("--plateau", type=int, default=3)
+    init.add_argument("--selector-mode", choices=["deterministic", "llm"], default="deterministic",
+                      help="portfolio ranking: heuristic default or opt-in LLM semantic selection")
     init.add_argument("--allow-dirty", action="store_true")
     init.add_argument("--interactive", action="store_true", help="run the interactive init wizard")
     init.add_argument("--yes", action="store_true", help="approve an interactive CampaignSpec without confirmation")
