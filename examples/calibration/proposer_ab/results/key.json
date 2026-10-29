@@ -1,0 +1,92 @@
+{
+  "H-4e74d08aa1bd": {
+    "condition": "exploit",
+    "replicate": 1,
+    "candidate_id": "engineering-acronym-expansion"
+  },
+  "H-8cb78ccdad2f": {
+    "condition": "exploit",
+    "replicate": 1,
+    "candidate_id": "negation-aware-overlap"
+  },
+  "H-d5bc7d380152": {
+    "condition": "exploit",
+    "replicate": 1,
+    "candidate_id": "compositional-order-scoring"
+  },
+  "H-382cb82f1b07": {
+    "condition": "exploit",
+    "replicate": 2,
+    "candidate_id": "directional-token-order"
+  },
+  "H-270d30d02fab": {
+    "condition": "exploit",
+    "replicate": 2,
+    "candidate_id": "negation-aware-overlap"
+  },
+  "H-fb3bec09b8d2": {
+    "condition": "exploit",
+    "replicate": 2,
+    "candidate_id": "technical-alias-expansion"
+  },
+  "H-08a1a739bcde": {
+    "condition": "exploit",
+    "replicate": 3,
+    "candidate_id": "synonym-lexicon-matching"
+  },
+  "H-87bb1b8a1704": {
+    "condition": "exploit",
+    "replicate": 3,
+    "candidate_id": "negation-aware-scoring"
+  },
+  "H-5894356f7eb8": {
+    "condition": "exploit",
+    "replicate": 3,
+    "candidate_id": "acronym-expansion-matching"
+  },
+  "H-4c135cc0e986": {
+    "condition": "reframe",
+    "replicate": 1,
+    "candidate_id": "synonym-canonicalization"
+  },
+  "H-f52435527030": {
+    "condition": "reframe",
+    "replicate": 1,
+    "candidate_id": "negation-polarity"
+  },
+  "H-72b308429dbc": {
+    "condition": "reframe",
+    "replicate": 1,
+    "candidate_id": "ordered-composition"
+  },
+  "H-23fdbc47fd57": {
+    "condition": "reframe",
+    "replicate": 2,
+    "candidate_id": "synonym-alias-lexicon"
+  },
+  "H-67418884e1ed": {
+    "condition": "reframe",
+    "replicate": 2,
+    "candidate_id": "negation-aware-overlap"
+  },
+  "H-a82203d7d11b": {
+    "condition": "reframe",
+    "replicate": 2,
+    "candidate_id": "acronym-expansion-matching"
+  },
+  "H-424fe2f74ac6": {
+    "condition": "reframe",
+    "replicate": 3,
+    "candidate_id": "synonym-alias-expansion"
+  },
+  "H-e530115b4078": {
+    "condition": "reframe",
+    "replicate": 3,
+    "candidate_id": "negation-aware-token-matching"
+  },
+  "H-51029552268d": {
+    "condition": "reframe",
+    "replicate": 3,
+    "candidate_id": "order-sensitive-composition"
+  }
+}

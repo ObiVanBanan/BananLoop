@@ -1,0 +1,9 @@
+{
+  "condition": "reframe",
+  "replicate": 1,
+  "duration_seconds": 16.18293869399986,
+  "usage": null,
+  "error": null,
+  "response_received": true,
+  "usage_status": "unavailable: CodexAdapter.execute returns structured output only; no usage metadata is surfaced"
+}

@@ -1,0 +1,126 @@
+{
+  "candidates": [
+    {
+      "candidate_id": "synonym-canonicalization",
+      "hypothesis": {
+        "hypothesis": "Add a small, explicit synonym-to-canonical-token mapping in solution.py so common technical paraphrases contribute to the same concept match; this will improve exact-match quality by at least 0.001 on the CPU DEV set.",
+        "rationale": "The task identifies synonyms as a possible error class, while the supplied experiments only measure partial gains from token normalization, stopword filtering, and overlap tie-breaking. Canonicalizing known paraphrases tests a different mechanism family.",
+        "expected_effect": "Quality increases by at least 0.001 versus the current champion.",
+        "files_or_area": [
+          "solution.py"
+        ],
+        "falsification_condition": "The DEV quality delta is below 0.001, or synonym canonicalization introduces enough false matches to prevent that gain.",
+        "mechanism_key": "synonym-canonicalization",
+        "relation": "new",
+        "prior_experiment_refs": [
+          1,
+          2,
+          3
+        ],
+        "novelty_rationale": "Experiments 1, 2, and 3 improved DEV quality by 0.0002, 0.0003, and 0.0004 respectively, but each remained below the 0.001 promotion threshold. Those are partial gains consistent with their stated mechanisms, not evidence that the mechanisms failed. This proposal tests explicit synonym canonicalization, which none of those experiments measured.",
+        "target_failure_signal": "",
+        "failure_mechanism": ""
+      },
+      "evidence_refs": [
+        "exp:1",
+        "exp:2",
+        "exp:3"
+      ],
+      "suspected_failure_mode": "Equivalent technical terms may have little or no token overlap, causing the matcher to miss semantically equivalent positions.",
+      "predicted_observable": "DEV errors involving known paraphrases decrease, and overall quality rises by at least 0.001.",
+      "discriminating_test": "Evaluate a synonym mapping against the current champion on the same DEV set; check whether gains concentrate on paraphrase cases and whether total quality improves by at least 0.001.",
+      "scope_eligibility": true,
+      "estimated_agent_calls": 2,
+      "estimated_evaluator_calls": 1,
+      "estimated_work_units": null,
+      "rationale": "Targets the task’s stated synonym error class through an explicit lexical mapping in the sole editable file.",
+      "uncertainty": "The request does not provide DEV examples or show whether synonym errors are common enough to clear the promotion threshold.",
+      "inference": "agent_inference"
+    },
+    {
+      "candidate_id": "negation-polarity",
+      "hypothesis": {
+        "hypothesis": "Add explicit handling for negation cues and their nearby technical terms in solution.py so statements with opposite polarity do not receive misleadingly similar overlap scores; this will improve exact-match quality by at least 0.001 on the CPU DEV set.",
+        "rationale": "The task names negation as a possible error class. Token overlap can count shared terms despite a polarity reversal, which a polarity-aware feature could address.",
+        "expected_effect": "Quality increases by at least 0.001 versus the current champion, with fewer errors on negated statements.",
+        "files_or_area": [
+          "solution.py"
+        ],
+        "falsification_condition": "The DEV quality delta is below 0.001, or polarity handling fails to reduce negation-related errors.",
+        "mechanism_key": "negation-polarity",
+        "relation": "new",
+        "prior_experiment_refs": [
+          1,
+          2,
+          3
+        ],
+        "novelty_rationale": "Experiments 1–3 reported partial DEV improvements of 0.0002–0.0004, below the required 0.001. Their results support that the tested mechanisms moved quality slightly; they do not test or disprove polarity-aware matching. This proposal changes the matching signal to account for negation.",
+        "target_failure_signal": "",
+        "failure_mechanism": ""
+      },
+      "evidence_refs": [
+        "exp:1",
+        "exp:2",
+        "exp:3"
+      ],
+      "suspected_failure_mode": "Shared content tokens may outweigh a negation cue, making statements with opposite meanings appear similar.",
+      "predicted_observable": "Negation-related DEV mismatches decrease and overall quality rises by at least 0.001.",
+      "discriminating_test": "Compare the current champion with a polarity-aware variant on the same DEV set; inspect negation cases and require a total quality delta of at least 0.001.",
+      "scope_eligibility": true,
+      "estimated_agent_calls": 2,
+      "estimated_evaluator_calls": 1,
+      "estimated_work_units": null,
+      "rationale": "Tests whether representing polarity directly resolves a semantic distinction that plain token overlap can obscure.",
+      "uncertainty": "No supplied DEV breakdown establishes the frequency or impact of negation errors.",
+      "inference": "agent_inference"
+    },
+    {
+      "candidate_id": "ordered-composition",
+      "hypothesis": {
+        "hypothesis": "Add a bounded word-order or local phrase feature in solution.py so technical terms whose meaning depends on composition are distinguished from statements with the same words in a different arrangement; this will improve exact-match quality by at least 0.001 on the CPU DEV set.",
+        "rationale": "The task identifies compositional word order as a possible error class. A phrase or order-sensitive signal tests whether token-set matching loses meaning encoded by term arrangement.",
+        "expected_effect": "Quality increases by at least 0.001 versus the current champion, with fewer order-sensitive composition errors.",
+        "files_or_area": [
+          "solution.py"
+        ],
+        "falsification_condition": "The DEV quality delta is below 0.001, or order-sensitive features do not reduce composition-related mismatches.",
+        "mechanism_key": "ordered-composition",
+        "relation": "new",
+        "prior_experiment_refs": [
+          1,
+          2,
+          3
+        ],
+        "novelty_rationale": "The measured partial gains in experiments 1, 2, and 3 were 0.0002, 0.0003, and 0.0004, all below the promotion threshold. These observations show small gains from normalization, filtering, and overlap tie-breaking, not a failed mechanism. None tested order-sensitive composition, so this proposal changes the representation used for matching.",
+        "target_failure_signal": "",
+        "failure_mechanism": ""
+      },
+      "evidence_refs": [
+        "exp:1",
+        "exp:2",
+        "exp:3"
+      ],
+      "suspected_failure_mode": "Token overlap may ignore term order and local composition, conflating statements that use similar words to express different concepts.",
+      "predicted_observable": "Order-sensitive composition mismatches decrease and overall quality rises by at least 0.001.",
+      "discriminating_test": "Evaluate a phrase/order-sensitive variant against the current champion on the same DEV set; check composition cases and require a total quality delta of at least 0.001.",
+      "scope_eligibility": true,
+      "estimated_agent_calls": 2,
+      "estimated_evaluator_calls": 1,
+      "estimated_work_units": null,
+      "rationale": "Tests a representation change for compositional meaning, distinct from lexical normalization and overlap scoring tweaks.",
+      "uncertainty": "The supplied context gives no examples or frequency estimates for word-order errors.",
+      "inference": "agent_inference"
+    }
+  ],
+  "hypothesis": null,
+  "rationale": null,
+  "expected_effect": null,
+  "files_or_area": null,
+  "falsification_condition": null,
+  "mechanism_key": null,
+  "relation": null,
+  "prior_experiment_refs": null,
+  "novelty_rationale": null,
+  "target_failure_signal": null,
+  "failure_mechanism": null
+}
