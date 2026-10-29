@@ -42,7 +42,7 @@ def load_agent_profiles(path: Path | None) -> dict[str, Any]:
         else:
             summary = type(exc).__name__
         raise AgentProfileError(f"invalid agent profile: {summary}") from None
-    allowed = {"bootstrap", "propose", "implement", "analyze"}
+    allowed = {"bootstrap", "propose", "select", "implement", "analyze"}
     unknown = set(validated_roles) - allowed
     if unknown:
         raise AgentProfileError(f"unsupported agent roles: {', '.join(sorted(unknown))}")
