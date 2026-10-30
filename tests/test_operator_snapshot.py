@@ -179,6 +179,40 @@ def test_event_cursor_reconnect_has_no_duplicates(tmp_path):
         store.close()
 
 
+def test_campaign_state_change_advances_snapshot_and_event_revision(tmp_path):
+    store = make_store(tmp_path)
+    try:
+        before = read_snapshot(store, "campaign-a")
+        store.update_campaign(status="PAUSED_NEEDS_INPUT", stop_reason="OPERATOR_REQUIRED")
+        after = read_snapshot(store, "campaign-a")
+
+        assert after["revision"] > before["revision"]
+        page = read_events_after(store, before["revision"])
+        assert page["cursor"] == after["revision"]
+        assert page["events"][-1]["seq"] == after["revision"]
+        assert page["events"][-1]["type"] == "CAMPAIGN_STATE_UPDATED"
+        assert page["events"][-1]["payload"] == {}
+    finally:
+        store.close()
+
+
+def test_campaign_counter_change_advances_snapshot_and_event_revision(tmp_path):
+    store = make_store(tmp_path)
+    try:
+        before = read_snapshot(store, "campaign-a")
+        store.increment("agent_calls")
+        after = read_snapshot(store, "campaign-a")
+
+        assert after["revision"] > before["revision"]
+        assert after["budget"]["agent_calls"] == 1
+        page = read_events_after(store, before["revision"])
+        assert page["cursor"] == after["revision"]
+        assert page["events"][-1]["type"] == "CAMPAIGN_STATE_UPDATED"
+        assert page["events"][-1]["payload"] == {}
+    finally:
+        store.close()
+
+
 def test_operator_cli_json_reads_selected_campaign(tmp_path, capsys):
     state_dir = tmp_path / "state"
     state_dir.mkdir()

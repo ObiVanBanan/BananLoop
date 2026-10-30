@@ -628,8 +628,11 @@ class CampaignStore:
             return
         fields["updated_at"] = utc_now()
         sql = ",".join(f"{key}=?" for key in fields)
-        self.conn.execute(f"UPDATE campaigns SET {sql} WHERE id=1", tuple(fields.values()))
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(f"UPDATE campaigns SET {sql} WHERE id=1", tuple(fields.values()))
+            # A payload-free event advances the operator cursor with this
+            # campaign-row update, without exposing private field values.
+            self.event("CAMPAIGN_STATE_UPDATED", {})
 
     def request_stop(self) -> bool:
         """Signal the owner; never overwrite a stage while its process is running."""
@@ -667,8 +670,9 @@ class CampaignStore:
         allowed = {"experiment_count", "attempt_count", "agent_calls", "evaluator_calls", "non_improve_streak"}
         if field not in allowed:
             raise StoreError(f"invalid counter: {field}")
-        self.conn.execute(f"UPDATE campaigns SET {field}={field}+?, updated_at=? WHERE id=1", (amount, utc_now()))
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(f"UPDATE campaigns SET {field}={field}+?, updated_at=? WHERE id=1", (amount, utc_now()))
+            self.event("CAMPAIGN_STATE_UPDATED", {})
 
     def event(self, event_type: str, payload: dict[str, Any]) -> None:
         self.conn.execute(

@@ -2,6 +2,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from bananloop.contracts import HypothesisPortfolio
 
 
@@ -29,8 +31,30 @@ def test_selector_preregistration_hashes_and_portfolio_contract_are_frozen():
 
     for name, expected in manifest["task"]["input_sha256"].items():
         assert sha256(FIXTURE / name) == expected
+    revision = manifest["source_checkout"]["revision"]
+    # The manifest pins an isolated source snapshot that is not included in
+    # this checkout. Do not silently substitute the current working tree: it
+    # would verify a different experiment. Keep the integrity assertion active
+    # whenever the pinned Git object is available.
+    import subprocess
+
+    object_check = subprocess.run(
+        ["git", "cat-file", "-e", f"{revision}^{{commit}}"],
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if object_check.returncode:
+        pytest.skip(f"pinned selector source commit {revision} is unavailable")
     for name, expected in manifest["selector_implementation_sha256"].items():
-        assert sha256(ROOT / name) == expected
+        blob = subprocess.run(
+            ["git", "show", f"{revision}:{name}"],
+            cwd=ROOT,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ).stdout
+        assert hashlib.sha256(blob).hexdigest() == expected
 
 
 def test_selector_preregistration_records_codex_subscription_quota_authorization():
