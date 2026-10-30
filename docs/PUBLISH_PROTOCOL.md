@@ -1,6 +1,6 @@
 # BananLoop v0.1.0 — closed-preview qualification protocol
 
-**Status:** preparation only. The owner intent recorded on 2026-10-29 was a **closed Research Preview**, but GitHub currently reports repository visibility as **public**. This discrepancy is unresolved. No public release, visibility change, tag, distribution or invitation is authorized by this document. A completed, independently reviewable Codex Direct vs BananLoop benchmark is a required gate.
+**Status:** preparation only. The owner intent recorded on 2026-10-29 was a **closed Research Preview**. GitHub reported the repository as public in checks earlier on 2026-10-30, then reported it as **private** at 2026-10-30 22:09 UTC. The current visibility now matches the closed-preview intent; verify collaborator/access settings and exposed artifacts before any preview recommendation. No public release, visibility change, tag, distribution or invitation is authorized by this document. A completed, independently reviewable Codex Direct vs BananLoop benchmark is a required gate.
 
 This protocol complements [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md). The release owner must approve the final SHA and explicitly authorize **each** irreversible publication step. Do not create a tag, GitHub Release, or change repository visibility as part of a documentation update.
 
