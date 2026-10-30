@@ -25,7 +25,7 @@ In the [public-only pilot report](https://github.com/ObiVanBanan/BananLoop/blob/
 
 ## Required pre-preview benchmark: ordinary iterative Codex vs Codex + BananLoop
 
-The token-budget implementation described by open Draft PR #61 is not integrated into the audited `main` SHA. Its accounting is opt-in for Codex and rejects an over-cap candidate after an opaque call; it is not a provider-enforced spending stop. No confirmed spend budget or verified hostile-code sandbox is available for this task. Do not make paid calls or run generated code on the host.
+As of 2026-10-31, updated Draft PR [#61](https://github.com/ObiVanBanan/BananLoop/pull/61) (`3e9f8b7`) adds opt-in Codex usage accounting for PROPOSE, SELECT, EXECUTE and ANALYZE, final-receipt validation, and retry/crash tests; its Windows/Python 3.13 suite collected 445 tests and exited 0. This code is **not integrated into the audited `main` SHA**, and it remains post-call accounting: an opaque call may exceed the cap before its candidate is rejected. Draft PR [#75](https://github.com/ObiVanBanan/BananLoop/pull/75) separately fixes snapshot/event cursor consistency and records seven CPU-only E2E passes. Neither PR is merged or release-final-SHA evidence. No confirmed spend budget or verified hostile-code sandbox is available for the required task; do not make paid calls or run generated code on the host.
 
 - Same pinned model/version/reasoning effort, initial repositories, task text, approved DEV information, tool permissions, evaluator and resource constraints.
 - Codex Direct **may iterate**, run approved DEV checks and repair its solution. Do not compare BananLoop against an artificially restricted one-shot baseline.
@@ -44,4 +44,4 @@ The token-budget implementation described by open Draft PR #61 is not integrated
 - [ ] Produce a per-task comparison and limitations section.
 - [ ] Link evidence and review the final report before owner approval.
 
-The **benchmark gate is BLOCKED / INELIGIBLE**: no approved spend budget, exact all-role usage accounting, or verified isolated evaluator is available for a compliant run. Existing DEV fixture improvements demonstrate a workflow, not superiority over standalone coding agents. This blocks a v0.1 release recommendation; record diagnostics and resume only after the prerequisites are met.
+The **benchmark gate is BLOCKED / INELIGIBLE**: there is no approved spend budget or verified isolated evaluator. The all-role metering implementation is still an unmerged Draft PR and does not enforce a provider-side spend cap. Existing DEV fixture improvements demonstrate a workflow, not superiority over standalone coding agents. This blocks a v0.1 release recommendation; resume only after the prerequisites are met.

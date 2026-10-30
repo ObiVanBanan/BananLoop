@@ -63,7 +63,7 @@ Release acceptance checks:
 
 ## 3a. Required benchmark against ordinary iterative Codex
 
-Follow [BENCHMARK_STATUS.md](BENCHMARK_STATUS.md) and the frozen paired protocol in [Issue #64](https://github.com/ObiVanBanan/BananLoop/issues/64), adapted to the actual approved task set. The first preview must not be approved until **a new repeat** is complete, its results have been independently checked and every arm's budget/protocol eligibility is documented. Current main lacks the PR #61 token-metering implementation, and even that opt-in design documents post-call overshoot rather than a provider-enforced spending stop. No confirmed spend budget or verified isolated evaluator is available for this task; do not run paid model calls or generated code on the host.
+Follow [BENCHMARK_STATUS.md](BENCHMARK_STATUS.md) and the frozen paired protocol in [Issue #64](https://github.com/ObiVanBanan/BananLoop/issues/64), adapted to the actual approved task set. The first preview must not be approved until **a new repeat** is complete, its results have been independently checked and every arm's budget/protocol eligibility is documented. Current main lacks the updated PR #61 all-role token-metering implementation; that Draft PR's accounting is opt-in and post-call, not a provider-enforced spending stop. No confirmed spend budget or verified isolated evaluator is available for this task; do not run paid model calls or generated code on the host.
 
 - Same pinned baseline, model/reasoning settings, allowed DEV data, tool permissions, evaluation and per-arm resource caps.
 - Allow ordinary Codex to iterate, test and repair; count *all* BananLoop agent/model roles.
