@@ -6,9 +6,9 @@
 
 **Fresh context. Persistent memory. Measurable progress.**
 
-**Status:** private `v0.1.0` Research Preview **candidate** — no tag or GitHub Release has been published.
+**Status:** `v0.1.0` Research Preview **candidate** — no tag or GitHub Release is published. GitHub currently reports this repository as public; the closed-preview release notes and actual visibility do not match.
 
-[![Private Preview Candidate](https://img.shields.io/badge/v0.1.0-private_preview_candidate-f4bd35?style=flat-square)](CHANGELOG.md)
+[![Preview Candidate](https://img.shields.io/badge/v0.1.0-preview_candidate-f4bd35?style=flat-square)](CHANGELOG.md)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square)
 [![License: MIT](https://img.shields.io/badge/License-MIT-55a87a?style=flat-square)](LICENSE)
 
@@ -159,7 +159,7 @@ The QA run used Luna with the opt-in semantic selector, three agent calls, and t
 
 **Exploratory signal, not a verified advantage:** a prior internal ten-task AutoResearchExam DEV comparison was reported as **7 wins for BananLoop vs 3 for ordinary Codex**. The run consumed substantially different resources, and the underlying per-run evidence has not yet been linked and independently reverified in this release branch. It is **not** a matched-budget result or final HOLDOUT proof.
 
-A separate LiveCodeBench hard-60 public-example pilot compared **BananLoop Control vs BananLoop Fresh**, not standalone Codex; it cannot answer the head-to-head question. Before approving the private preview, the team will repeat a **paired, independently scored Codex Direct vs Codex + BananLoop** comparison, documenting tokens/cost, validity and failures whether BananLoop wins or loses.
+A separate LiveCodeBench hard-60 public-example pilot compared **BananLoop Control vs BananLoop Fresh**, not standalone Codex; it cannot answer the head-to-head question. Before approving a preview, the team will repeat a **paired, independently scored Codex Direct vs Codex + BananLoop** comparison, documenting tokens/cost, validity and failures whether BananLoop wins or loses.
 
 Details, prior pilots and outstanding acceptance checks: [Benchmark evidence register](docs/BENCHMARK_STATUS.md).
 
@@ -216,9 +216,9 @@ Backends available in the codebase include **Codex CLI**, **Pi RPC**, and a gene
 
 ## What comes next
 
-**Planned, not shipped:** a visual research UI with a hypothesis tree and metric charts; human-approved major architecture pivots (target: v0.2.0); richer multi-step research plans and benchmark coverage. The first private preview prioritizes measured reliability over new features.
+**Current interface:** the existing CLI. Development of the experimental Pi terminal UI and Codex chat is deferred; existing read-only snapshots, persisted events and typed controls remain available independently of a UI. A future graphical client is a separate desktop application; its technology is undecided. Architecture pivots and expanded multi-step research remain deferred to v0.2+. The preview prioritizes verified reliability and honest evidence over new interface features.
 
-Read the [roadmap](docs/ROADMAP.md), [release status](CHANGELOG.md), [preview description](docs/RELEASE_COPY.md), and [private-preview release protocol](docs/PUBLISH_PROTOCOL.md).
+Read the [roadmap](docs/ROADMAP.md), [release status](CHANGELOG.md), [preview description](docs/RELEASE_COPY.md), and [preview release protocol](docs/PUBLISH_PROTOCOL.md).
 
 ## Community & security
 
