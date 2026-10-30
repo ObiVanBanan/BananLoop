@@ -38,6 +38,7 @@ Instead of forgetting what failed or accepting an agent's self-reported success,
 ## How it works
 
 <p align="center"><img src="assets/bananloop-how-it-works.png" alt="BananLoop research loop: goal, propose, gates, select, implement, independent evaluation, decide, learn, and repeat" width="100%" /></p>
+
 The **coding agent** proposes and implements. The **BananLoop supervisor** freezes the evaluation contract, checks scope, records outcomes, and decides whether a candidate may replace the current champion. The selector is advisory; it cannot bypass the deterministic gates.
 
 ## Quick start
