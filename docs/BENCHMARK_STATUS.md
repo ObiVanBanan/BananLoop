@@ -1,6 +1,6 @@
 # Benchmark evidence register — v0.1.0 private Research Preview
 
-**Status: EVIDENCE PENDING.** This register separates historical exploratory signals from the required release-gate head-to-head. It is not a leaderboard or a claim of general superiority over Codex.
+**Status: BLOCKED / INELIGIBLE FOR A NEW RUN.** This register separates historical exploratory signals from the required release-gate head-to-head. It is not a leaderboard or a claim of general superiority over Codex.
 
 ## Historical experiments
 
@@ -21,9 +21,11 @@ In the [public-only pilot report](https://github.com/ObiVanBanan/BananLoop/blob/
 
 ### Shared-account Codex pilot — budget-ineligible
 
-[Issue #60](https://github.com/ObiVanBanan/BananLoop/issues/60) documents an exploratory paired run where the best DEV quality matched, while BananLoop exceeded its nominal 750,000-token cap. That pair was **ineligible** for an advantage claim; keep this negative result visible.
+[Issue #60](https://github.com/ObiVanBanan/BananLoop/issues/60) documents an exploratory pair: ordinary Codex reported 706,403 tokens and DEV quality 0.70718697; BananLoop reported 751,298 tokens against a nominal 750,000, overshooting by 1,298. The BananLoop arm was **ineligible** and its next candidate was not measured. The observed champion scores matched; this does not show an advantage.
 
 ## Required pre-preview benchmark: ordinary iterative Codex vs Codex + BananLoop
+
+The token-budget implementation described by open Draft PR #61 is not integrated into the audited `main` SHA. Its accounting is opt-in for Codex and rejects an over-cap candidate after an opaque call; it is not a provider-enforced spending stop. No confirmed spend budget or verified hostile-code sandbox is available for this task. Do not make paid calls or run generated code on the host.
 
 - Same pinned model/version/reasoning effort, initial repositories, task text, approved DEV information, tool permissions, evaluator and resource constraints.
 - Codex Direct **may iterate**, run approved DEV checks and repair its solution. Do not compare BananLoop against an artificially restricted one-shot baseline.
@@ -42,4 +44,4 @@ In the [public-only pilot report](https://github.com/ObiVanBanan/BananLoop/blob/
 - [ ] Produce a per-task comparison and limitations section.
 - [ ] Link evidence and review the final report before owner approval.
 
-Until these boxes are complete, the **benchmark gate is OPEN**. Existing DEV fixture improvements demonstrate a workflow, not superiority over standalone coding agents.
+The **benchmark gate is BLOCKED / INELIGIBLE**: no approved spend budget, exact all-role usage accounting, or verified isolated evaluator is available for a compliant run. Existing DEV fixture improvements demonstrate a workflow, not superiority over standalone coding agents. This blocks a v0.1 release recommendation; record diagnostics and resume only after the prerequisites are met.
