@@ -1,6 +1,6 @@
 # BananLoop — project description and closed-preview copy
 
-This file holds copy for the repository's GitHub **About**, a short announcement to invited testers, and draft release notes. Nothing here is evidence of a published version or a public release. GitHub currently reports repository visibility as **public**, which conflicts with the closed-preview intent; do not use private-preview copy or invite users until the discrepancy is resolved.
+This file holds copy for the repository's GitHub **About**, a short announcement to invited testers, and draft release notes. Nothing here is evidence of a published version or a public release. GitHub reports repository visibility as **private** (checked 2026-10-30 22:09 UTC), consistent with the closed-preview intent. Do not invite users until collaborator access and exposed-artifact review are complete.
 
 ## GitHub About — short description
 
