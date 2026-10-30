@@ -1,6 +1,6 @@
 # v0.1.0 Research Preview — release checklist
 
-**Release decision (2026-10-29): private Research Preview only.** Keep repository visibility private; no public launch, announcement, package or automatic tag. A reproducible head-to-head against ordinary iterative Codex is mandatory **before** inviting preview users or approving a private release. Follow the [publication protocol](PUBLISH_PROTOCOL.md) and record exact-SHA evidence. Writing documentation is not a release.
+**Release intent (2026-10-29): closed Research Preview.** However, GitHub reports repository visibility as public on 2026-10-30. The discrepancy remains unresolved; this work does not change visibility. No announcement, package, tag, or release is authorized here. A reproducible head-to-head against ordinary iterative Codex and the other mandatory gates must pass before recommending any preview. Follow the [publication protocol](PUBLISH_PROTOCOL.md) and record exact-SHA evidence. Writing documentation is not a release.
 
 ## Code / evaluation
 
@@ -26,13 +26,14 @@
 - [x] Issue and PR templates, changelog, roadmap.
 - [ ] Verify README/banner display in GitHub dark **and** light theme, including mobile width; use [visual handoff](VISUAL_DIRECTION.md) without treating illustration as measured UI.
 - [ ] Review/copy the [suggested GitHub About text and preview notes](RELEASE_COPY.md) into repository settings when approved.
-- [ ] Confirm repo remains **private**; review collaborator access and redact leaked credentials, personal paths or protected evaluation data before granting any preview access.
+- [ ] Resolve the verified public-visibility vs closed-preview discrepancy and review access/exposed artifacts before any preview recommendation. Do not change repository visibility in this work.
+- [ ] Complete the history-wide secret/privacy audit. A limited 2026-10-30 pattern scan found zero selected-format matches in 3,999 reachable object IDs, but is not a complete scanner/clearance.
 - [ ] Keep a comprehensive history-wide secrets and rights audit as an explicit prerequisite for any **future public** opening; do not change visibility as part of v0.1.0.
 
-## Approve private preview
+## Approve a closed preview
 
 - [ ] Record the exact final `main` SHA and obtain explicit owner approval after all mandatory checks.
-- [ ] Approve the audience, private access/invitations and distribution method. **No public GitHub Release or visibility change.**
+- [ ] Approve the intended audience, access and distribution method after the repository visibility discrepancy is resolved. **No public GitHub Release or visibility change.**
 - [ ] Optionally, after separate approval, create a private `v0.1.0` tag and GitHub Release referencing the approved SHA. Do not imply PyPI distribution.
 - [ ] Update README/CHANGELOG from the final measured report; distinguish exploratory DEV signals from independently evaluated comparisons.
 
