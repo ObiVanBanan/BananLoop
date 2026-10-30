@@ -8,7 +8,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 
 class Direction(StrEnum):
@@ -21,6 +21,7 @@ class CampaignStatus(StrEnum):
     RUNNING = "RUNNING"
     PAUSED_INFRA = "PAUSED_INFRA"
     PAUSED_NEEDS_INPUT = "PAUSED_NEEDS_INPUT"
+    PAUSED_USER = "PAUSED_USER"
     GOAL_MET = "GOAL_MET"
     STOPPED = "STOPPED"
 
@@ -35,6 +36,7 @@ class StopReason(StrEnum):
     PAUSED_INFRA = "PAUSED_INFRA"
     PAUSED_NEEDS_INPUT = "PAUSED_NEEDS_INPUT"
     USER_STOPPED = "USER_STOPPED"
+    USER_PAUSED = "USER_PAUSED"
     ATTEMPT_LIMIT = "ATTEMPT_LIMIT"
 
 
@@ -100,6 +102,110 @@ class BudgetSpec(BaseModel):
     max_evaluator_calls: int = Field(default=10, ge=1)
     deadline_seconds: int = Field(default=3600, ge=1)
     plateau_experiments: int = Field(default=3, ge=1)
+
+
+def pivot_proposal_digest(payload: dict[str, Any]) -> str:
+    """Hash the immutable, operator-reviewable body of a pivot proposal."""
+    body = {key: value for key, value in payload.items() if key not in {"proposal_id", "digest"}}
+    encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+class PivotResourceRequest(BaseModel):
+    """Estimated extra resources needed if an operator approves a pivot."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    additional_agent_calls: int = Field(default=0, ge=0, le=1000)
+    additional_evaluator_calls: int = Field(default=0, ge=0, le=1000)
+    additional_evaluation_units: float | None = Field(default=None, ge=0, le=1_000_000)
+    notes: str = Field(default="", max_length=1000)
+
+
+class PivotProposal(BaseModel):
+    """Immutable architecture-pivot proposal awaiting human review."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    proposal_id: str = Field(pattern=r"^pivot-[0-9a-f]{24}$")
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    spec_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    trigger_experiment_ordinal: int = Field(ge=1)
+    current_architecture: str = Field(min_length=1, max_length=2000)
+    proposed_architecture: str = Field(min_length=1, max_length=2000)
+    rationale: str = Field(min_length=1, max_length=2000)
+    expected_effect: str = Field(min_length=1, max_length=1000)
+    changed_scope: tuple[str, ...] = Field(min_length=1, max_length=32)
+    resources: PivotResourceRequest
+
+    @field_validator("changed_scope")
+    @classmethod
+    def bounded_scope_items(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not item.strip() or len(item) > 300 for item in value):
+            raise ValueError("pivot changed_scope entries must be nonempty and bounded")
+        return value
+
+    @model_validator(mode="after")
+    def digest_matches_body(self) -> "PivotProposal":
+        if pivot_proposal_digest(self.model_dump(mode="json")) != self.digest:
+            raise ValueError("pivot proposal digest does not match its immutable body")
+        if self.proposal_id != f"pivot-{self.digest[:24]}":
+            raise ValueError("pivot proposal id does not match its digest")
+        return self
+
+    @classmethod
+    def build(
+        cls, *, spec_hash: str, trigger_experiment_ordinal: int,
+        current_architecture: str, proposed_architecture: str,
+        rationale: str, expected_effect: str, changed_scope: list[str] | tuple[str, ...],
+        resources: PivotResourceRequest | dict[str, Any],
+    ) -> "PivotProposal":
+        payload = {
+            "spec_hash": spec_hash,
+            "trigger_experiment_ordinal": trigger_experiment_ordinal,
+            "current_architecture": current_architecture,
+            "proposed_architecture": proposed_architecture,
+            "rationale": rationale,
+            "expected_effect": expected_effect,
+            "changed_scope": list(changed_scope),
+            "resources": (
+                resources.model_dump(mode="json")
+                if isinstance(resources, PivotResourceRequest) else resources
+            ),
+        }
+        digest = pivot_proposal_digest(payload)
+        return cls.model_validate({
+            **payload,
+            "changed_scope": tuple(payload["changed_scope"]),
+            "proposal_id": f"pivot-{digest[:24]}",
+            "digest": digest,
+        })
+
+
+class PivotDecisionCommand(BaseModel):
+    """Explicit operator decision tied to one immutable proposal digest."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    campaign_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+    request_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+    proposal_id: str = Field(pattern=r"^pivot-[0-9a-f]{24}$")
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    decision: Literal["approve", "reject"]
+    rejection_action: Literal["continue_old_plan", "change_conditions", "end_campaign"] | None = None
+
+
+class SpecLineage(BaseModel):
+    """Immutable parent/approval link for a campaign created from a pivot."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["pivot"] = "pivot"
+    parent_campaign_id: str = Field(pattern=r"^(legacy|c-[0-9a-f]{32})$")
+    parent_spec_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    proposal_id: str = Field(pattern=r"^pivot-[0-9a-f]{24}$")
+    proposal_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    decision_request_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 
 
 class EvaluationAsset(BaseModel):
@@ -232,6 +338,18 @@ class CampaignSpec(BaseModel):
     # Opt-in semantic ranking after the existing deterministic admissibility gates.
     # Default is omitted from approved_hash for historical campaign compatibility.
     selection_mode: Literal["deterministic", "llm"] = "deterministic"
+    # Optional exact candidate portfolio for controlled selector comparisons.
+    # The raw UTF-8 JSON and digest are embedded in the approved campaign spec,
+    # so later file edits cannot alter the experiment input.
+    frozen_portfolio_json: str | None = None
+    frozen_portfolio_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    replicate_label: str | None = Field(
+        default=None, min_length=1, max_length=80,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$",
+    )
+    # Pivot child lineage is part of the explicitly confirmed child spec hash.
+    # Omit it for all existing standalone campaigns to preserve hash compatibility.
+    spec_lineage: SpecLineage | None = None
 
     @field_validator("forbidden_diff_patterns")
     @classmethod
@@ -310,10 +428,34 @@ class CampaignSpec(BaseModel):
         if self.budget.max_evaluation_units is not None:
             if self.budget.max_evaluation_units < minimum_calls * self.budget.evaluation_units_per_call:
                 raise ValueError("evaluation work budget too small for baseline staged evaluation")
+        if (self.frozen_portfolio_json is None) != (self.frozen_portfolio_sha256 is None):
+            raise ValueError("frozen portfolio JSON and SHA-256 must be set together")
+        if self.replicate_label is not None and self.frozen_portfolio_json is None:
+            raise ValueError("replicate_label requires a frozen portfolio")
+        if self.frozen_portfolio_json is not None:
+            actual_digest = hashlib.sha256(self.frozen_portfolio_json.encode("utf-8")).hexdigest()
+            if actual_digest != self.frozen_portfolio_sha256:
+                raise ValueError("frozen portfolio SHA-256 mismatch")
+            try:
+                frozen = json.loads(self.frozen_portfolio_json)
+                if not isinstance(frozen, dict) or frozen.get("schema_version") != 1:
+                    raise ValueError("frozen portfolio must be a schema_version 1 object")
+                candidates = frozen.get("candidates")
+                if not isinstance(candidates, list) or not candidates:
+                    raise ValueError("frozen portfolio requires a non-empty candidates list")
+                if frozen.get("candidate_count", len(candidates)) != len(candidates):
+                    raise ValueError("frozen portfolio candidate_count mismatch")
+                # Validate candidate fields at campaign approval time, while the
+                # exact authored JSON remains embedded and hash-bound.
+                HypothesisPortfolio.model_validate({"candidates": candidates})
+            except (json.JSONDecodeError, ValidationError) as exc:
+                raise ValueError(f"invalid frozen portfolio: {exc}") from exc
         return self
 
     def approved_hash(self) -> str:
         data = self.model_dump(mode="json")
+        if self.spec_lineage is None:
+            data.pop("spec_lineage", None)
         if self.paired_comparison is None:
             data.pop("paired_comparison", None)
         if not self.protocol_manifests:
@@ -354,6 +496,12 @@ class CampaignSpec(BaseModel):
             data.pop("non_regression", None)
         if self.selection_mode == "deterministic":
             data.pop("selection_mode", None)
+        if self.frozen_portfolio_json is None:
+            data.pop("frozen_portfolio_json", None)
+        if self.frozen_portfolio_sha256 is None:
+            data.pop("frozen_portfolio_sha256", None)
+        if self.replicate_label is None:
+            data.pop("replicate_label", None)
         # Keep approved hashes stable for campaign specs created before agent profiles.
         agent_data = data["agent"]
         for key in ("reasoning_effort", "provider"):
@@ -390,6 +538,7 @@ class HypothesisCandidate(BaseModel):
 
     candidate_id: str = Field(min_length=1, max_length=80)
     hypothesis: Hypothesis
+    composite_steps: list[Hypothesis] = Field(default_factory=list, max_length=4)
     evidence_refs: list[str] = Field(default_factory=list, max_length=8)
     suspected_failure_mode: str = Field(default="", max_length=300)
     predicted_observable: str = Field(min_length=1, max_length=500)
@@ -401,6 +550,13 @@ class HypothesisCandidate(BaseModel):
     rationale: str = Field(min_length=1, max_length=1000)
     uncertainty: str = Field(min_length=1, max_length=500)
     inference: Literal["agent_inference"] = "agent_inference"
+
+    @field_validator("composite_steps")
+    @classmethod
+    def bounded_composite_steps(cls, value: list[Hypothesis]) -> list[Hypothesis]:
+        if value and not 2 <= len(value) <= 4:
+            raise ValueError("a composite requires two to four ordered steps")
+        return value
 
     @field_validator("candidate_id")
     @classmethod

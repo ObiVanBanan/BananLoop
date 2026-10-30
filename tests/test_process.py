@@ -30,6 +30,22 @@ def test_process_error_includes_stdout_and_stderr(tmp_path: Path):
     assert excinfo.value.result.returncode == 7
 
 
+def test_binary_run_process_preserves_stdin_and_stdout_bytes(tmp_path: Path):
+    script = tmp_path / "binary_echo.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stdout.buffer.write(sys.stdin.buffer.read())\n",
+        encoding="utf-8",
+    )
+    payload = b"before\r\nafter\r\n\xff"
+    result = run_process(
+        [sys.executable, str(script)], cwd=tmp_path, timeout=5,
+        input_bytes=payload, binary=True,
+    )
+    assert result.stdout == payload
+    assert result.stderr == b""
+
+
 @pytest.mark.parametrize("reason", ["timeout", "stop"])
 def test_cancellation_stops_child_work(tmp_path: Path, reason):
     ready = tmp_path / "ready"

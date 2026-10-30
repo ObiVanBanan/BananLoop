@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bananloop"
+version = "0.1.0"
+description = "Local supervisor for measurable autonomous improvement campaigns"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["pydantic>=2.7"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+mutation = ["pytest>=8", "pytest-gremlins==1.13.1"]
+
+[project.scripts]
+bananloop = "bananloop.cli:main"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.pytest-gremlins]
+# Initial, opt-in scope: evaluation and promotion decisions.
+paths = ["src/bananloop/policy.py"]
+operators = ["comparison", "boundary"]
+workers = 1
+cache = false
+report = "console"
+
+[tool.setuptools.packages.find]
+where = ["src"]

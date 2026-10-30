@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "portfolio_id": "mini-matcher-public-manual-portfolio-v1",
+  "provenance": "New preregistered portfolio authored from public TASK.md requirements before either selector arm ran; not the historical smoke portfolio and not reconstructed from its summary.",
+  "source_task_sha256": "9125c7c6e245477adafda063e8f24e84de560f7950ae57f83ca3c52bf149e90e",
+  "candidate_count": 3,
+  "candidates": [
+    {
+      "candidate_id": "structured_regex",
+      "hypothesis": {
+        "hypothesis": "Parse DN/PN integers with boundary-aware bilingual regexes and map material/joining aliases to canonical values before filtering the catalog.",
+        "rationale": "The public task defines a finite set of notation aliases and exact numeric requirements.",
+        "expected_effect": "Increase exact matches while keeping incomplete and unsupported queries abstained.",
+        "files_or_area": [
+          "matcher.py"
+        ],
+        "falsification_condition": "DEV quality does not improve or a partial/ambiguous query returns an article.",
+        "mechanism_key": "structured_regex",
+        "relation": "new",
+        "prior_experiment_refs": [],
+        "novelty_rationale": "",
+        "target_failure_signal": "",
+        "failure_mechanism": ""
+      },
+      "composite_steps": [],
+      "evidence_refs": [
+        "INSUFFICIENT_EVIDENCE"
+      ],
+      "suspected_failure_mode": "Substring regexes may accept malformed or adjacent numeric tokens.",
+      "predicted_observable": "Exact alias and integer recognition with abstention when any attribute is missing.",
+      "discriminating_test": "Run the frozen public DEV cases covering English/Russian aliases, exact DN/PN mismatches, missing attributes, and unknown combinations.",
+      "scope_eligibility": true,
+      "estimated_agent_calls": 1,
+      "estimated_evaluator_calls": 1,
+      "estimated_work_units": null,
+      "rationale": "Use explicit token boundaries and canonical attribute values, then require a unique exact catalog tuple.",
+      "uncertainty": "No experiment evidence; extraction and boundary behavior remain to be measured.",
+      "inference": "agent_inference"
+    },
+    {
+      "candidate_id": "alias_normalization",
+      "hypothesis": {
+        "hypothesis": "Normalize Russian and English unit/material/joining aliases into canonical tokens, extract one value per attribute, and abstain on duplicate or conflicting mentions.",
+        "rationale": "A normalization stage can reduce language-specific branching while preserving exact attribute constraints.",
+        "expected_effect": "Improve bilingual coverage without accepting conflicting or incomplete descriptions.",
+        "files_or_area": [
+          "matcher.py"
+        ],
+        "falsification_condition": "Normalization conflates distinct attributes or fails to improve the frozen DEV quality.",
+        "mechanism_key": "alias_normalization",
+        "relation": "new",
+        "prior_experiment_refs": [],
+        "novelty_rationale": "",
+        "target_failure_signal": "",
+        "failure_mechanism": ""
+      },
+      "composite_steps": [],
+      "evidence_refs": [
+        "INSUFFICIENT_EVIDENCE"
+      ],
+      "suspected_failure_mode": "Substring-based alias replacement may collide with unrelated words or hide conflicts.",
+      "predicted_observable": "Canonical attribute extraction is stable across documented Russian and English synonyms.",
+      "discriminating_test": "Compare normalized attribute extraction on all frozen public DEV cases, including absent and conflicting values.",
+      "scope_eligibility": true,
+      "estimated_agent_calls": 1,
+      "estimated_evaluator_calls": 1,
+      "estimated_work_units": null,
+      "rationale": "Build a small explicit alias map and validate extracted value cardinality before exact tuple lookup.",
+      "uncertainty": "The public task lists aliases but does not specify tokenizer details.",
+      "inference": "agent_inference"
+    },
+    {
+      "candidate_id": "constraint_intersection",
+      "hypothesis": {
+        "hypothesis": "Extract possible values for each of the four attributes independently, intersect those constraints with catalog rows, and return only a unique surviving article.",
+        "rationale": "Independent constraints make missing, unsupported, and conflicting attributes visible before selection.",
+        "expected_effect": "Preserve no-match safety while matching supported exact catalog tuples.",
+        "files_or_area": [
+          "matcher.py"
+        ],
+        "falsification_condition": "The intersection accepts a row without explicit evidence for all four attributes or abstains on valid complete queries.",
+        "mechanism_key": "constraint_intersection",
+        "relation": "new",
+        "prior_experiment_refs": [],
+        "novelty_rationale": "",
+        "target_failure_signal": "",
+        "failure_mechanism": ""
+      },
+      "composite_steps": [],
+      "evidence_refs": [
+        "INSUFFICIENT_EVIDENCE"
+      ],
+      "suspected_failure_mode": "A permissive extractor may produce multiple possible values and create accidental matches.",
+      "predicted_observable": "Every returned article satisfies four independently extracted exact constraints and uniqueness.",
+      "discriminating_test": "Run frozen public cases for missing attributes, wrong attribute combinations, unknown catalog tuples, and valid exact matches.",
+      "scope_eligibility": true,
+      "estimated_agent_calls": 1,
+      "estimated_evaluator_calls": 1,
+      "estimated_work_units": null,
+      "rationale": "Use canonical value sets per attribute and require exactly one catalog row in their intersection.",
+      "uncertainty": "No experiment evidence; parser ambiguity and overlap require measurement.",
+      "inference": "agent_inference"
+    }
+  ]
+}

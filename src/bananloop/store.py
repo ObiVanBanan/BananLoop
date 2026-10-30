@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .contracts import CampaignSpec, utc_now
+from .contracts import CampaignSpec, PivotDecisionCommand, PivotProposal, utc_now
 
 
 SCHEMA = """
@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
   status TEXT NOT NULL,
   stop_reason TEXT,
   stop_requested INTEGER NOT NULL DEFAULT 0,
+  pause_requested INTEGER NOT NULL DEFAULT 0,
   stage TEXT,
   baseline_json TEXT,
   baseline_snapshot TEXT,
@@ -152,8 +153,72 @@ class CampaignStore:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
+        existed = path.exists() and path.stat().st_size > 0
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
+        version = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
+        if version > 4:
+            self.conn.close()
+            raise StoreError(f"campaign database schema {version} is newer than this BananLoop version")
+        if existed and version < 1:
+            backup = path.with_name(path.name + ".pre-operator-v1.bak")
+            if not backup.exists():
+                with sqlite3.connect(backup) as destination:
+                    self.conn.backup(destination)
+        if existed and version == 1:
+            backup = path.with_name(path.name + ".pre-composite-v2.bak")
+            suffix = 0
+            while True:
+                candidate = backup if suffix == 0 else backup.with_name(backup.name + f".{suffix}")
+                try:
+                    with candidate.open("xb"):
+                        pass
+                    backup = candidate
+                    break
+                except FileExistsError:
+                    suffix += 1
+            try:
+                with sqlite3.connect(backup) as destination:
+                    self.conn.backup(destination)
+            except Exception:
+                backup.unlink(missing_ok=True)
+                raise
+        if existed and version == 2:
+            backup = path.with_name(path.name + ".pre-pivot-v3.bak")
+            suffix = 0
+            while True:
+                candidate = backup if suffix == 0 else backup.with_name(backup.name + f".{suffix}")
+                try:
+                    with candidate.open("xb"):
+                        pass
+                    backup = candidate
+                    break
+                except FileExistsError:
+                    suffix += 1
+            try:
+                with sqlite3.connect(backup) as destination:
+                    self.conn.backup(destination)
+            except Exception:
+                backup.unlink(missing_ok=True)
+                raise
+        if existed and version == 3:
+            backup = path.with_name(path.name + ".pre-pivot-decision-v4.bak")
+            suffix = 0
+            while True:
+                candidate = backup if suffix == 0 else backup.with_name(backup.name + f".{suffix}")
+                try:
+                    with candidate.open("xb"):
+                        pass
+                    backup = candidate
+                    break
+                except FileExistsError:
+                    suffix += 1
+            try:
+                with sqlite3.connect(backup) as destination:
+                    self.conn.backup(destination)
+            except Exception:
+                backup.unlink(missing_ok=True)
+                raise
         self.conn.executescript(SCHEMA)
         self._migrate_schema()
 
@@ -174,6 +239,8 @@ class CampaignStore:
             self.conn.execute("ALTER TABLE campaigns ADD COLUMN research_state_json TEXT")
         if "stop_requested" not in campaign_columns:
             self.conn.execute("ALTER TABLE campaigns ADD COLUMN stop_requested INTEGER NOT NULL DEFAULT 0")
+        if "pause_requested" not in campaign_columns:
+            self.conn.execute("ALTER TABLE campaigns ADD COLUMN pause_requested INTEGER NOT NULL DEFAULT 0")
 
         action_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(actions)")}
         if "request_json" not in action_columns:
@@ -186,7 +253,344 @@ class CampaignStore:
             self.conn.execute("ALTER TABLE experiments ADD COLUMN dev_decision_json TEXT")
         if "failure_analysis_json" not in experiment_columns:
             self.conn.execute("ALTER TABLE experiments ADD COLUMN failure_analysis_json TEXT")
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS operator_requests (
+                request_id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL CHECK(kind IN ('pause','resume','end')),
+                status TEXT NOT NULL CHECK(status IN ('ACCEPTED','COMPLETED','REJECTED','UNKNOWN')),
+                payload_json TEXT NOT NULL,
+                result_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+        )
+        composite_columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(experiments)")
+        }
+        if "composite_id" not in composite_columns:
+            self.conn.execute("ALTER TABLE experiments ADD COLUMN composite_id TEXT")
+        if "composite_step" not in composite_columns:
+            self.conn.execute("ALTER TABLE experiments ADD COLUMN composite_step INTEGER")
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS composite_sequences (
+                id TEXT PRIMARY KEY,
+                campaign_id INTEGER NOT NULL REFERENCES campaigns(id),
+                base_snapshot TEXT NOT NULL,
+                tip_snapshot TEXT NOT NULL,
+                max_steps INTEGER NOT NULL CHECK(max_steps BETWEEN 2 AND 4),
+                status TEXT NOT NULL CHECK(status IN ('ACTIVE','COMPLETED','REJECTED','ABANDONED')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                plan_json TEXT NOT NULL DEFAULT '[]',
+                current_step INTEGER NOT NULL DEFAULT 0,
+                final_experiment_id INTEGER
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS composite_steps (
+                composite_id TEXT NOT NULL REFERENCES composite_sequences(id),
+                step_order INTEGER NOT NULL,
+                experiment_id INTEGER NOT NULL UNIQUE REFERENCES experiments(id),
+                parent_snapshot TEXT NOT NULL,
+                candidate_snapshot TEXT NOT NULL,
+                dev_decision_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(composite_id,step_order)
+            )"""
+        )
+        self.conn.execute("CREATE INDEX IF NOT EXISTS composite_steps_experiment ON composite_steps(experiment_id)")
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS pivot_proposals (
+                proposal_id TEXT PRIMARY KEY,
+                digest TEXT NOT NULL UNIQUE,
+                spec_hash TEXT NOT NULL,
+                trigger_experiment_ordinal INTEGER NOT NULL,
+                proposal_json TEXT NOT NULL,
+                pause_reason TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('PENDING','APPROVED','REJECTED','STALE')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+        )
+        self.conn.execute("CREATE INDEX IF NOT EXISTS pivot_proposals_status ON pivot_proposals(status, created_at)")
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS pivot_decisions (
+                request_id TEXT PRIMARY KEY,
+                campaign_id TEXT NOT NULL,
+                proposal_id TEXT NOT NULL REFERENCES pivot_proposals(proposal_id),
+                digest TEXT NOT NULL,
+                decision TEXT NOT NULL CHECK(decision IN ('approve','reject')),
+                status TEXT NOT NULL CHECK(status IN ('APPROVED','REJECTED','STALE')),
+                result_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )"""
+        )
+        self.conn.execute("CREATE INDEX IF NOT EXISTS pivot_decisions_proposal ON pivot_decisions(proposal_id, created_at)")
+        self.conn.execute("PRAGMA user_version=4")
         self.conn.commit()
+
+    def save_pivot_proposal(self, proposal: PivotProposal, pause_reason: str) -> dict[str, Any]:
+        """Persist an immutable proposal; replay is idempotent by ID and digest."""
+        if not pause_reason or len(pause_reason) > 1000:
+            raise StoreError("pivot proposal pause reason must be nonempty and bounded")
+        payload = proposal.model_dump(mode="json")
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        with self.conn:
+            existing = self.pivot_proposal(proposal.proposal_id)
+            if existing is not None:
+                if existing["digest"] != proposal.digest or existing["proposal_json"] != encoded:
+                    raise StoreError("pivot proposal id reused with different content")
+                return existing
+            self.conn.execute(
+                "INSERT INTO pivot_proposals VALUES(?,?,?,?,?,?, 'PENDING',?,?)",
+                (
+                    proposal.proposal_id, proposal.digest, proposal.spec_hash,
+                    proposal.trigger_experiment_ordinal, encoded, pause_reason,
+                    utc_now(), utc_now(),
+                ),
+            )
+            self.event("PIVOT_PROPOSAL_CREATED", {
+                "proposal_id": proposal.proposal_id,
+                "digest": proposal.digest,
+                "trigger_experiment_ordinal": proposal.trigger_experiment_ordinal,
+                "pause_reason": pause_reason,
+            })
+            return self.pivot_proposal(proposal.proposal_id)
+
+    def pivot_proposal(self, proposal_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM pivot_proposals WHERE proposal_id=?", (proposal_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def pending_pivot_proposal(self) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM pivot_proposals WHERE status='PENDING' ORDER BY created_at LIMIT 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+    def pivot_decision(self, request_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM pivot_decisions WHERE request_id=?", (request_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def approved_pivot_for_child(
+        self, proposal_id: str, digest: str, campaign_id: str,
+    ) -> tuple[PivotProposal, dict[str, Any]]:
+        """Return only an intact, approved pivot bound to this paused parent."""
+        row = self.pivot_proposal(proposal_id)
+        campaign = self.campaign()
+        decision_row = self.conn.execute(
+            "SELECT * FROM pivot_decisions WHERE campaign_id=? AND proposal_id=? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (campaign_id, proposal_id),
+        ).fetchone()
+        if (
+            campaign["status"] != "PAUSED_NEEDS_INPUT"
+            or row is None
+            or decision_row is None
+            or decision_row["status"] != "APPROVED"
+            or decision_row["decision"] != "approve"
+            or decision_row["digest"] != digest
+            or row["status"] != "APPROVED"
+            or not self._pivot_proposal_is_intact(row, digest, require_paused=True)
+        ):
+            raise StoreError("pivot approval is missing, stale, or bound to a different parent")
+        proposal = PivotProposal.model_validate_json(row["proposal_json"])
+        if proposal.proposal_id != proposal_id or proposal.spec_hash != campaign["spec_hash"]:
+            raise StoreError("approved pivot proposal no longer matches the parent spec")
+        return proposal, dict(decision_row)
+
+    def _pivot_proposal_is_intact(
+        self, proposal_row: dict[str, Any] | None, expected_digest: str,
+        *, require_paused: bool,
+    ) -> bool:
+        if proposal_row is None:
+            return False
+        try:
+            proposal = PivotProposal.model_validate_json(proposal_row["proposal_json"])
+            canonical = json.dumps(
+                proposal.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            campaign = self.campaign()
+        except (ValueError, TypeError, json.JSONDecodeError, StoreError):
+            return False
+        return bool(
+            proposal.proposal_id == proposal_row["proposal_id"]
+            and proposal.digest == expected_digest == proposal_row["digest"]
+            and proposal.spec_hash == campaign["spec_hash"] == proposal_row["spec_hash"]
+            and canonical == proposal_row["proposal_json"]
+            and (not require_paused or campaign["status"] == "PAUSED_NEEDS_INPUT")
+        )
+
+    def apply_pivot_decision(
+        self, selected_campaign_id: str, command: PivotDecisionCommand,
+    ) -> dict[str, Any]:
+        """Atomically validate proposal identity/digest and record one decision."""
+        if not selected_campaign_id or command.campaign_id != selected_campaign_id:
+            raise StoreError("pivot decision targets a different campaign")
+        if command.decision == "approve" and command.rejection_action is not None:
+            raise StoreError("approval cannot include a rejection action")
+        if command.decision == "reject" and command.rejection_action not in {
+            None, "continue_old_plan", "change_conditions", "end_campaign",
+        }:
+            raise StoreError("invalid pivot rejection action")
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            previous = self.pivot_decision(command.request_id)
+            if previous is not None:
+                if any(previous[key] != value for key, value in {
+                    "campaign_id": command.campaign_id,
+                    "proposal_id": command.proposal_id,
+                    "digest": command.digest,
+                    "decision": command.decision,
+                }.items()):
+                    raise StoreError("pivot decision request id reused with different command")
+                try:
+                    previous_action = json.loads(previous["result_json"]).get("rejection_action")
+                except (ValueError, TypeError, AttributeError):
+                    previous_action = None
+                if previous_action != command.rejection_action:
+                    raise StoreError("pivot decision request id reused with different command")
+                if previous["status"] != "STALE":
+                    proposal_row = self.pivot_proposal(command.proposal_id)
+                    if (
+                        not self._pivot_proposal_is_intact(
+                            proposal_row, command.digest, require_paused=False,
+                        )
+                        or proposal_row["status"] != previous["status"]
+                    ):
+                        result = json.dumps(
+                            {"reason": "approved proposal content is stale"},
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                        now = utc_now()
+                        if proposal_row is not None:
+                            self.conn.execute(
+                                "UPDATE pivot_proposals SET status='STALE',updated_at=? WHERE proposal_id=?",
+                                (now, command.proposal_id),
+                            )
+                        self.conn.execute(
+                            "UPDATE pivot_decisions SET status='STALE',result_json=? WHERE request_id=?",
+                            (result, command.request_id),
+                        )
+                        self.event("PIVOT_DECISION_INVALIDATED", {
+                            "request_id": command.request_id,
+                            "proposal_id": command.proposal_id,
+                            "digest": command.digest,
+                            "reason": "proposal content no longer matches the approved digest",
+                        })
+                        previous = self.pivot_decision(command.request_id)
+                self.conn.commit()
+                return previous
+
+            proposal_row = self.pivot_proposal(command.proposal_id)
+            if proposal_row is None:
+                raise StoreError("pivot proposal not found")
+            if command.digest != proposal_row["digest"]:
+                raise StoreError("pivot proposal digest mismatch")
+            if proposal_row["status"] != "PENDING":
+                raise StoreError("pivot proposal is no longer pending")
+
+            result: dict[str, Any] = {}
+            status: str
+            try:
+                if not self._pivot_proposal_is_intact(
+                    proposal_row, command.digest, require_paused=True,
+                ):
+                    raise ValueError("proposal no longer matches its displayed identity or campaign")
+                status = "APPROVED" if command.decision == "approve" else "REJECTED"
+                result = {"proposal_id": command.proposal_id, "digest": command.digest}
+                if command.decision == "reject" and command.rejection_action is not None:
+                    result["rejection_action"] = command.rejection_action
+            except (ValueError, TypeError, json.JSONDecodeError):
+                status = "STALE"
+                result = {"reason": "proposal identity or immutable content is stale"}
+
+            now = utc_now()
+            self.conn.execute(
+                "UPDATE pivot_proposals SET status=?,updated_at=? WHERE proposal_id=? AND status='PENDING'",
+                (status, now, command.proposal_id),
+            )
+            self.conn.execute(
+                "INSERT INTO pivot_decisions VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    command.request_id, command.campaign_id, command.proposal_id,
+                    command.digest, command.decision, status,
+                    json.dumps(result, sort_keys=True, separators=(",", ":")), now,
+                ),
+            )
+            self.event("PIVOT_DECISION_RECORDED", {
+                "request_id": command.request_id,
+                "proposal_id": command.proposal_id,
+                "digest": command.digest,
+                "decision": command.decision,
+                "status": status,
+            })
+            decision = self.pivot_decision(command.request_id)
+            self.conn.commit()
+            return decision
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def control_request(self, request_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM operator_requests WHERE request_id=?", (request_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def pending_control_requests(self, kind: str) -> list[dict[str, Any]]:
+        return [dict(row) for row in self.conn.execute(
+            "SELECT * FROM operator_requests WHERE kind=? AND status='ACCEPTED' ORDER BY created_at",
+            (kind,),
+        )]
+
+    def record_control_request(self, request_id: str, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if not request_id or len(request_id) > 200:
+            raise StoreError("invalid operator request id")
+        if kind not in {"pause", "resume", "end"}:
+            raise StoreError("invalid operator request kind")
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        with self.conn:
+            existing = self.control_request(request_id)
+            if existing is not None:
+                if existing["kind"] != kind or existing["payload_json"] != encoded:
+                    raise StoreError("operator request id reused with different command")
+                return existing
+            now = utc_now()
+            self.conn.execute(
+                "INSERT INTO operator_requests VALUES(?,?,?,?,?,?,?)",
+                (request_id, kind, "ACCEPTED", encoded, None, now, now),
+            )
+            self.event("OPERATOR_REQUEST_ACCEPTED", {"request_id": request_id, "kind": kind})
+            return self.control_request(request_id)
+
+    def finish_control_request(self, request_id: str, status: str, result: dict[str, Any]) -> dict[str, Any]:
+        if status not in {"COMPLETED", "REJECTED", "UNKNOWN"}:
+            raise StoreError("invalid operator request outcome")
+        with self.conn:
+            existing = self.control_request(request_id)
+            if existing is None:
+                raise StoreError("operator request missing")
+            encoded = json.dumps(result, sort_keys=True, separators=(",", ":"))
+            if existing["status"] != "ACCEPTED":
+                if existing["status"] != status or existing["result_json"] != encoded:
+                    raise StoreError("operator request outcome already recorded")
+                return existing
+            self.conn.execute(
+                "UPDATE operator_requests SET status=?,result_json=?,updated_at=? WHERE request_id=?",
+                (status, encoded, utc_now(), request_id),
+            )
+            self.event("OPERATOR_REQUEST_FINISHED", {"request_id": request_id, "status": status})
+            return self.control_request(request_id)
 
     def close(self) -> None:
         self.conn.close()
@@ -239,6 +643,26 @@ class CampaignStore:
                 self.event("STOP_REQUESTED", {})
         return bool(changed)
 
+    def request_pause(self) -> bool:
+        """Request a resumable halt without changing the live stage."""
+        with self.conn:
+            changed = self.conn.execute(
+                "UPDATE campaigns SET pause_requested=1,updated_at=? WHERE id=1 "
+                "AND status IN ('READY','RUNNING') AND pause_requested=0 AND stop_requested=0",
+                (utc_now(),),
+            ).rowcount
+            if changed:
+                self.event("PAUSE_REQUESTED", {})
+        return bool(changed)
+
+    def clear_pause_request(self) -> None:
+        with self.conn:
+            self.conn.execute(
+                "UPDATE campaigns SET pause_requested=0,updated_at=? WHERE id=1",
+                (utc_now(),),
+            )
+            self.event("PAUSE_CLEARED", {})
+
     def increment(self, field: str, amount: int = 1) -> None:
         allowed = {"experiment_count", "attempt_count", "agent_calls", "evaluator_calls", "non_improve_streak"}
         if field not in allowed:
@@ -273,6 +697,48 @@ class CampaignStore:
         )
         self.event("ATTEMPT_STARTED", {"experiment_id": experiment_id, "attempt_id": attempt_id})
         self.conn.commit()
+        return experiment_id, attempt_id
+
+    def create_composite_attempt(self, sequence_id: str) -> tuple[int, int]:
+        """Create the next composite experiment, attempt and link atomically."""
+        now = utc_now()
+        with self.conn:
+            campaign = self.campaign()
+            sequence = self.conn.execute(
+                "SELECT * FROM composite_sequences WHERE id=?", (sequence_id,),
+            ).fetchone()
+            if sequence is None or sequence["status"] != "ACTIVE":
+                raise StoreError("composite is not active")
+            if campaign["active_attempt_id"] is not None:
+                raise StoreError("cannot create a composite attempt while another attempt is active")
+            step_order = int(sequence["current_step"]) + 1
+            if step_order > int(sequence["max_steps"]):
+                raise StoreError("composite has no remaining steps")
+            if campaign["champion_snapshot"] != sequence["base_snapshot"]:
+                raise StoreError("composite champion changed before its next step")
+            row = self.conn.execute(
+                "SELECT COALESCE(MAX(ordinal), 0) AS max_ordinal FROM experiments"
+            ).fetchone()
+            ordinal = int(row["max_ordinal"]) + 1
+            parent_snapshot = sequence["tip_snapshot"]
+            cur = self.conn.execute(
+                "INSERT INTO experiments(ordinal,parent_snapshot,status,composite_id,composite_step,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
+                (ordinal, parent_snapshot, "ACTIVE", sequence_id, step_order, now, now),
+            )
+            experiment_id = int(cur.lastrowid)
+            cur = self.conn.execute(
+                "INSERT INTO attempts(experiment_id,stage,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+                (experiment_id, "PROPOSE", "ACTIVE", now, now),
+            )
+            attempt_id = int(cur.lastrowid)
+            self.conn.execute(
+                "UPDATE campaigns SET active_experiment_id=?,active_attempt_id=?,attempt_count=attempt_count+1,stage='PROPOSE',updated_at=? WHERE id=1",
+                (experiment_id, attempt_id, now),
+            )
+            self.event("ATTEMPT_STARTED", {
+                "experiment_id": experiment_id, "attempt_id": attempt_id,
+                "composite_id": sequence_id, "composite_step": step_order,
+            })
         return experiment_id, attempt_id
 
     def attempt(self, attempt_id: int) -> dict[str, Any]:
@@ -324,6 +790,181 @@ class CampaignStore:
         self.event("ATTEMPT_COMPLETED", {"attempt_id": attempt_id, "experiment_id": experiment_id, "status": status})
         self.conn.commit()
 
+    def create_composite(
+        self, sequence_id: str, base_snapshot: str, *, plan: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not sequence_id or len(sequence_id) > 80 or not sequence_id.replace("-", "").isalnum():
+            raise StoreError("composite ID must be a stable alphanumeric slug")
+        if not 2 <= len(plan) <= 4:
+            raise StoreError("composite plan must contain between 2 and 4 steps")
+        now = utc_now()
+        with self.conn:
+            campaign = self.campaign()
+            if campaign["champion_snapshot"] != base_snapshot:
+                raise StoreError("composite base must be the current champion snapshot")
+            self.conn.execute(
+                "INSERT INTO composite_sequences(id,campaign_id,base_snapshot,tip_snapshot,max_steps,status,created_at,updated_at,plan_json,current_step) VALUES(?,?,?,?,?,'ACTIVE',?,?,?,0)",
+                (sequence_id, 1, base_snapshot, base_snapshot, len(plan), now, now,
+                 json.dumps(plan, sort_keys=True)),
+            )
+            self.event("COMPOSITE_STARTED", {"composite_id": sequence_id, "max_steps": len(plan)})
+        return self.composite(sequence_id)
+
+    def composite(self, sequence_id: str) -> dict[str, Any]:
+        row = self.conn.execute("SELECT * FROM composite_sequences WHERE id=?", (sequence_id,)).fetchone()
+        if row is None:
+            raise StoreError(f"composite {sequence_id} missing")
+        result = dict(row)
+        result["steps"] = [dict(item) for item in self.conn.execute(
+            "SELECT * FROM composite_steps WHERE composite_id=? ORDER BY step_order", (sequence_id,)
+        )]
+        return result
+
+    def active_composite(self) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT id FROM composite_sequences WHERE status='ACTIVE' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        return self.composite(row["id"]) if row else None
+
+    def attach_composite_attempt(self, sequence_id: str, experiment_id: int, step_order: int) -> None:
+        sequence = self.composite(sequence_id)
+        if sequence["status"] != "ACTIVE":
+            raise StoreError("composite is not active")
+        plan = json.loads(sequence["plan_json"])
+        if not 1 <= step_order <= len(plan) or int(sequence["current_step"]) + 1 != step_order:
+            raise StoreError("composite step is not next in saved plan")
+        with self.conn:
+            self.conn.execute(
+                "UPDATE experiments SET composite_id=?,composite_step=? WHERE id=?",
+                (sequence_id, step_order, experiment_id),
+            )
+
+    def start_composite_for_attempt(
+        self, sequence_id: str, base_snapshot: str, *, plan: list[dict[str, Any]],
+        experiment_id: int,
+    ) -> dict[str, Any]:
+        """Atomically persist a proposal sequence and link its first attempt.
+
+        Replays accept only the same durable plan/base and the same active
+        experiment, so a crash after this transaction cannot create a second
+        sequence or attach a different proposal to the saved ID.
+        """
+        if not sequence_id or len(sequence_id) > 80 or not sequence_id.replace("-", "").isalnum():
+            raise StoreError("composite ID must be a stable alphanumeric slug")
+        if not 2 <= len(plan) <= 4:
+            raise StoreError("composite plan must contain between 2 and 4 steps")
+        plan_json = json.dumps(plan, sort_keys=True)
+        now = utc_now()
+        with self.conn:
+            campaign = self.campaign()
+            experiment = self.experiment(experiment_id)
+            if campaign["champion_snapshot"] != base_snapshot:
+                raise StoreError("composite base must be the current champion snapshot")
+            if campaign["active_experiment_id"] != experiment_id:
+                raise StoreError("composite must attach to the active experiment")
+            if experiment["parent_snapshot"] != base_snapshot:
+                raise StoreError("composite base must match the proposal parent snapshot")
+            sequence = self.conn.execute(
+                "SELECT * FROM composite_sequences WHERE id=?", (sequence_id,),
+            ).fetchone()
+            if sequence is None:
+                self.conn.execute(
+                    "INSERT INTO composite_sequences(id,campaign_id,base_snapshot,tip_snapshot,max_steps,status,created_at,updated_at,plan_json,current_step) VALUES(?,?,?,?,?,'ACTIVE',?,?,?,0)",
+                    (sequence_id, 1, base_snapshot, base_snapshot, len(plan), now, now, plan_json),
+                )
+                self.event("COMPOSITE_STARTED", {
+                    "composite_id": sequence_id, "max_steps": len(plan),
+                })
+            else:
+                if (sequence["campaign_id"] != 1
+                        or sequence["base_snapshot"] != base_snapshot
+                        or sequence["max_steps"] != len(plan)
+                        or sequence["plan_json"] != plan_json
+                        or sequence["status"] != "ACTIVE"
+                        or int(sequence["current_step"]) != 0):
+                    raise StoreError("composite replay conflicts with saved proposal identity")
+            if experiment.get("composite_id") is None:
+                self.conn.execute(
+                    "UPDATE experiments SET composite_id=?,composite_step=1 WHERE id=?",
+                    (sequence_id, experiment_id),
+                )
+            elif experiment["composite_id"] != sequence_id or int(experiment["composite_step"] or 0) != 1:
+                raise StoreError("composite replay conflicts with active experiment link")
+        return self.composite(sequence_id)
+
+    def complete_composite_step(
+        self, sequence_id: str, experiment_id: int, *, parent_snapshot: str,
+        candidate_snapshot: str, dev_decision: dict[str, Any], status: str,
+    ) -> int:
+        experiment = self.experiment(experiment_id)
+        expected_order = int(experiment.get("composite_step") or 0)
+        decision_json = json.dumps(dev_decision, sort_keys=True)
+        now = utc_now()
+        with self.conn:
+            sequence = self.conn.execute(
+                "SELECT * FROM composite_sequences WHERE id=?", (sequence_id,)
+            ).fetchone()
+            if sequence is None:
+                raise StoreError("composite is missing")
+            existing = self.conn.execute(
+                "SELECT * FROM composite_steps WHERE composite_id=? AND experiment_id=?",
+                (sequence_id, experiment_id),
+            ).fetchone()
+            if existing:
+                order = int(existing["step_order"])
+                if (order != expected_order or existing["parent_snapshot"] != parent_snapshot
+                        or existing["candidate_snapshot"] != candidate_snapshot
+                        or existing["dev_decision_json"] != decision_json or existing["status"] != status):
+                    raise StoreError("composite retry conflicts with recorded step")
+                expected_tip = parent_snapshot if status == "FAILED" else candidate_snapshot
+                if int(sequence["current_step"]) == order - 1 and sequence["tip_snapshot"] == expected_tip:
+                    self.conn.execute(
+                        "UPDATE composite_sequences SET current_step=?,updated_at=? WHERE id=?",
+                        (order, now, sequence_id),
+                    )
+                elif int(sequence["current_step"]) != order or sequence["tip_snapshot"] != expected_tip:
+                    raise StoreError("composite retry conflicts with durable sequence state")
+                return order
+            if sequence["status"] != "ACTIVE":
+                raise StoreError("composite is not active")
+            order = int(sequence["current_step"]) + 1
+            if expected_order != order:
+                raise StoreError("composite experiment step order mismatch")
+            if parent_snapshot != sequence["tip_snapshot"]:
+                raise StoreError("composite parent must equal durable sequence tip")
+            if order > int(sequence["max_steps"]):
+                raise StoreError("composite step limit exceeded")
+            self.conn.execute("INSERT INTO composite_steps VALUES(?,?,?,?,?,?,?,?,?)", (
+                sequence_id, order, experiment_id, parent_snapshot, candidate_snapshot,
+                decision_json, status, now, now,
+            ))
+            tip_snapshot = parent_snapshot if status == "FAILED" else candidate_snapshot
+            self.conn.execute(
+                "UPDATE composite_sequences SET tip_snapshot=?,current_step=?,updated_at=? WHERE id=?",
+                (tip_snapshot, order, now, sequence_id),
+            )
+            self.event("COMPOSITE_STEP_RECORDED", {"composite_id": sequence_id, "step": order,
+                "experiment_id": experiment_id, "snapshot": candidate_snapshot, "status": status})
+        return order
+
+    def finish_composite(self, sequence_id: str, *, status: str, final_experiment_id: int | None = None) -> None:
+        if status not in {"COMPLETED", "REJECTED", "ABANDONED"}:
+            raise StoreError("invalid composite terminal status")
+        with self.conn:
+            row = self.conn.execute("SELECT status,final_experiment_id FROM composite_sequences WHERE id=?", (sequence_id,)).fetchone()
+            if row is None:
+                raise StoreError("composite is missing")
+            if row["status"] != "ACTIVE":
+                if row["status"] == status and row["final_experiment_id"] == final_experiment_id:
+                    return
+                raise StoreError("composite already has a different terminal outcome")
+            self.conn.execute(
+                "UPDATE composite_sequences SET status=?,final_experiment_id=?,updated_at=? WHERE id=?",
+                (status, final_experiment_id, utc_now(), sequence_id),
+            )
+            self.event("COMPOSITE_FINISHED", {"composite_id": sequence_id, "status": status,
+                "final_experiment_id": final_experiment_id})
+
     def promote_attempt(self, attempt_id: int, experiment_id: int) -> None:
         """Commit champion, promotion receipt and next stage as one transaction."""
         attempt = self.attempt(attempt_id)
@@ -337,7 +978,20 @@ class CampaignStore:
             raise StoreError("promotion requires the active PROMOTE stage")
         if not json.loads(experiment["decision_json"] or "{}").get("accepted"):
             raise StoreError("cannot promote a rejected candidate")
-        if campaign["champion_snapshot"] not in {experiment["parent_snapshot"], experiment["candidate_snapshot"]}:
+        if experiment.get("composite_id"):
+            sequence = self.composite(experiment["composite_id"])
+            final_order = int(experiment.get("composite_step") or 0)
+            plan_length = len(json.loads(sequence["plan_json"]))
+            composite_final_is_current = (
+                sequence["status"] == "ACTIVE"
+                and final_order == plan_length
+                and int(sequence["current_step"]) == final_order - 1
+                and sequence["tip_snapshot"] == experiment["parent_snapshot"]
+                and sequence["base_snapshot"] == campaign["champion_snapshot"]
+            )
+            if not composite_final_is_current:
+                raise StoreError("composite promotion is not the current final step")
+        elif campaign["champion_snapshot"] not in {experiment["parent_snapshot"], experiment["candidate_snapshot"]}:
             raise StoreError("champion changed before promotion")
         now = utc_now()
         with self.conn:

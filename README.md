@@ -152,7 +152,7 @@ Backends available in the codebase include **Codex CLI**, **Pi RPC**, and a gene
 
 ## What comes next
 
-**Planned, not shipped:** a visual research UI with a hypothesis tree and metric charts; human-approved major architecture pivots; richer multi-step research plans and benchmark coverage.
+**Current operator screen:** the opt-in Pi extension displays committed snapshots/events and DEV metrics, exposes explicit `/pause` and `/resume`, and provides `/chat` through a restricted Codex app-server bridge. Natural-language pause requests become short-lived proposals that require a separate confirmation token; chat cannot execute controls directly. Composite hypotheses are implemented with branch-local intermediate DEV steps and final validation/promotion gates. Immutable architecture pivot proposals and explicit digest-bound operator decisions are implemented; decisions do not automatically resume or create a child campaign. Live Codex/account behavior and Windows Terminal acceptance remain unverified. Selector A/B measurements and complete benchmark expansion remain open. See the [roadmap](docs/ROADMAP.md).
 
 Read the [roadmap](docs/ROADMAP.md) and [release status](CHANGELOG.md).
 

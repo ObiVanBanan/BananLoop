@@ -1,6 +1,7 @@
 import json
+import pytest
 
-from bananloop.cli import _agent_config, parser
+from bananloop.cli import MAX_FROZEN_PORTFOLIO_BYTES, _agent_config, _read_frozen_portfolio, parser
 
 
 def test_goal_uses_profile_default_backend(tmp_path):
@@ -54,6 +55,21 @@ def test_init_cli_accepts_agent_isolation_controls():
         "public_hard_pass_rate",
         "public_false_match_rate",
     ]
+
+
+def test_init_cli_parses_frozen_portfolio_and_replicate_label():
+    args = parser().parse_args([
+        "init", "--frozen-portfolio", "portfolio.json", "--replicate-label", "seed-53",
+    ])
+    assert args.frozen_portfolio == "portfolio.json"
+    assert args.replicate_label == "seed-53"
+
+
+def test_frozen_portfolio_reader_rejects_oversized_file(tmp_path):
+    path = tmp_path / "oversized-portfolio.json"
+    path.write_bytes(b" " * (MAX_FROZEN_PORTFOLIO_BYTES + 1))
+    with pytest.raises(ValueError, match="exceeds the 1048576-byte limit"):
+        _read_frozen_portfolio(path)
 
 
 
@@ -256,3 +272,64 @@ def test_opt_in_semantic_selector_cli_modes():
         args = parser().parse_args([command, *prefix, "--selector-mode", "llm"])
         assert args.selector_mode == "llm"
     assert parser().parse_args(["goal", "improve"]).selector_mode == "deterministic"
+
+
+def test_pivot_decision_cli_requires_rejection_choice_and_exact_fields():
+    import pytest
+    from bananloop.cli import cmd_pivot_decision, parser
+    from bananloop.store import StoreError
+
+    cli = parser()
+    prefix = ["pivot-decision", "--campaign-id", "c-" + "a" * 32,
+              "--proposal-id", "pivot-" + "b" * 24, "--digest", "c" * 64,
+              "--request-id", "decision-1"]
+    with pytest.raises(StoreError, match="requires --on-reject"):
+        cmd_pivot_decision(cli.parse_args([*prefix, "--decision", "reject"]))
+    approved = cli.parse_args([*prefix, "--decision", "approve"])
+    assert approved.decision == "approve"
+    rejected = cli.parse_args([*prefix, "--decision", "reject", "--on-reject", "change_conditions"])
+    assert rejected.on_reject == "change_conditions"
+
+
+def test_pivot_decision_cli_records_operator_choice_without_execution(tmp_path, capsys):
+    import json
+    from bananloop.cli import cmd_pivot_decision
+    from bananloop.contracts import PivotProposal, PivotResourceRequest
+    from bananloop.store import CampaignStore
+    from test_store_resources import make_store
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    store = make_store(state_dir)
+    proposal = PivotProposal.build(
+        spec_hash=store.campaign()["spec_hash"], trigger_experiment_ordinal=1,
+        current_architecture="old", proposed_architecture="new", rationale="reason",
+        expected_effect="effect", changed_scope=["src/new.py"],
+        resources=PivotResourceRequest(additional_agent_calls=1, additional_evaluator_calls=1, notes="bounded"),
+    )
+    store.save_pivot_proposal(proposal, "awaiting operator")
+    store.update_campaign(status="PAUSED_NEEDS_INPUT", stop_reason="PAUSED_NEEDS_INPUT")
+    before = store.campaign()
+    store.close()
+
+    args = parser().parse_args([
+        "pivot-decision", "--repo", str(tmp_path), "--state-dir", str(state_dir),
+        "--decision", "reject", "--proposal-id", proposal.proposal_id,
+        "--digest", proposal.digest, "--request-id", "operator-choice-1",
+        "--on-reject", "end_campaign",
+    ])
+    assert cmd_pivot_decision(args) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["decision"] == "reject"
+    assert receipt["result"]["rejection_action"] == "end_campaign"
+    assert receipt["automatic_execution"] is False
+
+    check = CampaignStore(state_dir / "campaign.sqlite3")
+    try:
+        after = check.campaign()
+        assert after["status"] == before["status"] == "PAUSED_NEEDS_INPUT"
+        assert after["stop_requested"] == 0
+        assert after["agent_calls"] == before["agent_calls"]
+        assert after["evaluator_calls"] == before["evaluator_calls"]
+    finally:
+        check.close()

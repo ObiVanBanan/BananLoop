@@ -74,6 +74,8 @@ def make_repo(tmp_path: Path) -> Path:
 
 def make_engine(
     tmp_path: Path, *, selection_mode: str = "deterministic", max_agent_calls: int = 12,
+    max_experiments: int = 5, frozen_portfolio_json: str | None = None,
+    replicate_label: str | None = None,
 ) -> tuple[CampaignStore, Engine, Path, str]:
     repo = make_repo(tmp_path)
     base = git(["rev-parse", "HEAD"], repo)
@@ -89,9 +91,15 @@ def make_engine(
         mandatory_checks=["tests"],
         editable_scope=["value.txt", "guard.txt"],
         protected_paths=["evaluator.py", "agent.py"],
-        budget=BudgetSpec(max_experiments=5, max_attempts=6, max_agent_calls=max_agent_calls, max_evaluator_calls=8, plateau_experiments=3),
+        budget=BudgetSpec(max_experiments=max_experiments, max_attempts=6, max_agent_calls=max_agent_calls, max_evaluator_calls=8, plateau_experiments=3),
         agent=AgentConfig(kind="command", command=[sys.executable, "agent.py"]),
         selection_mode=selection_mode,
+        frozen_portfolio_json=frozen_portfolio_json,
+        frozen_portfolio_sha256=(
+            hashlib.sha256(frozen_portfolio_json.encode("utf-8")).hexdigest()
+            if frozen_portfolio_json is not None else None
+        ),
+        replicate_label=replicate_label,
     )
     store = CampaignStore(paths.db)
     store.initialize(spec)
@@ -909,66 +917,106 @@ def test_partial_dev_gain_does_not_trigger_plateau_or_promote(tmp_path: Path):
         store.close()
 
 
-def test_plateau_allows_one_budgeted_reframe_then_stops(tmp_path: Path):
+def _seed_plateau_state(store, engine):
+    baseline = EvaluationResult(
+        metrics={"quality": 0, "regressions": 0}, checks={"tests": True},
+    ).model_dump_json()
+    store.update_campaign(
+        status="RUNNING", baseline_json=baseline, baseline_snapshot="baseline-snapshot",
+        champion_json=baseline, champion_snapshot="baseline-snapshot",
+        evaluator_calls=1, non_improve_streak=engine.spec.budget.plateau_experiments,
+    )
+
+
+def _record_bounded_reframe(store):
+    campaign = store.campaign()
+    experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
+    hypothesis = Hypothesis(
+        hypothesis="bounded reframe", rationale="different mechanism",
+        expected_effect="quality changes", files_or_area=["value.txt"],
+        falsification_condition="quality remains unchanged", mechanism_key="bounded-reframe",
+    )
+    result = EvaluationResult(metrics={"quality": 0, "regressions": 0}, checks={"tests": True})
+    decision = json.dumps({"accepted": False, "primary_value": 0, "champion_value": 0,
+                           "delta": 0, "reasons": ["NO_IMPROVEMENT"]})
+    store.update_experiment(
+        experiment_id, hypothesis_json=hypothesis.model_dump_json(),
+        evaluation_json=result.model_dump_json(), dev_decision_json=decision, decision_json=decision,
+    )
+    store.finish_attempt(attempt_id, experiment_id, status="REJECTED", scientific=True, improved=False)
+    candidate = HypothesisCandidate(
+        candidate_id="bounded-reframe", hypothesis=hypothesis, evidence_refs=["INSUFFICIENT_EVIDENCE"],
+        predicted_observable="quality metric", discriminating_test="same fixture", scope_eligibility=True,
+        estimated_agent_calls=1, estimated_evaluator_calls=1, rationale="bounded", uncertainty="toy",
+    )
+    portfolio = PortfolioRecord(
+        experiment_ordinal=store.experiment(experiment_id)["ordinal"],
+        action_id=f"exp:{experiment_id}:propose", strategy="reframe", candidates=[candidate],
+        decisions=[CandidateDecision(candidate_id="bounded-reframe", admissible=True)],
+        selected_candidate_id="bounded-reframe",
+    )
+    store.event("PORTFOLIO_DECISION", portfolio.model_dump(mode="json"))
+    store.conn.commit()
+
+
+def test_plateau_allows_one_budgeted_reframe_then_stops(tmp_path: Path, monkeypatch):
     store, engine, _, _ = make_engine(tmp_path)
+    pivot_calls = []
+    def fake_pivot_advice(task, **kwargs):
+        pivot_calls.append((task, kwargs))
+        return {
+            "proposed_architecture": "Use a bounded two-stage retrieval path.",
+            "rationale": "The current retrieval stage has plateaued.",
+            "expected_effect": "Improve DEV quality within the current guardrails.",
+            "changed_scope": ["value.txt"],
+            "resources": {
+                "additional_agent_calls": 1,
+                "additional_evaluator_calls": 1,
+                "additional_evaluation_units": None,
+                "notes": "one bounded experiment",
+            },
+        }
+    monkeypatch.setattr(engine, "_invoke_agent", fake_pivot_advice)
     try:
-        engine.workspace.ensure(engine.spec.base_commit)
-        engine._baseline()
-        store.update_campaign(non_improve_streak=engine.spec.budget.plateau_experiments)
+        _seed_plateau_state(store, engine)
         assert engine._post_iteration_stop() is False
         assert any(event["event_type"] == "PLATEAU_REFRAME_ALLOWED" for event in store.events())
 
-        campaign = store.campaign()
-        experiment_id, attempt_id = store.create_attempt(campaign["champion_snapshot"])
-        hypothesis = Hypothesis(
-            hypothesis="bounded reframe", rationale="different mechanism",
-            expected_effect="quality changes", files_or_area=["value.txt"],
-            falsification_condition="quality remains unchanged", mechanism_key="bounded-reframe",
-        )
-        result = EvaluationResult(metrics={"quality": 0, "regressions": 0}, checks={"tests": True})
-        store.update_experiment(
-            experiment_id,
-            hypothesis_json=hypothesis.model_dump_json(),
-            evaluation_json=result.model_dump_json(),
-            dev_decision_json=json.dumps({"accepted": False, "primary_value": 0, "champion_value": 0,
-                                          "delta": 0, "reasons": ["NO_IMPROVEMENT"]}),
-            decision_json=json.dumps({"accepted": False, "primary_value": 0, "champion_value": 0,
-                                      "delta": 0, "reasons": ["NO_IMPROVEMENT"]}),
-        )
-        store.finish_attempt(attempt_id, experiment_id, status="REJECTED", scientific=True, improved=False)
-        candidate = HypothesisCandidate(
-            candidate_id="bounded-reframe", hypothesis=hypothesis, evidence_refs=["INSUFFICIENT_EVIDENCE"],
-            predicted_observable="quality metric", discriminating_test="same fixture", scope_eligibility=True,
-            estimated_agent_calls=1, estimated_evaluator_calls=1, rationale="bounded", uncertainty="toy",
-        )
-        portfolio = PortfolioRecord(
-            experiment_ordinal=store.experiment(experiment_id)["ordinal"], action_id=f"exp:{experiment_id}:propose",
-            strategy="reframe", candidates=[candidate],
-            decisions=[CandidateDecision(candidate_id="bounded-reframe", admissible=True)],
-            selected_candidate_id="bounded-reframe",
-        )
-        store.event("PORTFOLIO_DECISION", portfolio.model_dump(mode="json"))
-        store.conn.commit()
+        _record_bounded_reframe(store)
         assert engine._post_iteration_stop() is True
-        assert store.campaign()["stop_reason"] == "PLATEAU"
+        campaign = store.campaign()
+        proposal_row = store.pending_pivot_proposal()
+        assert campaign["status"] == "PAUSED_NEEDS_INPUT"
+        assert campaign["stop_reason"] == "PAUSED_NEEDS_INPUT"
+        assert proposal_row is not None
+        assert proposal_row["status"] == "PENDING"
+        assert len(pivot_calls) == 1
+        assert pivot_calls[0][0]["role"] == "pivot_advice"
+        assert pivot_calls[0][1]["apply_changes"] is False
+        assert campaign["stop_reason"] != "PLATEAU"
     finally:
         store.close()
 
 
-def test_plateau_does_not_bypass_exhausted_agent_budget(tmp_path: Path):
+def test_plateau_does_not_bypass_exhausted_agent_budget(tmp_path: Path, monkeypatch):
     store, engine, _, _ = make_engine(tmp_path)
+    pivot_calls = []
+    monkeypatch.setattr(engine, "_invoke_agent", lambda *args, **kwargs: pivot_calls.append((args, kwargs)))
     try:
-        engine.workspace.ensure(engine.spec.base_commit)
-        engine._baseline()
-        store.update_campaign(
-            non_improve_streak=engine.spec.budget.plateau_experiments,
-            agent_calls=engine.spec.budget.max_agent_calls,
-        )
+        _seed_plateau_state(store, engine)
+        _record_bounded_reframe(store)
+        store.update_campaign(agent_calls=engine.spec.budget.max_agent_calls)
         assert engine._post_iteration_stop() is True
-        assert store.campaign()["stop_reason"] == "PLATEAU"
-        state = store.research_state()
-        assert "no budget remains" in state["stop_explanation"]
-        assert any(event["event_type"] == "PLATEAU_REFRAME_BLOCKED" for event in store.events())
+        campaign = store.campaign()
+        assert campaign["status"] == "PAUSED_NEEDS_INPUT"
+        assert campaign["stop_reason"] == "PAUSED_NEEDS_INPUT"
+        assert pivot_calls == []
+        blocked = [event for event in store.events() if event["event_type"] == "PIVOT_PROPOSAL_BLOCKED"]
+        assert blocked
+        payload = json.loads(blocked[-1]["payload_json"])
+        assert payload["reason"] == "BUDGET_EXHAUSTED"
+        assert payload["agent_call_started"] is False
+        assert store.pending_pivot_proposal() is None
     finally:
         store.close()
 
@@ -1928,6 +1976,112 @@ def test_llm_selector_default_preserves_legacy_campaign_hash():
     assert original.approved_hash() == explicit.approved_hash()
     assert original.approved_hash() != original.model_copy(
         update={"selection_mode": "llm"}).approved_hash()
+
+
+def _frozen_portfolio_json(*, all_ineligible: bool = False) -> str:
+    blocked_path = "evaluator.py" if all_ineligible else "value.txt"
+    def candidate(candidate_id: str, mechanism: str, path: str) -> dict:
+        return {
+            "candidate_id": candidate_id,
+            "hypothesis": {
+                "hypothesis": f"Implement {mechanism}", "rationale": "frozen test candidate",
+                "expected_effect": "Improve quality", "files_or_area": [path],
+                "falsification_condition": "No DEV improvement", "mechanism_key": mechanism,
+            },
+            "evidence_refs": ["INSUFFICIENT_EVIDENCE"], "suspected_failure_mode": "",
+            "predicted_observable": "DEV quality changes", "discriminating_test": "Run frozen DEV evaluator",
+            "scope_eligibility": True, "estimated_agent_calls": 1,
+            "estimated_evaluator_calls": 1, "estimated_work_units": None,
+            "rationale": "frozen test candidate", "uncertainty": "No prior evidence",
+            "inference": "agent_inference",
+        }
+    return json.dumps({
+        "schema_version": 1, "portfolio_id": "frozen-test-v1", "candidate_count": 3,
+        "candidates": [candidate("fixed-one", "step-1", blocked_path),
+                       candidate("fixed-two", "step-2", blocked_path),
+                       candidate("protected", "protected", "evaluator.py")],
+    }, separators=(",", ":"))
+
+
+def test_frozen_portfolio_campaign_skips_proposer_but_keeps_core_gates(tmp_path: Path):
+    frozen = _frozen_portfolio_json()
+    store, engine, _, _ = make_engine(
+        tmp_path, max_experiments=1, max_agent_calls=4,
+        frozen_portfolio_json=frozen, replicate_label="seed-53",
+    )
+    try:
+        result = engine.run()
+        assert result["agent_calls"] == 1
+        assert store.action("exp:1:propose") is None
+        loaded = [json.loads(event["payload_json"]) for event in store.events()
+                  if event["event_type"] == "FROZEN_PORTFOLIO_INPUT"]
+        assert loaded == [{
+            "experiment_id": 1, "action_id": "exp:1:propose",
+            "sha256": hashlib.sha256(frozen.encode("utf-8")).hexdigest(),
+            "replicate_label": "seed-53",
+            "candidate_ids": ["fixed-one", "fixed-two", "protected"],
+        }]
+        decision = next(json.loads(event["payload_json"]) for event in store.events()
+                        if event["event_type"] == "PORTFOLIO_DECISION")
+        assert {item["candidate_id"] for item in decision["candidates"]} == {
+            "fixed-one", "fixed-two", "protected",
+        }
+        protected = next(item for item in decision["decisions"] if item["candidate_id"] == "protected")
+        assert protected["admissible"] is False
+        assert "OUT_OF_SCOPE" in protected["rejection_reasons"]
+        assert decision["selected_candidate_id"] in {"fixed-one", "fixed-two"}
+    finally:
+        store.close()
+
+
+def test_frozen_portfolio_spec_hash_is_optional_and_content_bound():
+    original = CampaignSpec(
+        goal="task", source_repo=".", base_commit="base", evaluation_command=["eval"],
+        primary_metric=MetricSpec(name="quality", direction=Direction.MAXIMIZE,
+                                  target=1.0, min_improvement=0.1),
+    )
+    frozen = _frozen_portfolio_json()
+    frozen_spec = original.model_copy(update={
+        "frozen_portfolio_json": frozen,
+        "frozen_portfolio_sha256": hashlib.sha256(frozen.encode("utf-8")).hexdigest(),
+        "replicate_label": "seed-53",
+    })
+    assert original.approved_hash() == original.model_copy(update={
+        "frozen_portfolio_json": None, "frozen_portfolio_sha256": None, "replicate_label": None,
+    }).approved_hash()
+    assert frozen_spec.approved_hash() != original.approved_hash()
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        CampaignSpec.model_validate({
+            **original.model_dump(mode="json"), "frozen_portfolio_json": frozen,
+            "frozen_portfolio_sha256": "0" * 64, "replicate_label": "seed-53",
+        })
+    with pytest.raises(ValueError, match="requires a frozen portfolio"):
+        CampaignSpec.model_validate({**original.model_dump(mode="json"), "replicate_label": "seed-53"})
+
+
+def test_frozen_portfolio_does_not_repair_into_new_candidates(tmp_path: Path):
+    frozen = _frozen_portfolio_json(all_ineligible=True)
+    store, engine, _, _ = make_engine(
+        tmp_path, max_experiments=1, max_agent_calls=4,
+        frozen_portfolio_json=frozen, replicate_label="seed-ineligible",
+    )
+    try:
+        result = engine.run()
+        assert result["agent_calls"] == 0
+        assert store.action("exp:1:propose") is None
+        assert store.action("exp:1:propose-repair") is None
+        event_types = [event["event_type"] for event in store.events()]
+        assert "PORTFOLIO_REPAIR_DECISION" not in event_types
+        assert "PORTFOLIO_REPAIR_MALFORMED" not in event_types
+        decision = next(json.loads(event["payload_json"]) for event in store.events()
+                        if event["event_type"] == "PORTFOLIO_DECISION")
+        assert {item["candidate_id"] for item in decision["candidates"]} == {
+            "fixed-one", "fixed-two", "protected",
+        }
+        assert decision["selected_candidate_id"] is None
+        assert all(item["admissible"] is False for item in decision["decisions"])
+    finally:
+        store.close()
 
 
 def test_llm_selector_hides_protected_candidate_from_judge(tmp_path: Path, monkeypatch):

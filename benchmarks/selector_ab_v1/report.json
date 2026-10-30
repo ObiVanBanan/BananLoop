@@ -1,0 +1,195 @@
+{
+  "completed_pairs": 0,
+  "descriptive_mean_llm_advantage_on_dev": null,
+  "expected_trial_slots": 10,
+  "experiment_id": "mini-matcher-selector-ab-v1",
+  "failed_trials": 2,
+  "incomplete_trials": 0,
+  "interpretation": "Descriptive DEV evidence for one small fixture only; no selector winner or generalization claim.",
+  "known_duration_seconds": 54.85834386131287,
+  "known_provider_cost_usd": 0.0,
+  "known_tokens": null,
+  "manifest_sha256": "c6eee2d5dbc613a47cf6cec9b1666d5bb2cdfcc05df66462e6aedf3424229853",
+  "missing_trial_slots": 8,
+  "pairs": [
+    {
+      "arm_order": [
+        "llm",
+        "deterministic"
+      ],
+      "arms": {
+        "deterministic": {
+          "cost_usd": 0.0,
+          "dev_reward": null,
+          "duration_seconds": 31.542436361312866,
+          "failure_reason": "IMPLEMENTATION_PIPELINE_FAILED: git diff --binary patch was text-normalized across CRLF before git apply; candidate evaluation did not run. Campaign remained RUNNING/EXECUTE after the process exception.",
+          "selected_candidate_id": "constraint_intersection",
+          "status": "failed",
+          "tokens": null
+        },
+        "llm": {
+          "cost_usd": 0.0,
+          "dev_reward": null,
+          "duration_seconds": 23.3159075,
+          "failure_reason": "IMPLEMENTATION_BLOCKED: nested Codex workspace policy was read-only for matcher.py; candidate evaluation did not run.",
+          "selected_candidate_id": "constraint_intersection",
+          "status": "failed",
+          "tokens": null
+        }
+      },
+      "complete": false,
+      "llm_advantage_on_dev": null,
+      "observed_arm_order": [
+        "llm",
+        "deterministic"
+      ],
+      "seed": 53
+    },
+    {
+      "arm_order": [
+        "deterministic",
+        "llm"
+      ],
+      "arms": {
+        "deterministic": {
+          "cost_usd": null,
+          "dev_reward": null,
+          "duration_seconds": null,
+          "failure_reason": null,
+          "selected_candidate_id": null,
+          "status": "missing",
+          "tokens": null
+        },
+        "llm": {
+          "cost_usd": null,
+          "dev_reward": null,
+          "duration_seconds": null,
+          "failure_reason": null,
+          "selected_candidate_id": null,
+          "status": "missing",
+          "tokens": null
+        }
+      },
+      "complete": false,
+      "llm_advantage_on_dev": null,
+      "observed_arm_order": [],
+      "seed": 101
+    },
+    {
+      "arm_order": [
+        "deterministic",
+        "llm"
+      ],
+      "arms": {
+        "deterministic": {
+          "cost_usd": null,
+          "dev_reward": null,
+          "duration_seconds": null,
+          "failure_reason": null,
+          "selected_candidate_id": null,
+          "status": "missing",
+          "tokens": null
+        },
+        "llm": {
+          "cost_usd": null,
+          "dev_reward": null,
+          "duration_seconds": null,
+          "failure_reason": null,
+          "selected_candidate_id": null,
+          "status": "missing",
+          "tokens": null
+        }
+      },
+      "complete": false,
+      "llm_advantage_on_dev": null,
+      "observed_arm_order": [],
+      "seed": 211
+    },
+    {
+      "arm_order": [
+        "llm",
+        "deterministic"
+      ],
+      "arms": {
+        "deterministic": {
+          "cost_usd": null,
+          "dev_reward": null,
+          "duration_seconds": null,
+          "failure_reason": null,
+          "selected_candidate_id": null,
+          "status": "missing",
+          "tokens": null
+        },
+        "llm": {
+          "cost_usd": null,
+          "dev_reward": null,
+          "duration_seconds": null,
+          "failure_reason": null,
+          "selected_candidate_id": null,
+          "status": "missing",
+          "tokens": null
+        }
+      },
+      "complete": false,
+      "llm_advantage_on_dev": null,
+      "observed_arm_order": [],
+      "seed": 307
+    },
+    {
+      "arm_order": [
+        "deterministic",
+        "llm"
+      ],
+      "arms": {
+        "deterministic": {
+          "cost_usd": null,
+          "dev_reward": null,
+          "duration_seconds": null,
+          "failure_reason": null,
+          "selected_candidate_id": null,
+          "status": "missing",
+          "tokens": null
+        },
+        "llm": {
+          "cost_usd": null,
+          "dev_reward": null,
+          "duration_seconds": null,
+          "failure_reason": null,
+          "selected_candidate_id": null,
+          "status": "missing",
+          "tokens": null
+        }
+      },
+      "complete": false,
+      "llm_advantage_on_dev": null,
+      "observed_arm_order": [],
+      "seed": 401
+    }
+  ],
+  "portfolio_sha256": "e2b563dea0851d2c59bc0056f91349b81563d747715375f654e6c89419bf6c7a",
+  "present_trial_rows": 2,
+  "resource_authorization": {
+    "authorization_reference": "User authorized Codex subscription quota usage for Task 7.4 in this conversation on 2026-10-30, with a 20-minute maximum run window.",
+    "cost_estimate": "No separate API-billed spend authorized; per-trial token and monetary usage may be unavailable from Codex CLI.",
+    "estimated_evaluator_calls": 21,
+    "estimated_model_calls": 16,
+    "estimated_model_calls_breakdown": "15 campaign calls maximum plus one isolated workspace-write diagnostic call; diagnostic is excluded from trial slots.",
+    "estimated_setup_diagnostic_calls": 1,
+    "max_provider_cost_usd": 0,
+    "max_total_tokens": null,
+    "max_wall_clock_hours": 0.3333333333,
+    "provider_cost_basis": "No separately metered API spend authorized; subscription-only Codex usage.",
+    "required_operator_decision": "Authorized by user: Codex subscription quota only, no separate API billing, maximum 20 minutes.",
+    "status": "AUTHORIZED",
+    "token_cap_basis": "provider_enforced_codex_subscription_quota"
+  },
+  "resource_cap_status": "unknown_measurements",
+  "status": "incomplete",
+  "unknown_duration_slots": 8,
+  "unknown_duration_trials": 0,
+  "unknown_provider_cost_slots": 8,
+  "unknown_provider_cost_trials": 0,
+  "unknown_token_slots": 10,
+  "unknown_token_trials": 2,
+  "winner_claim": null
+}

@@ -1,0 +1,129 @@
+{
+  "arm_configs": {
+    "bananloop_deterministic": {
+      "config_sha256": "89da1dc7b45ae2d537c41b8031ac665977c05decc0e7aa10445bee800ad9bb4c",
+      "harness": "bananloop",
+      "model": "gpt-6-luna",
+      "reasoning_effort": "medium",
+      "selector": "deterministic",
+      "task_protocol": "AutoResearchExam-v1.1"
+    },
+    "baseline_codex": {
+      "config_sha256": "88fc711ed96c959040eb31d04e7dd68da9df3bb22e9468f0fc29fb71d4055539",
+      "harness": "codex_exec",
+      "model": "gpt-6-luna",
+      "reasoning_effort": "medium",
+      "selector": "not_applicable",
+      "task_protocol": "AutoResearchExam-v1.1"
+    }
+  },
+  "arms": [
+    "baseline_codex",
+    "bananloop_deterministic"
+  ],
+  "common_budget": {
+    "max_agent_calls": 12,
+    "max_evaluator_calls": 16,
+    "max_experiments": 6,
+    "wall_seconds": 86400
+  },
+  "dataset_revision": "2cfd41b022b5effec2ab9e9df9045afb6a1cc312",
+  "protocol_state": "planned_no_trials",
+  "repeats": 3,
+  "schema_version": 1,
+  "source_repo": "bespokelabs/AutoResearchExam",
+  "source_run_manifest": "benchmark_runs/autoresearchexam-v1.1/run_manifest.json",
+  "suite_id": "autoresearchexam-v1.1-ten-paired-v1",
+  "tasks": [
+    {
+      "comparison_metric": "official_verifier_reward_0_to_1",
+      "grader_core_sha256": "4f2be552c1d1dbdd87fff9e6fa1afb9a2371d64c9287c79f503b48a376724642",
+      "id": "carps-star-discrepancy-subset-select",
+      "raw_metric": "3D star discrepancy",
+      "source_task": "bespokelabs/carps-star-discrepancy-subset-select",
+      "task_toml_sha256": "e149dd3b1c959c445e2d06f25ad2753124837bae6011e540ec9e516fdf5c1482",
+      "version": "1.1.0"
+    },
+    {
+      "comparison_metric": "official_verifier_reward_0_to_1",
+      "grader_core_sha256": "24c709e45057a9ee6b0b3a4ef7cb08b6b9d224d45e0e1e32c6f057d34ebeb7a7",
+      "id": "budgeted-imputation-mcar50",
+      "raw_metric": "aggregated imputation score",
+      "source_task": "bespokelabs/budgeted-imputation-mcar50",
+      "task_toml_sha256": "a3760c5eac35277ddfde9ff039921a7119cc4dd8b43d4d2a580df52ec9fb864c",
+      "version": "1.1.0"
+    },
+    {
+      "comparison_metric": "official_verifier_reward_0_to_1",
+      "grader_core_sha256": "b55de0b37da5e1145054a2268e30f412672a91e83a1254d6a4546d7a7f2b5633",
+      "id": "label-efficient-risk-estimator",
+      "raw_metric": "median per-cell ratio",
+      "source_task": "bespokelabs/label-efficient-risk-estimator",
+      "task_toml_sha256": "7fe491cec532818d52e699a6db6d87325bf421f280aa94a10f497a4afb06e12c",
+      "version": "1.1.0"
+    },
+    {
+      "comparison_metric": "official_verifier_reward_0_to_1",
+      "grader_core_sha256": "a2a0b71a2a0de7ecdbbe87af212dc222c07c9df4c4d3a40b97d2bed221d18bbd",
+      "id": "shortest-valid-ci-l2-ece",
+      "raw_metric": "mean per-setting interval score",
+      "source_task": "bespokelabs/shortest-valid-ci-l2-ece",
+      "task_toml_sha256": "5c6344e36db8db95f7a89aca961ba14de65874b27ca61de299ac4e2f54530ba3",
+      "version": "1.1.0"
+    },
+    {
+      "comparison_metric": "official_verifier_reward_0_to_1",
+      "grader_core_sha256": "590d3787f5a0d386f380822f25c893e699b947afd1a13086191ecbc2f4577c8e",
+      "id": "sketched-newton-cov-estimator",
+      "raw_metric": "mean estimation error",
+      "source_task": "bespokelabs/sketched-newton-cov-estimator",
+      "task_toml_sha256": "df9b2bacf143f20d139d8cad8112ce8ee5a3902a679cf6c99b28dd77fffae9f8",
+      "version": "1.1.0"
+    },
+    {
+      "comparison_metric": "official_verifier_reward_0_to_1",
+      "grader_core_sha256": "4be89d0473b450e42336f2a01a129ca98635381b7dc2cee68f0701bb45085102",
+      "id": "act-tensor-sparse-panel-imputation-r2",
+      "raw_metric": "pooled held-out R2 improvement",
+      "source_task": "bespokelabs/act-tensor-sparse-panel-imputation-r2",
+      "task_toml_sha256": "81d2a54cf10d0729ad9f38b52a0d02e167b9141f38453245899493629273ba55",
+      "version": "1.1.0"
+    },
+    {
+      "comparison_metric": "official_verifier_reward_0_to_1",
+      "grader_core_sha256": "aee55aad3a58a717260cb80f7779e585fb1aa77ad6816d3f7cdd7378bcfd7790",
+      "id": "activeprune-al-unlabeled-pool-pruning",
+      "raw_metric": "mean final panel score",
+      "source_task": "bespokelabs/activeprune-al-unlabeled-pool-pruning",
+      "task_toml_sha256": "362ea1c3f7823212a6a123f9346b8085ae2443af587dfe61d079654cf8ba4077",
+      "version": "1.1.0"
+    },
+    {
+      "comparison_metric": "official_verifier_reward_0_to_1",
+      "grader_core_sha256": "a769dc1adcba30502ca0ecef9d4d5656dd569dec3b5bd2cf1771bf1621977fac",
+      "id": "hicard-latent-encoder",
+      "raw_metric": "percentage reduction in MSE",
+      "source_task": "bespokelabs/hicard-latent-encoder",
+      "task_toml_sha256": "dd09dd774a8c64664119f34e663f7ca8bc9d3c25306596342ae876274c84c0b3",
+      "version": "1.1.0"
+    },
+    {
+      "comparison_metric": "official_verifier_reward_0_to_1",
+      "grader_core_sha256": "dd2528166ed5a5c8d38a9f67a77aa746cc7652104fbdf9cbd1ba660ffc17d54a",
+      "id": "budgeted-covtype-dual-market-open",
+      "raw_metric": "balanced_accuracy",
+      "source_task": "bespokelabs/budgeted-covtype-dual-market-open",
+      "task_toml_sha256": "445e36e14db8c39ee02d137a26b878d880648d14b90f8fe164c275de03d0a1e9",
+      "version": "1.1.0"
+    },
+    {
+      "comparison_metric": "official_verifier_reward_0_to_1",
+      "grader_core_sha256": "d887ab267a9c7454add085af37cc5a56cbc052c3cdfd37a6a0a5be2667d43b58",
+      "id": "dctabeval-aeac-pooled-cat-statistics",
+      "raw_metric": "mean_roc_auc_12_seed_panel",
+      "source_task": "bespokelabs/dctabeval-aeac-pooled-cat-statistics",
+      "task_toml_sha256": "321de9811c9ffd08e0eb8de105eb6536ad9aad4bf43e54b19900496917117bae",
+      "version": "1.1.0"
+    }
+  ]
+}

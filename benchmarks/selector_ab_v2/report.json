@@ -1,0 +1,207 @@
+{
+  "completed_pairs": 5,
+  "descriptive_mean_llm_advantage_on_dev": -0.1125,
+  "expected_trial_slots": 10,
+  "experiment_id": "mini-matcher-selector-ab-v2",
+  "failed_trials": 0,
+  "incomplete_trials": 0,
+  "interpretation": "Descriptive DEV evidence for one small fixture only; no selector winner or generalization claim.",
+  "known_duration_seconds": 312.6695234775364,
+  "known_provider_cost_usd": 0.0,
+  "known_tokens": null,
+  "manifest_sha256": "4447ada694c3dd43aa92ff229040de536b70c35b00000f2159d877a0d1ab721d",
+  "missing_trial_slots": 0,
+  "pairs": [
+    {
+      "arm_order": [
+        "llm",
+        "deterministic"
+      ],
+      "arms": {
+        "deterministic": {
+          "cost_usd": 0.0,
+          "dev_reward": 1.0,
+          "duration_seconds": 36.8609445095062,
+          "failure_reason": null,
+          "selected_candidate_id": "constraint_intersection",
+          "status": "completed",
+          "tokens": null
+        },
+        "llm": {
+          "cost_usd": 0.0,
+          "dev_reward": 0.4375,
+          "duration_seconds": 36.243540287,
+          "failure_reason": null,
+          "selected_candidate_id": "constraint_intersection",
+          "status": "completed",
+          "tokens": null
+        }
+      },
+      "complete": true,
+      "llm_advantage_on_dev": -0.5625,
+      "observed_arm_order": [
+        "llm",
+        "deterministic"
+      ],
+      "seed": 503
+    },
+    {
+      "arm_order": [
+        "deterministic",
+        "llm"
+      ],
+      "arms": {
+        "deterministic": {
+          "cost_usd": 0.0,
+          "dev_reward": 1.0,
+          "duration_seconds": 32.5252742767334,
+          "failure_reason": null,
+          "selected_candidate_id": "constraint_intersection",
+          "status": "completed",
+          "tokens": null
+        },
+        "llm": {
+          "cost_usd": 0.0,
+          "dev_reward": 1.0,
+          "duration_seconds": 35.366735458374,
+          "failure_reason": null,
+          "selected_candidate_id": "constraint_intersection",
+          "status": "completed",
+          "tokens": null
+        }
+      },
+      "complete": true,
+      "llm_advantage_on_dev": 0.0,
+      "observed_arm_order": [
+        "deterministic",
+        "llm"
+      ],
+      "seed": 607
+    },
+    {
+      "arm_order": [
+        "deterministic",
+        "llm"
+      ],
+      "arms": {
+        "deterministic": {
+          "cost_usd": 0.0,
+          "dev_reward": 1.0,
+          "duration_seconds": 29.2004449367523,
+          "failure_reason": null,
+          "selected_candidate_id": "constraint_intersection",
+          "status": "completed",
+          "tokens": null
+        },
+        "llm": {
+          "cost_usd": 0.0,
+          "dev_reward": 1.0,
+          "duration_seconds": 30.6198995113373,
+          "failure_reason": null,
+          "selected_candidate_id": "structured_regex",
+          "status": "completed",
+          "tokens": null
+        }
+      },
+      "complete": true,
+      "llm_advantage_on_dev": 0.0,
+      "observed_arm_order": [
+        "deterministic",
+        "llm"
+      ],
+      "seed": 709
+    },
+    {
+      "arm_order": [
+        "llm",
+        "deterministic"
+      ],
+      "arms": {
+        "deterministic": {
+          "cost_usd": 0.0,
+          "dev_reward": 1.0,
+          "duration_seconds": 24.7696030139923,
+          "failure_reason": null,
+          "selected_candidate_id": "constraint_intersection",
+          "status": "completed",
+          "tokens": null
+        },
+        "llm": {
+          "cost_usd": 0.0,
+          "dev_reward": 1.0,
+          "duration_seconds": 29.7307605743408,
+          "failure_reason": null,
+          "selected_candidate_id": "constraint_intersection",
+          "status": "completed",
+          "tokens": null
+        }
+      },
+      "complete": true,
+      "llm_advantage_on_dev": 0.0,
+      "observed_arm_order": [
+        "llm",
+        "deterministic"
+      ],
+      "seed": 811
+    },
+    {
+      "arm_order": [
+        "deterministic",
+        "llm"
+      ],
+      "arms": {
+        "deterministic": {
+          "cost_usd": 0.0,
+          "dev_reward": 1.0,
+          "duration_seconds": 27.9998180866241,
+          "failure_reason": null,
+          "selected_candidate_id": "constraint_intersection",
+          "status": "completed",
+          "tokens": null
+        },
+        "llm": {
+          "cost_usd": 0.0,
+          "dev_reward": 1.0,
+          "duration_seconds": 29.352502822876,
+          "failure_reason": null,
+          "selected_candidate_id": "structured_regex",
+          "status": "completed",
+          "tokens": null
+        }
+      },
+      "complete": true,
+      "llm_advantage_on_dev": 0.0,
+      "observed_arm_order": [
+        "deterministic",
+        "llm"
+      ],
+      "seed": 919
+    }
+  ],
+  "portfolio_sha256": "e2b563dea0851d2c59bc0056f91349b81563d747715375f654e6c89419bf6c7a",
+  "present_trial_rows": 10,
+  "resource_authorization": {
+    "authorization_reference": "User authorized Codex subscription quota only, no separate API spend; up to one hour for Task 7.4 in this conversation on 2026-10-30.",
+    "cost_estimate": "No separate API-billed spend authorized; per-trial token and monetary usage may be unavailable from Codex CLI.",
+    "estimated_evaluator_calls": 21,
+    "estimated_model_calls": 16,
+    "estimated_model_calls_breakdown": "At most 15 campaign calls; no direct diagnostic call in v2.",
+    "estimated_setup_diagnostic_calls": 0,
+    "max_provider_cost_usd": 0,
+    "max_total_tokens": null,
+    "max_wall_clock_hours": 1,
+    "provider_cost_basis": "No separately metered API spend authorized; subscription-only Codex usage.",
+    "required_operator_decision": "User authorized Codex subscription quota only, no separate API spend; up to one hour for Task 7.4 in this conversation on 2026-10-30.",
+    "status": "AUTHORIZED",
+    "token_cap_basis": "provider_enforced_codex_subscription_quota"
+  },
+  "resource_cap_status": "unknown_measurements",
+  "status": "complete",
+  "unknown_duration_slots": 0,
+  "unknown_duration_trials": 0,
+  "unknown_provider_cost_slots": 0,
+  "unknown_provider_cost_trials": 0,
+  "unknown_token_slots": 10,
+  "unknown_token_trials": 10,
+  "winner_claim": null
+}

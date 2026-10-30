@@ -39,6 +39,58 @@ The coding agent proposes and edits. The evaluator and deterministic policy deci
 - deterministic fixture demonstrating accept -> reject -> accept;
 - documented `rag_tender` bridge boundary.
 
+## Experimental operator terminal
+
+The opt-in Pi extension displays committed campaign snapshots, sequenced event
+history, DEV metrics, composite sequences, budgets and epoch counts. Install the
+package and Pi, then run it from the campaign repository:
+
+```powershell
+python -m pip install -e .
+pi --extension ./operator-ui/pi-extension.ts --theme ./.pi/themes/bananloop.json --use-theme bananloop
+```
+
+Use `/bananloop <campaign-id>` for a real campaign or `/bananloop demo` for
+explicitly synthetic data. `/pause` submits the typed pause request and waits
+for committed `PAUSED_USER`; `/resume` starts the existing engine in a detached
+process without retry flags. If no result is observed within 30 seconds, the UI
+reports `UNKNOWN` and continues observing. The CLI has no receipt-status query,
+so an accepted request is never treated as completed based on exit status alone.
+
+`/chat <message>` starts the separate Codex app-server only on explicit input.
+The message plus bounded goal/stage/status/DEV-metric/budget context is sent to
+the configured Codex account after a visible notice. Event payloads, repository
+files, validation/HOLDOUT data and secrets are not attached. The bridge uses an
+ephemeral thread and isolated temporary workspace, verifies that tools are
+disabled, and fails closed if that configuration cannot be confirmed. A
+natural-language pause can only produce a proposal; the operator must confirm
+the displayed effect with `/confirm-pause <token>` within 30 seconds or reject
+it with `/reject-pause <token>`. No control action is called before that typed
+confirmation.
+
+The UI uses synthetic Node adapter, layout, protocol and control-flow tests; it
+does not establish real Codex account access, model/limit behavior, or enforced
+Windows sandbox settings. A Windows-hosted PTY smoke rendered `/bananloop demo`
+at 80 columns with no campaign or model; it is not Windows Terminal resize or
+live-control acceptance. The campaign's existing Codex role adapter and model
+profiles remain separate from this operator chat.
+
+The typed CLI boundary is also available directly:
+
+```powershell
+bananloop operator-snapshot --repo . --state-dir <state-dir>
+bananloop operator-events --repo . --state-dir <state-dir> --after 0 --limit 50
+bananloop pause --repo . --state-dir <state-dir> --request-id pause-001
+bananloop resume --repo . --state-dir <state-dir> --request-id resume-001
+```
+
+Pause and stop requests use durable idempotency receipts. When another process
+owns the campaign, an accepted response means the request was recorded, not
+that the owner has completed it. There is no receipt-status CLI command yet;
+refresh the snapshot and event cursor to observe the persisted state. `resume`
+runs the engine synchronously when invoked directly; the Pi extension launches
+it detached so its view can keep refreshing.
+
 v0.1 targets trusted local projects. Agent isolation prevents ordinary evaluator/GOLD leakage, but it is not an OS/chroot security sandbox against a deliberately adversarial local process and does not claim a hard USD budget.
 
 ## Install
@@ -498,3 +550,50 @@ quality gains from the terminal status alone.
 Directory scope entries ending with a slash (such as
 `src/nomenclature_matcher/`) are treated recursively. Sibling paths
 (`src/nomenclature_matcher_extra/`) are not implicitly editable.
+# Composite hypotheses
+
+A proposer may return `composite_steps` with two to four ordered `Hypothesis` objects on one candidate. BananLoop saves the sequence against the current champion snapshot, runs each step from the prior sequence snapshot, and records each step's DEV decision. Intermediate snapshots remain branch-local; validation and promotion run only for the final combined snapshot. A pause preserves the active step and sequence tip for resume. A stop abandons an unfinished sequence and checks the workspace back out to the champion.
+
+The read-only `bananloop operator-snapshot` command includes `composites`, with the base snapshot, current tip, step order, per-step DEV decision and final outcome. For a two-step sequence, inspect the JSON after completion:
+
+```powershell
+bananloop operator-snapshot --repo . --state-dir <state-dir> --json
+```
+
+The deterministic engine scenarios in `tests/test_composite.py` verify sequence ordering, recovery and outcome handling with a local fake agent and evaluator; they do not call a model service.
+
+## Architecture pivot review
+
+When a plateau produces a proposal, the campaign enters `PAUSED_NEEDS_INPUT`.
+`bananloop operator-snapshot --repo . --campaign-id <id>` projects the proposal
+ID, SHA-256 digest, current and proposed architecture, rationale, expected
+effect, changed scope, resource estimates, and integrity status. The Pi
+operator screen shows the same fields in its progress panel. A decision is only
+accepted while the proposal is intact, pending, and bound to the displayed
+digest.
+
+Approve or reject with an explicit local command. Use the exact ID and digest
+shown in the snapshot:
+
+```powershell
+bananloop pivot-decision --repo . --campaign-id <id> --decision approve `
+  --proposal-id <pivot-id> --digest <sha256> --request-id <unique-request-id>
+```
+
+Rejection requires an explicit next-step choice:
+
+```powershell
+bananloop pivot-decision --repo . --campaign-id <id> --decision reject `
+  --proposal-id <pivot-id> --digest <sha256> --request-id <unique-request-id> `
+  --on-reject continue_old_plan
+```
+
+`--on-reject` accepts `continue_old_plan`, `change_conditions`, or
+`end_campaign`. It records the operator's choice; it does not resume, edit a
+spec, or stop the campaign automatically. In the Pi screen, enter
+`/pivot approve <pivot-id> <sha256>` or
+`/pivot reject <pivot-id> <sha256> <choice>`. The screen rereads the committed
+snapshot before submitting. A changed, stale, or invalid proposal requires a
+fresh review and exact digest entry. Approval only records consent; creating a
+successor campaign and running it remain separate explicit actions. No model
+output can approve or reject a proposal.

@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from bananloop.agents.base import AgentError
-from bananloop.cli import cmd_stop
+from bananloop.cli import cmd_pause, cmd_stop
 from bananloop.contracts import EvaluationResult, PairedComparison
 from bananloop.engine import ControlledInterruption, Engine, EngineError
 from bananloop.evaluators.command import EvaluatorError
@@ -308,6 +308,71 @@ def test_stop_cli_cancels_running_agent_and_preserves_source(tmp_path):
         if proc.poll() is None:
             proc.kill()
             proc.communicate(timeout=5)
+
+
+def test_pause_cli_cancels_running_agent_and_keeps_attempt_resumable(tmp_path):
+    store, engine, repo, base = make_engine(tmp_path)
+    ready = tmp_path / "agent-started"
+    script = tmp_path / "blocking-agent.py"
+    script.write_text(
+        "import time\nfrom pathlib import Path\n"
+        + f"Path({str(ready)!r}).write_text('ready')\n"
+        + "time.sleep(30)\n"
+    )
+    spec = store.spec()
+    spec.agent.command = [sys.executable, str(script)]
+    store.update_campaign(spec_json=spec.model_dump_json(), spec_hash=spec.approved_hash())
+    root = store.path.parent
+    store.close()
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "bananloop.cli", "run", "--repo", str(repo), "--state-dir", str(root)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        deadline = time.monotonic() + 15
+        while not ready.exists() and proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ready.exists(), "agent did not start"
+        assert cmd_pause(argparse.Namespace(repo=str(repo), state_dir=str(root))) == 0
+        stdout, stderr = proc.communicate(timeout=5)
+        assert proc.returncode == 0, stdout + stderr
+        paused = CampaignStore(root / "campaign.sqlite3")
+        try:
+            campaign = paused.campaign()
+            assert campaign["status"] == "PAUSED_USER"
+            assert campaign["stop_reason"] == "USER_PAUSED"
+            assert campaign["active_attempt_id"] is not None
+            assert campaign["stage"] == "PROPOSE"
+            assert paused.action("exp:1:propose")["status"] == "CANCELLED"
+            assert paused.resource_summary()["open_reservations"] == 0
+            assert paused.request_pause() is False
+            assert any(event["event_type"] == "CAMPAIGN_PAUSED" for event in paused.events())
+        finally:
+            paused.close()
+        assert git(["rev-parse", "HEAD"], repo) == base
+        assert git(["status", "--porcelain"], repo) == ""
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate(timeout=5)
+
+
+def test_user_pause_requires_explicit_resume(tmp_path):
+    store, engine, _, _ = make_engine(tmp_path)
+    try:
+        assert store.request_pause() is True
+        first = engine.run()
+        assert first["status"] == "PAUSED_USER"
+        assert first["agent_calls"] == 0
+        assert store.campaign()["pause_requested"] == 1
+        assert engine.run()["status"] == "PAUSED_USER"
+        assert store.campaign()["agent_calls"] == 0
+        resumed = engine.run(resume=True)
+        assert resumed["status"] != "PAUSED_USER"
+        assert store.campaign()["pause_requested"] == 0
+        assert store.campaign()["agent_calls"] > 0
+    finally:
+        store.close()
 
 
 def test_agent_commits_and_untracked_changes_are_transferred(tmp_path):

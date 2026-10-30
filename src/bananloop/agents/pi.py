@@ -162,6 +162,9 @@ class PiAdapter(AgentAdapter):
                 "evidence_refs, suspected_failure_mode, predicted_observable, discriminating_test, scope_eligibility, "
                 "estimated_agent_calls, estimated_evaluator_calls, estimated_work_units (or null), rationale, "
                 "uncertainty, and inference=agent_inference. Candidate IDs must be stable mechanism slugs. "
+                "A candidate may optionally include composite_steps: an ordered sequence of two to four complete "
+                "Hypothesis objects when bounded successive edits are required. Each step gets core gates and DEV "
+                "measurement; validation and promotion apply only to the final combined result. "
                 "Estimate only remaining implementation/evaluation calls after this proposal call. "
                 "Use supplied DEV evidence references only or "
                 "INSUFFICIENT_EVIDENCE; separate observed evidence from inference. Do not invent gains, causes, "
@@ -174,6 +177,19 @@ class PiAdapter(AgentAdapter):
                 "relation, prior_experiment_refs, novelty_rationale, target_failure_signal, failure_mechanism. "
                 "If no useful hypothesis exists, return exactly {\"status\":\"NO_HYPOTHESIS\"}. "
                 "Do not use markdown fences and do not include prose outside the JSON object."
+            )
+        elif role == "pivot_advice":
+            instruction = (
+                "You are proposing an architecture pivot for human review at a measured plateau. "
+                "Use only the supplied current architecture, approved goal/scope, and public DEV evidence. "
+                "Describe one materially different proposed architecture, its rationale and expected measurable effect, "
+                "the exact changed scope, and bounded estimates of additional agent calls, evaluator calls and work units. "
+                "Treat all resource values as estimates, never as authorization. Do not change files, alter the approved "
+                "goal/evaluator/scope/budget, claim measured success, or request validation/holdout details. Do not include "
+                "secrets or private evaluation data. Your final message MUST be exactly one JSON object with keys "
+                "proposed_architecture, rationale, expected_effect, changed_scope, resources; resources must contain "
+                "additional_agent_calls, additional_evaluator_calls, additional_evaluation_units (or null), and notes. "
+                "Do not use markdown fences or prose outside the JSON object."
             )
         elif role == "analyze":
             instruction = (
@@ -288,6 +304,12 @@ class PiAdapter(AgentAdapter):
                 '{"hypothesis":"...","rationale":"...","expected_effect":"...",'
                 '"files_or_area":["..."],"falsification_condition":"...","mechanism_key":"...",'
                 '"relation":"new","prior_experiment_refs":[],"novelty_rationale":"..."}'
+            )
+        elif role == "pivot_advice":
+            schema = (
+                '{"proposed_architecture":"...","rationale":"...","expected_effect":"...",'
+                '"changed_scope":["..."],"resources":{"additional_agent_calls":1,'
+                '"additional_evaluator_calls":1,"additional_evaluation_units":null,"notes":"..."}}'
             )
         elif role == "analyze":
             schema = (
@@ -447,6 +469,9 @@ class PiAdapter(AgentAdapter):
         return text
 
     def execute(self, task: dict[str, Any], workspace: Path, timeout: int) -> dict[str, Any]:
+        role = task.get("role")
+        if role not in {"bootstrap", "propose", "analyze", "implement", "pivot_advice"}:
+            raise AgentError(f"unsupported Pi role: {role!r}")
         check_process_control()
         argv = self._argv()
         action_id = self._action_id(task)

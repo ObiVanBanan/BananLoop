@@ -1,0 +1,38 @@
+{"seed":"607","arm":"llm","init_exit":0,"run_exit":0,"report_exit":0,"duration_seconds":35.36673545837402,"python_version":"3.11.2","platform":"Linux-5.15.167.4-microsoft-standard-WSL2-x86_64-with-glibc2.36","codex_cli":"codex-cli 0.165.0","campaign_report_file":"campaign-report.md"}
+[BananLoop] baseline: starting full evaluator
+[BananLoop] baseline:evaluate: invoke evaluator
+[BananLoop] baseline:evaluate: completed
+[BananLoop] baseline quality: 0.4375
+[BananLoop] experiment 1: PROPOSE
+[BananLoop] exp:1:propose:semantic-select: invoke agent
+[BananLoop] exp:1:propose:semantic-select: completed
+[BananLoop] experiment 1 hypothesis: Extract possible values for each of the four attributes independently, intersect those constraints with catalog rows, and return only a unique surviving article.
+[BananLoop] target area: matcher.py
+[BananLoop] experiment 1: EXECUTE
+[BananLoop] exp:1:implement: invoke agent
+[BananLoop] exp:1:implement: completed
+[BananLoop] implementation: Implemented independent extraction and intersection of DN, PN, material, and joining constraints in `matcher.py`. The matcher requires one unambiguous value per attribute and returns an article only for a unique exact catalog match.; changed 1 file(s): matcher.py
+[BananLoop] experiment 1: SNAPSHOT
+[BananLoop] experiment 1: VERIFY
+[BananLoop] experiment 1: EVALUATE
+[BananLoop] exp:1:evaluate: invoke evaluator
+[BananLoop] exp:1:evaluate: completed
+[BananLoop] experiment 1: DECIDE
+[BananLoop] quality: 0.4375 -> 1 (+0.5625); ACCEPT
+[BananLoop] decision reasons: ACCEPTED
+[BananLoop] metrics: quality 0.4375 -> 1
+[BananLoop] experiment 1: PROMOTE
+[BananLoop] experiment 1: RECORD
+[BananLoop] experiment 1 result: ACCEPTED
+{
+  "status": "GOAL_MET",
+  "stop_reason": "GOAL_MET",
+  "stage": null,
+  "experiment_count": 1,
+  "attempt_count": 1,
+  "agent_calls": 2,
+  "evaluator_calls": 2,
+  "champion_snapshot": "064f012360479226dfc9fc9f4a8991909352ba95",
+  "campaign_id": "state-c3d00e0128c0d9ca0cc1120e21510766"
+}
+cp: preserving times for '/export/.': Operation not permitted
