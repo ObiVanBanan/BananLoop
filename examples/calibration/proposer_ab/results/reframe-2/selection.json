@@ -1,0 +1,167 @@
+{
+  "experiment_ordinal": 4,
+  "action_id": "ab:reframe-2",
+  "strategy": "reframe",
+  "trigger_evidence": [
+    "DEV non-improve streak=0",
+    "Champion stagnation streak=3",
+    "DEV experiment 3: DEV_PARTIAL_IMPROVEMENT"
+  ],
+  "candidates": [
+    {
+      "candidate_id": "synonym-alias-lexicon",
+      "hypothesis": {
+        "hypothesis": "Add a small deterministic synonym and technical-alias mapping in `solution.py`, and compare mapped concepts alongside normalized tokens; this will improve exact matches when statements use different wording for the same engineering concept.",
+        "rationale": "The public task identifies synonyms as a likely error class. Prior changes to token normalization, stopword filtering, and overlap tie-breaking each produced only a partial DEV improvement, so this reframes matching around concept equivalence rather than another token-overlap adjustment.",
+        "expected_effect": "Quality increases by at least 0.001 if synonym variation is a material source of DEV errors.",
+        "files_or_area": [
+          "solution.py"
+        ],
+        "falsification_condition": "Reject the mechanism if DEV quality improves by less than 0.001 or declines.",
+        "mechanism_key": "synonym-alias-mapping",
+        "relation": "new",
+        "prior_experiment_refs": [
+          1,
+          2,
+          3
+        ],
+        "novelty_rationale": "DEV experiments 1, 2, and 3 measured partial improvements of 0.0002, 0.0003, and 0.0004, respectively, but none met the 0.001 promotion threshold. These results support incremental overlap-related mechanisms without showing promotion; this candidate tests concept-level synonym mapping, a different mechanism family.",
+        "target_failure_signal": "",
+        "failure_mechanism": ""
+      },
+      "evidence_refs": [
+        "exp:1",
+        "exp:2",
+        "exp:3"
+      ],
+      "suspected_failure_mode": "Equivalent technical concepts expressed with different words may have insufficient token overlap to match.",
+      "predicted_observable": "DEV exact-match quality rises by at least 0.001 after adding deterministic aliases; if synonym variation is not a meaningful error source, quality stays below that threshold or falls.",
+      "discriminating_test": "Implement a bounded alias map in `solution.py`, then compare exact-match quality against the current champion on the same CPU DEV set; inspect whether any gain reaches 0.001.",
+      "scope_eligibility": true,
+      "estimated_agent_calls": 2,
+      "estimated_evaluator_calls": 1,
+      "estimated_work_units": null,
+      "rationale": "Targets the task's stated synonym error class with a concrete, isolated change. The supplied experiments show partial gains from prior mechanisms, not evidence that they failed to affect quality.",
+      "uncertainty": "No error breakdown or examples are supplied, so the prevalence and coverage of synonym cases are unknown.",
+      "inference": "agent_inference"
+    },
+    {
+      "candidate_id": "negation-aware-overlap",
+      "hypothesis": {
+        "hypothesis": "Add a negation-aware comparison in `solution.py` that distinguishes concepts appearing in negated contexts from the same concepts asserted positively; this will reduce exact-match errors caused by statements with opposite polarity.",
+        "rationale": "The public task names negation as a possible error class, while the current token-overlap framing can count shared concept words without representing polarity. This tests polarity handling independently of synonym mapping or further overlap ranking tweaks.",
+        "expected_effect": "Quality increases by at least 0.001 if polarity mismatches account for enough DEV errors.",
+        "files_or_area": [
+          "solution.py"
+        ],
+        "falsification_condition": "Reject the mechanism if DEV quality improves by less than 0.001 or declines.",
+        "mechanism_key": "negation-aware-matching",
+        "relation": "new",
+        "prior_experiment_refs": [
+          1,
+          2,
+          3
+        ],
+        "novelty_rationale": "Experiments 1–3 reported positive but sub-threshold deltas (0.0002–0.0004), indicating partial quality gains rather than failed mechanisms. None tested polarity representation; this candidate tests whether an unmodeled semantic feature explains remaining errors.",
+        "target_failure_signal": "",
+        "failure_mechanism": ""
+      },
+      "evidence_refs": [
+        "exp:1",
+        "exp:2",
+        "exp:3"
+      ],
+      "suspected_failure_mode": "Statements with shared technical terms but opposite negation may be treated as similar by token overlap.",
+      "predicted_observable": "Negation-aware matching improves exact-match quality by at least 0.001; otherwise the measured gain remains below threshold or becomes negative.",
+      "discriminating_test": "Add bounded negation-scope handling in `solution.py` and evaluate exact-match quality on the same CPU DEV set against the current champion.",
+      "scope_eligibility": true,
+      "estimated_agent_calls": 2,
+      "estimated_evaluator_calls": 1,
+      "estimated_work_units": null,
+      "rationale": "A materially different mechanism from lexical cleanup and overlap tie-breaking, grounded in an error class explicitly mentioned in the public task.",
+      "uncertainty": "The request supplies no examples or failure signal showing whether negation occurs in the DEV set or how it is represented.",
+      "inference": "agent_inference"
+    },
+    {
+      "candidate_id": "acronym-expansion-matching",
+      "hypothesis": {
+        "hypothesis": "Add deterministic acronym expansion for a bounded set of technical abbreviations in `solution.py` before matching; this will improve exact matches when a statement and canonical concept use an acronym and its expanded form.",
+        "rationale": "Acronym expansion is explicitly listed as a likely error class in the public task, and it tests a distinct lexical normalization mechanism from synonym mapping and negation handling.",
+        "expected_effect": "Quality increases by at least 0.001 if acronym/expansion mismatches are sufficiently common in DEV.",
+        "files_or_area": [
+          "solution.py"
+        ],
+        "falsification_condition": "Reject the mechanism if DEV quality improves by less than 0.001 or declines.",
+        "mechanism_key": "acronym-expansion",
+        "relation": "new",
+        "prior_experiment_refs": [
+          1,
+          2,
+          3
+        ],
+        "novelty_rationale": "The measured partial gains in experiments 1–3 (0.0002, 0.0003, 0.0004) show that previous mechanisms modestly improved quality but did not reach the promotion threshold. They do not test acronym expansion, so this candidate explores a distinct error class.",
+        "target_failure_signal": "",
+        "failure_mechanism": ""
+      },
+      "evidence_refs": [
+        "exp:1",
+        "exp:2",
+        "exp:3"
+      ],
+      "suspected_failure_mode": "Acronym and expanded-form variants may have low token overlap despite referring to the same concept.",
+      "predicted_observable": "Exact-match quality improves by at least 0.001 with bounded acronym expansion; without material acronym-related errors, the gain will be smaller or negative.",
+      "discriminating_test": "Implement a small explicit acronym-expansion table in `solution.py` and compare same-set CPU DEV exact-match quality to the current champion.",
+      "scope_eligibility": true,
+      "estimated_agent_calls": 2,
+      "estimated_evaluator_calls": 1,
+      "estimated_work_units": null,
+      "rationale": "Tests a task-stated error class using a small, auditable change confined to the allowed file.",
+      "uncertainty": "No acronym examples or DEV error breakdown are provided; coverage and ambiguity risk are unknown.",
+      "inference": "agent_inference"
+    }
+  ],
+  "decisions": [
+    {
+      "candidate_id": "synonym-alias-lexicon",
+      "admissible": true,
+      "rejection_reasons": [],
+      "criterion_scores": {
+        "dev_evidence": 3,
+        "mechanism_novelty": 1,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3
+      },
+      "selection_reason": "Selected by deterministic ordering: strategy-aware mechanism novelty, DEV evidence, falsifiability, budget feasibility, estimated cost, stable candidate ID."
+    },
+    {
+      "candidate_id": "negation-aware-overlap",
+      "admissible": true,
+      "rejection_reasons": [],
+      "criterion_scores": {
+        "dev_evidence": 3,
+        "mechanism_novelty": 1,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3
+      },
+      "selection_reason": "Ranked below selected candidate by the recorded deterministic criteria."
+    },
+    {
+      "candidate_id": "acronym-expansion-matching",
+      "admissible": true,
+      "rejection_reasons": [],
+      "criterion_scores": {
+        "dev_evidence": 3,
+        "mechanism_novelty": 1,
+        "falsifiability": 1,
+        "budget_feasibility": 1,
+        "lower_estimated_cost": -3
+      },
+      "selection_reason": "Ranked below selected candidate by the recorded deterministic criteria."
+    }
+  ],
+  "invalid_candidates": [],
+  "selected_candidate_id": "synonym-alias-lexicon",
+  "stop_reason": ""
+}

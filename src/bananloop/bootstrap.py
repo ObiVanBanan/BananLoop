@@ -32,6 +32,9 @@ class BootstrapError(RuntimeError):
     pass
 
 
+BOOTSTRAP_MAX_ATTEMPTS = 5
+
+
 class BootstrapPairedPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -98,6 +101,7 @@ class BootstrapPlan(BaseModel):
     smoke_command: list[str] = Field(default_factory=list)
     protocol_manifest_commands: dict[Literal["dev", "validation", "holdout"], list[str]] = Field(default_factory=dict)
     agent_visible_training_paths: list[str] = Field(default_factory=list)
+    agent_visible_context_paths: list[str] = Field(default_factory=list)
     validation_command: list[str] = Field(default_factory=list)
     holdout_command: list[str] = Field(default_factory=list)
     primary_metric: MetricSpec
@@ -187,6 +191,8 @@ def _bootstrap_task(
             "operator_input": "repo + human goal only unless essential assets/credentials are truly absent",
             "reuse_discovered_project_resources": True,
             "never_request_a_path_already_present_in_detected_resources": True,
+            "explicit_read_only_context_paths_use_agent_visible_context_paths": True,
+            "agent_visible_context_paths_must_be_discovered_and_non_label_bearing": True,
             "do_not_open_secret_env_files_or_echo_secret_values": True,
             "use_detected_environment_variable_names_without_requesting_secret_values": True,
             "report_resource_paths_and_availability_before_requesting_missing_inputs": True,
@@ -322,10 +328,93 @@ def _validate_agent_visible_training_paths(
     return validated
 
 
+def _validate_agent_visible_context_paths(
+    paths: list[str], runtime_resources: list[str],
+) -> list[str]:
+    """Allow explicitly selected, non-label-bearing project context read-only."""
+    runtime_set = set(runtime_resources)
+    unsafe_name = re.compile(
+        r"(?i)(?:^|[/_.-])(?:eval|evaluation|test|validation|holdout|gold|reference|"
+        r"query|queries|label|labels|answer|answers|expected|target)(?:$|[/_.-])"
+    )
+    validated: list[str] = []
+    for value in paths:
+        normalized = value.replace("\\", "/")
+        if (
+            not normalized
+            or normalized.startswith("/")
+            or any(part in {"", ".", ".."} for part in normalized.split("/"))
+            or normalized not in runtime_set
+            or unsafe_name.search(normalized)
+        ):
+            raise BootstrapError(
+                "agent_visible_context_paths must name discovered non-evaluation context "
+                "resources and must not expose labels, queries, answers, or reference files"
+            )
+        if normalized not in validated:
+            validated.append(normalized)
+    return validated
+
+
 def _bootstrap_contract_error(
     plan: BootstrapPlan,
     task: dict[str, Any],
 ) -> str | None:
+    goal = str(task.get("goal") or "")
+    repository = task.get("repository", {})
+    resources = repository.get("detected_resources", {})
+    discovered_paths = [
+        str(path)
+        for paths in resources.values()
+        if isinstance(paths, list)
+        for path in paths
+    ]
+    requested_visible_paths: list[str] = []
+    for path in discovered_paths:
+        escaped_path = re.escape(path)
+        before_path = re.search(
+            rf"(?:expose|make\s+visible|make\s+available|show|provide|"
+            rf"предостав\w*|показ\w*|сделай\s+видим\w*)\s+"
+            rf"(?:the\s+)?{escaped_path}",
+            goal,
+            re.IGNORECASE,
+        )
+        after_path = re.search(
+            rf"{escaped_path}\s+(?:as\s+)?(?:read.only\s+)?"
+            rf"(?:project\s+)?(?:context|training\s+resource|visible)",
+            goal,
+            re.IGNORECASE,
+        )
+        if before_path or after_path:
+            requested_visible_paths.append(path)
+    explicitly_hidden_paths = {
+        path for path in discovered_paths
+        if re.search(rf"(?:hide| скры|скры|не\s+показыв\w*)\s+{re.escape(path)}", goal, re.IGNORECASE)
+    }
+    missing_visible_paths = sorted(
+        set(requested_visible_paths)
+        - set(plan.agent_visible_training_paths)
+        - set(plan.agent_visible_context_paths)
+    )
+    if missing_visible_paths:
+        return (
+            "bootstrap omitted operator-requested read-only resource(s) from "
+            "agent_visible_context_paths or agent_visible_training_paths: "
+            + ", ".join(missing_visible_paths)
+        )
+    if explicitly_hidden_paths & (set(plan.agent_visible_training_paths) | set(plan.agent_visible_context_paths)):
+        return "bootstrap exposed operator-hidden resource(s): " + ", ".join(sorted(explicitly_hidden_paths))
+    unsafe_context_paths = [
+        path for path in plan.agent_visible_context_paths
+        if not any(path == p for paths in resources.values() if isinstance(paths, list) for p in paths)
+        or re.search(
+            r"(?i)(?:^|[/_.-])(?:eval|evaluation|test|validation|holdout|gold|reference|query|queries|label|labels|answer|answers|expected|target)(?:$|[/_.-])",
+            path,
+        )
+    ]
+    if unsafe_context_paths:
+        return "agent_visible_context_paths contains undiscovered or label-bearing resources: " + ", ".join(unsafe_context_paths)
+
     if plan.status != "needs_input":
         return None
     goal_need = re.compile(
@@ -347,7 +436,6 @@ def _bootstrap_contract_error(
         re.IGNORECASE,
     )
     supplied_goal = bool(str(task.get("goal") or "").strip())
-    repository = task.get("repository", {})
     runtimes = repository.get("detected_python_runtimes", [])
     resources = repository.get("detected_resources", {})
     env_keys = [str(key) for key in resources.get("env_keys", [])]
@@ -485,6 +573,7 @@ def bootstrap_campaign(
     max_evaluator_calls: int = 16,
     deadline_seconds: int = 14400,
     plateau_experiments: int = 3,
+    selection_mode: str = "deterministic",
 ) -> tuple[BootstrapPlan, CampaignSpec | None]:
     """Turn repo + goal into an approved CampaignSpec without touching source checkout."""
 
@@ -538,7 +627,7 @@ def bootstrap_campaign(
             encoding="utf-8",
         )
 
-    for attempt_index in range(3):
+    for attempt_index in range(BOOTSTRAP_MAX_ATTEMPTS):
         try:
             raw = adapter.execute(
                 task,
@@ -576,7 +665,7 @@ def bootstrap_campaign(
             })
             persist_record()
             workspace.checkout(source_base)
-            if isinstance(exc, ValidationError) and attempt_index < 2:
+            if isinstance(exc, ValidationError) and attempt_index < BOOTSTRAP_MAX_ATTEMPTS - 1:
                 task = {
                     **task,
                     "repair": {
@@ -622,7 +711,7 @@ def bootstrap_campaign(
 
         if contract_error is not None:
             persist_record()
-            if attempt_index < 2:
+            if attempt_index < BOOTSTRAP_MAX_ATTEMPTS - 1:
                 task = {
                     **task,
                     "repair": {
@@ -667,7 +756,7 @@ def bootstrap_campaign(
                 "error": str(exc),
             }
             persist_record()
-            if attempt_index < 2:
+            if attempt_index < BOOTSTRAP_MAX_ATTEMPTS - 1:
                 task = {
                     **task,
                     "repair": {
@@ -699,6 +788,10 @@ def bootstrap_campaign(
     assert plan is not None
     visible_training_paths = _validate_agent_visible_training_paths(
         plan.agent_visible_training_paths,
+        runtime_bindings,
+    )
+    visible_context_paths = _validate_agent_visible_context_paths(
+        plan.agent_visible_context_paths,
         runtime_bindings,
     )
     signal_receipt = readiness.get("signal_sanity", {})
@@ -755,10 +848,11 @@ def bootstrap_campaign(
         agent_hidden_paths=list(
             dict.fromkeys([
                 ".bananloop_eval/**",
-                *(path for path in runtime_bindings if path not in visible_training_paths),
+                *(path for path in runtime_bindings if path not in visible_training_paths and path not in visible_context_paths),
             ])
         ),
         agent_visible_training_paths=visible_training_paths,
+        agent_visible_context_paths=visible_context_paths,
         agent_visible_metrics=(
             plan.agent_visible_metrics or [plan.primary_metric.name]
         ),
@@ -785,6 +879,7 @@ def bootstrap_campaign(
             plateau_experiments=plateau_experiments,
         ),
         agent=agent_config,
+        selection_mode=selection_mode,
     )
 
     store = CampaignStore(paths.db)

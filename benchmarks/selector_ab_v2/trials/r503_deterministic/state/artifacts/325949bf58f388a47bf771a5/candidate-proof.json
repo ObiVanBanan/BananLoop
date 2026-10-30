@@ -1,0 +1,9 @@
+{
+  "candidate_snapshot": "acf42328278cf2d69a45d948664565b4883ec5d0",
+  "changed_paths": [
+    "matcher.py"
+  ],
+  "diff_sha256": "f667dc2f4e2055a9be3e62f7554a8c978020ea80696ac6131f10af414b629bad",
+  "parent_snapshot": "3f3fa9a79166829d4a11f0b3815ee57551c2f5a0",
+  "tree": "dec01a35a3f5751fe4cd20c4941837fd1ed07b90"
+}

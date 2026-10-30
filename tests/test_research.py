@@ -14,12 +14,15 @@ from bananloop.contracts import (
     MetricSpec,
     ResearchState,
 )
+from bananloop.semantic_selection import apply_semantic_choice
 from bananloop.research import (
     agent_evaluation_view,
     build_history,
     build_research_state,
     capsule_evidence_ref,
     planning_mode,
+    effective_reframe_threshold,
+    synthesize_dev_failure_analysis,
     redundancy_reason,
     normalize_portfolio,
     select_candidate,
@@ -131,7 +134,8 @@ def test_validation_evidence_never_enters_adaptive_research_state():
 
     state = build_research_state(s, campaign(non_improve_streak=99), [row])
     assert state.dev_non_improve_streak == 0
-    assert state.planning_mode == "exploit"
+    assert state.champion_stagnation_streak == 1
+    assert state.planning_mode == "explore"
     assert state.failure_counts == {"DEV_IMPROVEMENT": 1}
     assert "VALIDATION" not in state.model_dump_json()
 
@@ -240,6 +244,78 @@ def test_portfolio_selector_is_deterministic_and_prefers_new_mechanism_on_refram
     assert first.selected_candidate_id == "new-index"
     rejected = next(item for item in first.decisions if item.candidate_id == "retry-cache")
     assert "REDUNDANT_MECHANISM" in rejected.rejection_reasons
+
+
+def test_selector_tie_break_is_independent_of_candidate_id_and_json_order():
+    candidates = [
+        _portfolio_candidate("alpha", "mechanism-a"),
+        _portfolio_candidate("beta", "mechanism-b"),
+        _portfolio_candidate("gamma", "mechanism-c"),
+    ]
+    state = _selection_state()
+    def choose(items):
+        return select_candidate(HypothesisPortfolio(candidates=items), spec=spec(), state=state,
+                                experiments=[], experiment_ordinal=1, action_id="exp:1:propose")
+    def selected_content(record):
+        candidate = next(item for item in record.candidates
+                         if item.candidate_id == record.selected_candidate_id)
+        return candidate.model_dump(mode="json", exclude={"candidate_id"})
+
+    expected = selected_content(choose(candidates))
+    renamed = [item.model_copy(update={"candidate_id": f"renamed-{index}"})
+               for index, item in enumerate(candidates)]
+    assert selected_content(choose(renamed)) == expected
+    assert selected_content(choose(list(reversed(candidates)))) == expected
+    assert selected_content(choose(candidates)) == selected_content(choose(candidates))
+
+
+def test_selector_existing_strategy_and_evidence_scores_still_dominate_hash_tie_break():
+    known = _portfolio_candidate("z-known", "supported")
+    novel = _portfolio_candidate("a-novel", "new")
+    state = _selection_state(mechanisms=[
+        {"mechanism_key": "supported", "experiment_ordinals": [1], "dev_outcomes": {}}
+    ])
+    experiments = [{"ordinal": 1, "hypothesis_json": json.dumps({"mechanism_key": "other"})}]
+    record = select_candidate(HypothesisPortfolio(candidates=[novel, known]), spec=spec(), state=state,
+                               experiments=experiments, experiment_ordinal=2, action_id="exp:2:propose")
+    assert record.selected_candidate_id == "a-novel"  # reframe prioritizes novelty
+
+    exploit = state.model_copy(update={"planning_mode": "exploit"})
+    record = select_candidate(HypothesisPortfolio(candidates=[novel, known]), spec=spec(), state=exploit,
+                              experiments=experiments, experiment_ordinal=2, action_id="exp:2:propose")
+    assert record.selected_candidate_id == "z-known"  # exploit retains known-mechanism priority
+
+    stronger_evidence = _portfolio_candidate("strong-evidence", "equal-family", evidence_refs=["exp:1"])
+    stronger_evidence = stronger_evidence.model_copy(update={
+        "hypothesis": stronger_evidence.hypothesis.model_copy(update={"prior_experiment_refs": [1]})
+    })
+    weak_evidence = _portfolio_candidate("weak-evidence", "equal-family")
+    from bananloop.contracts import DevExperimentEvidence
+    evidence_state = state.model_copy(update={
+        "experiment_evidence": [DevExperimentEvidence(ordinal=1, mechanism_key="other", dev_outcome="DEV_NO_IMPROVEMENT")]
+    })
+    # Explore has equal novelty priority for known and new mechanisms, exposing
+    # the existing DEV evidence criterion before the neutral hash tie-break.
+    explore = evidence_state.model_copy(update={"planning_mode": "explore"})
+    record = select_candidate(HypothesisPortfolio(candidates=[weak_evidence, stronger_evidence]), spec=spec(),
+                              state=explore, experiments=experiments, experiment_ordinal=2,
+                              action_id="exp:2:propose")
+    evidence_scores = {item.candidate_id: item.criterion_scores["dev_evidence"]
+                       for item in record.decisions}
+    assert evidence_scores["strong-evidence"] > evidence_scores["weak-evidence"]
+    assert record.selected_candidate_id == "strong-evidence"
+
+
+def test_selector_rejections_remain_ineligible_with_tied_valid_candidates():
+    valid = _portfolio_candidate("valid", "valid-mechanism")
+    invalid = _portfolio_candidate("invalid", "invalid-mechanism", scope_eligibility=False)
+    record = select_candidate(HypothesisPortfolio(candidates=[valid, invalid]), spec=spec(),
+                              state=_selection_state(), experiments=[], experiment_ordinal=1,
+                              action_id="exp:1:propose")
+    assert record.selected_candidate_id == "valid"
+    rejected = next(item for item in record.decisions if item.candidate_id == "invalid")
+    assert not rejected.admissible
+    assert "AGENT_SCOPE_INELIGIBLE" in rejected.rejection_reasons
 
 
 def test_repeated_no_effect_reframe_selects_materially_different_mechanism():
@@ -506,7 +582,8 @@ def test_dogfood_partial_gain_preserves_dev_failure_mechanism_evidence():
     ), rows)
     assert state.failure_counts == {"DEV_NO_EFFECT": 2, "DEV_PARTIAL_IMPROVEMENT": 1}
     assert state.dev_non_improve_streak == 0
-    assert state.planning_mode == "exploit"
+    assert state.champion_stagnation_streak == 3
+    assert state.planning_mode == "reframe"
     assert [item.signal_key for item in state.failure_signals[:2]] == [
         "metric:retrieval_miss_count", "metric:rerank_selection_count",
     ]
@@ -522,3 +599,366 @@ def test_dogfood_partial_gain_preserves_dev_failure_mechanism_evidence():
     assert "private_failure_count" not in rendered
     assert "private case identity" not in rendered
     assert "hidden tier" not in rendered
+
+
+def test_auto_diagnosis_persists_unknown_cause_without_hidden_data():
+    s = spec(agent_visible_metrics=["quality"])
+    analysis = synthesize_dev_failure_analysis(s, {
+        "accepted": False,
+        "primary_value": 0.1,
+        "champion_value": 0.6,
+        "delta": -0.5,
+        "predicates": {"minimum_improvement": False},
+        "reasons": ["PRIMARY_NOT_IMPROVED", "VALIDATION:PRIVATE_RESULT"],
+        "validation": {"secret_answer": "DO_NOT_LEAK"},
+    })
+    assert analysis is not None
+    capsule = analysis.capsules[0]
+    assert capsule.failure_class == "DEV_METRIC_REGRESSION"
+    assert capsule.likely_mechanism == "UNKNOWN"
+    assert capsule.confidence == 0.0
+    assert "delta=-0.5" in capsule.observation
+    assert "PRIVATE" not in analysis.model_dump_json()
+    assert "DO_NOT_LEAK" not in analysis.model_dump_json()
+    assert synthesize_dev_failure_analysis(s, {"accepted": True}) is None
+
+
+def test_auto_diagnosis_respects_primary_metric_visibility():
+    s = spec(agent_visible_metrics=["other_metric"])
+    analysis = synthesize_dev_failure_analysis(s, {
+        "accepted": False,
+        "primary_value": 123456.0,
+        "champion_value": 1.0,
+        "delta": 123455.0,
+        "reasons": ["PRIMARY_NOT_IMPROVED"],
+    })
+    assert analysis is not None
+    assert "123456" not in analysis.model_dump_json()
+    assert analysis.capsules[0].failure_class == "DEV_UNEXPLAINED_REJECTION"
+
+
+def test_auto_diagnosis_separates_check_failures_from_metric_regressions():
+    s = spec()
+    analysis = synthesize_dev_failure_analysis(s, {
+        "accepted": False,
+        "primary_value": 0.7,
+        "champion_value": 0.6,
+        "delta": 0.1,
+        "predicates": {"check:valid": False},
+        "reasons": ["CHECK_FAILED:valid"],
+    })
+    assert analysis.capsules[0].failure_class == "DEV_CHECK_FAILURE"
+    assert "not proof" in analysis.capsules[0].general_rule
+
+
+def test_bounded_reframe_reachable_in_six_round_campaign():
+    s = spec(budget=BudgetSpec(
+        max_experiments=6, max_attempts=12, max_agent_calls=20,
+        max_evaluator_calls=15, plateau_experiments=7,
+    ))
+    assert effective_reframe_threshold(s) == 4
+    rows = [
+        {
+            "ordinal": i, "status": "REJECTED",
+            "hypothesis_json": json.dumps({
+                "mechanism_key": f"mechanism-{i}",
+                "relation": "new",
+            }),
+            "evaluation_json": json.dumps({
+                "status": "ok", "metrics": {"quality": 0.0}
+            }),
+            "dev_decision_json": json.dumps({
+                "accepted": False, "delta": -0.01,
+                "primary_value": 0.0, "champion_value": 0.01,
+                "reasons": ["PRIMARY_NOT_IMPROVED"],
+            }),
+            "decision_json": json.dumps({
+                "accepted": False, "delta": -0.01,
+                "reasons": ["PRIMARY_NOT_IMPROVED"],
+            }),
+        }
+        for i in range(1, 4)
+    ]
+    state = build_research_state(s, campaign(experiment_count=3), rows)
+    assert state.planning_mode == "reframe"
+    assert state.remaining_budget["experiments"] == 3
+    assert state.remaining_budget["dev_experiments_until_reframe"] == 0
+
+
+def test_auto_diagnosis_survives_rejected_trial_and_enters_proposer_memory():
+    s = spec()
+    analysis = synthesize_dev_failure_analysis(s, {
+        "accepted": False, "primary_value": 0.2,
+        "champion_value": 0.4, "delta": -0.2,
+        "reasons": ["PRIMARY_NOT_IMPROVED"],
+    })
+    row = {
+        "ordinal": 1, "status": "REJECTED", "failure_category": None,
+        "hypothesis_json": json.dumps({
+            "mechanism_key": "neighbor-damping",
+        }),
+        "evaluation_json": json.dumps({
+            "status": "ok", "metrics": {"quality": 0.2},
+            "diagnostics": {"hidden_holdout": 555},
+        }),
+        "dev_decision_json": json.dumps({
+            "accepted": False, "primary_value": 0.2,
+            "champion_value": 0.4, "delta": -0.2,
+            "reasons": ["PRIMARY_NOT_IMPROVED"],
+        }),
+        "decision_json": json.dumps({"accepted": False}),
+        "failure_analysis_json": analysis.model_dump_json(),
+    }
+    history = build_history(s, [row])
+    assert history[0]["failure_capsules"][0]["failure_class"] == "DEV_METRIC_REGRESSION"
+    assert "hidden_holdout" not in json.dumps(history)
+    research = build_research_state(s, campaign(), [row])
+    assert research.recent_failure_capsules[0].likely_mechanism == "UNKNOWN"
+    assert research.failure_signals == []
+    assert research.recent_failure_capsules[0].failure_class == "DEV_METRIC_REGRESSION"
+
+
+
+
+def test_raw_dev_metric_requires_opt_in_and_helps_with_clipped_reward():
+    champion = json.dumps({
+        "status": "ok",
+        "metrics": {"quality": 0.0},
+        "diagnostics": {"primary_raw_metric": -3.0, "hidden_case": 123456},
+    })
+    candidate = json.dumps({
+        "status": "ok",
+        "metrics": {"quality": 0.0},
+        "diagnostics": {"primary_raw_metric": 0.15, "hidden_case": 789101},
+    })
+    decision = {
+        "accepted": False, "primary_value": 0.0,
+        "champion_value": 0.0, "delta": 0.0,
+        "reasons": ["PRIMARY_NOT_IMPROVED"],
+    }
+    hidden = synthesize_dev_failure_analysis(
+        spec(), decision, champion_dev_json=champion,
+        candidate_dev_json=candidate,
+    )
+    assert "primary_raw_metric" not in hidden.model_dump_json()
+    visible = synthesize_dev_failure_analysis(
+        spec(agent_visible_diagnostics=["primary_raw_metric"]),
+        decision,
+        champion_dev_json=champion, candidate_dev_json=candidate,
+    )
+    text = visible.model_dump_json()
+    assert "primary_raw_metric" in text
+    assert "delta=+3.15" in text
+    assert "hidden_case" not in text
+    assert "123456" not in text
+    assert "789101" not in text
+
+
+def test_unknown_cause_capsule_remains_memory_not_enforced_failure_signal():
+    s = spec(agent_visible_metrics=["quality"])
+    analysis = synthesize_dev_failure_analysis(s, {
+        "accepted": False, "primary_value": 0.0,
+        "champion_value": 0.25, "delta": -0.25,
+        "reasons": ["PRIMARY_NOT_IMPROVED"],
+    })
+    row = {
+        "ordinal": 1, "status": "REJECTED", "failure_category": None,
+        "hypothesis_json": json.dumps({"mechanism_key": "unknown-cause-test"}),
+        "evaluation_json": json.dumps({"status": "ok", "metrics": {"quality": 0.0}}),
+        "dev_decision_json": json.dumps({
+            "accepted": False, "primary_value": 0.0,
+            "champion_value": 0.25, "delta": -0.25,
+            "reasons": ["PRIMARY_NOT_IMPROVED"],
+        }),
+        "failure_analysis_json": analysis.model_dump_json(),
+    }
+    state = build_research_state(s, campaign(), [row])
+    assert state.failure_signals == []
+    assert state.experiment_evidence[0].ordinal == 1
+    assert state.recent_failure_capsules[0].likely_mechanism == "UNKNOWN"
+    assert build_history(s, [row])[0]["failure_capsules"][0]["confidence"] == 0.0
+
+
+def test_repairable_portfolio_never_weakens_scope_or_budget_policy():
+    from bananloop.contracts import CandidateDecision, PortfolioRecord
+    from bananloop.research import repairable_portfolio_failure, portfolio_repair_context
+    record = PortfolioRecord(
+        experiment_ordinal=1, action_id="exp:1:propose", strategy="exploit",
+        decisions=[CandidateDecision(
+            candidate_id="bad-path", admissible=False,
+            rejection_reasons=["OUT_OF_SCOPE"],
+        )],
+    )
+    assert repairable_portfolio_failure(record)
+    context = portfolio_repair_context(record, spec(editable_scope=["output/**"]))
+    assert context["attempt"] == context["limit"] == 1
+    assert context["allowed_editable_scope"] == ["output/**"]
+    assert context["previous_rejections"][0]["rejection_reasons"] == ["OUT_OF_SCOPE"]
+    denied = record.model_copy(update={
+        "decisions": [CandidateDecision(
+            candidate_id="no-budget", admissible=False,
+            rejection_reasons=["INSUFFICIENT_AGENT_BUDGET"],
+        )]
+    })
+    assert not repairable_portfolio_failure(denied)
+    valid = record.model_copy(update={"selected_candidate_id": "good"})
+    assert not repairable_portfolio_failure(valid)
+
+
+def test_real_causal_capsule_still_becomes_actionable_signal():
+    s = spec(agent_visible_metrics=["quality"])
+    row = {
+        "ordinal": 1, "status": "REJECTED", "failure_category": None,
+        "hypothesis_json": json.dumps({"mechanism_key": "causal-failure"}),
+        "evaluation_json": json.dumps({"status": "ok", "metrics": {"quality": 0.0}}),
+        "failure_analysis_json": json.dumps({"capsules": [{
+            "title": "Valid DEV mismatch",
+            "failure_class": "KNOWN_DEV_CONSTRAINT",
+            "observation": "normalized aggregates disagree",
+            "likely_mechanism": "normalization mismatch",
+            "general_rule": "compare aggregate normalization paths",
+            "confidence": 0.9,
+        }]}),
+    }
+    state = build_research_state(s, campaign(), [row])
+    assert any(signal.signal_key == "capsule:KNOWN_DEV_CONSTRAINT"
+               for signal in state.failure_signals)
+
+
+def test_repaired_portfolio_is_visible_to_reframe_planner():
+    from bananloop.contracts import PortfolioRecord
+    s = spec()
+    events = [{
+        "event_type": "PORTFOLIO_REPAIR_DECISION",
+        "payload_json": PortfolioRecord(
+            experiment_ordinal=2, action_id="exp:2:propose-repair",
+            strategy="reframe", selected_candidate_id="fixed-idea",
+        ).model_dump_json(),
+    }]
+    state = build_research_state(s, campaign(), [], events=events)
+    assert len(state.portfolios) == 1
+    assert state.portfolios[0].selected_candidate_id == "fixed-idea"
+    assert state.portfolios[0].strategy == "reframe"
+
+
+
+def test_champion_stagnation_reframes_after_repeated_partial_dev_gains():
+    """A tiny positive DEV delta does not imply a new champion."""
+    s = spec(budget=BudgetSpec(
+        max_experiments=6, max_attempts=10, max_agent_calls=20,
+        max_evaluator_calls=10, plateau_experiments=7,
+    ))
+    rows = [{
+        "ordinal": i,
+        "status": "REJECTED",
+        "failure_category": "PRIMARY_NOT_IMPROVED",
+        "hypothesis_json": json.dumps({"mechanism_key": f"partial-{i}"}),
+        "evaluation_json": json.dumps({"status": "ok", "metrics": {"quality": 0.2 + 0.0001*i}}),
+        "dev_decision_json": json.dumps({
+            "accepted": False,
+            "primary_value": 0.2 + 0.0001*i,
+            "champion_value": 0.2,
+            "delta": 0.0001*i,
+            "reasons": ["PRIMARY_NOT_IMPROVED"],
+        }),
+        "decision_json": json.dumps({"accepted": False}),
+    } for i in range(1, 4)]
+    state = build_research_state(s, campaign(experiment_count=3), rows)
+    assert state.dev_non_improve_streak == 0
+    assert state.champion_stagnation_streak == 3
+    assert state.planning_mode == "reframe"
+    assert state.remaining_budget["dev_experiments_until_reframe"] == 0
+
+
+def test_champion_stagnation_resets_only_after_real_promotion():
+    s = spec()
+    rejected = {
+        "ordinal": 1, "status": "REJECTED",
+        "hypothesis_json": json.dumps({"mechanism_key": "partially-better"}),
+        "evaluation_json": json.dumps({"status": "ok", "metrics": {"quality": 0.2}}),
+        "dev_decision_json": json.dumps({
+            "accepted": False, "primary_value": 0.2,
+            "champion_value": 0.1, "delta": 0.1,
+            "reasons": ["PRIMARY_NOT_IMPROVED"],
+        }),
+        "decision_json": json.dumps({"accepted": False}),
+    }
+    promoted = {
+        **rejected,
+        "ordinal": 2, "status": "ACCEPTED",
+        "hypothesis_json": json.dumps({"mechanism_key": "real-promotion"}),
+        "dev_decision_json": json.dumps({
+            "accepted": True, "primary_value": 0.4,
+            "champion_value": 0.1, "delta": 0.3,
+            "reasons": ["ACCEPTED"],
+        }),
+        "decision_json": json.dumps({"accepted": True}),
+    }
+    blocked = {
+        "ordinal": 3, "status": "IMPLEMENTATION_BLOCKED",
+        "failure_category": "IMPLEMENTATION_BLOCKED",
+        "hypothesis_json": json.dumps({"mechanism_key": "blocked"}),
+    }
+    state = build_research_state(s, campaign(experiment_count=3), [rejected, promoted, blocked])
+    assert state.champion_stagnation_streak == 0
+    assert state.planning_mode == "exploit"
+
+
+def test_champion_stagnation_does_not_count_unevaluated_trials():
+    s = spec()
+    blocked = {
+        "ordinal": 1, "status": "NO_CHANGES",
+        "failure_category": "NO_CHANGES",
+        "hypothesis_json": json.dumps({"mechanism_key": "noop"}),
+    }
+    state = build_research_state(s, campaign(), [blocked])
+    assert state.champion_stagnation_streak == 0
+    assert state.dev_non_improve_streak == 0
+
+
+def test_semantic_selector_overrides_ranking_only_with_admissible_id():
+    portfolio = HypothesisPortfolio(candidates=[
+        _portfolio_candidate("alpha", "synonyms"),
+        _portfolio_candidate("beta", "negation"),
+    ])
+    base = select_candidate(portfolio, spec=spec(), state=_selection_state(), experiments=[],
+                            experiment_ordinal=1, action_id="exp:1:propose")
+    alternative = next(c for c in portfolio.candidates if c.candidate_id != base.selected_candidate_id)
+    selected, choice = apply_semantic_choice(base, {
+        "selected_candidate_id": alternative.candidate_id,
+        "reason": "This predicts a different causal fix to an unresolved DEV error.",
+        "evidence_refs": ["INSUFFICIENT_EVIDENCE"],
+        "main_risk": "New matching logic might trigger regressions.",
+    })
+    assert selected.selected_candidate_id == alternative.candidate_id
+    assert selected.candidates == base.candidates
+    assert choice.main_risk
+    assert all(d.admissible for d in selected.decisions)
+    assert base.selected_candidate_id != selected.selected_candidate_id
+
+
+def test_semantic_selector_rejects_ineligible_and_fabricated_evidence():
+    import pytest
+
+    portfolio = HypothesisPortfolio(candidates=[
+        _portfolio_candidate("good", "safe"),
+        _portfolio_candidate("bad", "unsafe", scope_eligibility=False),
+    ])
+    base = select_candidate(portfolio, spec=spec(), state=_selection_state(), experiments=[],
+                            experiment_ordinal=1, action_id="exp:1:propose")
+    response = {
+        "selected_candidate_id": "bad",
+        "reason": "Prefer this one despite its invalid scope.",
+        "evidence_refs": [],
+        "main_risk": "Scope.",
+    }
+    with pytest.raises(ValueError, match="ineligible"):
+        apply_semantic_choice(base, response)
+    response["selected_candidate_id"] = "good"
+    response["evidence_refs"] = ["exp:9999"]
+    with pytest.raises(ValueError, match="fabricated"):
+        apply_semantic_choice(base, response)
+    response["evidence_refs"] = ["INSUFFICIENT_EVIDENCE"]
+    response["unapproved_field"] = "arbitrary"
+    with pytest.raises(ValueError):
+        apply_semantic_choice(base, response)

@@ -1,0 +1,38 @@
+{"seed":"919","arm":"llm","init_exit":0,"run_exit":0,"report_exit":0,"duration_seconds":29.352502822875977,"python_version":"3.11.2","platform":"Linux-5.15.167.4-microsoft-standard-WSL2-x86_64-with-glibc2.36","codex_cli":"codex-cli 0.165.0","campaign_report_file":"campaign-report.md"}
+[BananLoop] baseline: starting full evaluator
+[BananLoop] baseline:evaluate: invoke evaluator
+[BananLoop] baseline:evaluate: completed
+[BananLoop] baseline quality: 0.4375
+[BananLoop] experiment 1: PROPOSE
+[BananLoop] exp:1:propose:semantic-select: invoke agent
+[BananLoop] exp:1:propose:semantic-select: completed
+[BananLoop] experiment 1 hypothesis: Parse DN/PN integers with boundary-aware bilingual regexes and map material/joining aliases to canonical values before filtering the catalog.
+[BananLoop] target area: matcher.py
+[BananLoop] experiment 1: EXECUTE
+[BananLoop] exp:1:implement: invoke agent
+[BananLoop] exp:1:implement: completed
+[BananLoop] implementation: Implemented boundary-aware DN/PN parsing, bilingual alias canonicalization, and unique exact catalog matching in `matcher.py`. Incomplete, conflicting, unsupported, or non-unique matches return `None`.; changed 1 file(s): matcher.py
+[BananLoop] experiment 1: SNAPSHOT
+[BananLoop] experiment 1: VERIFY
+[BananLoop] experiment 1: EVALUATE
+[BananLoop] exp:1:evaluate: invoke evaluator
+[BananLoop] exp:1:evaluate: completed
+[BananLoop] experiment 1: DECIDE
+[BananLoop] quality: 0.4375 -> 1 (+0.5625); ACCEPT
+[BananLoop] decision reasons: ACCEPTED
+[BananLoop] metrics: quality 0.4375 -> 1
+[BananLoop] experiment 1: PROMOTE
+[BananLoop] experiment 1: RECORD
+[BananLoop] experiment 1 result: ACCEPTED
+{
+  "status": "GOAL_MET",
+  "stop_reason": "GOAL_MET",
+  "stage": null,
+  "experiment_count": 1,
+  "attempt_count": 1,
+  "agent_calls": 2,
+  "evaluator_calls": 2,
+  "champion_snapshot": "2d9b9c5400c55b5cf21ede61e5e2ce65509140a5",
+  "campaign_id": "state-c3d00e0128c0d9ca0cc1120e21510766"
+}
+cp: preserving times for '/export/.': Operation not permitted

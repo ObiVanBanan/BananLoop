@@ -1,0 +1,302 @@
+{
+  "schema_version": 1,
+  "experiment_id": "mini-matcher-selector-ab-v1",
+  "status": "authorized_frozen_portfolio_not_historical",
+  "created_utc_date": "2026-10-30",
+  "source_checkout": {
+    "revision": "d789698527b135000b7250d285ab3618eb283b00",
+    "working_tree_note": "Runtime source, frozen portfolio, role profile, and trial fixture are frozen in a clean isolated local commit; the shared BananLoop worktree remains dirty and untouched."
+  },
+  "task": {
+    "id": "bananloop-mini-matcher-calibration",
+    "version": "local-fixture-v1",
+    "path": "examples/calibration/mini_matcher",
+    "goal": "Implement exact DN/PN and material/joining-type analog matching with safe abstention.",
+    "primary_metric": "quality",
+    "direction": "maximize",
+    "dev_cases": 16,
+    "baseline_quality_from_fixture_definition": 0.0,
+    "holdout": "none in this fixture; do not infer generalization beyond these 16 DEV cases",
+    "input_sha256": {
+      "TASK.md": "9125c7c6e245477adafda063e8f24e84de560f7950ae57f83ca3c52bf149e90e",
+      "evaluator.py": "b9351541f2e88af3ea7b72bf283e14f1e7d8beab23e148e947bb7722e5f782e0",
+      "README.md": "398319611130a98ae42be0b385edcda24cd65119e211794ceb6f210f1155c342",
+      "matcher.py": "ae3033d0df48a1adc833d1c292e5802bf70e560bb265f8e6aec1234cc4719526"
+    }
+  },
+  "portfolio": {
+    "status": "FROZEN_MANUAL_PREREGISTERED_NOT_HISTORICAL",
+    "required_artifact": "frozen_portfolio.json",
+    "sha256": "e2b563dea0851d2c59bc0056f91349b81563d747715375f654e6c89419bf6c7a",
+    "candidate_count": 3,
+    "reason": "A new manually authored portfolio is frozen from the public TASK.md before either selector arm; it is not reconstructed from or represented as the historical smoke payload."
+  },
+  "arms": [
+    {
+      "id": "deterministic",
+      "selector": "BananLoop core select_candidate",
+      "mode": "deterministic",
+      "model_calls_for_selection": 0
+    },
+    {
+      "id": "llm",
+      "selector": "BananLoop semantic selector after identical core admissibility gates",
+      "mode": "llm",
+      "model": "gpt-6-luna",
+      "reasoning_effort": "medium",
+      "model_calls_for_selection": 1
+    }
+  ],
+  "selector_implementation_sha256": {
+    "src/bananloop/__init__.py": "9bc3dad164589e6608f762087821d53605380e2c11c2e1d31d535154e6f9045e",
+    "src/bananloop/agent_profiles.py": "d5b5f5f205a182d62ee61ee324ea0ca0e2e5d6260023eb976a5cedf651296faa",
+    "src/bananloop/agents/__init__.py": "4b7b2e2cbb0e8d7ed8ec44ac523be56f4d1d299063d43050ced9a3e4be370222",
+    "src/bananloop/agents/base.py": "09ca25fc5731b8c68bd664e4d1e64b0f528eb492193fc7b097e6114032c29fde",
+    "src/bananloop/agents/codex.py": "7c56f4a3628f92a6c83a810209c450e9b8b923d451a643c6e31390c41f45fba8",
+    "src/bananloop/agents/command.py": "587105cee0296a1922f4e9f6b378c86040c627a11f2eab4f1fd0a6d35323403c",
+    "src/bananloop/agents/pi.py": "5ee2270f858fbf5edb0b53e568594ddfd5f8279a27590dafb13f718ecdb94ebd",
+    "src/bananloop/artifacts.py": "e0186df56f445c37f78b23e3eec36db7022c8c7c9c7dbc0287467f96b73aab0d",
+    "src/bananloop/bootstrap.py": "16aa2adbe31d2b33c2ca34750d0988ce44f3074e27621f76b80462f9183edbc3",
+    "src/bananloop/budget.py": "95987618aa2d2d51ddf3d36789f988428026a36df01fad12d4d10e40b8fc1b81",
+    "src/bananloop/candidate_preflight.py": "68f98b60126e3fcbf17e3f562ebd3efd03416ddf1730c0d63aedf9387aaecdcd",
+    "src/bananloop/cli.py": "fc04733ed27290abc5565f9ac4ed44ce1505dd365229376e886b9c34bebc99f8",
+    "src/bananloop/codex_hook.py": "360882c809d7b9d42231f130352f07403e565e6874ab0573caee69c6a9af7ec9",
+    "src/bananloop/contracts.py": "0bf8b75f8d4d1a09e00d12f777eb8372d887b432943218256f72e1caf7f3475c",
+    "src/bananloop/engine.py": "78c94535e623133c74beb93b571e6b35afac00211788342d67d91744ae966ad8",
+    "src/bananloop/envfiles.py": "d4b975c6fc060f6246e88e9ca3d28e416793148b4a632fdcc28ca2e7f73feffd",
+    "src/bananloop/evaluator_binding.py": "0be2c1b1aea5a7eb7510717b1b8327180fa64906813a28aeb5a6b7d9238482f4",
+    "src/bananloop/evaluators/__init__.py": "e1045ff01695b2abe6e25a97e0fbd5616c8727a910649d300f08542ed9ffdec2",
+    "src/bananloop/evaluators/command.py": "babafccbf28b270815be5d60fd9acebd5b16f5986ace7d3773bdf847b551f548",
+    "src/bananloop/export.py": "ae7b6b3ceae36d0465e6308b5a3b16e6241ef9c69004d482cf5101d9f00c3553",
+    "src/bananloop/integrity.py": "3bf1e3ee6e5db9b86af8074879fc503e01b38d7d9ee5b7be3c9a30764afed54d",
+    "src/bananloop/leakage.py": "a2ee8497fc813bdc8942ea0f17fff883480a1f8fa4627e64ffabe5600875a69c",
+    "src/bananloop/lock.py": "5636a9dff3c1bebe162a1ff05a8a13e2e4d33c33c5d9edb826d4abc71cf0d327",
+    "src/bananloop/operator_control.py": "e9835a962c986aaee29695cd81a12ddd4ca7ed02f378b955e9cf1950f0b7ecea",
+    "src/bananloop/operator_snapshot.py": "c497345bc64b299ad3bef99e475d8b772416c2b4be24c658461d87d02e89d8bf",
+    "src/bananloop/policy.py": "66c74344f5348d7fb6a0fef754f9786780b74c36f8673251191f11681674be85",
+    "src/bananloop/process.py": "ac10280ab756a9415ec98f87cd0750bbc28acebeb3e7396795d0d6879e9b3736",
+    "src/bananloop/readiness.py": "8d9228684fd4f6f6ace95226cc5133a6c63aeb5ea488a01c394a9e8b4722949b",
+    "src/bananloop/registry.py": "7d21fb82d34baff73875a9a856235d3b791c64e95913ab75cefdeca01815d957",
+    "src/bananloop/report.py": "a9efc90d5cd3d81ce39738c19f090fb5602f6b5cb40098a6f62ebcba01b41b6f",
+    "src/bananloop/research.py": "3992de63c4d21fd9ee320d97ea516b6c79a08f908889a71045c496eef53d3c19",
+    "src/bananloop/semantic_selection.py": "84b000d2b4d8954d99a0b0f083a4f711789ebaa0f4cc5f2bcb5f760897c2ca44",
+    "src/bananloop/store.py": "efa29ca81824ef948835ca5db82034f5391312eed229c9eb65fde2ba4532e399",
+    "src/bananloop/wizard.py": "73a0a7842a13d60b855f1469a030ed1ceb0886139a781e828805e3fa91354bb0",
+    "src/bananloop/workspace.py": "618b62f06a1051d770883268a97c4e61094afb5a79329d716c5d1ba85ca3a915",
+    "pyproject.toml": "f6a40f42f5dbd5c2485402e0257808e92e837949cc4f161a3757052b2f9a2e09",
+    "benchmarks/selector_ab_v1/report.py": "2e809c7b1a81be5ae9491a1444dc99dc6ebc16af89ce11f005f9e89bf0b6b627",
+    "benchmarks/selector_ab_v1/agent-profiles.toml": "54758a737437a66f66f0c410762ba1dcb373b08e51e0bdd06ad0bdf53998e441"
+  },
+  "replicate_design": {
+    "paired_seeds": [
+      53,
+      101,
+      211,
+      307,
+      401
+    ],
+    "randomization_seed": 20261030,
+    "arm_order_by_replicate": {
+      "53": [
+        "llm",
+        "deterministic"
+      ],
+      "101": [
+        "deterministic",
+        "llm"
+      ],
+      "211": [
+        "deterministic",
+        "llm"
+      ],
+      "307": [
+        "llm",
+        "deterministic"
+      ],
+      "401": [
+        "deterministic",
+        "llm"
+      ]
+    },
+    "campaigns": 10,
+    "evaluator_calls_per_campaign_ceiling": 2,
+    "agent_calls_per_campaign_ceiling": 2,
+    "max_experiments_per_campaign": 1,
+    "max_attempts_per_campaign": 2,
+    "max_total_evaluator_calls": 21,
+    "max_total_agent_calls": 15,
+    "comparison_unit": "Paired DEV reward per replicate label after the same byte-frozen candidate portfolio; report all five deltas, no pooled multi-task or model-seed claim.",
+    "selection_outcome": "Record selected candidate ID, validity, fallback, errors and action/event IDs for every replicate.",
+    "max_total_codex_calls": 16,
+    "max_semantic_selector_calls": 5,
+    "max_agent_call_timeout_seconds": 60,
+    "max_evaluator_timeout_seconds": 10,
+    "max_wall_clock_seconds": 1200,
+    "seed_semantics": "Replicate labels only; they do not seed Codex or a CLI RNG. Only arm order is randomized from randomization_seed.",
+    "codex_exec_args": [
+      "--ignore-user-config",
+      "--disable",
+      "multi_agent"
+    ],
+    "codex_cli_version": "codex-cli 0.165.0",
+    "python_version": "Python 3.13.1",
+    "agent_profile": "benchmarks/selector_ab_v1/agent-profiles.toml",
+    "agent_profile_sha256": "54758a737437a66f66f0c410762ba1dcb373b08e51e0bdd06ad0bdf53998e441"
+  },
+  "resource_authorization": {
+    "status": "AUTHORIZED",
+    "max_provider_cost_usd": 0,
+    "max_total_tokens": null,
+    "max_wall_clock_hours": 0.3333333333,
+    "estimated_model_calls": 16,
+    "estimated_evaluator_calls": 21,
+    "cost_estimate": "No separate API-billed spend authorized; per-trial token and monetary usage may be unavailable from Codex CLI.",
+    "required_operator_decision": "Authorized by user: Codex subscription quota only, no separate API billing, maximum 20 minutes.",
+    "authorization_reference": "User authorized Codex subscription quota usage for Task 7.4 in this conversation on 2026-10-30, with a 20-minute maximum run window.",
+    "provider_cost_basis": "No separately metered API spend authorized; subscription-only Codex usage.",
+    "token_cap_basis": "provider_enforced_codex_subscription_quota",
+    "estimated_setup_diagnostic_calls": 1,
+    "estimated_model_calls_breakdown": "15 campaign calls maximum plus one isolated workspace-write diagnostic call; diagnostic is excluded from trial slots."
+  },
+  "stop_rules": [
+    "Do not start if the frozen portfolio artifact or any input hash differs.",
+    "Do not start without explicit resource caps and provider readiness.",
+    "Stop immediately on any validation/holdout exposure, ineligible candidate implementation, or selector budget reservation error.",
+    "Preserve failures, fallbacks and missing pairs; do not replace or silently repeat a failed seed.",
+    "No winner claim from five pairs on one miniature task; report descriptive per-seed deltas only."
+  ],
+  "evidence_state": "No experiment calls or evaluator runs were made while preparing this manifest.",
+  "history": [
+    {
+      "revision": 2,
+      "change": "Added a new manually authored portfolio from public TASK.md because the exact historical payload was not found. It is explicitly not the historical smoke portfolio. No selector/evaluator/model run occurred.",
+      "portfolio_sha256": "e2b563dea0851d2c59bc0056f91349b81563d747715375f654e6c89419bf6c7a"
+    },
+    {
+      "revision": 3,
+      "change": "Added approved hash-bound CLI frozen portfolio, replicate labels, provider-enforced Codex subscription quota and a 20-minute wall-time ceiling; reduced per-campaign ceilings to one experiment and two agent/two evaluator calls. Inputs are unchanged and no trial had started when this authorization revision was written.",
+      "portfolio_sha256": "e2b563dea0851d2c59bc0056f91349b81563d747715375f654e6c89419bf6c7a"
+    },
+    {
+      "revision": 4,
+      "change": "Offline CLI init preflight accepted the frozen portfolio and replicate label in an isolated fixture; zero agent/evaluator actions and excluded from trial slots.",
+      "portfolio_sha256": "e2b563dea0851d2c59bc0056f91349b81563d747715375f654e6c89419bf6c7a"
+    },
+    {
+      "revision": 5,
+      "change": "A baseline-only setup smoke reached the core budget gate before selector execution (0 Codex calls, 1 local baseline evaluation); preserved outside the trial matrix. Increased attempts per campaign to 2 and total evaluator cap to 21 to account for this preflight plus ten matched baseline/candidate pairs; candidate portfolio and arm order unchanged.",
+      "portfolio_sha256": "e2b563dea0851d2c59bc0056f91349b81563d747715375f654e6c89419bf6c7a"
+    },
+    {
+      "revision": 6,
+      "change": "Added one separately bounded direct workspace-write diagnostic Codex call, excluded from trial slots, to investigate the first LLM arm IMPLEMENTATION_BLOCKED filesystem policy. Campaign call ceiling remains 15; total possible Codex calls is now 16 including the diagnostic. The failed seed 53 LLM slot will not be repeated. No arm order or candidate/task/source hashes changed.",
+      "portfolio_sha256": "e2b563dea0851d2c59bc0056f91349b81563d747715375f654e6c89419bf6c7a"
+    },
+    {
+      "revision": 7,
+      "change": "The separately authorized workspace-write diagnostic was run once in a fresh disposable directory. Codex CLI reported effective sandbox read-only and rejected writing despite requested workspace-write; no probe file was created. The CLI reported 7,957 tokens for this diagnostic. No further model calls will be made under the enforced read-only policy.",
+      "portfolio_sha256": "e2b563dea0851d2c59bc0056f91349b81563d747715375f654e6c89419bf6c7a"
+    },
+    {
+      "revision": 8,
+      "change": "User directed continuing the approved Luna selector work in Docker/Ubuntu after the Windows host forced read-only. Ubuntu WSL returned Wsl/Service/E_UNEXPECTED. A minimal Linux Docker image was built from the frozen source and public fixture; Codex CLI 0.165.0, Python 3.11.2, bubblewrap 0.8.0. Default Docker seccomp blocks namespace creation; a no-model, no-auth preflight passed with seccomp unconfined in an ephemeral, non-privileged container with default capabilities. Subsequent campaign calls remain within the existing total ceiling; the failed seed-53 LLM slot is not repeated.",
+      "portfolio_sha256": "e2b563dea0851d2c59bc0056f91349b81563d747715375f654e6c89419bf6c7a"
+    },
+    {
+      "revision": 9,
+      "change": "First Docker campaign slot (seed 53 deterministic, ordinal 2) reached baseline 0.4375 and one implementer call, then git.apply failed because CRLF patch data passed through text mode; no candidate evaluation ran. Recorded as failed, not retried. V1 is closed incomplete with two failed seed-53 arms and eight missing slots; no selector comparison claim.",
+      "portfolio_sha256": "e2b563dea0851d2c59bc0056f91349b81563d747715375f654e6c89419bf6c7a"
+    }
+  ],
+  "cli_init_preflight": {
+    "status": "PASS",
+    "state": "isolated disposable fixture only; excluded from trial matrix",
+    "campaign_spec_sha256": "6e745bcfeef80768d12684316669aa2f59562f66fef40042e9b9ad2b3d3acf16",
+    "frozen_portfolio_sha256": "e2b563dea0851d2c59bc0056f91349b81563d747715375f654e6c89419bf6c7a",
+    "agent_calls": 0,
+    "evaluator_calls": 0
+  },
+  "setup_budget_smoke": {
+    "status": "REJECTED_BEFORE_SELECTOR",
+    "replicate_label": "53",
+    "campaign_spec_sha256": "3ad8250bde3964a3d7d7b4bf9102f9852a76c0dc47d290e5230580b453aec18f",
+    "outcome": "NO_HYPOTHESIS",
+    "rejection": "INSUFFICIENT_EXPERIMENT_BUDGET",
+    "agent_calls": 0,
+    "evaluator_calls": 1,
+    "selector_action_started": false,
+    "implementation_action_started": false,
+    "included_in_trial_matrix": false,
+    "artifact": ".tmp-selector-ab-run/trials/r053_llm/"
+  },
+  "live_execution": {
+    "status": "V1_ABORTED_AFTER_TWO_FAILED_SEED53_SLOTS",
+    "reason": "The first preregistered LLM arm completed semantic selection, but the nested Codex implementer was given a read-only filesystem policy and could not edit matcher.py. No candidate evaluation ran. Remaining arms were not started because they share the same implementation path.",
+    "attempted_trial_slots": [
+      {
+        "seed": 53,
+        "arm": "llm",
+        "execution_ordinal": 1,
+        "status": "failed",
+        "artifact": ".tmp-selector-ab-run/trials/r053_llm_actual/"
+      }
+    ],
+    "actual_agent_calls": 2,
+    "actual_semantic_selector_calls": 1,
+    "actual_evaluator_calls": 1,
+    "actual_evaluator_calls_detail": "one local baseline DEV evaluation; zero candidate evaluations",
+    "actual_trial_duration_seconds": 23.3159075,
+    "provider_charge_usd": 0,
+    "token_usage": null,
+    "retry_policy": "Do not repeat this failed slot; remaining nine slots were not started.",
+    "actual_codex_calls": 3,
+    "campaign_agent_calls": 2,
+    "setup_diagnostic_calls": 1,
+    "reported_tokens": 7957,
+    "reported_token_scope": "The separate diagnostic call only; campaign calls did not expose token usage.",
+    "remaining_campaign_codex_calls_ceiling": 0,
+    "container_profile": "container_runtime in this manifest; all subsequent campaign slots use same image/profile, failed seed 53 LLM is not repeated.",
+    "actual_campaign_codex_calls": 3,
+    "actual_campaign_evaluator_calls": 2,
+    "actual_candidate_evaluator_calls": 0,
+    "v1_next_action": "Fix binary-preserving patch transport, create a new source-hash-bound v2 preregistration, and keep both v1 failures intact."
+  },
+  "execution_diagnostic": {
+    "status": "FAILED_READ_ONLY_POLICY",
+    "type": "single_direct_codex_workspace_write_probe",
+    "model": "gpt-6-luna",
+    "requested_sandbox": "workspace-write",
+    "effective_sandbox": "read-only",
+    "approval_mode": "never",
+    "scope": "new disposable directory under .tmp-selector-ab-run/policy_probe/ only",
+    "calls_used": 1,
+    "tokens_reported": 7957,
+    "duration_seconds": 11.8,
+    "probe_file_created": false,
+    "error": "Codex exec reported sandbox: read-only and rejected the requested write by workspace filesystem policy, despite --sandbox workspace-write.",
+    "excluded_from_trial_matrix": true,
+    "failed_seed_repeated": false,
+    "further_model_calls": "Stopped in the Windows host read-only environment. User subsequently authorized Docker/local Ubuntu; container campaign resumes below without bypassing Codex sandbox."
+  },
+  "container_runtime": {
+    "status": "STOPPED_AFTER_PATCH_TRANSPORT_FAILURE",
+    "runtime": "Docker Desktop Linux engine",
+    "engine": "29.9.2",
+    "image": "bananloop-selector-ab:luna-v1",
+    "image_id": "sha256:178028f86323dd707b37ace6526ebf764f14511522255839494d493a1fc17ff9",
+    "base": "node:22-bookworm-slim",
+    "base_digest": "sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da",
+    "os": "Debian GNU/Linux 12 (bookworm)",
+    "architecture": "amd64",
+    "python": "3.11.2",
+    "codex_cli": "0.165.0",
+    "bubblewrap": "0.8.0",
+    "codex_sandbox": "workspace-write",
+    "docker_seccomp": "unconfined for this ephemeral container only; default capabilities retained; not privileged",
+    "mounts": "one disposable trial directory read-write; single Codex auth.json read-only; no user config or MCP config",
+    "network": "Docker bridge for Codex model requests",
+    "user": "node uid 1000",
+    "preflight": "PASS: bubblewrap namespace + temp write succeeded with Docker seccomp unconfined; default Docker seccomp blocks namespace creation.",
+    "reason": "Docker removed the Windows read-only policy, but the first container campaign failed while applying a CRLF git patch passed through text mode. This is an execution-code bug, not a selector result. No candidate evaluation ran; no slot will be retried in v1."
+  }
+}

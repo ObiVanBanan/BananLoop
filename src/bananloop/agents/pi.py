@@ -130,6 +130,9 @@ class PiAdapter(AgentAdapter):
                 "Keep DEV, VALIDATION, and HOLDOUT manifests separate. Fixed inputs alone do not justify paired statistical acceptance. "
                 "If implementation should learn from discovered training resources, list only those paths in "
                 "agent_visible_training_paths; never include evaluation, test, validation, holdout, GOLD, or reference resources. "
+                "If the operator explicitly requests a discovered read-only project resource as context (such as a catalog), "
+                "list it in agent_visible_context_paths, not agent_visible_training_paths. Never include queries, labels, "
+                "answers, expected outputs, or evaluation/reference resources there. Operator-hidden paths stay hidden. "
                 "Also include signal_sanity. Configure it only from defensible repository-backed positive and negative "
                 "case IDs or controls, using evidence_kind known_examples, controlled_degradation, metamorphic, or "
                 "invariants, and the primary metric. Never invent labels or derive labels from the evaluator's own "
@@ -138,7 +141,7 @@ class PiAdapter(AgentAdapter):
                 "The core checks directed separation in every A/A smoke run. Do not invent missing references or "
                 "credentials; if essential inputs are missing, set status to needs_input and list exactly what the operator must provide. "
                 "Your final assistant message MUST be exactly one JSON object with keys: status, summary, "
-                "project_context, needs_input, evaluation_command, smoke_command, protocol_manifest_commands, agent_visible_training_paths, validation_command, holdout_command, "
+                "project_context, needs_input, evaluation_command, smoke_command, protocol_manifest_commands, agent_visible_training_paths, agent_visible_context_paths, validation_command, holdout_command, "
                 "primary_metric, guardrails, non_regression, mandatory_checks, editable_scope, protected_paths, "
                 "agent_visible_metrics, agent_visible_diagnostics, paired_comparison, signal_sanity, evaluator_timeout_seconds. "
                 "primary_metric must contain name, direction, target, min_improvement. paired_comparison must "
@@ -159,6 +162,9 @@ class PiAdapter(AgentAdapter):
                 "evidence_refs, suspected_failure_mode, predicted_observable, discriminating_test, scope_eligibility, "
                 "estimated_agent_calls, estimated_evaluator_calls, estimated_work_units (or null), rationale, "
                 "uncertainty, and inference=agent_inference. Candidate IDs must be stable mechanism slugs. "
+                "A candidate may optionally include composite_steps: an ordered sequence of two to four complete "
+                "Hypothesis objects when bounded successive edits are required. Each step gets core gates and DEV "
+                "measurement; validation and promotion apply only to the final combined result. "
                 "Estimate only remaining implementation/evaluation calls after this proposal call. "
                 "Use supplied DEV evidence references only or "
                 "INSUFFICIENT_EVIDENCE; separate observed evidence from inference. Do not invent gains, causes, "
@@ -171,6 +177,19 @@ class PiAdapter(AgentAdapter):
                 "relation, prior_experiment_refs, novelty_rationale, target_failure_signal, failure_mechanism. "
                 "If no useful hypothesis exists, return exactly {\"status\":\"NO_HYPOTHESIS\"}. "
                 "Do not use markdown fences and do not include prose outside the JSON object."
+            )
+        elif role == "pivot_advice":
+            instruction = (
+                "You are proposing an architecture pivot for human review at a measured plateau. "
+                "Use only the supplied current architecture, approved goal/scope, and public DEV evidence. "
+                "Describe one materially different proposed architecture, its rationale and expected measurable effect, "
+                "the exact changed scope, and bounded estimates of additional agent calls, evaluator calls and work units. "
+                "Treat all resource values as estimates, never as authorization. Do not change files, alter the approved "
+                "goal/evaluator/scope/budget, claim measured success, or request validation/holdout details. Do not include "
+                "secrets or private evaluation data. Your final message MUST be exactly one JSON object with keys "
+                "proposed_architecture, rationale, expected_effect, changed_scope, resources; resources must contain "
+                "additional_agent_calls, additional_evaluator_calls, additional_evaluation_units (or null), and notes. "
+                "Do not use markdown fences or prose outside the JSON object."
             )
         elif role == "analyze":
             instruction = (
@@ -268,6 +287,7 @@ class PiAdapter(AgentAdapter):
                 '"smoke_command":["python",".bananloop_eval/evaluator.py","--smoke"],'
                 '"protocol_manifest_commands":{"dev":[],"validation":[],"holdout":[]},'
                 '"agent_visible_training_paths":[], '
+                '"agent_visible_context_paths":[], '
                 '"validation_command":[],"holdout_command":[],'
                 '"primary_metric":{"name":"quality","direction":"maximize","target":1.0,"min_improvement":0.01},'
                 '"guardrails":[],"non_regression":[],"mandatory_checks":[],"editable_scope":["**"],'
@@ -284,6 +304,12 @@ class PiAdapter(AgentAdapter):
                 '{"hypothesis":"...","rationale":"...","expected_effect":"...",'
                 '"files_or_area":["..."],"falsification_condition":"...","mechanism_key":"...",'
                 '"relation":"new","prior_experiment_refs":[],"novelty_rationale":"..."}'
+            )
+        elif role == "pivot_advice":
+            schema = (
+                '{"proposed_architecture":"...","rationale":"...","expected_effect":"...",'
+                '"changed_scope":["..."],"resources":{"additional_agent_calls":1,'
+                '"additional_evaluator_calls":1,"additional_evaluation_units":null,"notes":"..."}}'
             )
         elif role == "analyze":
             schema = (
@@ -443,6 +469,9 @@ class PiAdapter(AgentAdapter):
         return text
 
     def execute(self, task: dict[str, Any], workspace: Path, timeout: int) -> dict[str, Any]:
+        role = task.get("role")
+        if role not in {"bootstrap", "propose", "analyze", "implement", "pivot_advice"}:
+            raise AgentError(f"unsupported Pi role: {role!r}")
         check_process_control()
         argv = self._argv()
         action_id = self._action_id(task)

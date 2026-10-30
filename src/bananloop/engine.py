@@ -11,6 +11,7 @@ from typing import Any, Callable
 from pydantic import ValidationError
 
 from .agents import AgentAdapter, AgentError, CodexAdapter, CommandAgentAdapter, PiAdapter
+from .candidate_preflight import python_syntax_errors
 from .budget import deadline_reached, pre_action_stop
 from .token_budget import ModelTokenBudgetExceeded
 from .artifacts import retain_artifacts
@@ -23,6 +24,10 @@ from .contracts import (
     Hypothesis,
     HypothesisPortfolio,
     ImplementResult,
+    PivotProposal,
+    PivotResourceRequest,
+    RuntimePaths,
+    SpecLineage,
     PortfolioRecord,
     ResearchState,
     StopReason,
@@ -37,6 +42,7 @@ from .evaluator_binding import (
 from .leakage import scan_forbidden_diff_patterns
 from .policy import InvalidEvaluation, decide, target_met, validate_evaluation
 from .process import ProcessCancelled, check_process_control, process_control
+from .semantic_selection import apply_semantic_choice
 from .research import (
     attempt_bucket,
     agent_decision_view,
@@ -48,8 +54,13 @@ from .research import (
     redundancy_reason,
     normalize_portfolio,
     select_candidate,
+    repairable_portfolio_failure,
+    portfolio_repair_context,
+    synthesize_dev_failure_analysis,
 )
 from .store import CampaignStore
+from .registry import CampaignRegistry, RegistryError
+from .lock import CampaignLock
 from .workspace import WorkspaceError, WorkspaceManager
 
 logger = logging.getLogger(__name__)
@@ -73,6 +84,17 @@ class CampaignHalted(Exception):
 
 class BindingRuntimeMismatch(EngineError):
     pass
+
+
+def _agent_failure_category(exc: Exception) -> str:
+    if not isinstance(exc, AgentError):
+        return "AGENT_PROTOCOL_ERROR"
+    message = str(exc).casefold()
+    if any(term in message for term in ("rate limit", "usage limit", "quota exceeded", "too many requests", "http 429")):
+        return "AGENT_RATE_LIMIT"
+    if any(term in message for term in ("authentication", "unauthorized", "login required", "http 401")):
+        return "AGENT_AUTH_ERROR"
+    return "AGENT_ERROR"
 
 
 def _hash_payload(payload: dict[str, Any]) -> str:
@@ -119,6 +141,107 @@ class Engine:
         )
         self.agent: AgentAdapter = self._make_agent_adapter(self.spec.agent)
 
+    @staticmethod
+    def create_approved_pivot_child(
+        parent_store: CampaignStore,
+        parent_campaign_id: str,
+        proposal_id: str,
+        proposal_digest: str,
+        child_spec: CampaignSpec,
+        confirmed_spec_hash: str,
+        *,
+        registry: CampaignRegistry | None = None,
+    ) -> tuple[str, RuntimePaths, CampaignSpec]:
+        """Create an immutable child campaign from one exact approved pivot.
+
+        This only registers and initializes state. It never invokes an agent or
+        evaluator. The operator confirms the digest of the final child spec,
+        including its parent and approval lineage, before any new campaign runs.
+        """
+        parent_spec = parent_store.spec()
+        if child_spec.spec_lineage is not None:
+            raise EngineError("child spec cannot supply or override its pivot lineage")
+        parent_hash = parent_spec.approved_hash()
+        if registry is None:
+            registry = CampaignRegistry(Path(parent_spec.source_repo))
+        parent_path, _ = registry.resolve(parent_campaign_id)
+        expected_parent_path = (
+            registry.legacy_db.parent.resolve()
+            if parent_campaign_id == "legacy"
+            else (registry.root / "campaigns" / parent_campaign_id).resolve()
+        )
+        if parent_path.resolve() != expected_parent_path or parent_store.path.resolve().parent != expected_parent_path:
+            raise EngineError("parent campaign id does not identify the supplied campaign store")
+
+        with CampaignLock(parent_store.path.parent / "campaign.lock"):
+            proposal, decision = parent_store.approved_pivot_for_child(
+                proposal_id, proposal_digest, parent_campaign_id,
+            )
+            if proposal.spec_hash != parent_hash:
+                raise EngineError("pivot approval is stale against the parent spec")
+            if Path(child_spec.source_repo).resolve() != Path(parent_spec.source_repo).resolve():
+                raise EngineError("pivot child must remain attached to the parent source repository")
+            changed_scope = set(proposal.changed_scope)
+            if not changed_scope:
+                raise EngineError("approved pivot has no changed scope")
+            import fnmatch
+            for changed_path in changed_scope:
+                if not any(fnmatch.fnmatchcase(changed_path, pattern) for pattern in child_spec.editable_scope):
+                    raise EngineError(
+                        f"child editable_scope does not cover approved pivot path: {changed_path}"
+                    )
+            if (
+                child_spec.goal == parent_spec.goal
+                and child_spec.evaluation_command == parent_spec.evaluation_command
+                and child_spec.validation_command == parent_spec.validation_command
+                and child_spec.holdout_command == parent_spec.holdout_command
+                and child_spec.editable_scope == parent_spec.editable_scope
+            ):
+                raise EngineError("pivot child must change goal, evaluation, or editable scope")
+
+            lineage = SpecLineage(
+                parent_campaign_id=parent_campaign_id,
+                parent_spec_hash=parent_hash,
+                proposal_id=proposal.proposal_id,
+                proposal_digest=proposal.digest,
+                decision_request_id=decision["request_id"],
+            )
+            approved_child = child_spec.model_copy(update={"spec_lineage": lineage})
+            if approved_child.approved_hash() != confirmed_spec_hash:
+                raise EngineError("confirmed child spec digest does not match the immutable child spec")
+            # Bind even a crash-left registry reservation to the exact fully
+            # confirmed child spec, so another spec cannot claim its empty slot.
+            child_request_id = (
+                f"pivot-child:{parent_campaign_id}:{proposal.proposal_id}:"
+                f"{proposal.digest}:{confirmed_spec_hash}"
+            )
+            try:
+                entry, state_dir, _ = registry.reserve(approved_child.goal, child_request_id)
+            except RegistryError as exc:
+                raise EngineError(f"cannot reserve approved pivot child: {exc}") from exc
+            paths = RuntimePaths(
+                root=state_dir,
+                db=state_dir / "campaign.sqlite3",
+                workspace=state_dir / "workspace",
+                artifacts=state_dir / "artifacts",
+                reports=state_dir / "reports",
+            )
+            if paths.db.exists():
+                existing = CampaignStore(paths.db)
+                try:
+                    if existing.spec().approved_hash() != confirmed_spec_hash:
+                        raise EngineError("pivot child request already exists with a different approved spec")
+                finally:
+                    existing.close()
+                return entry.campaign_id, paths, approved_child
+            with CampaignLock(paths.root / "campaign.lock"):
+                child_store = CampaignStore(paths.db)
+                try:
+                    child_store.initialize(approved_child)
+                finally:
+                    child_store.close()
+            return entry.campaign_id, paths, approved_child
+
     def _progress(self, message: str) -> None:
         if self._progress_callback:
             self._progress_callback(message)
@@ -127,10 +250,10 @@ class Engine:
         return self._agent_timeout_seconds or default
 
     def _agent_hidden_paths(self) -> list[str]:
-        visible_training = set(self.spec.agent_visible_training_paths)
+        visible_paths = set(self.spec.agent_visible_training_paths) | set(self.spec.agent_visible_context_paths)
         frozen = [
             asset.path for asset in self.spec.evaluation_assets
-            if asset.path not in visible_training
+            if asset.path not in visible_paths
         ]
         return list(dict.fromkeys([*self.spec.agent_hidden_paths, *frozen]))
 
@@ -233,6 +356,7 @@ class Engine:
         finalizable = reason not in {
             StopReason.PAUSED_INFRA,
             StopReason.PAUSED_NEEDS_INPUT,
+            StopReason.USER_PAUSED,
             StopReason.USER_STOPPED,
             StopReason.DEADLINE_REACHED,
         }
@@ -275,6 +399,8 @@ class Engine:
             status = CampaignStatus.PAUSED_INFRA
         if reason == StopReason.PAUSED_NEEDS_INPUT:
             status = CampaignStatus.PAUSED_NEEDS_INPUT
+        if reason == StopReason.USER_PAUSED:
+            status = CampaignStatus.PAUSED_USER
         if status in {CampaignStatus.STOPPED, CampaignStatus.GOAL_MET}:
             campaign = self.store.campaign()
             if campaign["active_attempt_id"] is not None:
@@ -283,16 +409,29 @@ class Engine:
                     self._stage_record(attempt["id"], attempt["experiment_id"])
                 else:
                     self.store.abandon_active_attempt(reason.value)
+            sequence = self.store.active_composite()
+            if sequence is not None:
+                self.store.finish_composite(sequence["id"], status="ABANDONED")
             snapshot = self.store.campaign()["champion_snapshot"]
             if snapshot and self.workspace.workspace.exists():
                 self.workspace.checkout(snapshot)
-        self.store.update_campaign(status=status.value, stop_reason=reason.value, stage=None)
+        self.store.update_campaign(
+            status=status.value,
+            stop_reason=reason.value,
+            stage=self.store.campaign()["stage"] if status == CampaignStatus.PAUSED_USER else None,
+        )
         event_payload: dict[str, Any] = {"reason": reason.value, "status": status.value}
         if final_holdout is not None:
             event_payload["final_holdout_target_met"] = final_holdout["target_met"]
             event_payload["final_holdout_snapshot"] = final_holdout["snapshot"]
-        self.store.event("CAMPAIGN_STOPPED", event_payload)
+        self.store.event("CAMPAIGN_PAUSED" if status == CampaignStatus.PAUSED_USER else "CAMPAIGN_STOPPED", event_payload)
         self.store.conn.commit()
+        if status == CampaignStatus.PAUSED_USER:
+            for request in self.store.pending_control_requests("pause"):
+                self.store.finish_control_request(request["request_id"], "COMPLETED", {"status": status.value})
+        if status == CampaignStatus.STOPPED:
+            for request in self.store.pending_control_requests("end"):
+                self.store.finish_control_request(request["request_id"], "COMPLETED", {"status": status.value})
         return self.store.campaign()
 
     def _budget_or_stop(self, kind: str, stage: str | None = None) -> bool:
@@ -334,10 +473,33 @@ class Engine:
             return True
         return False
 
+    def _pivot_budget_or_pause(self) -> bool:
+        """Block pivot advice before reserving a call outside approved limits."""
+        campaign = self.store.campaign()
+        reason = None
+        if deadline_reached(campaign["created_at"], self.spec.budget):
+            reason = StopReason.DEADLINE_REACHED.value
+        elif campaign["agent_calls"] >= self.spec.budget.max_agent_calls:
+            reason = StopReason.BUDGET_EXHAUSTED.value
+        if reason is None:
+            return False
+        self.store.event("PIVOT_PROPOSAL_BLOCKED", {
+            "trigger_experiment_ordinal": max(
+                (int(row["ordinal"]) for row in self.store.experiments()), default=0,
+            ),
+            "reason": reason,
+            "agent_call_started": False,
+        })
+        self.store.conn.commit()
+        self._stop(StopReason.PAUSED_NEEDS_INPUT)
+        return True
+
     def _control_reason(self) -> str | None:
         campaign = self.store.campaign()
         if campaign.get("stop_requested"):
             return StopReason.USER_STOPPED.value
+        if campaign.get("pause_requested"):
+            return StopReason.USER_PAUSED.value
         if deadline_reached(campaign["created_at"], self.spec.budget):
             return StopReason.DEADLINE_REACHED.value
         return None
@@ -366,7 +528,9 @@ class Engine:
         kind: str,
         request: dict[str, Any],
         invoke: Callable[[], dict[str, Any]],
+        budget_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
+        check_budget = budget_check or (lambda: self._budget_or_stop(kind, stage))
         if kind != "agent":
             violations = verify_evaluation_assets(self.workspace.workspace, self.spec.evaluation_assets)
             if violations:
@@ -389,7 +553,7 @@ class Engine:
             if kind != "agent":
                 self._ensure_evaluator_binding()
             if existing["status"] == "CANCELLED":
-                if self._budget_or_stop(kind, stage):
+                if check_budget():
                     raise CampaignHalted()
                 self._progress(f"{action_id}: retry cancelled action")
                 self.store.restart_action(action_id)
@@ -399,7 +563,7 @@ class Engine:
                         f"action {action_id} was running when process stopped; "
                         "resume with --retry-running-action only if you know the previous local process is gone"
                     )
-                if self._budget_or_stop(kind, stage):
+                if check_budget():
                     raise CampaignHalted()
                 self._progress(f"{action_id}: explicitly retry orphaned RUNNING action")
                 self.store.restart_action(action_id)
@@ -409,7 +573,7 @@ class Engine:
                         f"action {action_id} previously failed: {existing['error']}; "
                         "resume with --retry-failed-action to retry it"
                     )
-                if self._budget_or_stop(kind, stage):
+                if check_budget():
                     raise CampaignHalted()
                 self._progress(f"{action_id}: explicitly retry FAILED action")
                 self.store.restart_action(action_id)
@@ -420,7 +584,7 @@ class Engine:
         else:
             if kind != "agent":
                 self._ensure_evaluator_binding()
-            if self._budget_or_stop(kind, stage):
+            if check_budget():
                 raise CampaignHalted()
             self.store.start_action(action_id, experiment_id, stage, kind, request_hash, request)
         self._progress(f"{action_id}: invoke {kind}")
@@ -708,7 +872,7 @@ class Engine:
             ).model_dump(mode="json"),
         )
         result = EvaluationResult.model_validate(raw)
-        validate_evaluation(self.spec, result)
+        validate_evaluation(self.spec, result, tier="holdout")
         self.store.record_evaluation(
             None,
             snapshot,
@@ -858,6 +1022,36 @@ class Engine:
         self.store.set_research_state(payload)
         return payload
 
+
+    def _task_document(self) -> dict[str, Any] | None:
+        """Provide safe root TASK.md directly, without depending on agent temp paths.
+
+        Files already hidden from the agent must never be copied into prompts.
+        No arbitrary path from a model prompt is opened by this helper.
+        """
+        if self.workspace._matches("TASK.md", self._agent_hidden_paths()):
+            return {"status": "hidden"} if "task.md" in self.spec.goal.casefold() else None
+        filename = self.workspace.workspace / "TASK.md"
+        try:
+            if not filename.exists():
+                return {"status": "missing"} if "task.md" in self.spec.goal.casefold() else None
+            if filename.is_symlink() or not filename.is_file():
+                return {"status": "unsafe"}
+            # Reject large task files rather than silently omitting requirements.
+            with filename.open("rb") as task_file:
+                raw = task_file.read(32769)
+            if len(raw) > 32768:
+                return {"status": "too_large", "max_bytes": 32768}
+            text = raw.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+        except (OSError, UnicodeError):
+            return {"status": "unreadable"}
+        return {
+            "status": "available",
+            "path": "TASK.md",
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "content": text,
+        }
+
     def _task_context(self, role: str, experiment_id: int) -> dict[str, Any]:
         action_role = "analyze-dev-failures" if role == "analyze" else role
         action = self.store.action(f"exp:{experiment_id}:{action_role}")
@@ -875,7 +1069,7 @@ class Engine:
             for capsule in research_state.get("recent_failure_capsules", [])
         ]
         campaign = self.store.campaign()
-        return {
+        payload = {
             "schema_version": 1,
             "role": role,
             "goal": self.spec.goal,
@@ -894,6 +1088,7 @@ class Engine:
             "editable_scope": self.spec.editable_scope,
             "protected_paths": self._agent_protected_paths(),
             "agent_visible_training_paths": self.spec.agent_visible_training_paths,
+            "agent_visible_context_paths": self.spec.agent_visible_context_paths,
             "baseline": self._agent_evaluation_view(campaign["baseline_json"]),
             "champion": self._agent_evaluation_view(campaign["champion_json"]),
             "champion_snapshot": campaign["champion_snapshot"],
@@ -916,6 +1111,14 @@ class Engine:
                 "exploit": "build on the strongest DEV-supported mechanism without duplicating prior work",
                 "explore": "test a materially different mechanism family from recent failed attempts",
                 "reframe": "challenge the current framing and choose a new mechanism family before plateau",
+                "champion_progress": (
+                    "research_state.dev_non_improve_streak tracks scientific DEV feedback, "
+                    "while research_state.champion_stagnation_streak counts evaluated "
+                    "trials since the last accepted champion. A small positive DEV delta "
+                    "is evidence, not a champion promotion. After repeated no-promotion "
+                    "trials consider a different algorithm family; a justified refinement "
+                    "is still allowed."
+                ),
                 "genealogy": (
                     "If reusing a mechanism_key, set relation to refine/retry/supersede "
                     "and cite a matching prior experiment ordinal."
@@ -930,6 +1133,11 @@ class Engine:
             },
             "experiment_id": experiment_id,
         }
+        if role in {"propose", "implement"}:
+            task_document = self._task_document()
+            if task_document is not None:
+                payload["task_document"] = task_document
+        return payload
 
     @staticmethod
     def _hypothesis_grounding_error(
@@ -999,32 +1207,231 @@ class Engine:
             )
         return proof
 
-    def _stage_propose(self, attempt_id: int, experiment_id: int) -> None:
-        self.workspace.checkout(self.store.campaign()["champion_snapshot"])
-        task = self._task_context("propose", experiment_id)
+    def _record_semantic_selection(self, payload: dict[str, Any]) -> None:
+        """Avoid duplicating the same audit event on a pre-decision resume."""
+        if any(
+            json.loads(event["payload_json"]) == payload
+            for event in self.store.events()
+            if event["event_type"] == "PORTFOLIO_SELECTION"
+        ):
+            return
+        self.store.event("PORTFOLIO_SELECTION", payload)
+
+    def _select_semantically(
+        self, record: PortfolioRecord, task: dict[str, Any], experiment_id: int,
+    ) -> PortfolioRecord:
+        """Opt-in advisory comparison; core gates remain authoritative.
+
+        The judge action is durable. A resumed proposal reuses its frozen
+        input and result, never re-queries an uncertain running agent.
+        """
+        if self.spec.selection_mode != "llm":
+            return record
+
+        action_id = f"{record.action_id}:semantic-select"
+        existing = self.store.action(action_id)
+        if existing is not None:
+            # An action started before an interruption must retain its exact
+            # pre-judge admissibility decisions and input on replay.
+            judge_task = json.loads(existing["request_json"])
+            frozen = PortfolioRecord.model_validate(judge_task["base_record"])
+            if frozen.candidates != record.candidates or frozen.action_id != record.action_id:
+                raise EngineError("semantic selector frozen portfolio mismatch")
+            record = frozen
+        else:
+            if record.selected_candidate_id is None:
+                return record
+            admissible = {d.candidate_id for d in record.decisions if d.admissible}
+            if len(admissible) < 2:
+                return record
+            eligible = [c for c in record.candidates if c.candidate_id in admissible]
+            campaign = self.store.campaign()
+            remaining_calls = self.spec.budget.max_agent_calls - campaign["agent_calls"]
+            # Keep the judge from stealing calls reserved for implementation.
+            # If even one currently eligible plan could become unaffordable,
+            # use the existing selector rather than silently weaken its gates.
+            needed_for_implementation = max(max(1, c.estimated_agent_calls) for c in eligible)
+            if (remaining_calls < 1 + needed_for_implementation
+                    or pre_action_stop(campaign, self.spec.budget, "agent") is not None):
+                self._record_semantic_selection({
+                    "action_id": action_id, "status": "SKIPPED",
+                    "reason": "insufficient budget for judge plus implementation",
+                    "deterministic_candidate_id": record.selected_candidate_id,
+                })
+                return record
+
+            agent_request = {
+                "schema_version": 1,
+                "role": "select",
+                "goal": task["goal"],
+                "project_context": task.get("project_context", ""),
+                "task_document": task.get("task_document"),
+                "planning_mode": task.get("planning_mode"),
+                "primary_metric": task.get("primary_metric"),
+                "baseline": task.get("baseline"),
+                "champion": task.get("champion"),
+                "history": task.get("history", []),
+                "research_state": task.get("research_state", {}),
+                "eligible_candidates": [c.model_dump(mode="json") for c in eligible],
+                "selection_contract": {
+                    "only_select_existing_eligible_id": True,
+                    "do_not_modify_files": True,
+                    "compare_all_candidates": True,
+                    "dev_only": True,
+                    "scores_are_predictions_not_measurements": True,
+                    # The judge may explain TASK.md/history in prose but these
+                    # are the ONLY machine evidence references it may emit.
+                    "allowed_evidence_refs_by_candidate": {
+                        c.candidate_id: list(c.evidence_refs) for c in eligible
+                    },
+                },
+            }
+            # The durable action contains the exact agent-visible payload plus
+            # the private core decision. The agent sees ONLY eligible candidates,
+            # not rejected proposer ideas or core-internal selection records.
+            judge_task = {
+                "agent_visible_request": agent_request,
+                "base_record": record.model_dump(mode="json"),
+            }
+
+        if existing is not None and existing["status"] == "FAILED" and not self._retry_failed_actions:
+            self._record_semantic_selection({
+                "action_id": action_id, "status": "FALLBACK",
+                "reason": "previous judge action failed; deterministic selection retained",
+                "deterministic_candidate_id": record.selected_candidate_id,
+            })
+            return record
+
         try:
             raw = self._action(
-                action_id=f"exp:{experiment_id}:propose",
+                action_id=action_id,
                 experiment_id=experiment_id,
-                stage="PROPOSE",
+                stage="SELECT",
                 kind="agent",
-                request=task,
+                request=judge_task,
                 invoke=lambda: self._invoke_agent(
-                    task,
+                    judge_task["agent_visible_request"],
                     timeout=self._agent_timeout(900),
                     apply_changes=False,
                 ),
             )
-            raw = self.agent.normalize_result(task, raw)
-            if raw.get("status") == "NO_HYPOTHESIS":
-                self.store.update_experiment(experiment_id, failure_category="NO_HYPOTHESIS", lesson="Agent proposed no further hypothesis")
-                self.store.finish_attempt(attempt_id, experiment_id, status="NO_HYPOTHESIS", scientific=False, improved=False)
+            selected, choice = apply_semantic_choice(record, raw)
+        except (AgentError, ValidationError, ValueError) as exc:
+            # A malformed/failed judge cannot bypass the core's decision.
+            # Orphaned RUNNING actions and integrity errors are NOT swallowed.
+            self._record_semantic_selection({
+                "action_id": action_id, "status": "FALLBACK",
+                "reason": type(exc).__name__,
+                "deterministic_candidate_id": record.selected_candidate_id,
+            })
+            return record
+
+        self._record_semantic_selection({
+            "action_id": action_id, "status": "SELECTED",
+            "selected_candidate_id": selected.selected_candidate_id,
+            "deterministic_candidate_id": record.selected_candidate_id,
+            "reason": choice.reason,
+            "evidence_refs": choice.evidence_refs,
+            "main_risk": choice.main_risk,
+        })
+        return selected
+
+    def _stage_propose(self, attempt_id: int, experiment_id: int) -> None:
+        current = self.store.experiment(experiment_id)
+        if current.get("composite_id"):
+            self.workspace.checkout(current["parent_snapshot"])
+            sequence = self.store.composite(current["composite_id"])
+            if sequence["status"] != "ACTIVE":
+                self.store.update_experiment(
+                    experiment_id,
+                    failure_category="COMPOSITE_SEQUENCE_CLOSED",
+                    lesson=f"Composite sequence is already {sequence['status'].lower()}.",
+                )
+                self.store.finish_attempt(
+                    attempt_id, experiment_id, status="COMPOSITE_ABORTED",
+                    scientific=False, improved=False,
+                )
                 self._refresh_research_state()
-                self._stop(StopReason.NO_HYPOTHESIS)
                 return
-            portfolio = normalize_portfolio(raw)
+            step_order = int(current["composite_step"] or 0)
+            plan = json.loads(sequence["plan_json"])
+            if not 1 <= step_order <= len(plan):
+                raise EngineError("composite attempt points outside its saved plan")
+            hypothesis = Hypothesis.model_validate(plan[step_order - 1])
+            task = self._task_context("propose", experiment_id)
+            grounding_error = self._hypothesis_grounding_error(hypothesis, task)
+            duplicate = None if grounding_error else redundancy_reason(
+                hypothesis, [row for row in self.store.experiments() if row["id"] != experiment_id]
+            )
+            if grounding_error or duplicate:
+                reason = grounding_error or duplicate or "composite hypothesis rejected"
+                ungrounded = grounding_error is not None
+                self.store.update_experiment(
+                    experiment_id,
+                    hypothesis_json=hypothesis.model_dump_json(),
+                    failure_category="UNGROUNDED_HYPOTHESIS" if ungrounded else "REDUNDANT_HYPOTHESIS",
+                    lesson=reason[:1000],
+                )
+                self.store.event(
+                    "UNGROUNDED_HYPOTHESIS_REJECTED" if ungrounded else "REDUNDANT_HYPOTHESIS_REJECTED",
+                    {"experiment_id": experiment_id, "ordinal": current["ordinal"], "reason": reason[:1000]},
+                )
+                self.store.finish_composite(current["composite_id"], status="REJECTED")
+                self.store.finish_attempt(
+                    attempt_id, experiment_id,
+                    status="UNGROUNDED" if ungrounded else "REDUNDANT",
+                    scientific=False, improved=False,
+                )
+                self._refresh_research_state()
+                return
+            self.store.update_experiment(experiment_id, hypothesis_json=hypothesis.model_dump_json())
+            self._progress(f"composite step {step_order}/{len(plan)}: {hypothesis.hypothesis}")
+            self.store.set_stage(attempt_id, "EXECUTE")
+            self._checkpoint("EXECUTE")
+            return
+        self.workspace.checkout(self.store.campaign()["champion_snapshot"])
+        task = self._task_context("propose", experiment_id)
+        # No speculative planning when the approved goal explicitly relies on
+        # TASK.md but that source is missing, hidden, oversized or unreadable.
+        # Already-started proposal actions keep their frozen request on replay.
+        if (self.store.action(f"exp:{experiment_id}:propose") is None
+                and "task.md" in self.spec.goal.casefold()
+                and (task.get("task_document") or {}).get("status") != "available"):
+            reason = (task.get("task_document") or {}).get("status", "missing")
+            self.store.event("TASK_DOCUMENT_UNAVAILABLE", {
+                "experiment_id": experiment_id,
+                "reason": reason,
+            })
+            self.store.conn.commit()
+            self._stop(StopReason.PAUSED_NEEDS_INPUT, CampaignStatus.PAUSED_NEEDS_INPUT)
+            raise CampaignHalted()
+        try:
+            if self.spec.frozen_portfolio_json is not None:
+                frozen_data = json.loads(self.spec.frozen_portfolio_json)
+                portfolio = normalize_portfolio({"candidates": frozen_data["candidates"]})
+            else:
+                raw = self._action(
+                    action_id=f"exp:{experiment_id}:propose",
+                    experiment_id=experiment_id,
+                    stage="PROPOSE",
+                    kind="agent",
+                    request=task,
+                    invoke=lambda: self._invoke_agent(
+                        task,
+                        timeout=self._agent_timeout(900),
+                        apply_changes=False,
+                    ),
+                )
+                raw = self.agent.normalize_result(task, raw)
+                if raw.get("status") == "NO_HYPOTHESIS":
+                    self.store.update_experiment(experiment_id, failure_category="NO_HYPOTHESIS", lesson="Agent proposed no further hypothesis")
+                    self.store.finish_attempt(attempt_id, experiment_id, status="NO_HYPOTHESIS", scientific=False, improved=False)
+                    self._refresh_research_state()
+                    self._stop(StopReason.NO_HYPOTHESIS)
+                    return
+                portfolio = normalize_portfolio(raw)
         except (AgentError, ValidationError, ValueError, UnknownActionOutcome, WorkspaceError) as exc:
-            self.store.update_experiment(experiment_id, failure_category="AGENT_PROTOCOL_ERROR", lesson=str(exc)[:1000])
+            self.store.update_experiment(experiment_id, failure_category=_agent_failure_category(exc), lesson=str(exc)[:1000])
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(f"propose failed: {exc}") from exc
 
@@ -1052,9 +1459,96 @@ class Engine:
                 task=task,
                 grounding_check=self._hypothesis_grounding_error,
             )
+            record = self._select_semantically(record, task, experiment_id)
+            if self.spec.frozen_portfolio_json is not None:
+                existing_inputs = any(
+                    event.get("event_type") == "FROZEN_PORTFOLIO_INPUT"
+                    and json.loads(event["payload_json"]).get("experiment_id") == experiment_id
+                    for event in self.store.events()
+                )
+                if not existing_inputs:
+                    self.store.event("FROZEN_PORTFOLIO_INPUT", {
+                        "experiment_id": experiment_id,
+                        "action_id": action_id,
+                        "sha256": self.spec.frozen_portfolio_sha256,
+                        "replicate_label": self.spec.replicate_label,
+                        "candidate_ids": [candidate.candidate_id for candidate in portfolio.candidates],
+                    })
             self.store.event("PORTFOLIO_DECISION", record.model_dump(mode="json"))
             self.store.conn.commit()
             self._checkpoint("PORTFOLIO_SAVED")
+        if (self.spec.frozen_portfolio_json is None
+                and record.selected_candidate_id is None
+                and repairable_portfolio_failure(record)):
+            # GVS5H-style fresh proposer view: exact feedback + a bounded second
+            # proposal, with no edits/evaluator access and no loose scope bypass.
+            # The original PORTFOLIO_DECISION stays durable for audits.
+            repair_id = f"exp:{experiment_id}:propose-repair"
+            saved_repair = next((
+                event for event in self.store.events()
+                if event.get("event_type") == "PORTFOLIO_REPAIR_DECISION"
+                and json.loads(event["payload_json"]).get("action_id") == repair_id
+            ), None)
+            if saved_repair is not None:
+                corrected_record = PortfolioRecord.model_validate(
+                    json.loads(saved_repair["payload_json"])
+                )
+                corrected_portfolio = HypothesisPortfolio(candidates=corrected_record.candidates)
+            elif (self.store.action(repair_id) is not None or
+                  pre_action_stop(self.store.campaign(), self.spec.budget, "agent") is None):
+                repair_task = {
+                    **task,
+                    "portfolio_repair": portfolio_repair_context(record, self.spec),
+                }
+                try:
+                    repair_raw = self._action(
+                        action_id=repair_id,
+                        experiment_id=experiment_id,
+                        stage="PROPOSE",
+                        kind="agent",
+                        request=repair_task,
+                        invoke=lambda: self._invoke_agent(
+                            repair_task,
+                            timeout=self._agent_timeout(900),
+                            apply_changes=False,
+                        ),
+                    )
+                    repair_raw = self.agent.normalize_result(repair_task, repair_raw)
+                    corrected_portfolio = normalize_portfolio(repair_raw)
+                except (ValidationError, ValueError) as exc:
+                    # Bad model output is a failed bounded proposal, not an
+                    # excuse to relax core scope / evidence / budget gates.
+                    corrected_portfolio = HypothesisPortfolio(candidates=[])
+                    self.store.event("PORTFOLIO_REPAIR_MALFORMED", {
+                        "experiment_id": experiment_id,
+                        "reason": str(exc)[:300],
+                    })
+                    self.store.conn.commit()
+                corrected_record = select_candidate(
+                    corrected_portfolio,
+                    spec=self.spec,
+                    state=ResearchState.model_validate(self._refresh_research_state()),
+                    experiments=[row for row in self.store.experiments() if row["id"] != experiment_id],
+                    experiment_ordinal=int(self.store.experiment(experiment_id)["ordinal"]),
+                    action_id=repair_id,
+                    task=repair_task,
+                    grounding_check=self._hypothesis_grounding_error,
+                )
+                corrected_record = self._select_semantically(corrected_record, repair_task, experiment_id)
+                self.store.event(
+                    "PORTFOLIO_REPAIR_DECISION",
+                    corrected_record.model_dump(mode="json"),
+                )
+                self.store.conn.commit()
+                self._checkpoint("PORTFOLIO_REPAIR_SAVED")
+            else:
+                corrected_record = None
+                corrected_portfolio = None
+
+            if corrected_record is not None:
+                record = corrected_record
+                portfolio = corrected_portfolio
+
         if record.selected_candidate_id is None:
             ungrounded = next((
                 reason.removeprefix("UNGROUNDED_EVIDENCE: ")
@@ -1078,6 +1572,15 @@ class Engine:
             return
         selected = next(item for item in portfolio.candidates if item.candidate_id == record.selected_candidate_id)
         hypothesis = selected.hypothesis
+        if selected.composite_steps:
+            sequence_id = f"composite-{int(self.store.experiment(experiment_id)['ordinal'])}"
+            plan = [step.model_dump(mode="json") for step in selected.composite_steps]
+            self.store.start_composite_for_attempt(
+                sequence_id, self.store.campaign()["champion_snapshot"], plan=plan,
+                experiment_id=experiment_id,
+            )
+            self._checkpoint("COMPOSITE_ATTACHED")
+            hypothesis = selected.composite_steps[0]
         self._refresh_research_state()
 
         grounding_error = self._hypothesis_grounding_error(hypothesis, task)
@@ -1096,6 +1599,9 @@ class Engine:
                     "reason": grounding_error[:1000],
                 },
             )
+            composite_id = self.store.experiment(experiment_id).get("composite_id")
+            if composite_id:
+                self.store.finish_composite(composite_id, status="REJECTED")
             self.store.finish_attempt(
                 attempt_id,
                 experiment_id,
@@ -1126,6 +1632,9 @@ class Engine:
                     "reason": duplicate[:1000],
                 },
             )
+            composite_id = self.store.experiment(experiment_id).get("composite_id")
+            if composite_id:
+                self.store.finish_composite(composite_id, status="REJECTED")
             self.store.finish_attempt(
                 attempt_id,
                 experiment_id,
@@ -1156,7 +1665,10 @@ class Engine:
         action_id = f"exp:{experiment_id}:implement"
         existing_action = self.store.action(action_id)
         if not (existing_action and existing_action["status"] == "COMPLETED"):
-            self.workspace.checkout(campaign["champion_snapshot"])
+            exp = self.store.experiment(experiment_id)
+            self.workspace.checkout(
+                exp["parent_snapshot"] if exp.get("composite_id") else campaign["champion_snapshot"]
+            )
         exp = self.store.experiment(experiment_id)
         task = self._task_context("implement", experiment_id)
         task["hypothesis"] = json.loads(exp["hypothesis_json"])
@@ -1255,7 +1767,7 @@ class Engine:
                 if test_counts:
                     self._progress("worker-reported checks: " + ", ".join(test_counts[:6]))
         except (AgentError, ValidationError, UnknownActionOutcome, WorkspaceError) as exc:
-            self.store.update_experiment(experiment_id, failure_category="AGENT_PROTOCOL_ERROR", lesson=str(exc)[:1000])
+            self.store.update_experiment(experiment_id, failure_category=_agent_failure_category(exc), lesson=str(exc)[:1000])
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(f"implement failed: {exc}") from exc
         self.store.set_stage(attempt_id, "SNAPSHOT")
@@ -1369,6 +1881,30 @@ class Engine:
                 self.store.set_stage(attempt_id, "EVALUATE")
         else:
             self.store.set_stage(attempt_id, "EVALUATE")
+        if self.store.attempt(attempt_id)["stage"] == "EVALUATE":
+            syntax_errors = python_syntax_errors(self.workspace.workspace, changed)
+            if syntax_errors:
+                decision = {
+                    "accepted": False,
+                    "primary_value": None,
+                    "champion_value": None,
+                    "delta": None,
+                    "predicates": {"candidate_python_syntax": False},
+                    "reasons": ["CANDIDATE_PREFLIGHT_FAILED"],
+                }
+                self.store.update_experiment(
+                    experiment_id,
+                    decision_json=json.dumps(decision),
+                    failure_category="IMPLEMENTATION_BLOCKED",
+                    lesson="Python candidate syntax preflight: " + "; ".join(syntax_errors)[:800],
+                )
+                self.store.record_decision(experiment_id, exp["candidate_snapshot"], decision)
+                self.store.event(
+                    "CANDIDATE_PREFLIGHT_FAILED",
+                    {"experiment_id": experiment_id, "errors": syntax_errors[:8]},
+                )
+                self.store.conn.commit()
+                self.store.set_stage(attempt_id, "REJECT")
         self._checkpoint(self.store.attempt(attempt_id)["stage"])
 
     def _stage_evaluate(self, attempt_id: int, experiment_id: int) -> None:
@@ -1549,6 +2085,14 @@ class Engine:
         return FailureAnalysisResult.model_validate(payload)
 
     def _route_after_dev_analysis(self, attempt_id: int, decision: dict[str, Any]) -> None:
+        campaign = self.store.campaign()
+        experiment_id = campaign.get("active_experiment_id")
+        exp = self.store.experiment(int(experiment_id)) if experiment_id is not None else None
+        if exp and exp.get("composite_id"):
+            sequence = self.store.composite(exp["composite_id"])
+            if int(exp["composite_step"] or 0) < len(json.loads(sequence["plan_json"])):
+                self.store.set_stage(attempt_id, "REJECT")
+                return
         if decision.get("accepted") and self.validation_evaluator is not None:
             self.store.set_stage(attempt_id, "VALIDATE")
         else:
@@ -1622,6 +2166,27 @@ class Engine:
                     decision.model_dump(mode="json"),
                 )
         else:
+            # ARE-style evaluators often provide aggregate reward with no
+            # failure_signals. Store a deterministic, uncertainty-aware DEV
+            # capsule instead of silently skipping reflection. The model does
+            # not get an extra call or any hidden/case-level evaluator data.
+            analysis = synthesize_dev_failure_analysis(
+                self.spec,
+                decision.model_dump(mode="json"),
+                champion_dev_json=campaign["champion_json"],
+                candidate_dev_json=exp["evaluation_json"],
+            )
+            if analysis is not None:
+                self.store.update_experiment(
+                    experiment_id,
+                    failure_analysis_json=analysis.model_dump_json(),
+                )
+                self.store.event("DEV_FAILURE_DIAGNOSIS_RECORDED", {
+                    "experiment_id": experiment_id,
+                    "failure_class": analysis.capsules[0].failure_class,
+                    "source": "allowlisted_dev_decision",
+                })
+                self.store.conn.commit()
             self._route_after_dev_analysis(
                 attempt_id,
                 decision.model_dump(mode="json"),
@@ -1801,7 +2366,11 @@ class Engine:
         self._checkpoint("RECORD")
 
     def _stage_reject(self, attempt_id: int, experiment_id: int) -> None:
-        self.workspace.checkout(self.store.campaign()["champion_snapshot"])
+        exp = self.store.experiment(experiment_id)
+        self.workspace.checkout(
+            exp["parent_snapshot"] if exp.get("composite_id")
+            else self.store.campaign()["champion_snapshot"]
+        )
         self.store.set_stage(attempt_id, "RECORD")
         self._checkpoint("RECORD")
 
@@ -1831,6 +2400,36 @@ class Engine:
                 failure = (decision.get("reasons") or ["REJECTED"])[0]
             lesson = exp["lesson"] or f"Rejected: {failure}"
         self.store.update_experiment(experiment_id, failure_category=failure, lesson=lesson)
+        if exp.get("composite_id"):
+            sequence = self.store.composite(exp["composite_id"])
+            plan_length = len(json.loads(sequence["plan_json"]))
+            step_order = int(exp["composite_step"] or 0)
+            safe_to_advance = bool(
+                exp["candidate_snapshot"]
+                and not exp["failure_category"]
+                and exp["evaluation_json"]
+                and exp["dev_decision_json"]
+            )
+            terminal_failure = not safe_to_advance
+            step_status = (
+                "FAILED" if terminal_failure
+                else "INTERMEDIATE" if step_order < plan_length
+                else "FINAL_ACCEPTED" if accepted
+                else "FINAL_REJECTED"
+            )
+            self.store.complete_composite_step(
+                exp["composite_id"], experiment_id,
+                parent_snapshot=exp["parent_snapshot"],
+                candidate_snapshot=exp["candidate_snapshot"] or exp["parent_snapshot"],
+                dev_decision=json.loads(exp["dev_decision_json"] or "{}"),
+                status=step_status,
+            )
+            if terminal_failure or step_order >= plan_length:
+                self.store.finish_composite(
+                    exp["composite_id"],
+                    status="REJECTED" if terminal_failure or not accepted else "COMPLETED",
+                    final_experiment_id=experiment_id,
+                )
         self.store.finish_attempt(
             attempt_id,
             experiment_id,
@@ -1844,6 +2443,96 @@ class Engine:
             ),
         )
         self._refresh_research_state()
+
+    def _create_pivot_proposal(self) -> bool:
+        """Prepare one immutable architecture proposal, then wait for operator input."""
+        pending = self.store.pending_pivot_proposal()
+        if pending is not None:
+            self._stop(StopReason.PAUSED_NEEDS_INPUT)
+            return True
+
+        experiments = self.store.experiments()
+        if not experiments:
+            self.store.event("PIVOT_PROPOSAL_BLOCKED", {
+                "reason": "No completed experiment evidence is available at plateau.",
+                "agent_call_started": False,
+            })
+            self.store.conn.commit()
+            self._stop(StopReason.PAUSED_NEEDS_INPUT)
+            return True
+
+        trigger = max(experiments, key=lambda item: int(item["ordinal"]))
+        experiment_id = int(trigger["id"])
+        ordinal = int(trigger["ordinal"])
+        task = self._task_context("pivot_advice", experiment_id)
+        current_architecture = self.spec.project_context.strip() or (
+            f"Approved campaign goal: {self.spec.goal}; primary metric: "
+            f"{self.spec.primary_metric.name} ({self.spec.primary_metric.direction.value}); "
+            f"editable scope: {', '.join(self.spec.editable_scope)}"
+        )
+        current_architecture = current_architecture[:2000]
+        task["pivot_context"] = {
+            "current_architecture": current_architecture,
+            "approved_goal": self.spec.goal,
+            "approved_editable_scope": self.spec.editable_scope,
+            "approved_spec_hash": self.store.campaign()["spec_hash"],
+            "remaining_budget": {
+                "agent_calls": max(0, self.spec.budget.max_agent_calls - int(self.store.campaign()["agent_calls"])),
+                "evaluator_calls": max(0, self.spec.budget.max_evaluator_calls - int(self.store.campaign()["evaluator_calls"])),
+                "evaluation_units": (
+                    None if self.spec.budget.max_evaluation_units is None else max(
+                        0, self.spec.budget.max_evaluation_units - self.store.evaluation_work_reserved(),
+                    )
+                ),
+            },
+            "instruction": (
+                "Prepare one architecture-level alternative for operator review. This is only a proposal. "
+                "Do not alter this campaign's approved goal, evaluator, scope, budget, or persisted state. "
+                "The operator must approve a new immutable plan before any proposed work begins."
+            ),
+        }
+        request_id = f"pivot:{self.store.campaign()['spec_hash'][:12]}:{ordinal}:advice"
+        try:
+            response = self._action(
+                action_id=request_id,
+                experiment_id=experiment_id,
+                stage="PIVOT_ADVICE",
+                kind="agent",
+                request=task,
+                invoke=lambda: self._invoke_agent(
+                    task,
+                    timeout=self._agent_timeout(900),
+                    apply_changes=False,
+                ),
+                budget_check=self._pivot_budget_or_pause,
+            )
+            resources = PivotResourceRequest.model_validate(response.get("resources"))
+            proposal = PivotProposal.build(
+                spec_hash=self.store.campaign()["spec_hash"],
+                trigger_experiment_ordinal=ordinal,
+                current_architecture=current_architecture,
+                proposed_architecture=response.get("proposed_architecture"),
+                rationale=response.get("rationale"),
+                expected_effect=response.get("expected_effect"),
+                changed_scope=response.get("changed_scope"),
+                resources=resources,
+            )
+        except CampaignHalted:
+            # The custom pre-call gate has already recorded why no action began.
+            return True
+        except (AgentError, ValidationError, ValueError, UnknownActionOutcome, WorkspaceError, EngineError) as exc:
+            self.store.event("PIVOT_PROPOSAL_FAILED", {
+                "trigger_experiment_ordinal": ordinal,
+                "reason": str(exc)[:500],
+            })
+            self.store.conn.commit()
+            self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+            return True
+
+        pause_reason = "Architecture pivot proposal is pending explicit operator review."
+        self.store.save_pivot_proposal(proposal, pause_reason)
+        self._stop(StopReason.PAUSED_NEEDS_INPUT)
+        return True
 
     def _post_iteration_stop(self) -> bool:
         campaign = self.store.campaign()
@@ -1896,8 +2585,7 @@ class Engine:
                 })
                 self.store.conn.commit()
                 self._refresh_research_state()
-            self._stop(StopReason.PLATEAU)
-            return True
+            return self._create_pivot_proposal()
         reason = pre_action_stop(campaign, self.spec.budget, "agent")
         if reason and campaign["active_attempt_id"] is None:
             self._stop(reason)
@@ -1944,6 +2632,12 @@ class Engine:
             raise EngineError("approved campaign spec hash mismatch")
         if campaign["status"] in {CampaignStatus.GOAL_MET.value, CampaignStatus.STOPPED.value}:
             return campaign
+        if resume and campaign["status"] == CampaignStatus.PAUSED_USER.value:
+            self.store.clear_pause_request()
+            self.store.update_campaign(status=CampaignStatus.RUNNING.value, stop_reason=None)
+            campaign = self.store.campaign()
+        elif campaign["status"] == CampaignStatus.PAUSED_USER.value:
+            return campaign
         control_reason = self._control_reason()
         if control_reason:
             return self._stop(StopReason(control_reason))
@@ -1986,8 +2680,14 @@ class Engine:
                     return self._stop(reason)
                 if not self._new_attempt_fits_evaluator_budget():
                     return self._stop(StopReason.BUDGET_EXHAUSTED)
-                self.workspace.checkout(campaign["champion_snapshot"])
-                self.store.create_attempt(campaign["champion_snapshot"])
+                sequence = self.store.active_composite()
+                if sequence:
+                    self.workspace.checkout(sequence["tip_snapshot"])
+                    experiment_id, attempt_id = self.store.create_composite_attempt(sequence["id"])
+                    self._checkpoint("COMPOSITE_ATTEMPT_CREATED")
+                else:
+                    self.workspace.checkout(campaign["champion_snapshot"])
+                    experiment_id, attempt_id = self.store.create_attempt(campaign["champion_snapshot"])
                 campaign = self.store.campaign()
             attempt_id = int(campaign["active_attempt_id"])
             experiment_id = int(campaign["active_experiment_id"])

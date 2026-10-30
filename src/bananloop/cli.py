@@ -5,21 +5,45 @@ import hashlib
 import json
 import shlex
 import sys
+import uuid
 from pathlib import Path
 
 from .bootstrap import BootstrapError, bootstrap_campaign
 from .agent_profiles import AgentProfileError, load_agent_profiles
-from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, NonRegressionSpec, PairedComparison, RuntimePaths
+from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, NonRegressionSpec, PairedComparison, PivotDecisionCommand, RuntimePaths
 from .codex_hook import main as codex_hook_main
 from .engine import ControlledInterruption, Engine, EngineError
 from .export import export_champion
 from .integrity import EvaluationIntegrityError, discover_evaluation_assets, evaluation_fingerprint
 from .lock import CampaignLock, CampaignLockError
+from .operator_control import OperatorCommand, reconcile_control, submit_control, submit_pivot_decision
+from .operator_snapshot import read_events_after, read_snapshot
 from .report import build_report, render_markdown
 from .registry import CampaignRegistry, RegistryError, assert_safe_campaign_db
 from .store import CampaignStore, StoreError, campaign_db_initialized
 from .wizard import confirm_spec, discover_project, needs_interactive_init, run_init_wizard
 from .workspace import WorkspaceError, WorkspaceManager, assert_clean_source, current_commit
+
+MAX_FROZEN_PORTFOLIO_BYTES = 1024 * 1024
+
+
+def _read_frozen_portfolio(path: str | Path) -> tuple[str, str]:
+    """Read a bounded UTF-8 portfolio and return its exact text and byte digest."""
+    try:
+        with Path(path).open("rb") as stream:
+            portfolio_bytes = stream.read(MAX_FROZEN_PORTFOLIO_BYTES + 1)
+    except OSError as exc:
+        raise ValueError(f"cannot read frozen portfolio: {exc}") from exc
+    if len(portfolio_bytes) > MAX_FROZEN_PORTFOLIO_BYTES:
+        raise ValueError(
+            f"frozen portfolio exceeds the {MAX_FROZEN_PORTFOLIO_BYTES}-byte limit"
+        )
+    try:
+        portfolio_json = portfolio_bytes.decode("utf-8")
+        json.loads(portfolio_json)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("frozen portfolio must be valid UTF-8 JSON without a BOM") from exc
+    return portfolio_json, hashlib.sha256(portfolio_bytes).hexdigest()
 
 
 def _guard(value: str) -> GuardrailSpec:
@@ -77,6 +101,10 @@ def _display_campaign_id(args: argparse.Namespace, paths: RuntimePaths) -> str |
         digest = hashlib.sha256(str(paths.root).encode("utf-8")).hexdigest()[:32]
         return "state-" + digest
     return None
+
+
+def _operator_campaign_id(args: argparse.Namespace, paths: RuntimePaths) -> str:
+    return _display_campaign_id(args, paths) or "state-" + hashlib.sha256(str(paths.root).encode("utf-8")).hexdigest()[:32]
 
 
 def _agent_config(args: argparse.Namespace) -> AgentConfig:
@@ -151,6 +179,10 @@ def cmd_init(args: argparse.Namespace) -> int:
     ]
     frozen_paths = [asset.path for asset in evaluation_assets]
     protected_paths = list(dict.fromkeys([*(args.protect or []), *frozen_paths]))
+    frozen_portfolio_json = None
+    frozen_portfolio_sha256 = None
+    if getattr(args, "frozen_portfolio", None):
+        frozen_portfolio_json, frozen_portfolio_sha256 = _read_frozen_portfolio(args.frozen_portfolio)
     spec = CampaignSpec(
         goal=args.goal,
         source_repo=str(repo),
@@ -195,6 +227,10 @@ def cmd_init(args: argparse.Namespace) -> int:
             plateau_experiments=args.plateau,
         ),
         agent=agent,
+        selection_mode=getattr(args, "selector_mode", "deterministic"),
+        frozen_portfolio_json=frozen_portfolio_json,
+        frozen_portfolio_sha256=frozen_portfolio_sha256,
+        replicate_label=getattr(args, "replicate_label", None),
     )
     if interactive and not args.yes:
         if not confirm_spec(spec.model_dump(mode="json")):
@@ -367,6 +403,7 @@ def cmd_start(args: argparse.Namespace) -> int:
                         max_evaluator_calls=args.max_evaluator_calls,
                         deadline_seconds=args.deadline_seconds,
                         plateau_experiments=args.plateau,
+                        selection_mode=getattr(args, "selector_mode", "deterministic"),
                     )
         except CampaignLockError as exc:
             print(f"BananLoop error: {exc}", file=sys.stderr)
@@ -425,12 +462,23 @@ def cmd_run(args: argparse.Namespace, resume: bool = False) -> int:
         with CampaignLock(paths.root / "campaign.lock"):
             _, store, engine = _open(args)
             try:
+                control_request_id = getattr(args, "request_id", None) if resume else None
+                if control_request_id:
+                    paths = _selected_paths(args)
+                    receipt = submit_control(store, _operator_campaign_id(args, paths), OperatorCommand(
+                        _operator_campaign_id(args, paths), control_request_id, "resume",
+                    ))
+                    if receipt["status"] == "COMPLETED":
+                        print(json.dumps({"campaign_id": _operator_campaign_id(args, paths), "status": store.campaign()["status"], "request_id": control_request_id, "already_completed": True}))
+                        return 0
                 campaign = engine.run(
                     resume=resume,
                     retry_running_actions=bool(getattr(args, "retry_running_action", False)),
                     retry_failed_actions=bool(getattr(args, "retry_failed_action", False)),
                     agent_timeout_seconds=getattr(args, "agent_timeout_seconds", None),
                 )
+                if control_request_id:
+                    reconcile_control(store, control_request_id)
                 payload = {
                     k: campaign[k]
                     for k in (
@@ -484,7 +532,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         data["initialized"] = True
         data["resources"] = store.resource_summary()
         data["resources"]["model_tokens"] = store.model_token_summary()
-        data["evaluations"] = build_report(store)["measurements"]
+        data["evaluations"] = _status_evaluation_summary(build_report(store)["measurements"])
         research = store.research_state()
         if research:
             data["planning_mode"] = research.get("planning_mode")
@@ -494,19 +542,104 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_operator_snapshot(args: argparse.Namespace) -> int:
+    paths = _selected_paths(args, create=False)
+    if not campaign_db_initialized(paths.db):
+        raise StoreError("campaign is not initialized")
+    store = CampaignStore(paths.db)
+    try:
+        print(json.dumps(read_snapshot(store, _operator_campaign_id(args, paths)), sort_keys=True))
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_operator_events(args: argparse.Namespace) -> int:
+    paths = _selected_paths(args, create=False)
+    if not campaign_db_initialized(paths.db):
+        raise StoreError("campaign is not initialized")
+    store = CampaignStore(paths.db)
+    try:
+        print(json.dumps(read_events_after(store, args.after, limit=args.limit), sort_keys=True))
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_pivot_decision(args: argparse.Namespace) -> int:
+    """Record one explicit local pivot decision; this never resumes or runs a campaign."""
+    if args.decision == "reject" and not args.on_reject:
+        raise StoreError("pivot rejection requires --on-reject continue_old_plan, change_conditions, or end_campaign")
+    paths = _selected_paths(args, create=False)
+    if not campaign_db_initialized(paths.db):
+        raise StoreError("campaign is not initialized")
+    store = CampaignStore(paths.db)
+    try:
+        campaign_id = _operator_campaign_id(args, paths)
+        receipt = submit_pivot_decision(store, campaign_id, PivotDecisionCommand(
+            campaign_id=campaign_id,
+            request_id=args.request_id,
+            proposal_id=args.proposal_id,
+            digest=args.digest,
+            decision=args.decision,
+            rejection_action=args.on_reject,
+        ))
+        print(json.dumps({
+            "campaign_id": campaign_id,
+            "request_id": receipt["request_id"],
+            "proposal_id": receipt["proposal_id"],
+            "digest": receipt["digest"],
+            "decision": receipt["decision"],
+            "status": receipt["status"],
+            "result": json.loads(receipt["result_json"]),
+            "campaign_status": store.campaign()["status"],
+            "automatic_execution": False,
+        }, sort_keys=True))
+    finally:
+        store.close()
+    return 0
+
+
+def _status_evaluation_summary(measurements: list[dict]) -> list[dict]:
+    """Keep status output aggregate-only; full reports have a separate command."""
+    summary = []
+    for item in measurements:
+        result = item.get("result") or {}
+        summary.append({
+            "experiment_id": item.get("experiment_id"),
+            "tier": item.get("tier"),
+            "metrics": {
+                name: metric.get("value")
+                for name, metric in (result.get("metrics") or {}).items()
+            },
+            "checks": {
+                name: check.get("passed")
+                for name, check in (result.get("checks") or {}).items()
+            },
+        })
+    return summary
+
+
 def cmd_stop(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     paths = _selected_paths(args)
     store = CampaignStore(paths.db)
     try:
-        store.campaign()  # Fail clearly if the state directory is uninitialized.
-        store.request_stop()
+        campaign = store.campaign()  # Fail clearly if the state directory is uninitialized.
+        if campaign["status"] in {"STOPPED", "GOAL_MET"}:
+            print("Campaign is already terminal.")
+            return 0
+        request_id = getattr(args, "request_id", None) or uuid.uuid4().hex
+        submit_control(store, _operator_campaign_id(args, paths), OperatorCommand(
+            _operator_campaign_id(args, paths), request_id, "end",
+        ))
         try:
             with CampaignLock(paths.root / "campaign.lock"):
                 # No live owner: reconcile a stop without launching an agent.
                 spec = store.spec()
                 workspace = WorkspaceManager(Path(spec.source_repo), paths.workspace)
                 Engine(store, workspace).run()
+                reconcile_control(store, request_id)
         except CampaignLockError:
             print("Stop requested. The running supervisor will cancel its local process and preserve the champion.")
             return 0
@@ -514,6 +647,39 @@ def cmd_stop(args: argparse.Namespace) -> int:
         store.close()
     print("Campaign is terminal. Durable state and champion were preserved.")
     return 0
+
+
+def cmd_pause(args: argparse.Namespace) -> int:
+    paths = _selected_paths(args)
+    store = CampaignStore(paths.db)
+    final_status = None
+    try:
+        campaign = store.campaign()
+        if campaign["status"] == "PAUSED_USER":
+            print("Campaign is already paused and can be resumed.")
+            return 0
+        if campaign["status"] in {"STOPPED", "GOAL_MET"}:
+            raise StoreError("terminal campaign cannot be paused")
+        request_id = getattr(args, "request_id", None) or uuid.uuid4().hex
+        submit_control(store, _operator_campaign_id(args, paths), OperatorCommand(
+            _operator_campaign_id(args, paths), request_id, "pause",
+        ))
+        try:
+            with CampaignLock(paths.root / "campaign.lock"):
+                spec = store.spec()
+                workspace = WorkspaceManager(Path(spec.source_repo), paths.workspace)
+                final_status = Engine(store, workspace).run()["status"]
+                reconcile_control(store, request_id)
+        except CampaignLockError:
+            print("Pause requested. The running supervisor will cancel its local process.")
+            return 0
+    finally:
+        store.close()
+    if final_status == "PAUSED_USER":
+        print("Campaign paused. Durable state is available for explicit resume.")
+        return 0
+    print(f"Pause request did not finish as PAUSED_USER; observed status: {final_status}.", file=sys.stderr)
+    return 2
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -565,6 +731,8 @@ def parser() -> argparse.ArgumentParser:
     goal.add_argument("--state-dir")
     goal.add_argument("--request-id", help="idempotency key; use a new value to intentionally repeat a goal")
     goal.add_argument("--agent-profiles", help="TOML profile file for default and role-specific agent settings")
+    goal.add_argument("--selector-mode", choices=["deterministic", "llm"], default="deterministic",
+                      help="opt-in LLM comparison of admissible proposals")
     goal.add_argument(
         "--prepare-only",
         action="store_true",
@@ -587,6 +755,7 @@ def parser() -> argparse.ArgumentParser:
         max_evaluator_calls=16,
         deadline_seconds=14400,
         plateau=3,
+        selector_mode="deterministic",
         allow_dirty=False,
     )
 
@@ -639,6 +808,8 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--max-evaluator-calls", type=int, default=16)
     start.add_argument("--deadline-seconds", type=int, default=14400)
     start.add_argument("--plateau", type=int, default=3)
+    start.add_argument("--selector-mode", choices=["deterministic", "llm"], default="deterministic",
+                       help="portfolio ranking: heuristic default or opt-in LLM semantic selection")
     start.add_argument("--allow-dirty", action="store_true")
     start.add_argument(
         "--prepare-only",
@@ -646,6 +817,39 @@ def parser() -> argparse.ArgumentParser:
         help="build and persist CampaignSpec but do not start optimization",
     )
     start.set_defaults(func=cmd_start)
+
+    prepare = sub.add_parser(
+        "prepare",
+        help="prepare a repository, verify its evaluator, and stop before experiments",
+    )
+    prepare.add_argument("--repo", default=".")
+    prepare.add_argument("--goal", required=True)
+    prepare.add_argument("--state-dir")
+    prepare.add_argument("--agent-profiles", help="optional agent settings TOML")
+    prepare.add_argument("--selector-mode", choices=["deterministic", "llm"], default="deterministic",
+                         help="opt-in LLM comparison after preparation")
+    prepare.add_argument("--request-id", help="idempotency key for preparation")
+    prepare.set_defaults(
+        func=cmd_start,
+        prepare_only=True,
+        agent=None,
+        agent_cmd=None,
+        model=None,
+        provider=None,
+        thinking=None,
+        codex_arg=None,
+        pi_arg=None,
+        bootstrap_timeout_seconds=1200,
+        agent_timeout_seconds=None,
+        max_experiments=4,
+        max_attempts=7,
+        max_agent_calls=18,
+        max_evaluator_calls=16,
+        deadline_seconds=14400,
+        plateau=3,
+        selector_mode="deterministic",
+        allow_dirty=False,
+    )
 
     init = sub.add_parser("init", help="approve and persist a campaign specification")
     init.add_argument("--repo", default=".")
@@ -749,12 +953,22 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--max-evaluator-calls", type=int, default=10)
     init.add_argument("--deadline-seconds", type=int, default=3600)
     init.add_argument("--plateau", type=int, default=3)
+    init.add_argument("--selector-mode", choices=["deterministic", "llm"], default="deterministic",
+                      help="portfolio ranking: heuristic default or opt-in LLM semantic selection")
+    init.add_argument(
+        "--frozen-portfolio",
+        help="freeze a schema-v1 candidate portfolio JSON in CampaignSpec and skip proposer calls",
+    )
+    init.add_argument(
+        "--replicate-label",
+        help="record a bounded replicate identifier alongside an opt-in frozen portfolio",
+    )
     init.add_argument("--allow-dirty", action="store_true")
     init.add_argument("--interactive", action="store_true", help="run the interactive init wizard")
     init.add_argument("--yes", action="store_true", help="approve an interactive CampaignSpec without confirmation")
     init.set_defaults(func=cmd_init)
 
-    for name in ("run", "resume", "status", "stop", "report", "export"):
+    for name in ("run", "resume", "status", "operator-snapshot", "operator-events", "pivot-decision", "pause", "stop", "report", "export"):
         sp = sub.add_parser(name)
         sp.add_argument("--repo", default=".")
         sp.add_argument("--state-dir")
@@ -768,8 +982,28 @@ def parser() -> argparse.ArgumentParser:
         if name == "status":
             sp.add_argument("--json", action="store_true")
             sp.set_defaults(func=cmd_status)
+        elif name == "operator-snapshot":
+            sp.set_defaults(func=cmd_operator_snapshot)
+        elif name == "operator-events":
+            sp.add_argument("--after", type=int, default=0)
+            sp.add_argument("--limit", type=int, default=100)
+            sp.set_defaults(func=cmd_operator_events)
+        elif name == "pivot-decision":
+            sp.add_argument("--decision", required=True, choices=["approve", "reject"])
+            sp.add_argument("--proposal-id", required=True)
+            sp.add_argument("--digest", required=True)
+            sp.add_argument("--request-id", required=True, help="idempotency key for this explicit operator decision")
+            sp.add_argument(
+                "--on-reject", choices=["continue_old_plan", "change_conditions", "end_campaign"],
+                help="required for rejection; records the operator's next-step choice without executing it",
+            )
+            sp.set_defaults(func=cmd_pivot_decision)
         elif name == "stop":
+            sp.add_argument("--request-id", help="idempotency key for an operator command")
             sp.set_defaults(func=cmd_stop)
+        elif name == "pause":
+            sp.add_argument("--request-id", help="idempotency key for an operator command")
+            sp.set_defaults(func=cmd_pause)
         elif name == "report":
             sp.add_argument("--json", action="store_true")
             sp.add_argument("--output")
@@ -778,6 +1012,7 @@ def parser() -> argparse.ArgumentParser:
             sp.add_argument("--output", required=True, help="new directory for champion.patch, manifest and reports")
             sp.set_defaults(func=cmd_export)
         elif name == "resume":
+            sp.add_argument("--request-id", help="idempotency key for an operator command")
             sp.add_argument(
                 "--retry-running-action",
                 action="store_true",

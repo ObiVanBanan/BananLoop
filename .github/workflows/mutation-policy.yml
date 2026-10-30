@@ -1,0 +1,45 @@
+name: critical rule mutation smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/mutation-policy.yml
+      - pyproject.toml
+      - src/bananloop/policy.py
+      - src/bananloop/budget.py
+      - tests/test_policy.py
+      - tests/test_budget_policy.py
+
+jobs:
+  mutate-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install bounded mutation dependencies
+        run: python -m pip install -e '.[mutation]' pytest-cov
+      - name: Baseline policy tests
+        run: python -m pytest -p no:cacheprovider tests/test_policy.py tests/test_budget_policy.py
+      - name: Mutate policy comparisons and boundaries
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -p no:cacheprovider tests/test_policy.py --gremlins --gremlin-targets=src/bananloop/policy.py --gremlin-operators=comparison,boundary 2>&1 | tee mutation-policy.log
+      - name: Mutate budget comparisons and boundaries
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -p no:cacheprovider tests/test_budget_policy.py --gremlins --gremlin-targets=src/bananloop/budget.py --gremlin-operators=comparison,boundary 2>&1 | tee mutation-budget.log
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-critical-rules-${{ github.run_id }}
+          path: |
+            mutation-policy.log
+            mutation-budget.log
+          if-no-files-found: warn

@@ -1,0 +1,111 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from ci-py313.Dockerfile
+#1 transferring dockerfile: 211B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/python:3.13-bookworm
+#2 DONE 2.2s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [1/3] FROM docker.io/library/python:3.13-bookworm@sha256:3856e3e7bf4d0ba061501a84ed2eb0d429663307c0f54f191dc4de03c7081c3e
+#4 resolve docker.io/library/python:3.13-bookworm@sha256:3856e3e7bf4d0ba061501a84ed2eb0d429663307c0f54f191dc4de03c7081c3e 0.0s done
+#4 DONE 0.1s
+
+#4 [1/3] FROM docker.io/library/python:3.13-bookworm@sha256:3856e3e7bf4d0ba061501a84ed2eb0d429663307c0f54f191dc4de03c7081c3e
+#4 sha256:2cd0c54927ce0bb41aa467418bed9c0e6feb0bdea17e12d26c77b10ec780abf2 0B / 251B 0.2s
+#4 sha256:a94d40066e45db2bd44518fa617e4325b61fe7047aacdd283f3b6943d8a59785 0B / 27.84MB 0.2s
+#4 sha256:bfa8462505cf2bb5dcb457c5fa0a2242810a394198e1532265aa93ce4202003d 0B / 6.16MB 0.2s
+#4 sha256:2cd0c54927ce0bb41aa467418bed9c0e6feb0bdea17e12d26c77b10ec780abf2 251B / 251B 0.4s done
+#4 sha256:a94d40066e45db2bd44518fa617e4325b61fe7047aacdd283f3b6943d8a59785 2.10MB / 27.84MB 2.1s
+#4 sha256:a94d40066e45db2bd44518fa617e4325b61fe7047aacdd283f3b6943d8a59785 4.19MB / 27.84MB 2.6s
+#4 sha256:a94d40066e45db2bd44518fa617e4325b61fe7047aacdd283f3b6943d8a59785 6.29MB / 27.84MB 2.9s
+#4 sha256:a94d40066e45db2bd44518fa617e4325b61fe7047aacdd283f3b6943d8a59785 10.49MB / 27.84MB 3.5s
+#4 sha256:a94d40066e45db2bd44518fa617e4325b61fe7047aacdd283f3b6943d8a59785 12.58MB / 27.84MB 4.4s
+#4 sha256:a94d40066e45db2bd44518fa617e4325b61fe7047aacdd283f3b6943d8a59785 14.68MB / 27.84MB 4.8s
+#4 sha256:a94d40066e45db2bd44518fa617e4325b61fe7047aacdd283f3b6943d8a59785 17.83MB / 27.84MB 5.3s
+#4 sha256:a94d40066e45db2bd44518fa617e4325b61fe7047aacdd283f3b6943d8a59785 20.97MB / 27.84MB 5.4s
+#4 sha256:bfa8462505cf2bb5dcb457c5fa0a2242810a394198e1532265aa93ce4202003d 0B / 6.16MB 5.3s
+#4 sha256:a94d40066e45db2bd44518fa617e4325b61fe7047aacdd283f3b6943d8a59785 23.10MB / 27.84MB 6.2s
+#4 sha256:bfa8462505cf2bb5dcb457c5fa0a2242810a394198e1532265aa93ce4202003d 1.05MB / 6.16MB 6.0s
+#4 sha256:a94d40066e45db2bd44518fa617e4325b61fe7047aacdd283f3b6943d8a59785 25.17MB / 27.84MB 6.6s
+#4 sha256:a94d40066e45db2bd44518fa617e4325b61fe7047aacdd283f3b6943d8a59785 27.84MB / 27.84MB 6.8s
+#4 sha256:a94d40066e45db2bd44518fa617e4325b61fe7047aacdd283f3b6943d8a59785 27.84MB / 27.84MB 6.8s done
+#4 sha256:bfa8462505cf2bb5dcb457c5fa0a2242810a394198e1532265aa93ce4202003d 2.10MB / 6.16MB 8.4s
+#4 sha256:bfa8462505cf2bb5dcb457c5fa0a2242810a394198e1532265aa93ce4202003d 3.15MB / 6.16MB 11.1s
+#4 sha256:bfa8462505cf2bb5dcb457c5fa0a2242810a394198e1532265aa93ce4202003d 4.19MB / 6.16MB 14.0s
+#4 sha256:bfa8462505cf2bb5dcb457c5fa0a2242810a394198e1532265aa93ce4202003d 5.24MB / 6.16MB 16.4s
+#4 sha256:bfa8462505cf2bb5dcb457c5fa0a2242810a394198e1532265aa93ce4202003d 6.16MB / 6.16MB 17.9s
+#4 sha256:bfa8462505cf2bb5dcb457c5fa0a2242810a394198e1532265aa93ce4202003d 6.16MB / 6.16MB 18.0s done
+#4 extracting sha256:bfa8462505cf2bb5dcb457c5fa0a2242810a394198e1532265aa93ce4202003d
+#4 extracting sha256:bfa8462505cf2bb5dcb457c5fa0a2242810a394198e1532265aa93ce4202003d 0.2s done
+#4 DONE 18.4s
+
+#4 [1/3] FROM docker.io/library/python:3.13-bookworm@sha256:3856e3e7bf4d0ba061501a84ed2eb0d429663307c0f54f191dc4de03c7081c3e
+#4 extracting sha256:a94d40066e45db2bd44518fa617e4325b61fe7047aacdd283f3b6943d8a59785
+#4 extracting sha256:a94d40066e45db2bd44518fa617e4325b61fe7047aacdd283f3b6943d8a59785 0.7s done
+#4 DONE 19.1s
+
+#4 [1/3] FROM docker.io/library/python:3.13-bookworm@sha256:3856e3e7bf4d0ba061501a84ed2eb0d429663307c0f54f191dc4de03c7081c3e
+#4 extracting sha256:2cd0c54927ce0bb41aa467418bed9c0e6feb0bdea17e12d26c77b10ec780abf2 0.0s done
+#4 DONE 19.2s
+
+#5 [2/3] RUN python -m pip install --no-cache-dir pytest==9.2.0 pydantic==2.14.2
+#5 3.407 Collecting pytest==9.2.0
+#5 4.096   Downloading pytest-9.2.0-py3-none-any.whl.metadata (7.9 kB)
+#5 4.616 Collecting pydantic==2.14.2
+#5 4.747   Downloading pydantic-2.14.2-py3-none-any.whl.metadata (137 kB)
+#5 5.464 Collecting iniconfig>=2 (from pytest==9.2.0)
+#5 5.602   Downloading iniconfig-2.3.1-py3-none-any.whl.metadata (2.8 kB)
+#5 5.750 Collecting packaging>=24 (from pytest==9.2.0)
+#5 5.859   Downloading packaging-26.3-py3-none-any.whl.metadata (3.5 kB)
+#5 5.988 Collecting pluggy<2,>=1.6 (from pytest==9.2.0)
+#5 6.121   Downloading pluggy-1.7.0-py3-none-any.whl.metadata (5.0 kB)
+#5 6.346 Collecting pygments>=2.15 (from pytest==9.2.0)
+#5 6.532   Downloading pygments-2.21.0-py3-none-any.whl.metadata (2.5 kB)
+#5 7.250 Collecting annotated-types>=0.6.0 (from pydantic==2.14.2)
+#5 7.422   Downloading annotated_types-0.8.0-py3-none-any.whl.metadata (15 kB)
+#5 12.91 Collecting pydantic-core==2.50.2 (from pydantic==2.14.2)
+#5 13.05   Downloading pydantic_core-2.50.2-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (6.5 kB)
+#5 13.21 Collecting typing-extensions>=4.16.0 (from pydantic==2.14.2)
+#5 13.30   Downloading typing_extensions-4.16.0-py3-none-any.whl.metadata (3.3 kB)
+#5 13.43 Collecting typing-inspection>=0.4.4 (from pydantic==2.14.2)
+#5 13.53   Downloading typing_inspection-0.4.4-py3-none-any.whl.metadata (2.6 kB)
+#5 13.65 Downloading pytest-9.2.0-py3-none-any.whl (411 kB)
+#5 14.59 Downloading pydantic-2.14.2-py3-none-any.whl (490 kB)
+#5 15.62 Downloading pydantic_core-2.50.2-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (2.2 MB)
+#5 20.45    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.2/2.2 MB 452.8 kB/s  0:00:04
+#5 20.60 Downloading pluggy-1.7.0-py3-none-any.whl (27 kB)
+#5 20.76 Downloading annotated_types-0.8.0-py3-none-any.whl (13 kB)
+#5 20.91 Downloading iniconfig-2.3.1-py3-none-any.whl (7.6 kB)
+#5 21.02 Downloading packaging-26.3-py3-none-any.whl (129 kB)
+#5 21.38 Downloading pygments-2.21.0-py3-none-any.whl (1.3 MB)
+#5 24.30    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 408.7 kB/s  0:00:02
+#5 24.47 Downloading typing_extensions-4.16.0-py3-none-any.whl (45 kB)
+#5 24.81 Downloading typing_inspection-0.4.4-py3-none-any.whl (14 kB)
+#5 25.01 Installing collected packages: typing-extensions, pygments, pluggy, packaging, iniconfig, annotated-types, typing-inspection, pytest, pydantic-core, pydantic
+#5 26.55
+#5 26.55 Successfully installed annotated-types-0.8.0 iniconfig-2.3.1 packaging-26.3 pluggy-1.7.0 pydantic-2.14.2 pydantic-core-2.50.2 pygments-2.21.0 pytest-9.2.0 typing-extensions-4.16.0 typing-inspection-0.4.4
+#5 26.55 WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+#5 DONE 26.9s
+
+#6 [3/3] WORKDIR /work
+#6 DONE 0.1s
+
+#7 exporting to image
+#7 exporting layers
+#7 exporting layers 1.4s done
+#7 exporting manifest sha256:7ae3d0479caf1fbca5100c773ae2043cd879d9ff3fb919558653a67d0f497e0d 0.0s done
+#7 exporting config sha256:21bf6d21d097c5768432c1591f57c6a23c02e553e17d966949181bbf1dfd1718 0.0s done
+#7 exporting attestation manifest sha256:146d31172abc173ec2cf6228e5cc7cdc98fc9aa6a06b0ec5a0a8ac09fba96090 0.0s done
+#7 exporting manifest list sha256:ff19a1e283e46afc3c82dc19865974d3fe0a011ff337fc93e25893bb73a41f1b 0.0s done
+#7 naming to docker.io/library/bananloop-py313-tests:roadmap
+#7 naming to docker.io/library/bananloop-py313-tests:roadmap done
+#7 unpacking to docker.io/library/bananloop-py313-tests:roadmap
+#7 unpacking to docker.io/library/bananloop-py313-tests:roadmap 1.4s done
+#7 DONE 2.9s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/voe59de2pmibyxg4hfcd1hmyn

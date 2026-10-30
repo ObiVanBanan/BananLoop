@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import shutil
@@ -32,6 +33,7 @@ BOOTSTRAP_SCHEMA = {
             "additionalProperties": False,
         },
         "agent_visible_training_paths": {"type": "array", "items": {"type": "string"}},
+        "agent_visible_context_paths": {"type": "array", "items": {"type": "string"}},
         "validation_command": {"type": "array", "items": {"type": "string"}},
         "holdout_command": {"type": "array", "items": {"type": "string"}},
         "primary_metric": {
@@ -115,7 +117,7 @@ BOOTSTRAP_SCHEMA = {
     },
     "required": [
         "status", "summary", "project_context", "needs_input",
-        "evaluation_command", "smoke_command", "protocol_manifest_commands", "agent_visible_training_paths", "validation_command", "holdout_command",
+        "evaluation_command", "smoke_command", "protocol_manifest_commands", "agent_visible_training_paths", "agent_visible_context_paths", "validation_command", "holdout_command",
         "primary_metric", "guardrails", "non_regression", "mandatory_checks",
         "editable_scope", "protected_paths", "agent_visible_metrics",
         "agent_visible_diagnostics", "paired_comparison", "signal_sanity", "evaluator_timeout_seconds"
@@ -159,6 +161,8 @@ HYPOTHESIS_CANDIDATE_SCHEMA = {
     "properties": {
         "candidate_id": {"type": "string", "minLength": 1, "maxLength": 80, "pattern": "^[a-z0-9][a-z0-9_-]{0,79}$"},
         "hypothesis": LEGACY_HYPOTHESIS_SCHEMA,
+        "composite_steps": {"type": "array", "minItems": 2, "maxItems": 4,
+                            "items": LEGACY_HYPOTHESIS_SCHEMA},
         "evidence_refs": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
         "suspected_failure_mode": {"type": "string", "maxLength": 300},
         "predicted_observable": {"type": "string", "minLength": 1, "maxLength": 500},
@@ -211,6 +215,40 @@ HYPOTHESIS_SCHEMA = {
     "required": ["candidates", *LEGACY_HYPOTHESIS_SCHEMA["required"]],
     "additionalProperties": False,
 }
+SELECTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "selected_candidate_id": {"type": "string", "minLength": 1, "maxLength": 80},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 1200},
+        "evidence_refs": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
+        "main_risk": {"type": "string", "minLength": 1, "maxLength": 500},
+    },
+    "required": ["selected_candidate_id", "reason", "evidence_refs", "main_risk"],
+    "additionalProperties": False,
+}
+
+def selection_schema_for_task(task: dict[str, Any]) -> dict[str, Any]:
+    """Constrain Codex structured output to the public eligible ID/ref vocabulary.
+
+    This reduces hallucinated free-form references; the engine still enforces
+    per-candidate evidence linkage and hard admissibility independently.
+    """
+    schema = copy.deepcopy(SELECTION_SCHEMA)
+    eligible = task.get("eligible_candidates") or []
+    ids = sorted({str(c["candidate_id"]) for c in eligible if isinstance(c, dict) and c.get("candidate_id")})
+    refs = sorted({
+        ref for c in eligible if isinstance(c, dict)
+        for ref in c.get("evidence_refs", []) if isinstance(ref, str)
+    })
+    if ids:
+        schema["properties"]["selected_candidate_id"]["enum"] = ids
+    if refs:
+        schema["properties"]["evidence_refs"]["items"]["enum"] = refs
+    else:
+        schema["properties"]["evidence_refs"]["maxItems"] = 0
+    return schema
+
+
 FAILURE_ANALYSIS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -246,6 +284,29 @@ FAILURE_ANALYSIS_SCHEMA = {
         }
     },
     "required": ["capsules"],
+    "additionalProperties": False,
+}
+
+PIVOT_ADVICE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "proposed_architecture": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "rationale": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "expected_effect": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "changed_scope": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 300}},
+        "resources": {
+            "type": "object",
+            "properties": {
+                "additional_agent_calls": {"type": "integer", "minimum": 0, "maximum": 1000},
+                "additional_evaluator_calls": {"type": "integer", "minimum": 0, "maximum": 1000},
+                "additional_evaluation_units": {"type": ["number", "null"], "minimum": 0, "maximum": 1000000},
+                "notes": {"type": "string", "maxLength": 1000},
+            },
+            "required": ["additional_agent_calls", "additional_evaluator_calls", "additional_evaluation_units", "notes"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["proposed_architecture", "rationale", "expected_effect", "changed_scope", "resources"],
     "additionalProperties": False,
 }
 
@@ -299,14 +360,22 @@ class CodexAdapter(AgentAdapter):
     def execute(self, task: dict[str, Any], workspace: Path, timeout: int) -> dict[str, Any]:
         self.last_token_usage = None
         role = task.get("role")
+        if role not in {"bootstrap", "propose", "select", "analyze", "pivot_advice", "implement"}:
+            raise AgentError(f"unsupported Codex role: {role!r}")
         if role == "bootstrap":
             schema = BOOTSTRAP_SCHEMA
         elif role == "propose":
             schema = HYPOTHESIS_SCHEMA
+        elif role == "select":
+            schema = selection_schema_for_task(task)
         elif role == "analyze":
             schema = FAILURE_ANALYSIS_SCHEMA
-        else:
+        elif role == "pivot_advice":
+            schema = PIVOT_ADVICE_SCHEMA
+        elif role == "implement":
             schema = IMPLEMENT_SCHEMA
+        else:
+            raise AgentError(f"unsupported Codex role: {role!r}")
         if role == "bootstrap":
             instruction = (
                 "You are the campaign bootstrapper for BananLoop. Inspect the repository and the human goal, "
@@ -371,6 +440,9 @@ class CodexAdapter(AgentAdapter):
                 "If discovery found training resources that implementation should use, list only those paths in "
                 "agent_visible_training_paths. Core permits only discovered paths clearly named as training data; "
                 "never include evaluation, test, validation, holdout, GOLD, or reference resources. "
+                "If the operator explicitly requests a discovered read-only project resource as context (such as a catalog), "
+                "list it in agent_visible_context_paths, not agent_visible_training_paths. Never include queries, labels, "
+                "answers, expected outputs, or evaluation/reference resources there. Operator-hidden paths stay hidden. "
                 "Never encode shell environment assignments as the executable name; BananLoop can normalize leading "
                 "NAME=value argv tokens, but prefer a plain executable argv and read runtime values from the process environment. "
                 "Use stable case IDs/input fingerprints, and avoid per-evaluation "
@@ -386,6 +458,8 @@ class CodexAdapter(AgentAdapter):
         elif role == "propose":
             instruction = (
                 "Propose a bounded portfolio of 2-3 materially different, falsifiable hypotheses (never more than 4) for this measurable campaign. "
+                "If task_document.status is available, treat task_document.content as the authoritative public TASK.md; "
+                "do not substitute generic hypotheses if the disposable workspace cannot open TASK.md. "
                 "Use the supplied research_state, its aggregate failure_signals and experiment_evidence, "
                 "and planning_mode. If failure_signals exist, target one supplied signal_key and explain "
                 "the causal failure_mechanism; use empty strings for both fields otherwise. "
@@ -395,6 +469,9 @@ class CodexAdapter(AgentAdapter):
                 "suspected_failure_mode, predicted_observable, discriminating_test, scope_eligibility, "
                 "estimated_agent_calls, estimated_evaluator_calls, estimated_work_units (or null), rationale, "
                 "uncertainty, and inference=agent_inference. Candidate IDs must be stable mechanism slugs. "
+                "Optionally include composite_steps as an ordered sequence of two to four complete Hypothesis objects "
+                "when the proposed mechanism requires bounded successive edits; each step is gated and measured on DEV, "
+                "and only the final combined result can validate or promote. "
                 "Estimate only remaining implementation/evaluation calls after the current proposal call. "
                 "Use only supplied DEV evidence references or "
                 "INSUFFICIENT_EVIDENCE; distinguish observed facts from your inference. Do not invent gains, causes, "
@@ -403,6 +480,31 @@ class CodexAdapter(AgentAdapter):
                 "Avoid repeating a mechanism unless "
                 "you explicitly mark the hypothesis as refine, retry, or supersede and reference the prior "
                 "experiment ordinal. Do not modify files. Return {candidates:[...]} or legacy single Hypothesis JSON.\n\n"
+            )
+        elif role == "select":
+            instruction = (
+                "You are the independent BananLoop semantic portfolio selector. "
+                "Compare ALL eligible_candidates with each other against the public TASK.md, "
+                "goal, project_context, planning_mode and DEV-only history. "
+                "Previous partial gains do not imply champion promotion. "
+                "Choose exactly ONE candidate_id from eligible_candidates; do not invent IDs. "
+                "Prioritize a plausible causal mechanism addressing unresolved observed errors, "
+                "falsifiability, feasibility, regression risk and expected gain relative to cost. "
+                "Consider materially different mechanism families; do not select by candidate ID, "
+                "alphabetic order or prose length. The deterministic core alone decides admissibility. "
+                "Never infer hidden validation/holdout outcomes, invent reward gains or claim you executed a test. "
+                "The evidence_refs output is a MACHINE-READABLE list of identifiers, NOT prose or citations. "
+                "After selecting an eligible candidate, copy evidence_refs values verbatim ONLY from "
+                "selection_contract.allowed_evidence_refs_by_candidate[selected_candidate_id]; "
+                "they must be exact JSON strings such as 'exp:1', 'signal:foo', "
+                "'capsule:0123456789abcdef', or 'INSUFFICIENT_EVIDENCE'. "
+                "Do NOT write 'TASK.md: ...', 'exp:1: ...', an explanation, or a paraphrase into evidence_refs. "
+                "Discuss TASK.md and experiment details in reason, not evidence_refs. "
+                "An empty evidence_refs list is valid when you cite no machine-readable reference. "
+                "If you cannot copy an allowed ID exactly, return an empty list rather than inventing one. "
+                "Do not modify files or run evaluators. Return only selected_candidate_id, "
+                "reason, evidence_refs, and main_risk in the structured schema. "
+                "These are predictions, not measured outcomes.\n\n"
             )
         elif role == "analyze":
             instruction = (
@@ -415,9 +517,20 @@ class CodexAdapter(AgentAdapter):
                 "structured failure capsules. If evidence is insufficient, use a low confidence value rather "
                 "than fabricating a cause.\n\n"
             )
-        else:
+        elif role == "pivot_advice":
+            instruction = (
+                "You are proposing an architecture pivot for human review at a measured plateau. "
+                "Use only the supplied current architecture, approved goal/scope, and public DEV evidence. "
+                "Describe one materially different proposed architecture, why it may address the observed plateau, "
+                "its expected measurable effect, the exact changed scope, and bounded additional agent/evaluator/work-unit "
+                "estimates. Treat these as estimates, never as authorization. Do not change files, alter the approved "
+                "goal/evaluator/scope/budget, claim measured success, or request validation/holdout details. "
+                "Do not include secrets or private evaluation data. Return only the exact typed JSON object requested.\n\n"
+            )
+        elif role == "implement":
             instruction = (
                 "Implement exactly the approved hypothesis in the current repository. "
+                "If task_document.status is available, use its embedded public requirements even when temporary TASK.md reading fails. "
                 "Modify only the allowed editable scope. Do not modify evaluator/protected artifacts. "
                 "Do not decide whether the result is better; BananLoop will evaluate it independently. "
                 "The supervisor runs configured evaluator and validation commands independently. Do not mark "
@@ -426,6 +539,8 @@ class CodexAdapter(AgentAdapter):
                 "only when you cannot implement the approved change or a real constraint prevents it. "
                 "Return the requested structured result after editing.\n\n"
             )
+        else:
+            raise AgentError(f"unsupported Codex role: {role!r}")
         instruction += (
             "Before returning the structured response, remove only transient cache artifacts you created "
             "in this disposable workspace (for example .pytest_cache, __pycache__, and *.pyc). Do not "

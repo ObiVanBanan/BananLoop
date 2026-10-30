@@ -15,8 +15,8 @@ from typing import Any, Callable
 @dataclass(slots=True)
 class ProcessResult:
     returncode: int
-    stdout: str
-    stderr: str
+    stdout: str | bytes
+    stderr: str | bytes
 
 
 class ProcessError(RuntimeError):
@@ -102,20 +102,27 @@ def run_process(
     cwd: Path,
     timeout: float,
     input_text: str | None = None,
+    input_bytes: bytes | None = None,
+    binary: bool = False,
     check: bool = True,
     env: dict[str, str] | None = None,
 ) -> ProcessResult:
+    if input_text is not None and input_bytes is not None:
+        raise ValueError("provide either input_text or input_bytes, not both")
+    if input_bytes is not None and not binary:
+        raise ValueError("input_bytes requires binary=True")
+    if binary and input_text is not None:
+        raise ValueError("input_text cannot be used with binary=True")
     check_process_control()
     try:
         proc = subprocess.Popen(
             argv,
             cwd=cwd,
-            stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+            stdin=subprocess.PIPE if input_text is not None or input_bytes is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            text=not binary,
+            **({"encoding": "utf-8", "errors": "replace"} if not binary else {}),
             shell=False,
             env=env,
             **process_group_options(),
@@ -123,7 +130,7 @@ def run_process(
     except OSError as exc:
         raise ProcessError(f"cannot start process: {argv!r}: {exc}") from exc
     deadline = time.monotonic() + timeout
-    pending_input = input_text
+    pending_input = input_bytes if binary else input_text
     try:
         while True:
             check_process_control()
@@ -146,9 +153,11 @@ def run_process(
     if check and result.returncode != 0:
         details: list[str] = []
         if result.stdout.strip():
-            details.append("stdout:\n" + result.stdout[-4000:].rstrip())
+            output = result.stdout[-4000:]
+            details.append("stdout:\n" + (output.decode("utf-8", "replace") if isinstance(output, bytes) else output.rstrip()))
         if result.stderr.strip():
-            details.append("stderr:\n" + result.stderr[-4000:].rstrip())
+            output = result.stderr[-4000:]
+            details.append("stderr:\n" + (output.decode("utf-8", "replace") if isinstance(output, bytes) else output.rstrip()))
         suffix = "\n" + "\n".join(details) if details else ""
         raise ProcessError(
             f"process failed with exit code {result.returncode}: {argv!r}{suffix}",
