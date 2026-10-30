@@ -13,10 +13,6 @@ FIXTURE = ROOT / "examples" / "calibration" / "mini_matcher"
 PORTFOLIO = ROOT / "benchmarks" / "selector_ab_v2" / "frozen_portfolio.json"
 
 
-def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def sha256_line_ending_variants(path: Path) -> set[str]:
     """Hash unchanged text content under either platform newline convention."""
     raw = path.read_bytes()
@@ -38,7 +34,7 @@ def test_selector_preregistration_hashes_and_portfolio_contract_are_frozen():
     HypothesisPortfolio.model_validate({"candidates": portfolio["candidates"]})
 
     for name, expected in manifest["task"]["input_sha256"].items():
-        assert sha256(FIXTURE / name) == expected
+        assert expected in sha256_line_ending_variants(FIXTURE / name)
     revision = manifest["source_checkout"]["revision"]
     # The manifest pins an isolated source snapshot that is not included in
     # this checkout. Do not silently substitute the current working tree: it
