@@ -17,13 +17,21 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def sha256_line_ending_variants(path: Path) -> set[str]:
+    """Hash unchanged text content under either platform newline convention."""
+    raw = path.read_bytes()
+    lf = raw.replace(b"\r\n", b"\n")
+    crlf = lf.replace(b"\n", b"\r\n")
+    return {hashlib.sha256(value).hexdigest() for value in (raw, lf, crlf)}
+
+
 def test_selector_preregistration_hashes_and_portfolio_contract_are_frozen():
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     portfolio = json.loads(PORTFOLIO.read_text(encoding="utf-8"))
 
     assert manifest["status"] == "authorized_frozen_portfolio_not_historical"
     assert manifest["portfolio"]["status"] == "FROZEN_MANUAL_PREREGISTERED_NOT_HISTORICAL"
-    assert manifest["portfolio"]["sha256"] == sha256(PORTFOLIO)
+    assert manifest["portfolio"]["sha256"] in sha256_line_ending_variants(PORTFOLIO)
     assert portfolio["portfolio_id"] == "mini-matcher-public-manual-portfolio-v1"
     assert portfolio["candidate_count"] == 3
     assert "not the historical smoke" in portfolio["provenance"]
