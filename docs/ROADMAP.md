@@ -1,6 +1,6 @@
 # Roadmap
 
-BananLoop is preparing a **private v0.1.0 Research Preview candidate** (not tagged or published). This roadmap distinguishes implemented capabilities, mandatory pre-preview evidence, and future proposals. It is not a delivery schedule.
+BananLoop is preparing a **v0.1.0 Research Preview candidate** (not tagged or published). The release intent is a closed preview, but GitHub metadata currently reports this repository as **public**; this discrepancy is unresolved. This roadmap distinguishes implemented capabilities, mandatory evidence, and deferred proposals. It is not a delivery schedule.
 
 ## Available in the preview
 
@@ -15,13 +15,13 @@ BananLoop is preparing a **private v0.1.0 Research Preview candidate** (not tagg
 
 - Independently review the paired ordinary iterative Codex vs Codex + BananLoop benchmark, with matched resource constraints, actual usage and final evaluation. See [benchmark evidence register](BENCHMARK_STATUS.md).
 - Verify the exact final SHA, clean installation, reproducible demo, evaluator isolation, budget/recovery paths, security and README rendering.
-- Keep the repository private. A tag or private GitHub Release is optional and requires explicit owner approval.
+- Reconcile the public repository setting with the intended closed-preview audience before recommending a release. This work does not change visibility. A tag or GitHub Release requires separate owner approval.
 
 ## Next — targeted for v0.2.0 or later
 
-### Visual research interface
+### Interface boundary
 
-An optional interface for campaign timeline, hypothesis tree, observed metrics, budgets, action receipts, and champion diff. The CLI remains first-class.
+The CLI is the v0.1 user interface. Do not develop or expand the experimental Pi terminal UI or Codex chat for this preview. Preserve the existing headless snapshots, persisted events and typed controls. A future graphical interface is a separate desktop application; no technology is selected and implementation is deferred to v0.2+.
 
 ### Human-approved architecture pivots (v0.2.0 target)
 
