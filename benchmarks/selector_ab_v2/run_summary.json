@@ -1,0 +1,52 @@
+{
+  "experiment_id": "mini-matcher-selector-ab-v2",
+  "manifest_sha256": "4447ada694c3dd43aa92ff229040de536b70c35b00000f2159d877a0d1ab721d",
+  "portfolio_sha256": "e2b563dea0851d2c59bc0056f91349b81563d747715375f654e6c89419bf6c7a",
+  "source_revision": "cd753c97c62148c3ccd3f030251e96a4d19b23bd",
+  "status": "complete",
+  "completed_slots": 10,
+  "completed_pairs": 5,
+  "failed_slots": 0,
+  "missing_slots": 0,
+  "pairs": {
+    "503": {
+      "llm_reward": 0.4375,
+      "deterministic_reward": 1.0,
+      "llm_minus_deterministic": -0.5625
+    },
+    "607": {
+      "llm_reward": 1.0,
+      "deterministic_reward": 1.0,
+      "llm_minus_deterministic": 0.0
+    },
+    "709": {
+      "llm_reward": 1.0,
+      "deterministic_reward": 1.0,
+      "llm_minus_deterministic": 0.0
+    },
+    "811": {
+      "llm_reward": 1.0,
+      "deterministic_reward": 1.0,
+      "llm_minus_deterministic": 0.0
+    },
+    "919": {
+      "llm_reward": 1.0,
+      "deterministic_reward": 1.0,
+      "llm_minus_deterministic": 0.0
+    }
+  },
+  "descriptive_mean_llm_minus_deterministic": -0.1125,
+  "winner_claim": null,
+  "codex_agent_calls": 15,
+  "semantic_selector_calls": 5,
+  "evaluator_calls": 20,
+  "summed_trial_duration_seconds": 312.6695234775364,
+  "separately_billed_api_usd": 0.0,
+  "codex_tokens": null,
+  "runtime_image_id": "sha256:7fa488be06863911b277b9370cb21547381ab65c9f4a47a01197cdb8e6ed74de",
+  "notes": [
+    "All rewards are from the 16-case DEV fixture; no HOLDOUT exists.",
+    "Subscription token usage is not exposed and remains unknown.",
+    "v1 seed 53 failed slots remain in selector_ab_v1 and were not retried."
+  ]
+}

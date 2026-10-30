@@ -28,13 +28,13 @@
 - [ ] Review/copy the [suggested GitHub About text and preview notes](RELEASE_COPY.md) into repository settings when approved.
 - [ ] Resolve the verified public-visibility vs closed-preview discrepancy and review access/exposed artifacts before any preview recommendation. Do not change repository visibility in this work.
 - [ ] Complete the history-wide secret/privacy audit. A limited 2026-10-30 pattern scan found zero selected-format matches in 3,999 reachable object IDs, but is not a complete scanner/clearance.
-- [ ] Keep a comprehensive history-wide secrets and rights audit as an explicit prerequisite for any **future public** opening; do not change visibility as part of v0.1.0.
+- [ ] Complete a comprehensive history-wide secrets and rights audit before any preview recommendation. The limited selected-format scan recorded in the evidence docs is not full clearance. Do not change visibility as part of v0.1.0.
 
 ## Approve a closed preview
 
 - [ ] Record the exact final `main` SHA and obtain explicit owner approval after all mandatory checks.
 - [ ] Approve the intended audience, access and distribution method after the repository visibility discrepancy is resolved. **No public GitHub Release or visibility change.**
-- [ ] Optionally, after separate approval, create a private `v0.1.0` tag and GitHub Release referencing the approved SHA. Do not imply PyPI distribution.
+- [ ] Only after the actual visibility matches the approved audience and all gates pass, separately approve any tag or GitHub Release from the audited SHA. Do not imply PyPI distribution.
 - [ ] Update README/CHANGELOG from the final measured report; distinguish exploratory DEV signals from independently evaluated comparisons.
 
 **No cost-matched or independently held-out superiority over ordinary Codex has yet been established by the mini matcher or exploratory DEV comparisons.**

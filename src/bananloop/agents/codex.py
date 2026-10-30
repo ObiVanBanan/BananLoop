@@ -160,6 +160,8 @@ HYPOTHESIS_CANDIDATE_SCHEMA = {
     "properties": {
         "candidate_id": {"type": "string", "minLength": 1, "maxLength": 80, "pattern": "^[a-z0-9][a-z0-9_-]{0,79}$"},
         "hypothesis": LEGACY_HYPOTHESIS_SCHEMA,
+        "composite_steps": {"type": "array", "minItems": 2, "maxItems": 4,
+                            "items": LEGACY_HYPOTHESIS_SCHEMA},
         "evidence_refs": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
         "suspected_failure_mode": {"type": "string", "maxLength": 300},
         "predicted_observable": {"type": "string", "minLength": 1, "maxLength": 500},
@@ -284,6 +286,29 @@ FAILURE_ANALYSIS_SCHEMA = {
     "additionalProperties": False,
 }
 
+PIVOT_ADVICE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "proposed_architecture": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "rationale": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "expected_effect": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "changed_scope": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 300}},
+        "resources": {
+            "type": "object",
+            "properties": {
+                "additional_agent_calls": {"type": "integer", "minimum": 0, "maximum": 1000},
+                "additional_evaluator_calls": {"type": "integer", "minimum": 0, "maximum": 1000},
+                "additional_evaluation_units": {"type": ["number", "null"], "minimum": 0, "maximum": 1000000},
+                "notes": {"type": "string", "maxLength": 1000},
+            },
+            "required": ["additional_agent_calls", "additional_evaluator_calls", "additional_evaluation_units", "notes"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["proposed_architecture", "rationale", "expected_effect", "changed_scope", "resources"],
+    "additionalProperties": False,
+}
+
 IMPLEMENT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -331,6 +356,8 @@ class CodexAdapter(AgentAdapter):
 
     def execute(self, task: dict[str, Any], workspace: Path, timeout: int) -> dict[str, Any]:
         role = task.get("role")
+        if role not in {"bootstrap", "propose", "select", "analyze", "pivot_advice", "implement"}:
+            raise AgentError(f"unsupported Codex role: {role!r}")
         if role == "bootstrap":
             schema = BOOTSTRAP_SCHEMA
         elif role == "propose":
@@ -339,8 +366,12 @@ class CodexAdapter(AgentAdapter):
             schema = selection_schema_for_task(task)
         elif role == "analyze":
             schema = FAILURE_ANALYSIS_SCHEMA
-        else:
+        elif role == "pivot_advice":
+            schema = PIVOT_ADVICE_SCHEMA
+        elif role == "implement":
             schema = IMPLEMENT_SCHEMA
+        else:
+            raise AgentError(f"unsupported Codex role: {role!r}")
         if role == "bootstrap":
             instruction = (
                 "You are the campaign bootstrapper for BananLoop. Inspect the repository and the human goal, "
@@ -434,6 +465,9 @@ class CodexAdapter(AgentAdapter):
                 "suspected_failure_mode, predicted_observable, discriminating_test, scope_eligibility, "
                 "estimated_agent_calls, estimated_evaluator_calls, estimated_work_units (or null), rationale, "
                 "uncertainty, and inference=agent_inference. Candidate IDs must be stable mechanism slugs. "
+                "Optionally include composite_steps as an ordered sequence of two to four complete Hypothesis objects "
+                "when the proposed mechanism requires bounded successive edits; each step is gated and measured on DEV, "
+                "and only the final combined result can validate or promote. "
                 "Estimate only remaining implementation/evaluation calls after the current proposal call. "
                 "Use only supplied DEV evidence references or "
                 "INSUFFICIENT_EVIDENCE; distinguish observed facts from your inference. Do not invent gains, causes, "
@@ -479,7 +513,17 @@ class CodexAdapter(AgentAdapter):
                 "structured failure capsules. If evidence is insufficient, use a low confidence value rather "
                 "than fabricating a cause.\n\n"
             )
-        else:
+        elif role == "pivot_advice":
+            instruction = (
+                "You are proposing an architecture pivot for human review at a measured plateau. "
+                "Use only the supplied current architecture, approved goal/scope, and public DEV evidence. "
+                "Describe one materially different proposed architecture, why it may address the observed plateau, "
+                "its expected measurable effect, the exact changed scope, and bounded additional agent/evaluator/work-unit "
+                "estimates. Treat these as estimates, never as authorization. Do not change files, alter the approved "
+                "goal/evaluator/scope/budget, claim measured success, or request validation/holdout details. "
+                "Do not include secrets or private evaluation data. Return only the exact typed JSON object requested.\n\n"
+            )
+        elif role == "implement":
             instruction = (
                 "Implement exactly the approved hypothesis in the current repository. "
                 "If task_document.status is available, use its embedded public requirements even when temporary TASK.md reading fails. "
@@ -491,6 +535,8 @@ class CodexAdapter(AgentAdapter):
                 "only when you cannot implement the approved change or a real constraint prevents it. "
                 "Return the requested structured result after editing.\n\n"
             )
+        else:
+            raise AgentError(f"unsupported Codex role: {role!r}")
         instruction += (
             "Before returning the structured response, remove only transient cache artifacts you created "
             "in this disposable workspace (for example .pytest_cache, __pycache__, and *.pyc). Do not "

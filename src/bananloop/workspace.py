@@ -6,13 +6,26 @@ import os
 import shutil
 import stat
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from .process import run_process
 
 
 class WorkspaceError(RuntimeError):
     pass
+
+
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise WorkspaceError(f"cannot inspect workspace path component {path}") from exc
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISLNK(metadata.st_mode) or bool(
+        getattr(metadata, "st_file_attributes", 0) & reparse_flag
+    )
 
 
 def _remove_readonly(func, path: str, exc_info) -> None:
@@ -145,6 +158,31 @@ class WorkspaceManager:
                     return True
         return False
 
+    @staticmethod
+    def _assert_plain_workspace_path(root: Path, relative: str, label: str) -> None:
+        """Reject traversal and any symlink/reparse component below a workspace root."""
+        normalized = relative.replace("\\", "/")
+        posix = PurePosixPath(normalized)
+        windows = PureWindowsPath(normalized)
+        if (posix.is_absolute() or windows.drive or any(
+            part in {"", ".", ".."} for part in normalized.split("/")
+        )):
+            raise WorkspaceError(f"{label} changed path is not a safe relative path: {relative!r}")
+        resolved_root = root.resolve()
+        current = resolved_root
+        for component in posix.parts:
+            current = current / component
+            if _is_reparse_point(current):
+                raise WorkspaceError(
+                    f"{label} changed path traverses a symlink or reparse point: {relative!r}"
+                )
+        try:
+            current.resolve(strict=False).relative_to(resolved_root)
+        except (OSError, ValueError) as exc:
+            raise WorkspaceError(
+                f"{label} changed path escapes its workspace: {relative!r}"
+            ) from exc
+
     def prepare_agent_workspace(self, hidden_paths: list[str]) -> Path:
         self.cleanup_agent_workspace()
         self.agent_workspace = Path(tempfile.mkdtemp(prefix="bananloop-agent-")).resolve()
@@ -194,18 +232,27 @@ class WorkspaceManager:
             raise WorkspaceError(
                 "agent attempted to write hidden path(s): " + ", ".join(sorted(violations))
             )
+        for path in changed:
+            self._assert_plain_workspace_path(agent_workspace, path, "agent")
+            self._assert_plain_workspace_path(self.workspace, path, "supervisor")
         patch = run_process(
             ["git", "diff", "--cached", "--binary", "--full-index", self._agent_base],
             cwd=agent_workspace,
             timeout=30,
+            binary=True,
         ).stdout
         if patch:
+            if not isinstance(patch, bytes):
+                raise WorkspaceError("binary git diff returned text instead of bytes")
             run_process(
                 ["git", "apply", "--whitespace=nowarn", "-"],
                 cwd=self.workspace,
                 timeout=60,
-                input_text=patch,
+                input_bytes=patch,
+                binary=True,
             )
+        for path in changed:
+            self._assert_plain_workspace_path(self.workspace, path, "supervisor")
         return changed
 
     def cleanup_agent_workspace(self) -> None:

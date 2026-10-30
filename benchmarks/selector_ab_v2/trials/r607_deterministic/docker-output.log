@@ -1,0 +1,36 @@
+{"seed":"607","arm":"deterministic","init_exit":0,"run_exit":0,"report_exit":0,"duration_seconds":32.5252742767334,"python_version":"3.11.2","platform":"Linux-5.15.167.4-microsoft-standard-WSL2-x86_64-with-glibc2.36","codex_cli":"codex-cli 0.165.0","campaign_report_file":"campaign-report.md"}
+[BananLoop] baseline: starting full evaluator
+[BananLoop] baseline:evaluate: invoke evaluator
+[BananLoop] baseline:evaluate: completed
+[BananLoop] baseline quality: 0.4375
+[BananLoop] experiment 1: PROPOSE
+[BananLoop] experiment 1 hypothesis: Extract possible values for each of the four attributes independently, intersect those constraints with catalog rows, and return only a unique surviving article.
+[BananLoop] target area: matcher.py
+[BananLoop] experiment 1: EXECUTE
+[BananLoop] exp:1:implement: invoke agent
+[BananLoop] exp:1:implement: completed
+[BananLoop] implementation: Implemented the approved constraint-intersection matcher in matcher.py. It extracts explicit DN, PN, material, and joining-type values, filters catalog rows against all four constraints, and returns an article only for a unique match.; changed 1 file(s): matcher.py
+[BananLoop] experiment 1: SNAPSHOT
+[BananLoop] experiment 1: VERIFY
+[BananLoop] experiment 1: EVALUATE
+[BananLoop] exp:1:evaluate: invoke evaluator
+[BananLoop] exp:1:evaluate: completed
+[BananLoop] experiment 1: DECIDE
+[BananLoop] quality: 0.4375 -> 1 (+0.5625); ACCEPT
+[BananLoop] decision reasons: ACCEPTED
+[BananLoop] metrics: quality 0.4375 -> 1
+[BananLoop] experiment 1: PROMOTE
+[BananLoop] experiment 1: RECORD
+[BananLoop] experiment 1 result: ACCEPTED
+{
+  "status": "GOAL_MET",
+  "stop_reason": "GOAL_MET",
+  "stage": null,
+  "experiment_count": 1,
+  "attempt_count": 1,
+  "agent_calls": 1,
+  "evaluator_calls": 2,
+  "champion_snapshot": "097276713a6031f41869253e7b19e47218026cac",
+  "campaign_id": "state-c3d00e0128c0d9ca0cc1120e21510766"
+}
+cp: preserving times for '/export/.': Operation not permitted

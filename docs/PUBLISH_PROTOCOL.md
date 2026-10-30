@@ -1,6 +1,6 @@
-# BananLoop v0.1.0 — private-preview qualification protocol
+# BananLoop v0.1.0 — closed-preview qualification protocol
 
-**Status:** preparation only. The owner chose a **closed/private Research Preview** on 2026-10-29. No public release, visibility change, tag, distribution or invitation is authorized by this document. A completed, independently reviewable Codex Direct vs BananLoop benchmark is a required gate.
+**Status:** preparation only. The owner intent recorded on 2026-10-29 was a **closed Research Preview**, but GitHub currently reports repository visibility as **public**. This discrepancy is unresolved. No public release, visibility change, tag, distribution or invitation is authorized by this document. A completed, independently reviewable Codex Direct vs BananLoop benchmark is a required gate.
 
 This protocol complements [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md). The release owner must approve the final SHA and explicitly authorize **each** irreversible publication step. Do not create a tag, GitHub Release, or change repository visibility as part of a documentation update.
 
@@ -63,7 +63,7 @@ Release acceptance checks:
 
 ## 3a. Required benchmark against ordinary iterative Codex
 
-Follow [BENCHMARK_STATUS.md](BENCHMARK_STATUS.md) and the frozen paired protocol in [Issue #64](https://github.com/ObiVanBanan/BananLoop/issues/64), adapted to the actual approved task set. The first preview must not be approved until **a new repeat** is complete, its results have been independently checked and every arm's budget/protocol eligibility is documented.
+Follow [BENCHMARK_STATUS.md](BENCHMARK_STATUS.md) and the frozen paired protocol in [Issue #64](https://github.com/ObiVanBanan/BananLoop/issues/64), adapted to the actual approved task set. The first preview must not be approved until **a new repeat** is complete, its results have been independently checked and every arm's budget/protocol eligibility is documented. Current main lacks the PR #61 token-metering implementation, and even that opt-in design documents post-call overshoot rather than a provider-enforced spending stop. No confirmed spend budget or verified isolated evaluator is available for this task; do not run paid model calls or generated code on the host.
 
 - Same pinned baseline, model/reasoning settings, allowed DEV data, tool permissions, evaluation and per-arm resource caps.
 - Allow ordinary Codex to iterate, test and repair; count *all* BananLoop agent/model roles.
@@ -72,9 +72,11 @@ Follow [BENCHMARK_STATUS.md](BENCHMARK_STATUS.md) and the frozen paired protocol
 - Keep the historical **reported** AutoResearchExam 7:3 DEV result separate: mismatched resources and unlinked underlying evidence make it exploratory, not a release-pass benchmark.
 - A neutral or negative outcome does not automatically bar a preview; an unrepeatable, unsafe or misleading result **does** block approval.
 
-## 4. Security and private-preview access audit
+## 4. Security, visibility and preview access audit
 
-**Private status is not a security guarantee.** Before inviting collaborators or tagging, audit relevant branches, recent history, datasets, logs and artifacts for secrets or withheld evaluation data, and rotate anything exposed. A full history-aware secrets/rights scan of *all* refs remains mandatory **before any future public opening**; do not conflate a private-preview check with public-release clearance.
+The repository is currently reported as **public** despite the closed-preview intent. Do not invite preview users or recommend a release until the owner resolves this discrepancy. Before any preview recommendation, audit relevant branches, history, datasets, logs and artifacts for secrets or withheld evaluation data, and rotate anything exposed. A full history-aware secrets/rights scan of *all* refs is also mandatory before any future public-opening decision.
+
+A limited local pattern scan on 2026-10-30 checked selected private-key, AWS, GitHub, Slack and credential-assignment formats across 3,999 reachable Git object IDs and found zero matches. It did not cover untracked artifacts, refs absent from the clone, all provider formats or GitHub secret-scanning alerts; it is not a completed secrets clearance.
 
 ```bash
 git fetch --all --tags --prune
@@ -117,7 +119,7 @@ Fill in this receipt before any publish action:
 | Deterministic demo | NOT RUN ON FINAL SHA |
 | Independent evaluator/privacy check | NOT VERIFIED ON FINAL SHA |
 | Private-preview credential/protected-data check | NOT VERIFIED |
-| Full public history scan (future public release only) | NOT RUN |
+| Complete history-wide secret/privacy audit | NOT VERIFIED; limited selected-format scan only |
 | Paired Codex Direct vs BananLoop report | NOT VERIFIED |
 | Benchmark protocol/budget/holdout eligibility | NOT VERIFIED |
 | README desktop/mobile review | NOT VERIFIED |
@@ -125,11 +127,11 @@ Fill in this receipt before any publish action:
 | Release owner approval | NOT GIVEN |
 | Decision | BLOCKED UNTIL EVIDENCE IS ENTERED |
 
-Attach exact logs or a sanitized evidence file, including negative findings and known limitations. Any **required private-preview** check marked `NOT RUN` or `NOT VERIFIED` blocks a claim of complete readiness; a maintainer may explicitly accept a documented preview risk, but it cannot silently become green. The separately listed **future public** history scan does **not** block this private preview, but will block any public-opening decision.
+Attach exact logs or a sanitized evidence file, including negative findings and known limitations. Any required preview check marked `NOT RUN` or `NOT VERIFIED` blocks a claim of complete readiness. The current public-visibility vs closed-preview discrepancy, incomplete history audit, and blocked benchmark gate are release blockers.
 
-## 7. Optional private tag / GitHub Release — only after explicit approval
+## 7. Optional tag / GitHub Release — only after explicit approval
 
-Only **after** the owner explicitly approves the final tested SHA, the independent H2H report and the private-preview audience, the owner may optionally create a tag and GitHub Release **inside the still-private repository**:
+Only **after** the owner resolves the repository visibility discrepancy and explicitly approves the final tested SHA, independent H2H report and intended audience, may the owner optionally create a tag and GitHub Release:
 
 ```bash
 git fetch --all --tags
@@ -140,7 +142,7 @@ git tag -a v0.1.0 <APPROVED_SHA> -m "BananLoop v0.1.0 Research Preview"
 git push origin v0.1.0
 ```
 
-If approved, create a **private-repository GitHub Release** from this exact tag titled **BananLoop v0.1.0 — Private Research Preview**, with actual benchmark results, [CHANGELOG.md](../CHANGELOG.md) and limitations. No external/public publication, PyPI claim, or visibility change is part of v0.1.0. A future public release requires a separate owner decision and full history audit.
+If approved, create a GitHub Release from this exact tag titled **BananLoop v0.1.0 — Research Preview**, with actual benchmark results, [CHANGELOG.md](../CHANGELOG.md) and limitations. No external publication, PyPI claim, or visibility change is part of this work. Any future public-opening decision requires separate owner approval and a complete history audit.
 
 ## 8. Follow-up after release
 

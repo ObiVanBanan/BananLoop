@@ -1,6 +1,6 @@
-# BananLoop — project description and private-preview copy
+# BananLoop — project description and closed-preview copy
 
-This file holds copy for the repository's GitHub **About**, a short announcement to invited testers, and draft release notes. Nothing here is evidence of a published version or a public release.
+This file holds copy for the repository's GitHub **About**, a short announcement to invited testers, and draft release notes. Nothing here is evidence of a published version or a public release. GitHub currently reports repository visibility as **public**, which conflicts with the closed-preview intent; do not use private-preview copy or invite users until the discrepancy is resolved.
 
 ## GitHub About — short description
 
@@ -20,7 +20,7 @@ BananLoop is a local, open-source autonomous improvement harness for developers 
 
 **Research is a use case, not a product boundary.** Retrieval quality, bug reduction, performance tuning and other executable software metrics can fit the same loop.
 
-## Private v0.1.0 Research Preview — draft notes
+## Closed v0.1.0 Research Preview — draft notes
 
 **Status:** candidate only; no tag or GitHub Release is implied.
 
@@ -38,13 +38,14 @@ BananLoop is a local, open-source autonomous improvement harness for developers 
 - Requires a trustworthy executable/approved evaluation contract; does not guarantee finding an improvement.
 - Git workspaces are **not** a hardened sandbox for untrusted generated code.
 - Model cost/token accounting can be incomplete depending on the provider; no universal hard financial cap is claimed.
-- Major architecture pivots requiring human approval and the visual research interface are **planned for later versions**, not shipped in v0.1.0.
+- The v0.1 user interface is the existing CLI. Experimental Pi terminal UI and Codex chat development are deferred. Read-only snapshots, persisted events and typed controls remain interface-independent. A future graphical UI is a separate desktop application with no technology selected.
+- Major architecture pivots are deferred to v0.2.0. Existing experimental code does not make these v0.1 acceptance criteria.
 - Earlier exploratory DEV comparisons (including a reported 7:3 AutoResearchExam result) do **not** establish a cost-matched head-to-head advantage. See [benchmark register](BENCHMARK_STATUS.md).
 
-### Private-preview qualification
+### Closed-preview qualification
 
-Before invitation, confirm the final-SHA installation/tests and a reproducible paired ordinary-Codex vs BananLoop benchmark with its exact protocol and limitations. If head-to-head does not demonstrate an advantage, report that outcome accurately. **Keep repository visibility private**; external publication, a public release, and packaging are separate future decisions.
+Before invitation, resolve the observed public-visibility/closed-preview discrepancy, complete the final-SHA installation/tests and provide a reproducible paired ordinary-Codex vs BananLoop benchmark with its exact protocol and limitations. The required benchmark is currently blocked by missing confirmed spend authorization and verified evaluator isolation. If a future eligible head-to-head does not demonstrate an advantage, report that outcome accurately. Do not change repository visibility as part of this documentation work.
 
-## Suggested private invitation (after release approval)
+## Suggested closed-preview invitation (after release approval and access verification)
 
 > BananLoop v0.1.0 is available as a private Research Preview for invited collaborators. It coordinates goal-driven experiments around coding agents, with independent evaluation, research memory and reproducible campaign history. This is an experimental developer tool for trusted evaluation-ready repositories, not a promise of better results than standalone Codex. The installation guide, verified benchmark report and known limitations are linked from the repository.

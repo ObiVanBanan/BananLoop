@@ -1,4 +1,4 @@
-# Benchmark evidence register — v0.1.0 private Research Preview
+# Benchmark evidence register — v0.1.0 closed Research Preview
 
 **Status: BLOCKED / INELIGIBLE FOR A NEW RUN.** This register separates historical exploratory signals from the required release-gate head-to-head. It is not a leaderboard or a claim of general superiority over Codex.
 
@@ -35,7 +35,7 @@ The token-budget implementation described by open Draft PR #61 is not integrated
 - Execute untrusted candidate code only with tested isolation from host credentials, protected data and evaluator; no unisolated fallback.
 - Export per-task outcomes and counts for **wins / ties / losses**, quality delta, token/cost efficiency, regressions, wall time and failures, including disqualified/incomplete arms.
 - Attach the run manifest, exact code and evaluator SHAs, sanitized logs, reproducible commands, frozen final predictions and eligibility decisions.
-- Report any material protocol mismatches as **ineligible**, not as wins. Results need not favor BananLoop to be an honest private-preview benchmark.
+- Report any material protocol mismatches as **ineligible**, not as wins. Results need not favor BananLoop to be honest evidence for a closed preview.
 
 ## Release gate
 
