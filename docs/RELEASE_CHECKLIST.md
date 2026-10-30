@@ -28,7 +28,7 @@
 - [x] Issue and PR templates, changelog, roadmap.
 - [ ] Verify README/banner display in GitHub dark **and** light theme, including mobile width; use [visual handoff](VISUAL_DIRECTION.md) without treating illustration as measured UI.
 - [ ] Review/copy the [suggested GitHub About text and preview notes](RELEASE_COPY.md) into repository settings when approved.
-- [ ] Resolve the verified public-visibility vs closed-preview discrepancy and review access/exposed artifacts before any preview recommendation. Do not change repository visibility in this work.
+- [ ] Verify that repository visibility remains private, review collaborator access and exposed artifacts before any preview recommendation. Do not change repository visibility in this work.
 - [ ] Complete the history-wide secret/privacy audit. A limited 2026-10-30 pattern scan found zero selected-format matches in 3,999 reachable object IDs, but is not a complete scanner/clearance.
 - [ ] Complete a comprehensive history-wide secrets and rights audit before any preview recommendation. The limited selected-format scan recorded in the evidence docs is not full clearance. Do not change visibility as part of v0.1.0.
 
