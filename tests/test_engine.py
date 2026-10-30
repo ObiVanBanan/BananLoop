@@ -2383,3 +2383,24 @@ def test_issue60_retry_consumes_new_reserve_without_erasing_previous_spend(tmp_p
         assert len(store.model_token_summary()["receipts"]) == 1
     finally:
         store.close()
+
+
+def test_issue60_crash_retry_preserves_old_upper_bound_and_reserves_again(tmp_path: Path):
+    store, _, _, _ = _issue60_capped_engine(tmp_path, limit=600000, reserve=300000)
+    try:
+        store.start_action("exp:1:implement", None, "EXECUTE", "agent", "hash", {})
+        assert store.model_tokens_reserved() == 300000
+
+        # A restart observes an orphaned RUNNING action. Its old reservation
+        # becomes UNKNOWN and remains charged while the explicit retry reserves
+        # a fresh worst-case amount.
+        store.restart_action("exp:1:implement")
+        assert store.model_tokens_reserved() == 600000
+        token_reservations = [
+            row for row in store.reservations() if row["resource"] == "model_token"
+        ]
+        assert [row["status"] for row in token_reservations] == ["UNKNOWN", "RESERVED"]
+        assert store.model_token_summary()["unknown"] == ["exp:1:implement", "exp:1:implement"]
+        assert store.resource_summary()["unknown_outcomes"] >= 1
+    finally:
+        store.close()

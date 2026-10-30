@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from bananloop.contracts import BudgetSpec
+from bananloop.contracts import (
+    AgentConfig, AgentRoleOverride, BudgetSpec, CampaignSpec, Direction, MetricSpec,
+)
 from bananloop.agents.codex import CodexAdapter
 from bananloop.token_budget import parse_codex_usage, model_tokens
 
@@ -34,16 +36,32 @@ def test_missing_or_invalid_codex_usage_is_unknown(payload):
     assert parse_codex_usage(payload) is None
 
 
+def test_valid_earlier_receipt_does_not_mask_invalid_final_receipt():
+    valid = json.dumps({"type": "turn.completed", "usage": {
+        "input_tokens": 25, "output_tokens": 5, "cached_input_tokens": 0}})
+    invalid = json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1}})
+    assert parse_codex_usage(valid + "\n" + invalid) is None
+    assert parse_codex_usage(valid + "\n{") is None
+
+
 def test_budget_is_opt_in_and_reserves_are_strict():
     legacy = BudgetSpec()
     assert legacy.max_model_tokens is None
     capped = BudgetSpec(max_model_tokens=750000,
-                        model_token_stage_reserves={"EXECUTE": 300000})
+                        model_token_stage_reserves={"EXECUTE": 300000, "SELECT": 150000})
     assert capped.max_model_tokens == 750000
     with pytest.raises(ValueError):
         BudgetSpec(model_token_stage_reserves={"EXECUTE": 0})
     with pytest.raises(ValueError):
         BudgetSpec(model_token_stage_reserves={"UNKNOWN": 500})
+    with pytest.raises(ValueError, match="all model stages"):
+        CampaignSpec(
+            goal="test", source_repo=".", base_commit="base", evaluation_command=["eval"],
+            primary_metric=MetricSpec(name="quality", direction=Direction.MAXIMIZE,
+                                      target=1, min_improvement=0.1),
+            agent=AgentConfig(roles={"select": AgentRoleOverride(kind="pi")}),
+            budget=BudgetSpec(max_model_tokens=1000),
+        )
 
 
 def test_codex_jsonl_metering_contract(tmp_path: Path, monkeypatch):

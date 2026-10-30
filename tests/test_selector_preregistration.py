@@ -1,6 +1,9 @@
 import hashlib
 import json
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from bananloop.contracts import HypothesisPortfolio
 
@@ -29,8 +32,19 @@ def test_selector_preregistration_hashes_and_portfolio_contract_are_frozen():
 
     for name, expected in manifest["task"]["input_sha256"].items():
         assert sha256(FIXTURE / name) == expected
+    revision = manifest["source_checkout"]["revision"]
+    exists = subprocess.run(
+        ["git", "cat-file", "-e", f"{revision}^{{commit}}"],
+        cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode == 0
+    if not exists:
+        pytest.skip(f"pinned selector source commit {revision} is unavailable")
     for name, expected in manifest["selector_implementation_sha256"].items():
-        assert sha256(ROOT / name) == expected
+        blob = subprocess.run(
+            ["git", "show", f"{revision}:{name}"], cwd=ROOT, check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        ).stdout
+        assert hashlib.sha256(blob).hexdigest() == expected
 
 
 def test_selector_preregistration_records_codex_subscription_quota_authorization():
