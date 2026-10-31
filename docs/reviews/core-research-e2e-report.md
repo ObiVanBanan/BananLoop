@@ -52,3 +52,14 @@ No model or paid calls, benchmark treatment, validation or HOLDOUT scores were r
 - SIGINT exited the active CLI with code 130; the state reported `PAUSED_INFRA`; the database recorded `ACTION_CANCELLED` for `exp:1:propose`; the child-survival sentinel was absent. After resume the campaign reached `GOAL_MET`, three experiments, seven agent calls, four evaluator calls, quality 0→3 and `DEV_ONLY`. No validation/HOLDOUT was configured.
 - Logs and state: `/tmp/bananloop-sigint-e2e-20261101/result.json` and `/tmp/bananloop-sigint-e2e-20261101/logs/`.
 - This is Linux-only runtime evidence. Windows CTRL_BREAK/process-tree behavior remains unverified until hosted Windows CI finishes; it does not prove hostile-code isolation or H2H eligibility.
+
+## Bootstrap-budget candidate follow-up — 2026-11-01
+
+**Candidate:** PR #87 head `b0278de7e4e86f54e1ed4e5e8e331a9d24f09d3c`, stacked on PR #86 head `14c383a49a1ebf46e8448534f0b09c6c4333b6d4`; Linux / Python 3.14.7. No model calls, paid calls, benchmark treatment or HOLDOUT scoring were used.
+
+- The seven CPU-only research scenarios listed above passed again on this worktree, including improvement/promotion, failed-hypothesis reflection, plateau, composite acceptance/rejection, durable resume, and DEV-only adaptive history.
+- The full suite completed with exit code 0: 453 passed, 1 skipped. The skip is the unavailable pinned selector preregistration source snapshot.
+- The SIGINT lifecycle runner sent a real signal during an active local agent action, observed `PAUSED_INFRA` and persisted cancellation, confirmed the child process exited, then resumed to `GOAL_MET`: 3 experiments, 7 agent calls, 4 evaluator calls, quality 0→3, `DEV_ONLY`. No model calls or HOLDOUT were configured.
+- Reproduction: `/tmp/bananloop-plan-sigint-e2e-20261101-pr87/result.json`; logs are under `/tmp/bananloop-plan-sigint-e2e-20261101-pr87/logs/`.
+
+This remains local Linux evidence. PR #87 hosted matrix is pending; this does not establish Windows behavior for the new bootstrap metering, hostile-code isolation, H2H eligibility, or a release recommendation.
