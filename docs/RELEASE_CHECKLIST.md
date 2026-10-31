@@ -25,6 +25,9 @@
 - The exact release SHA is not selected. The final-SHA checklist items remain open.
 - PR #85's updated history-scan and release-checklist docs at SHA `8d5862058d3509d8d0c3d1358839d381e96ae521` passed runs [41244438038](https://github.com/ObiVanBanan/BananLoop/actions/runs/41244438038) and [41244442129](https://github.com/ObiVanBanan/BananLoop/actions/runs/41244442129) on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12. Windows: 448 passed, 1 skipped. A later audit-recommendation documentation refresh is under verification.
 
+
+- PR #91 head `3ab301ad499f17f1a9abb4ac7813743b6d4f1d1a` passed hosted run [#41246679803](https://github.com/ObiVanBanan/BananLoop/actions/runs/41246679803) on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 (Windows: 458 passed, 1 skipped). Local FINAL_HOLDOUT recovery fixture passed: interruption canceled the active evaluator child, resume completed one accepted result/receipt/event, and no agent action exposed the HOLDOUT canary or resumed adaptive work. Full local suite: 457 passed, 2 skipped; the skips are the unavailable selector snapshot and network-dependent clean-install build isolation. Details and artifacts are in the [E2E report](reviews/core-research-e2e-report.md).
+
 ## Head-to-head benchmark — release blocker
 
 - [ ] Freeze a fair **Codex Direct vs Codex + BananLoop** paired protocol (same model, task, evaluator and available DEV feedback; direct Codex may iterate).
