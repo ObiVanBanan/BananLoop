@@ -87,6 +87,10 @@ class PairedComparison(BaseModel):
 
 
 class BudgetSpec(BaseModel):
+    # Pydantic <2.10 reserves the entire "model_" namespace by default.
+    # Retain protection for actual BaseModel methods while allowing model_token_*.
+    model_config = ConfigDict(protected_namespaces=("model_validate", "model_dump"))
+
     max_evaluation_units: int | None = Field(default=None, ge=1)
     evaluation_units_per_call: int | None = Field(default=None, ge=1)
 
@@ -99,6 +103,20 @@ class BudgetSpec(BaseModel):
     max_experiments: int = Field(default=5, ge=1)
     max_attempts: int = Field(default=8, ge=1)
     max_agent_calls: int = Field(default=20, ge=1)
+    # Opt-in: no implied token cap for existing campaigns.
+    max_model_tokens: int | None = Field(default=None, ge=1)
+    model_token_reserve: int = Field(default=300000, ge=1)
+    model_token_stage_reserves: dict[str, int] = Field(default_factory=dict)
+
+    @field_validator("model_token_stage_reserves")
+    @classmethod
+    def valid_model_token_reserves(cls, value: dict[str, int]) -> dict[str, int]:
+        allowed = {"PROPOSE", "SELECT", "EXECUTE", "ANALYZE", "BOOTSTRAP"}
+        if any(stage not in allowed or isinstance(amount, bool) or not isinstance(amount, int) or amount < 1
+               for stage, amount in value.items()):
+            raise ValueError("model_token_stage_reserves must map supported agent stages to positive integers")
+        return value
+
     max_evaluator_calls: int = Field(default=10, ge=1)
     deadline_seconds: int = Field(default=3600, ge=1)
     plateau_experiments: int = Field(default=3, ge=1)
@@ -419,6 +437,10 @@ class CampaignSpec(BaseModel):
             raise ValueError("validation_timeout_seconds requires validation_command")
         if self.holdout_timeout_seconds is not None and not self.holdout_command:
             raise ValueError("holdout_timeout_seconds requires holdout_command")
+        if self.budget.max_model_tokens is not None:
+            for role in ("propose", "select", "implement", "analyze"):
+                if self.agent.for_role(role).kind != "codex":
+                    raise ValueError("max_model_tokens requires Codex adapter for all model stages")
         minimum_calls = 1 + int(bool(self.validation_command)) + int(bool(self.holdout_command))
         if self.budget.max_evaluator_calls < minimum_calls:
             raise ValueError(
@@ -464,9 +486,15 @@ class CampaignSpec(BaseModel):
             data.pop("signal_sanity_status", None)
         if self.signal_sanity_receipt_sha256 is None:
             data.pop("signal_sanity_receipt_sha256", None)
-        for key in ("max_evaluation_units", "evaluation_units_per_call"):
+        for key in ("max_evaluation_units", "evaluation_units_per_call", "max_model_tokens"):
             if data["budget"][key] is None:
                 data["budget"].pop(key)
+        if self.budget.max_model_tokens is None:
+            # Old campaign hashes did not include these opt-in budget fields.
+            data["budget"].pop("model_token_reserve", None)
+            data["budget"].pop("model_token_stage_reserves", None)
+        elif not self.budget.model_token_stage_reserves:
+            data["budget"].pop("model_token_stage_reserves", None)
         # Keep hashes compatible with v0.1 specs created before these fields existed.
         if not self.project_context:
             data.pop("project_context", None)

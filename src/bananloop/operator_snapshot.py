@@ -29,6 +29,7 @@ SAFE_EVENT_FIELDS = {
     "CAMPAIGN_STOPPED": {"reason", "status"},
     "PAUSE_REQUESTED": set(),
     "PAUSE_CLEARED": set(),
+    "CAMPAIGN_STATE_UPDATED": set(),
 }
 
 

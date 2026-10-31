@@ -1,9 +1,11 @@
 # v0.1.0 Research Preview — release checklist
 
-The preview is intended for early developers to try on trusted repositories. This checklist is an operational release gate; file creation alone does not mean the version is published.
+**Release intent (2026-10-29): closed Research Preview.** The repository endpoint reported public visibility on 2026-10-31 00:12 UTC, conflicting with the closed-preview intent. An apparent private result at 2026-10-30 22:09 UTC came from a branch/PR payload without repo-level visibility and is not valid evidence. Collaborator access and exposed-artifact review remain outstanding. This work does not change visibility. No announcement, package, tag, or release is authorized here. A reproducible head-to-head against ordinary iterative Codex and the other mandatory gates must pass before recommending any preview. Follow the [publication protocol](PUBLISH_PROTOCOL.md) and record exact-SHA evidence. Writing documentation is not a release.
 
 ## Code / evaluation
 
+- [x] Stage [PR #75](https://github.com/ObiVanBanan/BananLoop/pull/75) campaign cursor fix in the combined integration candidate; final-main acceptance remains open.
+- [x] Stage [PR #61](https://github.com/ObiVanBanan/BananLoop/pull/61) opt-in Codex token accounting in the same integration candidate. It is not provider-enforced; final-main acceptance and budget limitations remain open.
 - [x] Independent QA of semantic selector patch on SHA `c698e4966a0cf8621dbfbff8145c1397b278c2e8`: 335 pytest passed, six fresh Luna replay selections accepted, one CPU mini matcher smoke passed.
 - [x] Version in `pyproject.toml` is 0.1.0.
 - [ ] Run full suite on the exact final main release commit (documentation-only changes should not alter logic but warrant verification).
@@ -11,21 +13,30 @@ The preview is intended for early developers to try on trusted repositories. Thi
 - [ ] Review private evaluator and HOLDOUT isolation using the final tree.
 - [ ] Resolve CI infrastructure/billing issue, or explicitly document verified substitute checks before publishing.
 
+## Head-to-head benchmark — release blocker
+
+- [ ] Freeze a fair **Codex Direct vs Codex + BananLoop** paired protocol (same model, task, evaluator and available DEV feedback; direct Codex may iterate).
+- [ ] Run and archive the repeat with exact source/model/evaluator SHAs, task IDs, seeds, per-arm accounting and eligibility decisions.
+- [ ] Independently score frozen final artifacts without feeding validation/HOLDOUT observations into agent planning.
+- [ ] Report win/tie/loss outcomes, quality, model tokens/cost, wall time, known budget/protocol mismatches and failures. **No superiority claim is required to release; honest evidence is required.**
+- [ ] Update the [benchmark evidence register](BENCHMARK_STATUS.md) and attach sanitized proof of the new run. Earlier reported exploratory AutoResearchExam 7:3 DEV results are **not** sufficient.
+
 ## GitHub presentation
 
 - [x] Distinctive banner, short marketing README, honest DEV demo.
 - [x] MIT license, contributing guide, security policy, code of conduct.
 - [x] Issue and PR templates, changelog, roadmap.
-- [ ] Verify README/banner display in GitHub dark **and** light theme.
-- [ ] Set repository About description and topics (maintainer GitHub settings).
-- [ ] If desired, intentionally change repository visibility from private to public after reviewing secrets/history.
-- [ ] Check all historical branches, tags, PRs and commit history for credentials before making repository public.
+- [ ] Verify README/banner display in GitHub dark **and** light theme, including mobile width; use [visual handoff](VISUAL_DIRECTION.md) without treating illustration as measured UI.
+- [ ] Review/copy the [suggested GitHub About text and preview notes](RELEASE_COPY.md) into repository settings when approved.
+- [ ] Resolve the verified public-visibility vs closed-preview discrepancy, then review collaborator access and exposed artifacts before any preview recommendation. Do not change repository visibility in this work.
+- [ ] Complete the history-wide secret/privacy audit. A limited 2026-10-30 pattern scan found zero selected-format matches in 3,999 reachable object IDs, but is not a complete scanner/clearance.
+- [ ] Complete a comprehensive history-wide secrets and rights audit before any preview recommendation. The limited selected-format scan recorded in the evidence docs is not full clearance. Do not change visibility as part of v0.1.0.
 
-## Publish
+## Approve a closed preview
 
-- [ ] Confirm release owner wants to publish `v0.1.0` as a tag and GitHub Release.
-- [ ] Create annotated `v0.1.0` tag from audited main SHA.
-- [ ] Publish GitHub Release titled “BananLoop v0.1.0 — Research Preview”, with `CHANGELOG.md` summary and truthful limitations.
-- [ ] Run benchmarks and publish their actual environment, budgets, seeds and DEV/validation/holdout scopes separately from preview demo.
+- [ ] Record the exact final `main` SHA and obtain explicit owner approval after all mandatory checks.
+- [ ] Approve the intended audience, access and distribution method after the repository visibility discrepancy is resolved. **No public GitHub Release or visibility change.**
+- [ ] Only after the actual visibility matches the approved audience and all gates pass, separately approve any tag or GitHub Release from the audited SHA. Do not imply PyPI distribution.
+- [ ] Update README/CHANGELOG from the final measured report; distinguish exploratory DEV signals from independently evaluated comparisons.
 
-No continuous benchmark winner or general Codex performance advantage has been established by the mini matcher fixture.
+**No cost-matched or independently held-out superiority over ordinary Codex has yet been established by the mini matcher or exploratory DEV comparisons.**
