@@ -1,0 +1,10 @@
+Carps scorer attribution
+
+The star_discrepancy_3d algorithm in carps.py is adapted from
+bespokelabsai/AutoResearchExam, pinned commit
+23c0d92e11af1dea821f972b5f0a739060958002, file
+carps-star-discrepancy-subset-select/environment/are-grader-ctx/grader_core.py
+(source blob f29fb50a95b3951a5bc97a195544de429e27a07f). Changes: the code is
+adapted into this task broker and kept in the trusted evaluator process.
+AutoResearchExam is distributed under Apache License 2.0; see the accompanying
+LICENSE.autoresearchexam.

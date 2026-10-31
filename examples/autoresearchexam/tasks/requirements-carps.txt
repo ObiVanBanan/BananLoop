@@ -1,0 +1,2 @@
+# Trusted broker image dependency. Candidate source is not installed here.
+numpy==2.2.6
