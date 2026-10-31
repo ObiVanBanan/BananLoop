@@ -88,3 +88,13 @@ The documentation-only PR #85 update on head `d7bf9d055da1557e9a5f584a5b9b834e82
 - Reproduction artifacts: `/tmp/bananloop-final-holdout-e2e-20261101-retry3/result.json` and the adjacent logs directory.
 
 This verifies local fixture recovery and the test matrix. It does not establish hostile-code isolation, dataset rights, or H2H eligibility; no benchmark candidates were run.
+
+
+## CLI HIL writer serialization — 2026-11-01
+
+**PR #92 head:** `ebbc066ba7dddbe82290e9606c5fa2e0f8232801`, stacked on PR #91. A read-only review found that the terminal rejection transaction could race with a concurrent `run/resume` and be overwritten by a later RUNNING transition. The CLI now takes the same `campaign.lock` for `pivot-decision` that the campaign runner holds for its full run.
+
+- Regression assertion: while the campaign lock is held, `pivot-decision` returns the lock error; the campaign remains `PAUSED_NEEDS_INPUT` and no `CAMPAIGN_STOPPED` event is written. The existing rejection path then commits its receipt and STOPPED transition atomically.
+- Exact-head hosted run [#41250697408](https://github.com/ObiVanBanan/BananLoop/actions/runs/41250697408) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12. Windows: **460 passed, 1 skipped in 697.26s**; the skip is the unavailable pinned selector preregistration snapshot.
+- The pre-lock-fix local run reported 459 passed, 2 skipped and the focused pivot/HIL suite 22 passed. The current fetched CLI/test files compiled, and a local Linux lock primitive check confirmed a second writer is rejected; the exact updated head received the full hosted matrix above.
+- No model calls, benchmark candidate, HOLDOUT score, merge, tag or release were performed. PR #92 remains draft.
