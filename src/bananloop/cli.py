@@ -624,10 +624,7 @@ def cmd_pivot_decision(args: argparse.Namespace) -> int:
             decision=args.decision,
             rejection_action=args.on_reject,
         ))
-        if args.decision == "reject" and receipt["status"] == "REJECTED":
-            campaign = store.end_after_rejected_pivot(receipt["request_id"])
-        else:
-            campaign = store.campaign()
+        campaign = store.campaign()
         print(json.dumps({
             "campaign_id": campaign_id,
             "request_id": receipt["request_id"],
