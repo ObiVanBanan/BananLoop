@@ -64,7 +64,9 @@ def stage_candidate_artifact(
     """
     source = source_root.resolve(strict=True)
     target = destination.absolute()
-    if not source.is_dir() or source_root.is_symlink():
+    if not source.is_dir() or source_root.is_symlink() or (
+        hasattr(os.path, "isjunction") and os.path.isjunction(source_root)
+    ):
         raise SandboxError("candidate source must be a real directory")
     try:
         target.resolve(strict=False).relative_to(source)

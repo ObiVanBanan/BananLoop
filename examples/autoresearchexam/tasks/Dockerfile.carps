@@ -1,0 +1,10 @@
+# Build from the already used Python 3.13 slim image by digest. The resulting
+# local image must also be pinned by its content digest in CandidateSandbox.
+FROM python:3.13-slim@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb
+WORKDIR /opt/are
+COPY examples/autoresearchexam/tasks/requirements-carps.txt ./requirements-carps.txt
+RUN python -m pip install --no-cache-dir --disable-pip-version-check -r requirements-carps.txt \
+    && python -c "import numpy; assert numpy.__version__ == '2.2.6'"
+COPY examples/autoresearchexam/tasks/carps_runner.py ./carps_runner.py
+USER 65532:65532
+ENTRYPOINT ["python", "-I", "/opt/are/carps_runner.py"]

@@ -1,0 +1,1 @@
+"""Pinned AutoResearchExam task adapters."""
