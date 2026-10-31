@@ -1,6 +1,6 @@
 # v0.1.0 Research Preview — release checklist
 
-**Release intent (2026-10-29): closed Research Preview.** GitHub reported public visibility earlier on 2026-10-30 and private visibility at 2026-10-30 22:09 UTC. The current setting matches the closed-preview intent; collaborator access and exposed-artifact review remain outstanding. This work does not change visibility. No announcement, package, tag, or release is authorized here. A reproducible head-to-head against ordinary iterative Codex and the other mandatory gates must pass before recommending any preview. Follow the [publication protocol](PUBLISH_PROTOCOL.md) and record exact-SHA evidence. Writing documentation is not a release.
+**Release intent (2026-10-29): closed Research Preview.** The repository endpoint reported public visibility on 2026-10-31 00:12 UTC, conflicting with the closed-preview intent. An apparent private result at 2026-10-30 22:09 UTC came from a branch/PR payload without repo-level visibility and is not valid evidence. Collaborator access and exposed-artifact review remain outstanding. This work does not change visibility. No announcement, package, tag, or release is authorized here. A reproducible head-to-head against ordinary iterative Codex and the other mandatory gates must pass before recommending any preview. Follow the [publication protocol](PUBLISH_PROTOCOL.md) and record exact-SHA evidence. Writing documentation is not a release.
 
 ## Code / evaluation
 
