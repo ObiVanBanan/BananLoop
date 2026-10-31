@@ -65,6 +65,18 @@ def _bootstrap_token_ledger(
             raise BootstrapError("bootstrap token budget settings cannot be removed after metered attempts")
         return None
     if not path.exists():
+        unmetered_path = path.parent / "bootstrap-unmetered-invocations.json"
+        if unmetered_path.exists():
+            try:
+                prior_unmetered = json.loads(unmetered_path.read_text(encoding="utf-8")).get(
+                    "entries", []
+                )
+            except (OSError, ValueError, AttributeError):
+                prior_unmetered = ["unreadable unmetered invocation marker"]
+            if prior_unmetered:
+                raise BootstrapError(
+                    "cannot enable max_model_tokens after prior unmetered bootstrap invocations; usage is UNKNOWN"
+                )
         prior_record = path.parent / "bootstrap-plan.json"
         if prior_record.exists():
             try:
@@ -664,6 +676,7 @@ def bootstrap_campaign(
         plateau_experiments=plateau_experiments,
     )
     token_ledger_path = paths.root / "bootstrap-token-budget.json"
+    unmetered_ledger_path = paths.root / "bootstrap-unmetered-invocations.json"
     token_ledger = _bootstrap_token_ledger(
         token_ledger_path,
         limit=budget.max_model_tokens,
@@ -725,6 +738,7 @@ def bootstrap_campaign(
 
     for attempt_index in range(BOOTSTRAP_MAX_ATTEMPTS):
         token_entry: dict[str, Any] | None = None
+        unmetered_entry: dict[str, Any] | None = None
         if token_ledger is not None:
             limit = int(token_ledger["settings"]["limit"])
             reserve = int(token_ledger["settings"]["stage_reserves"].get(
@@ -746,6 +760,19 @@ def bootstrap_campaign(
             }
             token_ledger["entries"].append(token_entry)
             _write_bootstrap_token_ledger(token_ledger_path, token_ledger)
+        else:
+            unmetered_ledger = (
+                json.loads(unmetered_ledger_path.read_text(encoding="utf-8"))
+                if unmetered_ledger_path.exists()
+                else {"schema_version": 1, "entries": []}
+            )
+            unmetered_entry = {
+                "invocation_id": f"bootstrap:{len(unmetered_ledger['entries']) + 1}",
+                "status": "IN_FLIGHT",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+            }
+            unmetered_ledger["entries"].append(unmetered_entry)
+            _write_bootstrap_token_ledger(unmetered_ledger_path, unmetered_ledger)
         try:
             try:
                 raw = adapter.execute(task, workspace.workspace, timeout=agent_timeout_seconds)
@@ -767,6 +794,10 @@ def bootstrap_campaign(
                         raise BootstrapError("bootstrap token usage UNKNOWN; refusing retries")
                     if sum(int(item["amount"]) for item in token_ledger["entries"]) > int(token_ledger["settings"]["limit"]):
                         raise BootstrapError("bootstrap token budget overshoot; campaign was not initialized")
+                if unmetered_entry is not None:
+                    unmetered_entry["status"] = "RETURNED"
+                    unmetered_entry["returned_at"] = datetime.now(timezone.utc).isoformat()
+                    _write_bootstrap_token_ledger(unmetered_ledger_path, unmetered_ledger)
             raw = adapter.normalize_result(task, raw)
             plan = BootstrapPlan.model_validate(raw)
             plan = _bind_plan_runtime(plan, task)
