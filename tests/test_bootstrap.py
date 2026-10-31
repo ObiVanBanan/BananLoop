@@ -697,6 +697,7 @@ bootstrap.bootstrap_campaign(
         env=child_env,
         capture_output=True,
         text=True,
+        timeout=120,
         check=False,
     )
     assert crashed.returncode == 77
