@@ -41,3 +41,35 @@ No model or paid calls, benchmark treatment, validation or HOLDOUT scores were r
 - Reusable pause/resume CLI run via `examples/fixture/run_lifecycle_e2e.py` passed on Linux/Python 3.14.7. A real local CLI supervisor process was paused during an active agent subprocess; the action was cancelled, then explicit resume completed three experiments and produced the final `DEV_ONLY` report (`GOAL_MET`, quality 0→3, 7 agent calls including the interrupted call, 4 evaluator calls). No model calls; no validation or holdout configured.
 - Reproduction command: `python examples/fixture/run_lifecycle_e2e.py --output-dir /tmp/bananloop-plan-lifecycle-e2e-final`. It refuses to overwrite an existing output directory and saves JSON result plus stdout/stderr for init, pause, interrupted run, resume, status and report under `logs/`.
 - Recorded run artifacts: `/tmp/bananloop-plan-lifecycle-e2e-final/result.json` and `/tmp/bananloop-plan-lifecycle-e2e-final/logs/`.
+
+## Real-signal recovery follow-up — 2026-11-01
+
+**Candidate source commit:** `c0e7f0aa79e373c51926be178854472cb71db5b4` (stacked on PR #85; main base `44614ea22bc5967adb7ee607bce2472cc66487ee`). Linux / Python 3.14.7, deterministic local command agent, zero model calls.
+
+- `tests/test_cli.py`: **22 passed**, including deterministic checks that CLI interruption persists a resumable `PAUSED_INFRA` state and preserves pending final-HOLDOUT intent.
+- Full local suite on the candidate worktree: **450 passed, 1 skipped in 37.25s**. The skip remains the unavailable pinned selector source commit; Linux/Python 3.14.7.
+- Reproduction: `/tmp/bananloop-plan-venv/bin/python examples/fixture/run_lifecycle_e2e.py --sigint --output-dir /tmp/bananloop-sigint-e2e-20261101`.
+- SIGINT exited the active CLI with code 130; the state reported `PAUSED_INFRA`; the database recorded `ACTION_CANCELLED` for `exp:1:propose`; the child-survival sentinel was absent. After resume the campaign reached `GOAL_MET`, three experiments, seven agent calls, four evaluator calls, quality 0→3 and `DEV_ONLY`. No validation/HOLDOUT was configured.
+- Logs and state: `/tmp/bananloop-sigint-e2e-20261101/result.json` and `/tmp/bananloop-sigint-e2e-20261101/logs/`.
+- This is Linux-only runtime evidence. Windows CTRL_BREAK/process-tree behavior remains unverified until hosted Windows CI finishes; it does not prove hostile-code isolation or H2H eligibility.
+
+## Bootstrap-budget candidate follow-up — 2026-11-01
+
+**Candidate:** PR #87 code/test commit `65b3f57be185183ff355db952cc3e6a40209c012`, stacked on PR #86 head `14c383a49a1ebf46e8448534f0b09c6c4333b6d4`; Linux / Python 3.14.7. No model calls, paid calls, benchmark treatment or HOLDOUT scoring were used.
+
+- The seven CPU-only research scenarios listed above passed again on this worktree, including improvement/promotion, failed-hypothesis reflection, plateau, composite acceptance/rejection, durable resume, and DEV-only adaptive history. The staged validation gate and one-time terminal HOLDOUT test also passed separately: `tests/test_engine.py::test_staged_validation_gates_promotion_and_final_holdout_runs_once`.
+- The full suite completed with exit code 0: 454 passed, 1 skipped. The skip is the unavailable pinned selector preregistration source snapshot.
+- A subprocess regression abruptly exited during a first unmetered bootstrap call; the pre-call marker remained `IN_FLIGHT`, and a retry with a cap was rejected before adapter creation.
+- The SIGINT lifecycle runner sent a real signal during an active local agent action, observed `PAUSED_INFRA` and persisted cancellation, confirmed the child process exited, then resumed to `GOAL_MET`: 3 experiments, 7 agent calls, 4 evaluator calls, quality 0→3, `DEV_ONLY`. No model calls or HOLDOUT were configured.
+- Reproduction: `/tmp/bananloop-plan-sigint-e2e-20261101-pr87/result.json`; logs are under `/tmp/bananloop-plan-sigint-e2e-20261101-pr87/logs/`.
+
+PR #87 head `8bd6987f7ebc7a4223c6ef0ba4993212074b50ac` passed hosted run [#41236491009](https://github.com/ObiVanBanan/BananLoop/actions/runs/41236491009) on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12. The later lifecycle/install matrix runs #88/#89 have their Ubuntu Python 3.11/3.12/3.13 jobs green; Windows Python 3.12 is still running. The local Linux evidence does not prove hostile-code isolation, H2H eligibility, or a release recommendation.
+
+## Current stacked verification — 2026-11-01
+
+**PR #89 head:** `472f695a6263d80d8d62875febaf394e73122f2e`, stacked on PR #88, #87, #86 and #85.
+
+- Full local suite: **456 passed, 2 skipped** on Linux/Python 3.14.7. The skips are the unavailable pinned selector source snapshot and the clean-install test's network-dependent build-isolation step. The hosted Ubuntu/Python 3.11/3.12/3.13 matrix passed, including wheel install and CPU fixture execution; Windows/Python 3.12 remains in progress.
+- A fresh real-SIGINT run of `examples/fixture/run_lifecycle_e2e.py` exited the CLI with code 130, persisted `PAUSED_INFRA` and the cancelled `exp:1:propose` action, confirmed the child had exited, then resumed to `GOAL_MET` with 3 experiments, 7 agent calls, 4 evaluator calls, quality 0→3, and `DEV_ONLY`. It made zero model calls and configured no HOLDOUT.
+- Reproduction: `PYTHONPATH=src /tmp/bananloop-plan-venv/bin/python examples/fixture/run_lifecycle_e2e.py --sigint --output-dir /tmp/bananloop-sigint-e2e-current-20261101`.
+- Logs and state: `/tmp/bananloop-sigint-e2e-current-20261101/result.json` and `/tmp/bananloop-sigint-e2e-current-20261101/logs/`.

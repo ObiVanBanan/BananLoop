@@ -21,7 +21,7 @@
 
 ### CI update — 2026-11-01
 
-- PR #85 is based on `main` SHA `44614ea22bc5967adb7ee607bce2472cc66487ee` and changes documentation plus an example-only lifecycle runner. On an earlier head, hosted Ubuntu Python 3.11/3.12/3.13 jobs passed and Windows/Python 3.12 remained in progress. Subsequent documentation-only updates triggered fresh matrices; do not count the platform matrix complete until all jobs pass on the final PR head.
+- PR #85 head `2ca86372428fc2db31bc4d82a9c7a9df34a0311a` is based on `main` SHA `44614ea22bc5967adb7ee607bce2472cc66487ee`. Hosted run `41237749011` passed on Ubuntu Python 3.11/3.12/3.13; Windows/Python 3.12 was still running when recorded. PR #86 and #87 hosted matrices passed on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12. PR #88/#89 Ubuntu matrices passed; their Windows Python 3.12 jobs remain in progress. Do not count cross-platform lifecycle/install acceptance complete until those Windows jobs pass.
 - The exact release SHA is not selected. The final-SHA checklist items remain open.
 
 ## Head-to-head benchmark — release blocker
