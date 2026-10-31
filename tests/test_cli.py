@@ -371,11 +371,13 @@ def test_pivot_decision_cli_requires_rejection_choice_and_exact_fields():
         cmd_pivot_decision(cli.parse_args([*prefix, "--decision", "reject"]))
     approved = cli.parse_args([*prefix, "--decision", "approve"])
     assert approved.decision == "approve"
-    rejected = cli.parse_args([*prefix, "--decision", "reject", "--on-reject", "change_conditions"])
-    assert rejected.on_reject == "change_conditions"
+    rejected = cli.parse_args([*prefix, "--decision", "reject", "--on-reject", "end_campaign"])
+    assert rejected.on_reject == "end_campaign"
+    with pytest.raises(SystemExit):
+        cli.parse_args([*prefix, "--decision", "reject", "--on-reject", "change_conditions"])
 
 
-def test_pivot_decision_cli_records_operator_choice_without_execution(tmp_path, capsys):
+def test_pivot_decision_cli_ends_after_rejection_without_execution_and_is_idempotent(tmp_path, capsys):
     import json
     from bananloop.cli import cmd_pivot_decision
     from bananloop.contracts import PivotProposal, PivotResourceRequest
@@ -407,14 +409,28 @@ def test_pivot_decision_cli_records_operator_choice_without_execution(tmp_path, 
     assert receipt["decision"] == "reject"
     assert receipt["result"]["rejection_action"] == "end_campaign"
     assert receipt["automatic_execution"] is False
+    assert receipt["campaign_status"] == "STOPPED"
 
     check = CampaignStore(state_dir / "campaign.sqlite3")
     try:
         after = check.campaign()
-        assert after["status"] == before["status"] == "PAUSED_NEEDS_INPUT"
-        assert after["stop_requested"] == 0
+        assert after["status"] == "STOPPED"
+        assert before["status"] == "PAUSED_NEEDS_INPUT"
+        assert after["stop_requested"] == 1
         assert after["agent_calls"] == before["agent_calls"]
         assert after["evaluator_calls"] == before["evaluator_calls"]
+        stop_events = [event for event in check.events() if event["event_type"] == "CAMPAIGN_STOPPED"]
+        assert len(stop_events) == 1
+        assert json.loads(stop_events[0]["payload_json"])["pivot_request_id"] == "operator-choice-1"
+    finally:
+        check.close()
+
+    assert cmd_pivot_decision(args) == 0
+    repeated = json.loads(capsys.readouterr().out)
+    assert repeated["campaign_status"] == "STOPPED"
+    check = CampaignStore(state_dir / "campaign.sqlite3")
+    try:
+        assert len([event for event in check.events() if event["event_type"] == "CAMPAIGN_STOPPED"]) == 1
     finally:
         check.close()
 
