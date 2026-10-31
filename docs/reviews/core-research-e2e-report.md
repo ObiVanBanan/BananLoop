@@ -74,4 +74,4 @@ PR #87 head `8bd6987f7ebc7a4223c6ef0ba4993212074b50ac` passed hosted run [#41236
 - Reproduction: `PYTHONPATH=src /tmp/bananloop-plan-venv/bin/python examples/fixture/run_lifecycle_e2e.py --sigint --output-dir /tmp/bananloop-sigint-e2e-current-20261101`.
 - Logs and state: `/tmp/bananloop-sigint-e2e-current-20261101/result.json` and `/tmp/bananloop-sigint-e2e-current-20261101/logs/`.
 
-The documentation-only PR #85 update on head `0701f44b8196d5f7369d238a4de9830612505807` also passed its hosted Ubuntu/Windows matrix (run `41237948371`; Windows: 448 passed, 1 skipped). No PR is merged and the release SHA remains unselected.
+The documentation-only PR #85 update on head `d7bf9d055da1557e9a5f584a5b9b834e82129894` also passed its hosted Ubuntu/Windows matrix (run `41238895406`; Windows: 448 passed, 1 skipped in 642.13s). No PR is merged and the release SHA remains unselected.
