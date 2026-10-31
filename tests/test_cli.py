@@ -394,7 +394,10 @@ def test_pivot_decision_cli_ends_after_rejection_without_execution_and_is_idempo
         resources=PivotResourceRequest(additional_agent_calls=1, additional_evaluator_calls=1, notes="bounded"),
     )
     store.save_pivot_proposal(proposal, "awaiting operator")
-    store.update_campaign(status="PAUSED_NEEDS_INPUT", stop_reason="PAUSED_NEEDS_INPUT")
+    store.update_campaign(
+        status="PAUSED_NEEDS_INPUT", stop_reason="PAUSED_NEEDS_INPUT",
+        champion_snapshot="champion-before-rejection",
+    )
     before = store.campaign()
     store.close()
 
@@ -417,6 +420,7 @@ def test_pivot_decision_cli_ends_after_rejection_without_execution_and_is_idempo
         assert after["status"] == "STOPPED"
         assert before["status"] == "PAUSED_NEEDS_INPUT"
         assert after["stop_requested"] == 1
+        assert after["champion_snapshot"] == before["champion_snapshot"] == "champion-before-rejection"
         assert after["agent_calls"] == before["agent_calls"]
         assert after["evaluator_calls"] == before["evaluator_calls"]
         stop_events = [event for event in check.events() if event["event_type"] == "CAMPAIGN_STOPPED"]
