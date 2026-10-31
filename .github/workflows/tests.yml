@@ -24,3 +24,22 @@ jobs:
       - run: python -m pip install -e ".[test]"
       - run: python -m pip install numpy==2.2.6
       - run: pytest
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install -e ".[test]"
+      - name: Pull pinned runtime base
+        run: docker pull python:3.13-slim@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb
+      - name: Build Carps runtime image
+        run: docker build --file examples/autoresearchexam/tasks/Dockerfile.carps --tag bananloop-carps:ci .
+      - name: Verify runtime restrictions with inert probe
+        run: python -m pytest -q tests/test_are_sandbox_runtime.py
+        env:
+          BANANLOOP_REQUIRE_DOCKER_SMOKE: "1"
