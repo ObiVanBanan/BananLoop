@@ -33,19 +33,20 @@ class PublicCloud:
     n: int
     k: int
     git_blob_sha1: str
+    sha256: str
     split: str
     seed: int = 0
 
 
 PUBLIC_CLOUDS = (
-    PublicCloud("cloud_00", "cloud_00.npy", 2436, 30, "4a8b15a9501e43afd31bf8698a5f82f9639abfd0", "dev"),
-    PublicCloud("cloud_01", "cloud_01.npy", 3217, 65, "e82565000fff860749e340bd4787d5aa11ba08f4", "dev"),
-    PublicCloud("cloud_02", "cloud_02.npy", 1149, 30, "af1cbf230866727313d09be7de221de1d057f4fa", "dev"),
-    PublicCloud("cloud_03", "cloud_03.npy", 1374, 30, "08231ce769f3becd367dfff665367c49b1844370", "dev"),
-    PublicCloud("cloud_04", "cloud_04.npy", 3621, 50, "5172df1c7d2bedac96fea1c6adc0bacc586f5a97", "dev"),
-    PublicCloud("cloud_05", "cloud_05.npy", 872, 65, "04b97aa75f2772136fee8d12ceb0bf2ee9d1209f", "validation"),
-    PublicCloud("cloud_06", "cloud_06.npy", 2457, 50, "188ff123230b80d4967bab897c98d88f7480e2f7", "holdout"),
-    PublicCloud("cloud_07", "cloud_07.npy", 2990, 65, "66d93a90b3666dd615bc38537dc3d96b16d2f4b8", "holdout"),
+    PublicCloud("cloud_00", "cloud_00.npy", 2436, 30, "4a8b15a9501e43afd31bf8698a5f82f9639abfd0", "e3c113b089b7b7f13429593eebcbdfb71f0374bc9b9a1b4f8e910709911d5b35", "dev"),
+    PublicCloud("cloud_01", "cloud_01.npy", 3217, 65, "e82565000fff860749e340bd4787d5aa11ba08f4", "9dae1df7b994f2d75958439cafa6843725d845ab72d164b8c543d8d95c6fa356", "dev"),
+    PublicCloud("cloud_02", "cloud_02.npy", 1149, 30, "af1cbf230866727313d09be7de221de1d057f4fa", "61145848214161145ef956a5ba9cbfb5700f6110d2ba38b225fe338826bc18da", "dev"),
+    PublicCloud("cloud_03", "cloud_03.npy", 1374, 30, "08231ce769f3becd367dfff665367c49b1844370", "a4e9c7089ed94a809b406e81d3362701dc8dd8e6f076eae7ac68428590d0dc55", "dev"),
+    PublicCloud("cloud_04", "cloud_04.npy", 3621, 50, "5172df1c7d2bedac96fea1c6adc0bacc586f5a97", "d1941a6fac230b157ed295c2a6322918bc7f36c87401a837bbc9e81cfbdd0709", "dev"),
+    PublicCloud("cloud_05", "cloud_05.npy", 872, 65, "04b97aa75f2772136fee8d12ceb0bf2ee9d1209f", "611bd182922e738836f09b4050e96693fbecb30f56c243520194acca646d17c2", "validation"),
+    PublicCloud("cloud_06", "cloud_06.npy", 2457, 50, "188ff123230b80d4967bab897c98d88f7480e2f7", "139339b1a17b118221fa5afede47e5c6809e2ae682d3a48d89e5e3db5353bc9b", "holdout"),
+    PublicCloud("cloud_07", "cloud_07.npy", 2990, 65, "66d93a90b3666dd615bc38537dc3d96b16d2f4b8", "6b8095ee6ebe9f5e61a78b18c5d499b4ba5044dbc1955843c59599f18852594c", "holdout"),
 )
 
 
@@ -77,6 +78,9 @@ def prepare(output_root: Path, *, opener=urllib.request.urlopen) -> dict:
                 raise ValueError(f"public example exceeds 16 MiB: {cloud.case_id}")
             if _git_blob_sha1(payload) != cloud.git_blob_sha1:
                 raise ValueError(f"pinned upstream blob mismatch: {cloud.case_id}")
+            sha256 = hashlib.sha256(payload).hexdigest()
+            if sha256 != cloud.sha256:
+                raise ValueError(f"pinned upstream SHA-256 mismatch: {cloud.case_id}")
             points = np.load(io.BytesIO(payload), allow_pickle=False)
             if points.dtype != np.float64 or points.shape != (cloud.n, 3) or not points.flags.c_contiguous:
                 raise ValueError(f"public cloud metadata mismatch: {cloud.case_id}")
@@ -96,7 +100,7 @@ def prepare(output_root: Path, *, opener=urllib.request.urlopen) -> dict:
                 "k": cloud.k,
                 "seed": cloud.seed,
                 "upstream_git_blob_sha1": cloud.git_blob_sha1,
-                "sha256": hashlib.sha256(payload).hexdigest(),
+                "sha256": sha256,
             })
         manifest = {
             "schema_version": 1,

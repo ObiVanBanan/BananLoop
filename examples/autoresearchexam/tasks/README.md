@@ -16,7 +16,8 @@ The public example panel is frozen as `cloud_00`–`cloud_04` DEV,
 caller until freeze; because its source is public, it is not an official hidden
 evaluation set. `prepare_carps.py` downloads only those eight explicitly pinned
 public files and verifies each Git blob SHA-1, dimensions, dtype, values, and
-records a SHA-256 for each file. It never fetches upstream hidden/sealed data.
+SHA-256 against the hashes frozen in `prepare_carps.py`. It never fetches
+upstream hidden/sealed data.
 
 ## Runtime image
 
