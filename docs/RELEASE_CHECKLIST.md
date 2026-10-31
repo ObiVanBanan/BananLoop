@@ -13,6 +13,12 @@
 - [ ] Review private evaluator and HOLDOUT isolation using the final tree.
 - [ ] Resolve CI infrastructure/billing issue, or explicitly document verified substitute checks before publishing.
 
+### Verification update — 2026-10-31
+
+- On code base `44614ea22bc5967adb7ee607bce2472cc66487ee`, Linux/Python 3.14.7 full suite: **448 passed, 1 skipped**; seven CPU-only lifecycle/research E2E cases: **7 passed**.
+- A non-editable wheel install, CLI `--help`, and offline fixture generation succeeded in temporary Linux/Python 3.14 environments. Windows and Python 3.11/3.12 clean-install/full-suite evidence for the final SHA remain open.
+- Skip: selector preregistration source commit is unavailable. This does not verify that missing source snapshot.
+
 ## Head-to-head benchmark — release blocker
 
 - [ ] Freeze a fair **Codex Direct vs Codex + BananLoop** paired protocol (same model, task, evaluator and available DEV feedback; direct Codex may iterate).
