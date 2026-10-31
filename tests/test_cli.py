@@ -417,3 +417,113 @@ def test_pivot_decision_cli_records_operator_choice_without_execution(tmp_path, 
         assert after["evaluator_calls"] == before["evaluator_calls"]
     finally:
         check.close()
+
+
+def test_pivot_child_cli_requires_hash_confirmation_and_replay_is_idempotent(
+    tmp_path, monkeypatch, capsys,
+):
+    from bananloop import cli
+    from bananloop.contracts import (
+        CampaignSpec, Direction, MetricSpec, PivotDecisionCommand,
+        PivotProposal, PivotResourceRequest, RuntimePaths,
+    )
+    from bananloop.registry import CampaignRegistry
+    from bananloop.store import CampaignStore, StoreError
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    project_paths = RuntimePaths.for_repo(repo, tmp_path / "project-state")
+    registry = CampaignRegistry(repo, project_paths)
+    entry, parent_dir, _ = registry.reserve("parent goal", "parent-request")
+    parent_spec = CampaignSpec(
+        goal="parent goal", source_repo=str(repo), base_commit="a" * 40,
+        evaluation_command=["python", "evaluate.py"],
+        primary_metric=MetricSpec(
+            name="quality", direction=Direction.MAXIMIZE, target=1.0, min_improvement=0.1,
+        ),
+    )
+    parent = CampaignStore(parent_dir / "campaign.sqlite3")
+    parent.initialize(parent_spec)
+    parent.update_campaign(status="PAUSED_NEEDS_INPUT", stop_reason="PAUSED_NEEDS_INPUT")
+    proposal = PivotProposal.build(
+        spec_hash=parent_spec.approved_hash(), trigger_experiment_ordinal=1,
+        current_architecture="old", proposed_architecture="new", rationale="plateau",
+        expected_effect="improve quality", changed_scope=["src/new.py"],
+        resources=PivotResourceRequest(
+            additional_agent_calls=1, additional_evaluator_calls=1, notes="one bounded child",
+        ),
+    )
+    parent.save_pivot_proposal(proposal, "operator approval required")
+    parent.apply_pivot_decision(entry.campaign_id, PivotDecisionCommand(
+        campaign_id=entry.campaign_id, request_id="approve-pivot-1",
+        proposal_id=proposal.proposal_id, digest=proposal.digest, decision="approve",
+    ))
+    child_spec = parent_spec.model_copy(update={
+        "goal": "parent goal with approved change",
+        "editable_scope": ["src/new.py"],
+    })
+    spec_file = tmp_path / "child.json"
+    spec_file.write_text(child_spec.model_dump_json(), encoding="utf-8")
+    monkeypatch.setattr(cli, "_selected_paths", lambda _args, create=False: RuntimePaths.for_repo(repo, parent_dir))
+    monkeypatch.setattr(cli, "_operator_campaign_id", lambda _args, _paths: entry.campaign_id)
+    monkeypatch.setattr(cli, "CampaignRegistry", lambda *_args, **_kwargs: registry)
+
+    prefix = [
+        "pivot-child", "--repo", str(repo), "--campaign-id", entry.campaign_id,
+        "--proposal-id", proposal.proposal_id, "--digest", proposal.digest,
+        "--spec-file", str(spec_file),
+    ]
+    preview_args = cli.parser().parse_args(prefix)
+    before_counts = (parent.campaign()["agent_calls"], parent.campaign()["evaluator_calls"])
+    try:
+        assert cli.cmd_pivot_child(preview_args) == 0
+        preview = json.loads(capsys.readouterr().out)
+        assert preview["status"] == "CONFIRMATION_REQUIRED"
+        assert preview["child_initialized"] is False
+        assert preview["automatic_execution"] is False
+        assert len(list((registry.root / "campaigns").glob("*/campaign.sqlite3"))) == 1
+
+        confirmed_args = cli.parser().parse_args([*prefix, "--confirmed-child-hash", preview["child_spec_hash"]])
+        assert cli.cmd_pivot_child(confirmed_args) == 0
+        result = json.loads(capsys.readouterr().out)
+        assert result["status"] == "READY"
+        assert result["automatic_execution"] is False
+        assert result["next_command"][-1] == result["campaign_id"]
+        child_id = result["campaign_id"]
+        child_dir = registry.resolve(child_id)[0]
+        child_store = CampaignStore(child_dir / "campaign.sqlite3")
+        try:
+            assert child_store.campaign()["status"] == "READY"
+            assert child_store.spec().spec_lineage.decision_request_id == "approve-pivot-1"
+            events = child_store.events()
+        finally:
+            child_store.close()
+
+        assert cli.cmd_pivot_child(confirmed_args) == 0
+        replay = json.loads(capsys.readouterr().out)
+        assert replay["campaign_id"] == child_id
+        child_store = CampaignStore(child_dir / "campaign.sqlite3")
+        try:
+            assert child_store.events() == events
+        finally:
+            child_store.close()
+        assert (parent.campaign()["agent_calls"], parent.campaign()["evaluator_calls"]) == before_counts
+
+        mismatch_args = cli.parser().parse_args([*prefix, "--confirmed-child-hash", "0" * 64])
+        with pytest.raises(StoreError, match="confirmed child spec hash"):
+            cli.cmd_pivot_child(mismatch_args)
+    finally:
+        parent.close()
+
+
+def test_pivot_child_cli_rejects_custom_state_dir(tmp_path):
+    from bananloop.cli import cmd_pivot_child
+    from bananloop.store import StoreError
+
+    args = parser().parse_args([
+        "pivot-child", "--repo", str(tmp_path), "--state-dir", str(tmp_path / "state"),
+        "--proposal-id", "pivot-" + "a" * 24, "--digest", "b" * 64,
+        "--spec-file", str(tmp_path / "child.json"),
+    ])
+    with pytest.raises(StoreError, match="--state-dir is unsupported"):
+        cmd_pivot_child(args)
