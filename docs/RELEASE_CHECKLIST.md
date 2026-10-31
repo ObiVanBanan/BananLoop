@@ -10,7 +10,7 @@
 - [x] Version in `pyproject.toml` is 0.1.0.
 - [ ] Run full suite on the exact final main release commit (documentation-only changes should not alter logic but warrant verification).
 - [ ] Check clean install and fixture on Linux / Windows; record actual stdout and versions.
-- [ ] Verify the digest-bound CLI approval/rejection flow on the final tree. Candidate [PR #92](https://github.com/ObiVanBanan/BananLoop/pull/92) previews and confirms an approved child before initializing it, and supports explicit terminal rejection; it remains draft and its latest hosted matrix is pending.
+- [ ] Verify the digest-bound CLI approval/rejection flow on the final tree. Draft candidate [PR #92](https://github.com/ObiVanBanan/BananLoop/pull/92) previews and confirms an approved child before initializing it, supports explicit terminal rejection, and serializes decisions with run/resume through the campaign lock. Exact head `ebbc066ba7dddbe82290e9606c5fa2e0f8232801` passed hosted matrix [#41250697408](https://github.com/ObiVanBanan/BananLoop/actions/runs/41250697408) on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 (Windows: 460 passed, 1 skipped). Final-tree verification remains open.
 - [ ] Review private evaluator and HOLDOUT isolation using the final tree.
 - [ ] Resolve CI infrastructure/billing issue, or explicitly document verified substitute checks before publishing.
 
