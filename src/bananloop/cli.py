@@ -685,7 +685,7 @@ def cmd_pivot_child(args: argparse.Namespace) -> int:
                 "proposal_id": proposal.proposal_id,
                 "proposal_digest": proposal.digest,
                 "child_spec_hash": confirmed_hash,
-                "child_spec": json.loads(approved_child.model_dump_json()),
+                "spec_file": str(Path(args.spec_file).resolve()),
                 "child_initialized": False,
                 "automatic_execution": False,
             }, sort_keys=True))
