@@ -55,7 +55,7 @@ Deferred to v0.2+: new Pi terminal UI work, desktop UI implementation, chat-firs
 
 Repository API says `public` as of this audit. The repo setting was not changed. Do not create a tag/release or merge as part of this plan without separate authorization; do not infer a closed preview from the documentation while the repository remains public.
 
-**Current recommendation: NOT READY.** The release benchmark is **BLOCKED / INELIGIBLE** because no confirmed spend authorization and no verified hostile-code evaluator isolation are established. Other open acceptance evidence includes current-SHA test/install runs on Windows/Linux and comprehensive secret/privacy/rights review. No H2H model call or HOLDOUT evaluation has been started.
+**Current recommendation: NOT READY.** The benchmark is **BLOCKED / INELIGIBLE**: no explicit spend authorization, verified hostile-code evaluator isolation, or complete benchmark-data rights evidence is available. The current PR #85 audit-doc head `8d5862058d3509d8d0c3d1358839d381e96ae521` passed hosted full-suite matrices `41244438038` and `41244442129` on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12; Windows reported 448 passed, 1 skipped. The stacked lifecycle, bootstrap-budget, CI lifecycle, and clean-install PRs #86–#89 also have passing hosted matrices but remain draft and outside `main`; `main` is still `44614ea22bc5967adb7ee607bce2472cc66487ee`, and no final release SHA is selected. Comprehensive secret/privacy review remains open: Gitleaks PR #90 reports 14 manually reviewed false positives and remains non-passing with findings unsuppressed; GitHub secret-alert listing is unavailable. No H2H model call or HOLDOUT evaluation has been started.
 
 
 ## Verification update — current code base
