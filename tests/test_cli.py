@@ -52,6 +52,49 @@ def test_run_sigint_persists_resumable_infrastructure_pause(tmp_path, monkeypatc
         store.close()
 
 
+def test_run_sigint_preserves_pending_final_holdout_intent(tmp_path, monkeypatch, capsys):
+    from bananloop import cli
+    from bananloop.contracts import CampaignSpec, Direction, MetricSpec, RuntimePaths
+    from bananloop.store import CampaignStore
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    paths = RuntimePaths.for_repo(repo, tmp_path / "state")
+    paths.ensure()
+    store = CampaignStore(paths.db)
+    store.initialize(CampaignSpec(
+        goal="Improve quality",
+        source_repo=str(repo),
+        base_commit="a" * 40,
+        evaluation_command=["python", "evaluate.py"],
+        holdout_command=["python", "holdout.py"],
+        primary_metric=MetricSpec(
+            name="quality", direction=Direction.MAXIMIZE, target=1, min_improvement=0.1,
+        ),
+    ))
+    store.update_campaign(status="RUNNING", stage="FINAL_HOLDOUT", stop_reason="GOAL_MET")
+
+    class InterruptedEngine:
+        def run(self, **_kwargs):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "_open", lambda _args: (paths, store, InterruptedEngine()))
+    args = parser().parse_args(["run", "--repo", str(repo), "--state-dir", str(paths.root)])
+    try:
+        assert cli.cmd_run(args) == 130
+        persisted = CampaignStore(paths.db)
+        try:
+            campaign = persisted.campaign()
+            assert campaign["status"] == "RUNNING"
+            assert campaign["stage"] == "FINAL_HOLDOUT"
+            assert campaign["stop_reason"] == "GOAL_MET"
+        finally:
+            persisted.close()
+        assert "interrupted by user" in capsys.readouterr().err.lower()
+    finally:
+        store.close()
+
+
 def test_pi_cli_builds_agent_config():
     args = parser().parse_args([
         "init",

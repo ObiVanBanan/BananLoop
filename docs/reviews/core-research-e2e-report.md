@@ -46,7 +46,8 @@ No model or paid calls, benchmark treatment, validation or HOLDOUT scores were r
 
 **Candidate source commit:** `c0e7f0aa79e373c51926be178854472cb71db5b4` (stacked on PR #85; main base `44614ea22bc5967adb7ee607bce2472cc66487ee`). Linux / Python 3.14.7, deterministic local command agent, zero model calls.
 
-- `tests/test_cli.py`: **21 passed**, including a new deterministic check that CLI interruption persists a resumable `PAUSED_INFRA` state.
+- `tests/test_cli.py`: **22 passed**, including deterministic checks that CLI interruption persists a resumable `PAUSED_INFRA` state and preserves pending final-HOLDOUT intent.
+- Full local suite on the candidate worktree: **450 passed, 1 skipped in 37.25s**. The skip remains the unavailable pinned selector source commit; Linux/Python 3.14.7.
 - Reproduction: `/tmp/bananloop-plan-venv/bin/python examples/fixture/run_lifecycle_e2e.py --sigint --output-dir /tmp/bananloop-sigint-e2e-20261101`.
 - SIGINT exited the active CLI with code 130; the state reported `PAUSED_INFRA`; the database recorded `ACTION_CANCELLED` for `exp:1:propose`; the child-survival sentinel was absent. After resume the campaign reached `GOAL_MET`, three experiments, seven agent calls, four evaluator calls, quality 0→3 and `DEV_ONLY`. No validation/HOLDOUT was configured.
 - Logs and state: `/tmp/bananloop-sigint-e2e-20261101/result.json` and `/tmp/bananloop-sigint-e2e-20261101/logs/`.
