@@ -767,8 +767,11 @@ class CampaignStore:
     def update_experiment(self, experiment_id: int, **fields: Any) -> None:
         fields["updated_at"] = utc_now()
         sql = ",".join(f"{key}=?" for key in fields)
-        self.conn.execute(f"UPDATE experiments SET {sql} WHERE id=?", tuple(fields.values()) + (experiment_id,))
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(f"UPDATE experiments SET {sql} WHERE id=?", tuple(fields.values()) + (experiment_id,))
+            # Experiment fields are projected into operator snapshots. Advance
+            # the cursor atomically without exposing hypothesis or score data.
+            self.event("SNAPSHOT_DATA_UPDATED", {})
 
     def finish_attempt(
         self, attempt_id: int, experiment_id: int, *, status: str,
@@ -1250,17 +1253,20 @@ class CampaignStore:
         *,
         tier: str = "dev",
     ) -> None:
-        existing = self.conn.execute(
-            "SELECT id FROM evaluations WHERE experiment_id IS ? AND candidate_snapshot=? AND tier=?",
-            (experiment_id, snapshot, tier),
-        ).fetchone()
-        if existing:
-            return
-        self.conn.execute(
-            "INSERT INTO evaluations(experiment_id,candidate_snapshot,tier,result_json,created_at) VALUES(?,?,?,?,?)",
-            (experiment_id, snapshot, tier, json.dumps(result, sort_keys=True), utc_now()),
-        )
-        self.conn.commit()
+        with self.conn:
+            existing = self.conn.execute(
+                "SELECT id FROM evaluations WHERE experiment_id IS ? AND candidate_snapshot=? AND tier=?",
+                (experiment_id, snapshot, tier),
+            ).fetchone()
+            if existing:
+                return
+            self.conn.execute(
+                "INSERT INTO evaluations(experiment_id,candidate_snapshot,tier,result_json,created_at) VALUES(?,?,?,?,?)",
+                (experiment_id, snapshot, tier, json.dumps(result, sort_keys=True), utc_now()),
+            )
+            if tier == "dev":
+                # Only DEV evaluations are included in operator snapshots.
+                self.event("SNAPSHOT_DATA_UPDATED", {})
 
     def evaluations(self, tier: str | None = None) -> list[dict[str, Any]]:
         if tier is None:
