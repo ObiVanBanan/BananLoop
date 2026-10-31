@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>BananLoop — Web Operator</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand" aria-label="BananLoop">
+        <svg class="brand-icon" viewBox="0 0 55 55" aria-hidden="true"><path d="M11 40C26 43 40 29 40 11l8 4C50 35 32 49 12 47Z" fill="#ffd61b"/><path d="m11 40-5 4 6 3 3-4m26-32 3-7 7 5-3 6" fill="#ffd61b"/><circle cx="27" cy="37" r="2" fill="#0c1524"/><circle cx="37" cy="27" r="2" fill="#0c1524"/></svg>
+        <div><strong>BANAN<span>LOOP</span><em>_</em></strong><small>RESEARCH CONTROL / EXPERIMENTAL WEB</small></div>
+      </div>
+      <div class="brand-promise">Autonomous AI Engine <span class="promise-divider">|</span> Fresh context. Persistent memory. Measurable progress.</div>
+      <div class="topbar-right">
+        <div class="top-sep"></div>
+        <div class="global-status"><i class="status-led"></i><span id="globalStatus">DEMO RUNNING</span></div>
+        <div class="top-sep"></div>
+        <div class="top-stat"><span>ЭКСПЕРИМЕНТ</span><b id="topExperiment">17 / 50</b></div>
+        <div class="top-sep"></div>
+        <div class="top-stat"><span>ЭПОХИ</span><b id="topEpochs">14</b></div>
+        <div class="top-sep"></div>
+        <span class="mode-tag" id="modeTag">DEMO DATA</span>
+      </div>
+    </header>
+
+    <main class="dashboard">
+      <section class="top-grid">
+        <article class="panel goal-panel">
+          <div class="panel-heading"><span class="panel-heading-icon">◎</span><h2>ЦЕЛЬ КАМПАНИИ</h2><span class="heading-aside" id="campaignId">c-demo-retrieval</span></div>
+          <div class="goal-body" id="goalText">Улучшить качество поиска на 15% за счёт расширения запросов и reranking, без регрессий.</div>
+          <div class="goal-meta">
+            <div><small>МЕТРИКА</small><b id="goalMetric">Recall@10</b></div>
+            <div><small>BASELINE</small><b id="goalBaseline">0.612</b></div>
+            <div><small>ЦЕЛЬ</small><b id="goalTarget">0.704</b></div>
+          </div>
+        </article>
+        <article class="panel stage-panel">
+          <div class="panel-heading"><span class="panel-heading-icon">⌘</span><h2>EXPERIMENT STAGES</h2><span class="heading-aside">ТЕКУЩАЯ СТАДИЯ <b id="engineStageLabel">PROPOSE</b></span></div>
+          <div class="stages" id="stageList" aria-label="Стадии эксперимента"></div>
+          <div class="stage-foot"><div id="stageHint">Формирование новых гипотез с учётом DEV-результатов</div><div class="step-progress" id="stepProgress"></div></div>
+        </article>
+      </section>
+
+      <section class="workspace-grid" aria-label="Рабочая область кампании">
+        <article class="panel live-panel">
+          <div class="panel-heading">
+            <span class="panel-heading-icon">❯_</span><h2>LIVE EXPERIMENT</h2>
+            <span class="heading-aside"><span class="dot running-dot"></span><span id="liveStatus">RUNNING</span></span>
+          </div>
+          <div class="live-toolbar"><span id="liveDescription">Эксперимент #17 · текущий цикл</span><span id="liveTimestamp">Обновлено сейчас</span></div>
+          <div class="live-stream" id="liveStream" role="log" aria-label="История сообщений и событий кампании" aria-live="polite" aria-relevant="additions"></div>
+          <div class="composer-box">
+            <div class="chat-chrome"><span class="chat-chrome-indicator">●</span> BananLoop Agent <span class="chat-chrome-divider">/</span> <span id="chatConnection">local preview</span><span class="chat-chrome-right">SESSION 01 <span class="chat-chrome-led">●</span></span></div>
+            <div class="composer-context"><span class="pill" id="chatMode">DEMO CHAT</span><span id="composerCaption">Ответы имитируются. Модель не вызывается.</span></div>
+            <form id="chatForm" class="composer"><span class="prompt-symbol">❯</span><textarea id="chatInput" name="message" rows="2" autocomplete="off" placeholder="Написать агенту: «проверь слабые запросы»" maxlength="500" aria-label="Сообщение или локальная заметка"></textarea><button type="submit" id="sendBtn" aria-label="Отправить сообщение">ОТПРАВИТЬ <span>↵</span></button></form>
+            <div class="composer-controls"><span class="composer-footnote">Enter — отправить · Shift+Enter — новая строка</span><div class="sim-controls"><button id="demoReset" type="button" class="ghost-button">↺ СБРОС</button><button id="demoToggle" type="button" class="accent-button">Ⅱ ПАУЗА ДЕМО</button></div></div>
+          </div>
+        </article>
+
+        <div class="workspace-right">
+          <article class="panel progress-panel">
+            <div class="panel-heading"><span class="panel-heading-icon">▥</span><h2>EXPERIMENT PROGRESS</h2><span class="heading-aside"><span class="dot cyan-dot"></span> DEV ONLY</span></div>
+            <div class="progress-content">
+              <div class="chart-column">
+                <div class="chart-legend"><span><i class="keyline current"></i> Best DEV</span><span><i class="keyline baseline"></i> Baseline</span><span><i class="keyline target"></i> Target</span><span class="chart-right-label" id="chartMetricLabel">RECALL@10</span></div>
+                <div id="chart" class="chart" role="img" aria-label="График прогресса DEV метрики"></div>
+              </div>
+              <div class="metric-sidebar">
+                <div class="metric-item"><small>BEST DEV</small><strong id="bestScore">0.701</strong><span id="bestDelta" class="positive">+14.5%</span></div>
+                <div class="metric-item"><small>ЦЕЛЬ</small><strong id="sideTarget">0.704</strong><span id="targetGap" class="quiet">осталось 0.003</span></div>
+                <div class="metric-item"><small>ЭКСПЕРИМЕНТЫ</small><strong id="experimentCount">17 <span>/ 50</span></strong><div class="progress-track"><div id="experimentBar" class="progress-fill" style="width:34%"></div></div></div>
+                <div class="metric-item"><small>ВЫЗОВЫ АГЕНТА</small><strong id="agentBudget">24 <span>/ 80</span></strong><div class="progress-track"><div id="agentBar" class="progress-fill muted" style="width:30%"></div></div></div>
+                <div class="metric-item compact-metric"><small>EVALUATOR</small><strong id="evalBudget">18 / 100</strong></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="panel hypothesis-panel">
+            <div class="panel-heading"><span class="panel-heading-icon">♧</span><h2>HYPOTHESES</h2><span class="heading-aside" id="hypothesisCount">10 ЗАПИСЕЙ</span></div>
+            <div class="table-tools"><span>История DEV-экспериментов</span><div class="table-actions"><input id="hypothesisSearch" type="search" placeholder="Поиск гипотезы" aria-label="Поиск гипотезы"/><select id="statusFilter" aria-label="Фильтр статуса"><option value="all">Все статусы</option><option value="accepted">Принятые</option><option value="rejected">Отклонённые</option><option value="active">Активные</option></select></div></div>
+            <div class="table-scroll"><table><thead><tr><th>#</th><th>Гипотеза</th><th>DEV</th><th>Δ к baseline</th><th>Статус</th></tr></thead><tbody id="hypothesisBody"></tbody></table></div>
+            <div class="table-footer">
+              <div class="source-select"><button id="importButton" type="button" title="Импортировать operator-snapshot JSON">↑ SNAPSHOT JSON</button><input id="sourceFile" type="file" accept=".json,application/json" hidden/></div>
+              <span class="table-footer-caption">DEV history · independent evaluation</span>
+            </div>
+          </article>
+        </div>
+      </section>
+      <footer class="footer"><span><i class="footer-led"></i> BananLoop web viewer · <b id="footerMode">Синтетические данные</b></span><span>CLI остаётся источником истины · HOLDOUT не отображается</span><span id="footerTime">—</span></footer>
+    </main>
+  </div>
+  <script src="./model.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
