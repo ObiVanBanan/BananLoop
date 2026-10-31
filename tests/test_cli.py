@@ -407,6 +407,21 @@ def test_pivot_decision_cli_ends_after_rejection_without_execution_and_is_idempo
         "--digest", proposal.digest, "--request-id", "operator-choice-1",
         "--on-reject", "end_campaign",
     ])
+    from bananloop.lock import CampaignLock
+
+    # A run/resume owns this lock for its full state transition. The operator
+    # decision must fail without recording a receipt while that writer is active.
+    with CampaignLock(state_dir / "campaign.lock"):
+        assert cmd_pivot_decision(args) == 2
+        assert "campaign is already locked" in capsys.readouterr().err
+
+    check = CampaignStore(state_dir / "campaign.sqlite3")
+    try:
+        assert check.campaign()["status"] == "PAUSED_NEEDS_INPUT"
+        assert not [event for event in check.events() if event["event_type"] == "CAMPAIGN_STOPPED"]
+    finally:
+        check.close()
+
     assert cmd_pivot_decision(args) == 0
     receipt = json.loads(capsys.readouterr().out)
     assert receipt["decision"] == "reject"
