@@ -41,3 +41,13 @@ No model or paid calls, benchmark treatment, validation or HOLDOUT scores were r
 - Reusable pause/resume CLI run via `examples/fixture/run_lifecycle_e2e.py` passed on Linux/Python 3.14.7. A real local CLI supervisor process was paused during an active agent subprocess; the action was cancelled, then explicit resume completed three experiments and produced the final `DEV_ONLY` report (`GOAL_MET`, quality 0→3, 7 agent calls including the interrupted call, 4 evaluator calls). No model calls; no validation or holdout configured.
 - Reproduction command: `python examples/fixture/run_lifecycle_e2e.py --output-dir /tmp/bananloop-plan-lifecycle-e2e-final`. It refuses to overwrite an existing output directory and saves JSON result plus stdout/stderr for init, pause, interrupted run, resume, status and report under `logs/`.
 - Recorded run artifacts: `/tmp/bananloop-plan-lifecycle-e2e-final/result.json` and `/tmp/bananloop-plan-lifecycle-e2e-final/logs/`.
+
+## Real-signal recovery follow-up — 2026-11-01
+
+**Candidate source commit:** `c0e7f0aa79e373c51926be178854472cb71db5b4` (stacked on PR #85; main base `44614ea22bc5967adb7ee607bce2472cc66487ee`). Linux / Python 3.14.7, deterministic local command agent, zero model calls.
+
+- `tests/test_cli.py`: **21 passed**, including a new deterministic check that CLI interruption persists a resumable `PAUSED_INFRA` state.
+- Reproduction: `/tmp/bananloop-plan-venv/bin/python examples/fixture/run_lifecycle_e2e.py --sigint --output-dir /tmp/bananloop-sigint-e2e-20261101`.
+- SIGINT exited the active CLI with code 130; the state reported `PAUSED_INFRA`; the database recorded `ACTION_CANCELLED` for `exp:1:propose`; the child-survival sentinel was absent. After resume the campaign reached `GOAL_MET`, three experiments, seven agent calls, four evaluator calls, quality 0→3 and `DEV_ONLY`. No validation/HOLDOUT was configured.
+- Logs and state: `/tmp/bananloop-sigint-e2e-20261101/result.json` and `/tmp/bananloop-sigint-e2e-20261101/logs/`.
+- This is Linux-only runtime evidence. Windows CTRL_BREAK/process-tree behavior remains unverified until hosted Windows CI finishes; it does not prove hostile-code isolation or H2H eligibility.
