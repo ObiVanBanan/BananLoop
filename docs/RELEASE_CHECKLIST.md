@@ -5,7 +5,7 @@
 ## Code / evaluation
 
 - [x] Integrate [PR #75](https://github.com/ObiVanBanan/BananLoop/pull/75) campaign cursor fix into `main` through [PR #81](https://github.com/ObiVanBanan/BananLoop/pull/81). Linux current-base suite passed; Windows acceptance remains open.
-- [x] Integrate [PR #61](https://github.com/ObiVanBanan/BananLoop/pull/61) opt-in Codex token accounting into `main` through [PR #81](https://github.com/ObiVanBanan/BananLoop/pull/81). It is post-call accounting, not provider-enforced spending control; budget authorization and cross-platform acceptance remain open.
+- [x] Integrate [PR #61](https://github.com/ObiVanBanan/BananLoop/pull/61) opt-in Codex token accounting into `main` through [PR #81](https://github.com/ObiVanBanan/BananLoop/pull/81). It is post-call accounting, not provider-enforced spending control. Issue #64 specifies a $3 pilot cap, but USD accounting against it and cross-platform acceptance remain open.
 - [x] Independent QA of semantic selector patch on SHA `c698e4966a0cf8621dbfbff8145c1397b278c2e8`: 335 pytest passed, six fresh Luna replay selections accepted, one CPU mini matcher smoke passed.
 - [x] Version in `pyproject.toml` is 0.1.0.
 - [ ] Run full suite on the exact final main release commit (documentation-only changes should not alter logic but warrant verification).
