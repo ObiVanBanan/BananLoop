@@ -4,8 +4,8 @@
 
 ## Code / evaluation
 
-- [ ] Review [PR #75](https://github.com/ObiVanBanan/BananLoop/pull/75) for campaign state/snapshot cursor consistency; its local CPU-only E2E and Windows suite evidence is branch evidence, not a final-main acceptance run.
-- [ ] Review the updated [PR #61](https://github.com/ObiVanBanan/BananLoop/pull/61) for opt-in Codex token metering. It remains Draft, is not provider-enforced, and has not been integrated into `main`.
+- [x] Stage [PR #75](https://github.com/ObiVanBanan/BananLoop/pull/75) campaign cursor fix in the combined integration candidate; final-main acceptance remains open.
+- [x] Stage [PR #61](https://github.com/ObiVanBanan/BananLoop/pull/61) opt-in Codex token accounting in the same integration candidate. It is not provider-enforced; final-main acceptance and budget limitations remain open.
 - [x] Independent QA of semantic selector patch on SHA `c698e4966a0cf8621dbfbff8145c1397b278c2e8`: 335 pytest passed, six fresh Luna replay selections accepted, one CPU mini matcher smoke passed.
 - [x] Version in `pyproject.toml` is 0.1.0.
 - [ ] Run full suite on the exact final main release commit (documentation-only changes should not alter logic but warrant verification).
