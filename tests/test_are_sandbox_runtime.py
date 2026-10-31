@@ -25,10 +25,10 @@ PINNED_IMAGE = (
 def test_inert_linux_sandbox_probe_with_docker(tmp_path: Path) -> None:
     """Exercise the real Docker policy with trusted probe code, no candidate or task data."""
     required = os.getenv("BANANLOOP_REQUIRE_DOCKER_SMOKE") == "1"
+    if not required:
+        pytest.skip("runtime smoke runs only in the dedicated docker-smoke job")
     if shutil.which("docker") is None:
-        if required:
-            pytest.fail("Docker is required for this CI sandbox smoke")
-        pytest.skip("Docker CLI is unavailable")
+        pytest.fail("Docker is required for this CI sandbox smoke")
     daemon = subprocess.run(
         ["docker", "info"],
         stdin=subprocess.DEVNULL,
