@@ -62,4 +62,4 @@ Repository API says `public` as of this audit. The repo setting was not changed.
 - Reachable-history pattern scan: 1,588 blobs, zero matches for the five listed key/token formats. No dedicated scanner or GitHub secret alerts were available; this remains a limited scan, not clearance.
 - GitHub API confirms public visibility. No benchmark/model call, HOLDOUT run, visibility change, merge, tag or release was performed for this update.
 - GitHub returned no workflow runs or combined statuses for this merge commit; local Linux test results do not substitute for a hosted Windows/Linux matrix.
-- PR #85 current head `c46ba7de7e689698c874110f20775edd9b3c428d` is docs/example-only; hosted matrix run `41232714785` is still in progress. Earlier head `066bdeb` had Ubuntu Python 3.11/3.12/3.13 pass, while Windows Python 3.12 remained in progress.
+- PR #85 changes are docs/example-only. An earlier hosted matrix head had Ubuntu Python 3.11/3.12/3.13 pass, while Windows Python 3.12 remained in progress. Later documentation updates triggered fresh workflows; acceptance must be rechecked on the final PR head.

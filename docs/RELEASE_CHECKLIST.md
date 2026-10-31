@@ -21,7 +21,7 @@
 
 ### CI update — 2026-11-01
 
-- PR #85 is based on `main` SHA `44614ea22bc5967adb7ee607bce2472cc66487ee` and changes documentation plus an example-only lifecycle runner. On earlier head `066bdeb`, hosted Ubuntu Python 3.11/3.12/3.13 jobs passed and Windows/Python 3.12 remained in progress. Current head `c46ba7d` has workflow run `41232714785`; all four matrix jobs are in progress. Do not count the matrix complete until each reaches a terminal result.
+- PR #85 is based on `main` SHA `44614ea22bc5967adb7ee607bce2472cc66487ee` and changes documentation plus an example-only lifecycle runner. On an earlier head, hosted Ubuntu Python 3.11/3.12/3.13 jobs passed and Windows/Python 3.12 remained in progress. Subsequent documentation-only updates triggered fresh matrices; do not count the platform matrix complete until all jobs pass on the final PR head.
 - The exact release SHA is not selected. The final-SHA checklist items remain open.
 
 ## Head-to-head benchmark — release blocker
