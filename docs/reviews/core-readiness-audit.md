@@ -80,3 +80,10 @@ PR #91 head `3ab301ad499f17f1a9abb4ac7813743b6d4f1d1a` adds a real local CLI E2E
 - PR #85 documentation now records this result and the release checklist points to it. The resulting documentation commit is queued for hosted CI; the exact-SHA result is pending.
 
 Release recommendation remains **NOT READY**. H2H eligibility is blocked by missing explicit spend authorization, incomplete hostile-code isolation proof and unresolved task-data rights. Gitleaks findings remain unsuppressed after the suppression request was rejected; no credential was confirmed, but comprehensive secret/privacy clearance is still incomplete. No merge, visibility change, tag or release was performed.
+
+
+## Minimal CLI HIL follow-up — 2026-11-01
+
+Draft PR #92 head `6ca18f264b5eb2a7091787a2e25e6b0854674f04`, stacked on PR #91, adds a two-step approved-pivot CLI path: preview an operator-authored child spec and derive immutable lineage/hash from the approval receipt, then explicitly confirm that hash to initialize an idempotent `READY` child. Starting the child remains a separate `run` command; preview/creation invokes no agent or evaluator. A rejection with `end_campaign` atomically marks the paused parent `STOPPED/USER_STOPPED`, preserves its champion, and emits one stop event. Other rejection follow-ups (`continue_old_plan`, `change_conditions`) are not exposed in the v0.1 CLI because the engine has no correct continuation semantics for them; they remain deferred. Local Linux/Python 3.14.7 full suite: 459 passed, 2 skipped; focused pivot/HIL suite: 22 passed. Hosted matrix run [41248892749](https://github.com/ObiVanBanan/BananLoop/actions/runs/41248892749) is queued at the time of this update. PR #92 remains draft and unmerged.
+
+This closes the minimal CLI approval/terminal-rejection path in candidate code, but it does not make architecture pivots or arbitrary child campaigns release-ready. Hostile-code isolation, benchmark-data rights, H2H eligibility, exact final-main acceptance, owner approval, and the public/closed-preview mismatch remain outstanding. **Release recommendation: NOT READY.**
