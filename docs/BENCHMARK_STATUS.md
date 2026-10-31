@@ -46,4 +46,4 @@ The token limit is opt-in post-call accounting from Codex terminal receipts when
 - [ ] Produce a per-task comparison and limitations section.
 - [ ] Link evidence and review the final report before owner approval.
 
-The **benchmark gate is BLOCKED / INELIGIBLE**: there is no approved spend budget or verified isolated evaluator. Token metering is included in the integration candidate but is not a provider-side hard spending cap. Existing DEV fixture improvements demonstrate a workflow, not superiority over standalone coding agents. This blocks a v0.1 release recommendation; resume only after the prerequisites are met.
+The **benchmark gate is BLOCKED / INELIGIBLE**: there is no approved spend budget or verified isolated evaluator. Optional Codex token accounting is integrated into `main` through PR #81, but it is post-call receipt accounting—not a provider-side hard spending cap—and bootstrap calls are not metered. Existing DEV fixture improvements demonstrate a workflow, not superiority over standalone coding agents. This blocks a v0.1 release recommendation; resume only after the prerequisites are met.
