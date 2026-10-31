@@ -65,7 +65,7 @@ def test_inert_linux_sandbox_probe_with_docker(tmp_path: Path) -> None:
     report = json.loads(result.stdout.decode("utf-8"))
     assert report["status"] == "PASS", report
     assert report["uid"] == 65532
-    assert report["cap_eff"] == "0"
+    assert int(report["cap_eff"], 16) == 0
     assert report["no_new_privs"] == "1"
     assert report["seccomp"] == "2"
     assert report["root_read_only"] is True
