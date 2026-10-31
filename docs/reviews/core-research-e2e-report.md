@@ -29,7 +29,7 @@ The command above was run with pytest node IDs using underscores (`then_stops`, 
 - This is deterministic local-fixture evidence, not live acceptance with Codex or Pi.
 - The original run above exercised Windows only. The current-main follow-up below now adds Linux/Python 3.14 fixture and lifecycle evidence; current-SHA Windows acceptance remains unverified.
 - The OS does not isolate evaluator code as a hostile-code sandbox. This evidence does not authorize executing benchmark submissions on the host.
-- No H2H was run. The matched-resource benchmark release gate remains `BLOCKED`/`INELIGIBLE` pending spend authorization and verified evaluator isolation.
+- No H2H was run. The matched-resource benchmark release gate remains `BLOCKED`/`INELIGIBLE` the unverified $3 USD cap accounting and evaluator isolation.
 
 
 ## Current-main follow-up — 2026-10-31
