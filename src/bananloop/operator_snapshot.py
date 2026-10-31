@@ -30,6 +30,7 @@ SAFE_EVENT_FIELDS = {
     "PAUSE_REQUESTED": set(),
     "PAUSE_CLEARED": set(),
     "CAMPAIGN_STATE_UPDATED": set(),
+    "SNAPSHOT_DATA_UPDATED": set(),
 }
 
 

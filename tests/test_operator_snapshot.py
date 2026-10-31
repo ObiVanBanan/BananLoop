@@ -213,6 +213,45 @@ def test_campaign_counter_change_advances_snapshot_and_event_revision(tmp_path):
         store.close()
 
 
+def test_experiment_projection_change_advances_snapshot_revision(tmp_path):
+    store = make_store(tmp_path)
+    try:
+        experiment_id, _ = store.create_attempt("base")
+        before = read_snapshot(store, "campaign-a")
+        store.update_experiment(
+            experiment_id,
+            hypothesis_json=json.dumps({"hypothesis": "new visible hypothesis"}),
+            status="CANDIDATE",
+        )
+        after = read_snapshot(store, "campaign-a")
+
+        assert after["revision"] > before["revision"]
+        assert after["hypotheses"][0]["title"] == "new visible hypothesis"
+        page = read_events_after(store, before["revision"])
+        assert page["cursor"] == after["revision"]
+        assert page["events"][-1]["type"] == "SNAPSHOT_DATA_UPDATED"
+        assert page["events"][-1]["payload"] == {}
+    finally:
+        store.close()
+
+
+def test_dev_evaluation_projection_change_advances_snapshot_revision(tmp_path):
+    store = make_store(tmp_path)
+    try:
+        before = read_snapshot(store, "campaign-a")
+        store.record_evaluation(None, "baseline", json.loads(_result(0.25)), tier="dev")
+        after = read_snapshot(store, "campaign-a")
+
+        assert after["revision"] > before["revision"]
+        assert [point["score"] for point in after["dev_points"]] == [0.25]
+        page = read_events_after(store, before["revision"])
+        assert page["cursor"] == after["revision"]
+        assert page["events"][-1]["type"] == "SNAPSHOT_DATA_UPDATED"
+        assert page["events"][-1]["payload"] == {}
+    finally:
+        store.close()
+
+
 def test_operator_cli_json_reads_selected_campaign(tmp_path, capsys):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
