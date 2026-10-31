@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -664,6 +665,60 @@ def test_bootstrap_token_budget_cannot_be_enabled_after_unmetered_attempts(tmp_p
             stage_reserves={},
         )
     assert not ledger_path.exists()
+
+
+def test_hard_exit_during_unmetered_bootstrap_blocks_later_capped_retry(tmp_path, monkeypatch):
+    import bananloop.bootstrap as bootstrap_module
+
+    repo, _ = make_repo(tmp_path)
+    state = tmp_path / "interrupted-unmetered-state"
+    source_root = Path(__file__).resolve().parents[1] / "src"
+    script = """
+import os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[3])
+from bananloop import bootstrap
+from bananloop.contracts import AgentConfig, RuntimePaths
+class ExitingAgent:
+    def probe(self): return {"available": True}
+    def execute(self, task, workspace, timeout): os._exit(77)
+bootstrap._agent = lambda _config: ExitingAgent()
+bootstrap.bootstrap_campaign(
+    repo=Path(sys.argv[1]), goal="improve fixture quality",
+    paths=RuntimePaths.for_repo(Path(sys.argv[1]), Path(sys.argv[2])),
+    agent_config=AgentConfig(kind="command", command=["unused"]),
+)
+"""
+    child_env = dict(os.environ)
+    child_env["PYTHONPATH"] = str(source_root)
+    crashed = subprocess.run(
+        [sys.executable, "-c", script, str(repo), str(state), str(source_root)],
+        cwd=repo,
+        env=child_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert crashed.returncode == 77
+    marker = json.loads(
+        (state / "bootstrap-unmetered-invocations.json").read_text(encoding="utf-8")
+    )
+    assert marker["entries"][0]["status"] == "IN_FLIGHT"
+
+    monkeypatch.setattr(
+        bootstrap_module,
+        "_agent",
+        lambda _config: pytest.fail("a capped retry must be rejected before an adapter call"),
+    )
+    with pytest.raises(BootstrapError, match="prior unmetered bootstrap invocations"):
+        bootstrap_campaign(
+            repo=repo,
+            goal="improve fixture quality",
+            paths=RuntimePaths.for_repo(repo, state),
+            agent_config=AgentConfig(kind="codex"),
+            max_model_tokens=100,
+            model_token_reserve=100,
+        )
 
 
 def test_bootstrap_contract_rejects_request_to_repeat_supplied_goal(tmp_path: Path):
