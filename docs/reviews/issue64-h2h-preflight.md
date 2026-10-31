@@ -22,7 +22,7 @@ These are preparation references, not a frozen trial manifest. Dataset case IDs,
 - A digest-pinned official Python image passed the limited isolation smoke described in [the isolation report](are-isolation-smoke.md).
 - The smoke enforced 2 CPUs, 8 GiB memory, 64 PIDs, no network, read-only root, no host mounts, zero effective capabilities, `no-new-privileges`, and a bounded temporary filesystem. Docker accepted `--storage-opt size=24g`, but enforcement and persistence on candidate data were not tested.
 - No H2H task adapter, pilot runner, agent/grader split, or restricted model proxy exists in the main tree. The container has no model connectivity by design. Codex CLI 0.165.0 exists on the host, but no credential was mounted into the container and no API endpoint was contacted.
-- The MLflow Python package is installed locally, but no `MLFLOW_TRACKING_URI` or MLflow CLI is configured. The experiment-tracking sink required by the experiment workflow is therefore not yet verified.
+- The MLflow Python package is installed locally. A zero-cost SQLite-backed tracking smoke logged and read back one parameter and metric using a temporary database; that database was removed after the smoke. No persistent `MLFLOW_TRACKING_URI`, campaign tracking configuration, or container-to-supervisor tracking path is configured yet.
 
 ## Remaining gates before a run
 
@@ -30,7 +30,7 @@ These are preparation references, not a frozen trial manifest. Dataset case IDs,
 2. Build the restricted runner: separate agent and evaluator containers and storage, protect grader/HOLDOUT data, deny traversal/symlinks and host credentials, disable candidate egress, and negatively test all prohibited paths.
 3. Verify a narrowly allowlisted model proxy that cannot relay arbitrary traffic or expose its provider credential. Reconcile the experiment's $3 total cap with #61's post-call receipts and prove attributable per-call USD accounting; token limits alone are not a hard dollar ceiling.
 4. Enforce and verify per-arm disk quota, CPU/RAM/process/wall-clock limits and cleanup. Docker accepted the requested storage option, but disk-cap enforcement has not been demonstrated.
-5. Implement and test identical iterative Codex Control and BananLoop treatment harnesses, fake-agent/fake-meter smoke, immutable manifests, event/cost logs and independent post-freeze scoring. Configure and verify MLflow or an approved tracking sink before baseline execution.
+5. Implement and test identical iterative Codex Control and BananLoop treatment harnesses, fake-agent/fake-meter smoke, immutable manifests, event/cost logs and independent post-freeze scoring. Configure and verify the persistent MLflow SQLite backend and its supervisor-only write path before baseline execution.
 6. Only after all gates pass, use the Issue #64 $3 cap and run the baseline first. Mark missing or unverifiable cost as `INELIGIBLE`; do not score any overspending arm or use an unsandboxed fallback.
 
 The host sandbox smoke proves only that Docker can apply basic controls to a harmless probe. It does not qualify the proposed evaluator boundary or authorize a paid H2H.
