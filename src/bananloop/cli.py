@@ -607,39 +607,45 @@ def cmd_operator_events(args: argparse.Namespace) -> int:
 
 
 def cmd_pivot_decision(args: argparse.Namespace) -> int:
-    """Record a pivot decision; explicit terminal rejection never runs a campaign."""
+    """Record a pivot decision while serializing it with run/resume transitions."""
     if args.decision == "reject" and not args.on_reject:
         raise StoreError("pivot rejection requires --on-reject end_campaign")
     paths = _selected_paths(args, create=False)
-    if not campaign_db_initialized(paths.db):
-        raise StoreError("campaign is not initialized")
-    store = CampaignStore(paths.db)
     try:
-        campaign_id = _operator_campaign_id(args, paths)
-        receipt = submit_pivot_decision(store, campaign_id, PivotDecisionCommand(
-            campaign_id=campaign_id,
-            request_id=args.request_id,
-            proposal_id=args.proposal_id,
-            digest=args.digest,
-            decision=args.decision,
-            rejection_action=args.on_reject,
-        ))
-        campaign = store.campaign()
-        print(json.dumps({
-            "campaign_id": campaign_id,
-            "request_id": receipt["request_id"],
-            "proposal_id": receipt["proposal_id"],
-            "digest": receipt["digest"],
-            "decision": receipt["decision"],
-            "status": receipt["status"],
-            "result": json.loads(receipt["result_json"]),
-            "campaign_status": campaign["status"],
-            "automatic_execution": False,
-        }, sort_keys=True))
-    finally:
-        store.close()
-    return 0
-
+        # A concurrent resume may otherwise overwrite the terminal STOPPED
+        # transition after reading the paused state. Serialize all writer paths.
+        with CampaignLock(paths.root / "campaign.lock"):
+            if not campaign_db_initialized(paths.db):
+                raise StoreError("campaign is not initialized")
+            store = CampaignStore(paths.db)
+            try:
+                campaign_id = _operator_campaign_id(args, paths)
+                receipt = submit_pivot_decision(store, campaign_id, PivotDecisionCommand(
+                    campaign_id=campaign_id,
+                    request_id=args.request_id,
+                    proposal_id=args.proposal_id,
+                    digest=args.digest,
+                    decision=args.decision,
+                    rejection_action=args.on_reject,
+                ))
+                campaign = store.campaign()
+                print(json.dumps({
+                    "campaign_id": campaign_id,
+                    "request_id": receipt["request_id"],
+                    "proposal_id": receipt["proposal_id"],
+                    "digest": receipt["digest"],
+                    "decision": receipt["decision"],
+                    "status": receipt["status"],
+                    "result": json.loads(receipt["result_json"]),
+                    "campaign_status": campaign["status"],
+                    "automatic_execution": False,
+                }, sort_keys=True))
+            finally:
+                store.close()
+        return 0
+    except CampaignLockError as exc:
+        print(f"BananLoop error: {exc}", file=sys.stderr)
+        return 2
 
 def cmd_pivot_child(args: argparse.Namespace) -> int:
     """Preview or initialize one approved pivot child; never execute its campaign."""
