@@ -607,9 +607,9 @@ def cmd_operator_events(args: argparse.Namespace) -> int:
 
 
 def cmd_pivot_decision(args: argparse.Namespace) -> int:
-    """Record one explicit local pivot decision; this never resumes or runs a campaign."""
+    """Record a pivot decision; explicit terminal rejection never runs a campaign."""
     if args.decision == "reject" and not args.on_reject:
-        raise StoreError("pivot rejection requires --on-reject continue_old_plan, change_conditions, or end_campaign")
+        raise StoreError("pivot rejection requires --on-reject end_campaign")
     paths = _selected_paths(args, create=False)
     if not campaign_db_initialized(paths.db):
         raise StoreError("campaign is not initialized")
@@ -624,6 +624,10 @@ def cmd_pivot_decision(args: argparse.Namespace) -> int:
             decision=args.decision,
             rejection_action=args.on_reject,
         ))
+        if args.decision == "reject" and receipt["status"] == "REJECTED":
+            campaign = store.end_after_rejected_pivot(receipt["request_id"])
+        else:
+            campaign = store.campaign()
         print(json.dumps({
             "campaign_id": campaign_id,
             "request_id": receipt["request_id"],
@@ -632,7 +636,7 @@ def cmd_pivot_decision(args: argparse.Namespace) -> int:
             "decision": receipt["decision"],
             "status": receipt["status"],
             "result": json.loads(receipt["result_json"]),
-            "campaign_status": store.campaign()["status"],
+            "campaign_status": campaign["status"],
             "automatic_execution": False,
         }, sort_keys=True))
     finally:
@@ -1114,8 +1118,8 @@ def parser() -> argparse.ArgumentParser:
             sp.add_argument("--digest", required=True)
             sp.add_argument("--request-id", required=True, help="idempotency key for this explicit operator decision")
             sp.add_argument(
-                "--on-reject", choices=["continue_old_plan", "change_conditions", "end_campaign"],
-                help="required for rejection; records the operator's next-step choice without executing it",
+                "--on-reject", choices=["end_campaign"],
+                help="required for rejection; atomically ends the paused campaign without running agents",
             )
             sp.set_defaults(func=cmd_pivot_decision)
         elif name == "pivot-child":
