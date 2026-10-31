@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -24,6 +27,7 @@ from .contracts import (
 from .integrity import discover_evaluation_assets, sha256_evaluation_asset
 from .readiness import ReadinessError, run_bootstrap_readiness
 from .store import CampaignStore, StoreError, campaign_db_initialized
+from .token_budget import model_tokens
 from .wizard import discover_project
 from .workspace import WorkspaceManager, current_commit
 
@@ -33,6 +37,67 @@ class BootstrapError(RuntimeError):
 
 
 BOOTSTRAP_MAX_ATTEMPTS = 5
+
+
+def _write_bootstrap_token_ledger(path: Path, ledger: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=".bootstrap-token-budget-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(ledger, handle, indent=2, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def _bootstrap_token_ledger(
+    path: Path,
+    *,
+    limit: int | None,
+    reserve: int,
+    stage_reserves: dict[str, int],
+) -> dict[str, Any] | None:
+    if limit is None:
+        if path.exists():
+            raise BootstrapError("bootstrap token budget settings cannot be removed after metered attempts")
+        return None
+    if not path.exists():
+        prior_record = path.parent / "bootstrap-plan.json"
+        if prior_record.exists():
+            try:
+                prior_attempts = json.loads(prior_record.read_text(encoding="utf-8")).get(
+                    "bootstrap_attempts", []
+                )
+            except (OSError, ValueError, AttributeError):
+                prior_attempts = ["unreadable prior bootstrap record"]
+            if prior_attempts:
+                raise BootstrapError(
+                    "cannot enable max_model_tokens after prior unmetered bootstrap attempts; usage is UNKNOWN"
+                )
+    settings = {
+        "limit": limit,
+        "reserve": reserve,
+        "stage_reserves": stage_reserves,
+    }
+    if path.exists():
+        ledger = json.loads(path.read_text(encoding="utf-8"))
+        if ledger.get("settings") != settings:
+            raise BootstrapError("bootstrap token budget settings changed; use the original settings to resume")
+        stranded = [entry for entry in ledger.get("entries", []) if entry["status"] == "RESERVED"]
+        if stranded:
+            for entry in stranded:
+                entry["status"] = "UNKNOWN"
+            _write_bootstrap_token_ledger(path, ledger)
+            raise BootstrapError("bootstrap token usage is UNKNOWN after an interrupted invocation; refusing another model call")
+        if any(entry["status"] == "UNKNOWN" for entry in ledger.get("entries", [])):
+            raise BootstrapError("bootstrap token usage is UNKNOWN; refusing another model call")
+        return ledger
+    ledger = {"schema_version": 1, "settings": settings, "entries": []}
+    _write_bootstrap_token_ledger(path, ledger)
+    return ledger
 
 
 class BootstrapPairedPlan(BaseModel):
@@ -574,6 +639,9 @@ def bootstrap_campaign(
     deadline_seconds: int = 14400,
     plateau_experiments: int = 3,
     selection_mode: str = "deterministic",
+    max_model_tokens: int | None = None,
+    model_token_reserve: int = 300000,
+    model_token_stage_reserves: dict[str, int] | None = None,
 ) -> tuple[BootstrapPlan, CampaignSpec | None]:
     """Turn repo + goal into an approved CampaignSpec without touching source checkout."""
 
@@ -583,6 +651,32 @@ def bootstrap_campaign(
         )
 
     paths.ensure()
+    model_token_stage_reserves = dict(model_token_stage_reserves or {})
+    budget = BudgetSpec(
+        max_experiments=max_experiments,
+        max_attempts=max_attempts,
+        max_agent_calls=max_agent_calls,
+        max_model_tokens=max_model_tokens,
+        model_token_reserve=model_token_reserve,
+        model_token_stage_reserves=model_token_stage_reserves,
+        max_evaluator_calls=max_evaluator_calls,
+        deadline_seconds=deadline_seconds,
+        plateau_experiments=plateau_experiments,
+    )
+    token_ledger_path = paths.root / "bootstrap-token-budget.json"
+    token_ledger = _bootstrap_token_ledger(
+        token_ledger_path,
+        limit=budget.max_model_tokens,
+        reserve=budget.model_token_reserve,
+        stage_reserves=budget.model_token_stage_reserves,
+    )
+    bootstrap_agent_config = agent_config.for_role("bootstrap")
+    if budget.max_model_tokens is not None:
+        if bootstrap_agent_config.kind != "codex":
+            raise BootstrapError("max_model_tokens requires a Codex bootstrap adapter")
+        for role in ("propose", "select", "implement", "analyze"):
+            if agent_config.for_role(role).kind != "codex":
+                raise BootstrapError("max_model_tokens requires Codex adapters for all campaign model stages")
     source_base = current_commit(repo)
     workspace = WorkspaceManager(repo, paths.workspace)
     workspace.ensure(source_base)
@@ -592,8 +686,10 @@ def bootstrap_campaign(
         repo, workspace.workspace, discovery
     )
 
-    bootstrap_agent_config = agent_config.for_role("bootstrap")
     adapter = _agent(bootstrap_agent_config)
+    if token_ledger is not None:
+        assert isinstance(adapter, CodexAdapter)
+        adapter.meter_tokens = True
     probe = adapter.probe()
     if not probe.get("available"):
         raise BootstrapError(f"bootstrap agent unavailable: {probe}")
@@ -628,12 +724,49 @@ def bootstrap_campaign(
         )
 
     for attempt_index in range(BOOTSTRAP_MAX_ATTEMPTS):
+        token_entry: dict[str, Any] | None = None
+        if token_ledger is not None:
+            limit = int(token_ledger["settings"]["limit"])
+            reserve = int(token_ledger["settings"]["stage_reserves"].get(
+                "BOOTSTRAP", token_ledger["settings"]["reserve"]
+            ))
+            charged_or_reserved = sum(int(item["amount"]) for item in token_ledger["entries"])
+            if charged_or_reserved + reserve > limit:
+                raise BootstrapError(
+                    f"insufficient_token_reserve for BOOTSTRAP: need {reserve}, have {max(0, limit-charged_or_reserved)}"
+                )
+            token_entry = {
+                "action_id": f"bootstrap:{len(token_ledger['entries']) + 1}",
+                "stage": "BOOTSTRAP",
+                "amount": reserve,
+                "status": "RESERVED",
+                "quality": "upper_bound",
+                "reserved_at": datetime.now(timezone.utc).isoformat(),
+                "usage": None,
+            }
+            token_ledger["entries"].append(token_entry)
+            _write_bootstrap_token_ledger(token_ledger_path, token_ledger)
         try:
-            raw = adapter.execute(
-                task,
-                workspace.workspace,
-                timeout=agent_timeout_seconds,
-            )
+            try:
+                raw = adapter.execute(task, workspace.workspace, timeout=agent_timeout_seconds)
+            finally:
+                if token_entry is not None:
+                    usage = adapter.last_token_usage
+                    if usage is None:
+                        token_entry["status"] = "UNKNOWN"
+                        token_entry["quality"] = "upper_bound"
+                    else:
+                        actual = model_tokens(usage)
+                        token_entry["amount"] = actual
+                        token_entry["status"] = "CONSUMED"
+                        token_entry["quality"] = "actual"
+                        token_entry["usage"] = usage
+                    token_entry["settled_at"] = datetime.now(timezone.utc).isoformat()
+                    _write_bootstrap_token_ledger(token_ledger_path, token_ledger)
+                    if token_entry["status"] == "UNKNOWN":
+                        raise BootstrapError("bootstrap token usage UNKNOWN; refusing retries")
+                    if sum(int(item["amount"]) for item in token_ledger["entries"]) > int(token_ledger["settings"]["limit"]):
+                        raise BootstrapError("bootstrap token budget overshoot; campaign was not initialized")
             raw = adapter.normalize_result(task, raw)
             plan = BootstrapPlan.model_validate(raw)
             plan = _bind_plan_runtime(plan, task)
@@ -874,6 +1007,9 @@ def bootstrap_campaign(
             max_experiments=max_experiments,
             max_attempts=max_attempts,
             max_agent_calls=max_agent_calls,
+            max_model_tokens=max_model_tokens,
+            model_token_reserve=model_token_reserve,
+            model_token_stage_reserves=model_token_stage_reserves,
             max_evaluator_calls=max_evaluator_calls,
             deadline_seconds=deadline_seconds,
             plateau_experiments=plateau_experiments,
@@ -884,7 +1020,10 @@ def bootstrap_campaign(
 
     store = CampaignStore(paths.db)
     try:
-        store.initialize(spec)
+        store.initialize(
+            spec,
+            bootstrap_token_usage=(token_ledger["entries"] if token_ledger is not None else None),
+        )
         store.event(
             "CAMPAIGN_BOOTSTRAPPED",
             {
