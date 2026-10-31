@@ -4,8 +4,8 @@
 
 ## Code / evaluation
 
-- [x] Stage [PR #75](https://github.com/ObiVanBanan/BananLoop/pull/75) campaign cursor fix in the combined integration candidate; final-main acceptance remains open.
-- [x] Stage [PR #61](https://github.com/ObiVanBanan/BananLoop/pull/61) opt-in Codex token accounting in the same integration candidate. It is not provider-enforced; final-main acceptance and budget limitations remain open.
+- [x] Integrate [PR #75](https://github.com/ObiVanBanan/BananLoop/pull/75) campaign cursor fix into `main` through [PR #81](https://github.com/ObiVanBanan/BananLoop/pull/81). Linux current-base suite passed; Windows acceptance remains open.
+- [x] Integrate [PR #61](https://github.com/ObiVanBanan/BananLoop/pull/61) opt-in Codex token accounting into `main` through [PR #81](https://github.com/ObiVanBanan/BananLoop/pull/81). It is post-call accounting, not provider-enforced spending control; budget authorization and cross-platform acceptance remain open.
 - [x] Independent QA of semantic selector patch on SHA `c698e4966a0cf8621dbfbff8145c1397b278c2e8`: 335 pytest passed, six fresh Luna replay selections accepted, one CPU mini matcher smoke passed.
 - [x] Version in `pyproject.toml` is 0.1.0.
 - [ ] Run full suite on the exact final main release commit (documentation-only changes should not alter logic but warrant verification).
@@ -18,6 +18,11 @@
 - On code base `44614ea22bc5967adb7ee607bce2472cc66487ee`, Linux/Python 3.14.7 full suite: **448 passed, 1 skipped**; seven CPU-only lifecycle/research E2E cases: **7 passed**.
 - A non-editable wheel install, CLI `--help`, and offline fixture generation succeeded in temporary Linux/Python 3.14 environments. Windows and Python 3.11/3.12 clean-install/full-suite evidence for the final SHA remain open.
 - Skip: selector preregistration source commit is unavailable. This does not verify that missing source snapshot.
+
+### CI update — 2026-11-01
+
+- PR #85 is based on `main` SHA `44614ea22bc5967adb7ee607bce2472cc66487ee` and changes documentation plus an example-only lifecycle runner. Hosted Ubuntu Python 3.11/3.12/3.13 jobs passed. Windows/Python 3.12 is still `in_progress`; do not count the matrix complete until it reaches a terminal result.
+- The exact release SHA is not selected. The final-SHA checklist items remain open.
 
 ## Head-to-head benchmark — release blocker
 
