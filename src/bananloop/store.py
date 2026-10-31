@@ -489,6 +489,12 @@ class CampaignStore:
                             "reason": "proposal content no longer matches the approved digest",
                         })
                         previous = self.pivot_decision(command.request_id)
+                if (
+                    previous["status"] == "REJECTED"
+                    and command.decision == "reject"
+                    and command.rejection_action == "end_campaign"
+                ):
+                    self._finish_rejected_pivot_end(previous)
                 self.conn.commit()
                 return previous
 
@@ -536,48 +542,43 @@ class CampaignStore:
                 "status": status,
             })
             decision = self.pivot_decision(command.request_id)
+            if (
+                decision["status"] == "REJECTED"
+                and command.decision == "reject"
+                and command.rejection_action == "end_campaign"
+            ):
+                self._finish_rejected_pivot_end(decision)
             self.conn.commit()
             return decision
         except Exception:
             self.conn.rollback()
             raise
 
-    def end_after_rejected_pivot(self, request_id: str) -> dict[str, Any]:
-        """Atomically end a paused campaign after its pivot was explicitly rejected."""
-        self.conn.execute("BEGIN IMMEDIATE")
+    def _finish_rejected_pivot_end(self, decision: dict[str, Any]) -> None:
+        """Finish an end-campaign rejection inside the decision transaction."""
         try:
-            decision = self.pivot_decision(request_id)
-            if decision is None or decision["decision"] != "reject" or decision["status"] != "REJECTED":
-                raise StoreError("terminal pivot rejection receipt is missing or stale")
-            try:
-                rejection_action = json.loads(decision["result_json"]).get("rejection_action")
-            except (ValueError, TypeError, AttributeError):
-                rejection_action = None
-            if rejection_action != "end_campaign":
-                raise StoreError("pivot rejection does not authorize ending the campaign")
-            campaign = self.campaign()
-            if campaign["status"] == CampaignStatus.STOPPED.value:
-                self.conn.commit()
-                return campaign
-            if campaign["status"] != CampaignStatus.PAUSED_NEEDS_INPUT.value:
-                raise StoreError("campaign is no longer paused for this pivot decision")
-            if campaign["active_attempt_id"] is not None or campaign["active_experiment_id"] is not None:
-                raise StoreError("cannot end a pivot campaign while work is active")
-            self.conn.execute(
-                "UPDATE campaigns SET status=?,stop_reason=?,stop_requested=1,pause_requested=0,updated_at=? WHERE id=1",
-                (CampaignStatus.STOPPED.value, StopReason.USER_STOPPED.value, utc_now()),
-            )
-            self.event("CAMPAIGN_STOPPED", {
-                "reason": StopReason.USER_STOPPED.value,
-                "status": CampaignStatus.STOPPED.value,
-                "pivot_request_id": request_id,
-                "proposal_id": decision["proposal_id"],
-            })
-            self.conn.commit()
-            return self.campaign()
-        except Exception:
-            self.conn.rollback()
-            raise
+            rejection_action = json.loads(decision["result_json"]).get("rejection_action")
+        except (ValueError, TypeError, AttributeError):
+            rejection_action = None
+        if rejection_action != "end_campaign":
+            raise StoreError("pivot rejection does not authorize ending the campaign")
+        campaign = self.campaign()
+        if campaign["status"] == CampaignStatus.STOPPED.value:
+            return
+        if campaign["status"] != CampaignStatus.PAUSED_NEEDS_INPUT.value:
+            raise StoreError("campaign is no longer paused for this pivot decision")
+        if campaign["active_attempt_id"] is not None or campaign["active_experiment_id"] is not None:
+            raise StoreError("cannot end a pivot campaign while work is active")
+        self.conn.execute(
+            "UPDATE campaigns SET status=?,stop_reason=?,stop_requested=1,pause_requested=0,updated_at=? WHERE id=1",
+            (CampaignStatus.STOPPED.value, StopReason.USER_STOPPED.value, utc_now()),
+        )
+        self.event("CAMPAIGN_STOPPED", {
+            "reason": StopReason.USER_STOPPED.value,
+            "status": CampaignStatus.STOPPED.value,
+            "pivot_request_id": decision["request_id"],
+            "proposal_id": decision["proposal_id"],
+        })
 
     def control_request(self, request_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
