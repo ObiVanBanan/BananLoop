@@ -1,69 +1,64 @@
 # Core readiness audit — v0.1 Research Preview
 
-**Audit base:** `origin/main` / `b4abbf1488296ff43a4f4c3c639ed24e54a3764e` (`feat: implement operator roadmap and record evidence`).
-**Scope:** current source and tracked documentation at that SHA, local benchmark artifacts explicitly identified below, GitHub state read on 2026-10-30. This audit does not treat roadmap checkboxes or PR descriptions as proof of implementation.
+**Audit base:** `origin/main` / `44614ea22bc5967adb7ee607bce2472cc66487ee` (2026-10-31). The audit uses current source, tracked evidence, reachable Git refs and GitHub repository metadata; roadmap checkboxes and PR descriptions are not implementation proof. The work branch `codex/core-readiness-execution` is based on this commit; the user-facing main checkout is unchanged.
 
-## Confirmed capabilities on the audit base
+## Confirmed in current `main`
 
-- CLI is implemented in `src/bananloop/cli.py`; campaigns use SQLite state and `src/bananloop/engine.py` owns the research lifecycle. `src/bananloop/store.py` persists actions, reservations, receipts, events and champion state.
-- Action replay uses request hashes and durable action statuses in `src/bananloop/engine.py`; unknown `RUNNING` and failed actions require explicit retry flags. These mechanics are not token metering.
-- SQLite migrations in `src/bananloop/store.py` add columns/tables and migrate legacy evaluation rows. Process termination in `src/bananloop/process.py` handles process groups, Windows break/kill fallbacks, and Unix process-group termination. Existing unit tests exercise local child processes and recovery; this is not evidence of a supported Windows/Linux acceptance matrix.
-- `src/bananloop/operator_control.py` provides typed pause/resume/end commands and durable request receipts. `src/bananloop/operator_snapshot.py` projects committed state and DEV-only evaluation rows; `read_events_after()` supports cursor paging and filters event payloads.
-- Champion promotion is guarded by validation/policy checks and persisted atomically by the store. Terminal cleanup checks out the champion snapshot in `src/bananloop/engine.py`.
-- Composite hypotheses and architecture-pivot records exist on this branch. They are deferred product scope under the current plan; existence in code does not make them v0.1 release requirements.
+- The supported user flow is the Python CLI (`src/bananloop/cli.py`). `engine.py`, `research.py`, `store.py`, `policy.py` and `evaluators/` implement the durable propose/implement/evaluate/decide loop, research memory, evaluator policy and champion state. The repository requires Python 3.11+ per `pyproject.toml`. In this Linux host, Python 3.14.7 was used in a temporary `/tmp` environment; a regular wheel install, CLI help, and offline fixture creation succeeded. The exact-base full suite completed with 448 passed and 1 skipped; see the verification update below.
+- The core exposes typed operator controls (`src/bananloop/operator_control.py`), read-only snapshots and event paging (`operator_snapshot.py`), independently of any UI. `operator-ui/` remains in the repository as an experimental Pi interface. Current README and roadmap defer it; the UI is not required by the core or release acceptance.
+- PR #75's campaign state/event fix is in `main`: row updates and payload-free `CAMPAIGN_STATE_UPDATED` events commit atomically; projected experiment changes and DEV inserts advance the cursor. `tests/test_operator_snapshot.py` covers cursor/revision changes. No schema migration was added for this fix.
+- PR #61's optional Codex token accounting is in `main`. When enabled, campaign configuration requires Codex for all model roles; the engine performs pre-call reserve admission and validates final Codex receipts; reservations with unknown outcomes remain charged; cached input is not double-counted; overshoot prevents candidate application/promotion. This is post-call usage accounting, not a provider-side spend stop, and it does not provide a hard USD cap. Legacy campaigns without the option preserve their existing spec hash/behavior.
+- SQLite actions, request fingerprints, receipts, recovery states, champion snapshots and migrations are implemented in `store.py`/`engine.py`. `process.py` has platform-specific process-tree termination paths. Unit tests exist for action retry, durable resume, child-process termination, promotion and champion preservation. The prior report `docs/reviews/core-research-e2e-report.md` records seven CPU-only Windows/Python 3.13 E2E cases, but it predates this exact main SHA and is not current-SHA acceptance.
+- Current preview documentation (`README.md`, `docs/ROADMAP.md`, `docs/BENCHMARK_STATUS.md`, `docs/RELEASE_CHECKLIST.md`) describes CLI-only scope, separates exploratory evidence from H2H evidence, and keeps the matched Codex comparison as a release gate.
 
-## Incomplete or unverified implementations
+## Incomplete or unverified
 
-- **Token-aware model budget:** not integrated in this `main`. `CampaignSpec` exposes call/evaluation limits, while draft PR #61 / issue #60 describe a separate opt-in Codex token metering implementation. The PR itself documents post-call overshoot, unknown usage, and missing real Windows receipt validation. Do not describe current main as enforcing a strict token cap.
-- **Interactive UI scope:** README and `docs/ROADMAP.md` still describe the Pi terminal and `/chat` as available capabilities. The user-approved product boundary in the stabilization plan is CLI only; a future desktop application is deferred. Existing snapshot/control/events remain useful headless interfaces and should be retained.
-- **Benchmark status document:** `docs/BENCHMARK_STATUS.md` is absent on the audit base.
-- **Lifecycle acceptance:** tests cover local subprocesses, pause/stop and recovery paths, but no evidence in the inspected tree establishes a reproducible full campaign E2E matrix on both Windows and Linux with final report and crash/restart.
-- **Secret/history audit:** no dedicated scanner was available in the execution environment. A limited local pattern scan of reachable Git objects across refs known to this clone checked 3,999 object IDs for private-key headers, AWS access-key IDs, GitHub/Slack token formats and quoted credential assignments; it reported zero matches. It did not inspect untracked artifacts, refs absent from this clone, every provider-specific format, or GitHub secret-scanning alerts. This is not a complete clearance; no secret values belong in this report.
+- **Cross-platform acceptance:** Linux/Python 3.14 full pytest passed on the current code base (448 passed, 1 skipped); seven selected CPU-only research E2E tests passed. A regular wheel install, `bananloop --help` and offline fixture creation succeeded in temporary environments. Windows acceptance and the supported Python 3.11/3.12 matrix remain unverified on this exact base; the final release SHA is not selected.
+- **Durable lifecycle acceptance:** source/tests cover pause, stop, recovery, idempotent receipts and champion preservation, and a previous seven-case fixture report passed on Windows. A reusable current-SHA Linux CLI lifecycle runner now launches a local agent subprocess, pauses/cancels it, resumes the campaign and captures the final report. The run passed on Python 3.14.7. Current-SHA Windows acceptance and supported Python 3.11/3.12 matrix remain outstanding; SIGINT and active Codex cancellation need supported-platform acceptance.
+- **Token budget:** local counters/reservations are implemented and tested in source, but the cap is based on available Codex CLI receipts and worst-case reservations. It cannot prevent one opaque provider call from exceeding the remaining allowance. USD cost is not established when unavailable and must remain `UNKNOWN`.
+- **Benchmark isolation:** BananLoop's normal workspace/integrity controls are not a hostile-code OS sandbox. PR #83 adds a Docker candidate runner; PR #84 adds a Carps-specific broker, but #84 is still an open draft and neither is integrated into `main`. Its own limits state that Docker image/smoke did not run in the desktop session, evaluator process/ACL isolation, model proxy, USD accounting, total disk cap and complete negative preflight are unproven. Do not run candidate/model arms on this basis.
+- **Matched H2H:** issue #64 remains open. No eligible Codex Direct vs BananLoop scores, frozen final artifacts or complete per-arm receipts are available. The historical #60 pair overshot BananLoop's nominal budget and is ineligible. LiveCodeBench #63 is a different BananLoop-vs-BananLoop public-only pilot; it does not answer the release question.
+- **Repository visibility:** GitHub repository API currently reports `visibility=public`, while the release docs say the intended Research Preview is closed. No visibility change is made here. Collaborator access and exposed-artifact review remain separate release gates.
+- **Secret/privacy audit:** no dedicated scanner (`gitleaks`, `trufflehog`, `detect-secrets`) is installed in this host, and no connected secret-alert listing tool is available. A local non-printing scan of 1,588 blobs reachable from the refs in this clone found zero matches for private-key headers, AWS access-key IDs, GitHub token formats, Slack token formats and Google API-key format. This limited pattern scan does not prove absence of all secret types, inspect unreachable objects or refs absent from this clone, evaluate rights/privacy, or check GitHub secret-scanning alerts. No secret values are recorded here.
 
-## Reproduced consistency defect (fixed in this branch)
+## Defects, risks and changes already integrated
 
-`CampaignStore.update_campaign()` in the audit base updated campaign rows and committed without inserting an event. `set_research_state()` delegates to that method. `read_snapshot()` derived `revision` from `MAX(events.seq)`. A consumer could therefore keep the same event cursor while `status`, stop reason, or research state changed. The current audit branch fixes this by recording a payload-free `CAMPAIGN_STATE_UPDATED` event atomically with the row update; a regression test checks the snapshot revision and event cursor. No SQLite schema migration is introduced.
+- **Snapshot cursor defect — fixed in #75 and current `main`.** Campaign state could previously change without advancing the event-derived snapshot revision. The fix atomically records a payload-free event with row changes and has regression tests; the current-base full suite passed.
+- **Model accounting risk — narrowed, not eliminated.** Optional reservations and receipts prevent promotion after unmetered/overshoot outcomes, but they do not stop provider charges during a single call. Do not call this a strict spending cap.
+- **Candidate execution risk — unresolved for hostile submissions.** Workspace separation and a Docker runner do not by themselves establish safe isolation of credentials, evaluator, model proxy, network or total disk use. No unsandboxed fallback is acceptable.
+- **Public/closed-preview mismatch — unresolved.** Repository-level API confirms public visibility; no repository setting was changed.
+- **No verified matched-resource advantage.** A win is not required, but an eligible, independently scored pair is mandatory evidence before recommending the preview.
 
-## Bugs and release risks
+## PR and issue state checked on 2026-10-31
 
-- Strict per-campaign token admission/accounting is absent from audit-base `main`; provider cost/token use may remain unknown. This blocks claims of a strict token cap and a fair budget-matched H2H.
-- Codex CLI process cancellation/recovery must still be accepted with real processes on supported Windows and Linux configurations. Existing local process tests alone do not establish this release criterion.
-- The repository's agent/evaluator isolation is not an OS-grade hostile-code sandbox. Generated benchmark code must not be executed on the host or via an unsandboxed fallback.
-- H2H artifact in the local audit evidence is absent. Issue #60 documents an exploratory shared pair: Codex used 706,403 tokens and reached DEV quality 0.70718697; BananLoop used 751,298 against a nominal 750,000, so the arm was ineligible after a 1,298-token overshoot and its next candidate was unmeasured. Equal visible champion scores do not demonstrate a harness advantage.
-- `docs/benchmarks/operator-roadmap.md` reports an AutoResearchExam BananLoop-only intermediate DEV run, an empty planned paired suite, and a separate selector mini-fixture. These are distinct experiments and cannot satisfy the Codex Direct vs BananLoop gate. The five-pair selector DEV fixture reported four ties and one lower LLM-selector score; it has no HOLDOUT and no winner claim.
-- PR #63 is a public-only LiveCodeBench pilot with no official hidden score, no billed-token accounting, and explicit warnings that generated code is unsafe to run on the host. It is not the required H2H.
-- Hosted CI is not established as green for the final SHA. The release checklist itself leaves final-SHA suite, clean Windows/Linux install, evaluator/HOLDOUT review, CI substitute, privacy/history audit, and publish gates open.
+- PR #61 (token receipts): merged into main; post-call Codex accounting only.
+- PR #75 (campaign event cursor): merged into main; atomic event/revision update.
+- PR #72 (release documentation): merged into main; current docs preserve CLI scope and blockers.
+- PR #81 (integration of #61/#75/#72): merged into main; current main includes their combined changes.
+- PR #63 (LiveCodeBench public-only pilot): open draft, based on a separate fresh-proposer branch; not an AutoResearchExam H2H.
+- PR #70 (LLM semantic selector): GitHub still reports the PR open/draft, but its source commit `c698e4966a0cf8621dbfbff8145c1397b278c2e8` is an ancestor of current `main`; the optional selector is present and deterministic selection remains the default. Do not duplicate it. Its opt-in existence and single DEV smoke do not establish improvement over the deterministic selector.
+- PR #84 (Carps task broker, head `c72b01925ffdc8b5028d9e777d7dceddfa880e02`): open draft, based on #83 rather than current main; not integrated. Actual cloud preparation and focused tests are reported in the PR; Docker runtime smoke and all treatment/H2H scores remain absent.
+- Issues #28 (product goal), #49 (product specification), #60 (token budget) and #64 (paired AutoResearchExam pilot) are open. Issue text is specification/context, not proof of implementation.
 
-## Duplicate / overlapping pull requests and issues
+## v0.1 requirements and deferrals
 
-- PR #61 implements the P0 token-budget scope for issue #60 but is open and not integrated into audit-base `main`; it is not a strict external spending stop. Do not duplicate its approach without checking its branch and tests.
-- PR #63 is a separate LiveCodeBench public-only experiment and must remain distinct from AutoResearchExam H2H evidence.
-- PR #70 is an opt-in semantic selector proposal with its own hard gates/fallback. Its PR description says local tests are not yet verified; it is not H2H evidence.
-- PR #72 is an open Draft documentation PR. On 2026-10-30 its branch was updated with current `main` and corrected scope/visibility/benchmark docs; GitHub reports head `9def13a5fb3dd1dee3ca07c3a801e65b309802f7`, `mergeable=true`. Final-SHA validation, platform installs, complete history audit and repeat H2H remain unfinished. GitHub metadata reports `visibility=public`, which conflicts with the intended closed preview; visibility was not changed.
-- Issues #28 and #49 are open product/specification context; #60 is open and covers token admission; #64 is open and specifies the required paired AutoResearchExam study and isolation gate. These issues describe desired work, not proof it is present in `main`.
+Required before a v0.1 Research Preview recommendation: truthful CLI-only scope; correct state/event cursor semantics; durable lifecycle and champion integrity accepted on supported Windows/Linux; accurate token accounting limitations; current-SHA CPU-only research E2E; clean install and full suite; evaluator/HOLDOUT isolation; comprehensive secret/privacy/rights review; and eligible, reproducible Codex Direct vs Codex + BananLoop evidence. If spend authorization, usage accounting or safe isolation is unavailable, mark the benchmark `BLOCKED`/`INELIGIBLE` and do not substitute a paid or host-executed run.
 
-## Required for v0.1 vs deferred to v0.2+
+Deferred to v0.2+: new Pi terminal UI work, desktop UI implementation, chat-first workflow, interactive charts, multi-user/remote dashboard, new model platforms, expanded benchmark classes without licensing and safe oracle, and architecture-pivot continuation. Preserve existing `operator-ui/`, typed controls, snapshots and persisted events.
 
-**Required before a v0.1 Research Preview recommendation:** CLI-only truthful docs; correct state/event revision semantics; durable local campaign lifecycle and champion integrity; token accounting described honestly (unknown where unavailable) with no strict-cap claim; a deterministic CPU-only core research E2E with explicit pass/fail/skip outcomes; final-SHA suite and clean install on supported Windows/Linux; safe evaluator boundary; complete historical secret/privacy audit; and a reproducible matched-resource Codex Direct vs BananLoop comparison. If cost metering or sandbox is unavailable, the H2H gate is `BLOCKED`/`INELIGIBLE`; do not run paid or unsandboxed substitutes.
+## Visibility, release recommendation and next gates
 
-**Deferred to v0.2+:** Pi terminal development/expansion, desktop application, chat-first workflow, interactive charts, architecture-pivot campaign continuation, remote/multi-user dashboard, new model platforms, and additional benchmark classes without licensing and safe oracle boundaries. Preserve existing headless typed control, read-only snapshots, and event mechanisms.
+Repository API says `public` as of this audit. The repo setting was not changed. Do not create a tag/release or merge as part of this plan without separate authorization; do not infer a closed preview from the documentation while the repository remains public.
 
-## Visibility and secret review
+**Current recommendation: NOT READY.** The release benchmark is **BLOCKED / INELIGIBLE** because no confirmed spend authorization and no verified hostile-code evaluator isolation are established. Other open acceptance evidence includes current-SHA test/install runs on Windows/Linux and comprehensive secret/privacy/rights review. No H2H model call or HOLDOUT evaluation has been started.
 
-GitHub repository metadata reported `visibility=public` on 2026-10-30. This contradicts the private-preview statement in Draft PR #72. The audit branch did not change repository visibility. No dedicated secret scanner was installed. A local pattern scan over reachable refs known to this clone checked 3,999 object IDs and reported zero matches for selected private-key/token/credential formats; it did not cover untracked files, remote refs absent from the clone, every provider format, or GitHub secret alerts. This is not a complete clearance.
 
-## PR and release recommendation
+## Verification update — current code base
 
-The current audit branch contains a narrow event/snapshot consistency fix and regression coverage. Additional changes should be split by invariant and checked against the actual base before separate PRs. No merge, tag, release, or visibility change is part of this work. **Current recommendation: NOT READY; benchmark gate BLOCKED pending confirmed resources and a verified isolated evaluator.**
-
-## Verification update — 2026-10-31
-
-- The current PR #61 head is `3e9f8b7f99924432ae767c1e6d1b07bc70da9c71`, still Draft. It has been refreshed against this audit-base `main`, adds SELECT-role token attribution/config validation, strict final-receipt handling, and crash-retry coverage. Its Windows / Python 3.13 full suite collected 445 tests and exited 0; hosted CI and Linux verification remain unverified. The token cap is post-call accounting, not a provider-enforced spend limit.
-- The event/snapshot consistency patch and CPU-only scenarios A–E are recorded in `docs/reviews/core-research-e2e-report.md`. The local full suite collected 432 tests and exited 0; seven selected E2E and DEV-only context cases passed. The preregistered selector source snapshot is absent, so its hash verification is explicitly skipped rather than comparing unrelated current files.
-- These checks do not clear the release gate. No matched-resource H2H, Linux acceptance, complete secret-scanner run, or safe hostile-code evaluator boundary has been established.
-
-## Source references
-
-- `src/bananloop/engine.py`, `src/bananloop/store.py`, `src/bananloop/process.py`, `src/bananloop/operator_control.py`, `src/bananloop/operator_snapshot.py` at `b4abbf1488296ff43a4f4c3c639ed24e54a3764e`.
-- `docs/ROADMAP.md`, `docs/RELEASE_CHECKLIST.md`, `docs/benchmarks/operator-roadmap.md` at the same SHA.
-- GitHub PRs #61, #63, #70, #72 and issues #28, #49, #60, #64 as observed on 2026-10-30.
+- Base commit: `44614ea22bc5967adb7ee607bce2472cc66487ee`. This branch adds documentation and an example-only test runner; no `src/bananloop` runtime or evaluator/benchmark files changed.
+- Linux, Python 3.14.7, temporary venv: full `pytest` **448 passed, 1 skipped in 38.45s**. The skip is `tests/test_selector_preregistration.py`: pinned source commit `cd753c97c62148c3ccd3f030251e96a4d19b23bd` is unavailable.
+- The seven CPU-only lifecycle/research E2E tests A–E plus DEV-only adaptive context passed: **7 passed in 3.11s**. `examples/fixture/run_lifecycle_e2e.py` also passed end-to-end: a local CLI subprocess was paused and cancelled, then resumed to `GOAL_MET`; final report `DEV_ONLY`, 3 experiments, 7 agent calls, 4 evaluator calls, champion quality 0→3. Logs and state are retained in `/tmp/bananloop-plan-lifecycle-e2e-final`. This does not prove Windows or hostile-code isolation.
+- A non-editable wheel installation from this checkout succeeded; `bananloop --help` returned successfully; `examples/fixture/create_fixture.py` created `/tmp/bananloop-plan-fixture`. This is Linux/Python 3.14 only, not the full supported-platform install matrix.
+- Reachable-history pattern scan: 1,588 blobs, zero matches for the five listed key/token formats. No dedicated scanner or GitHub secret alerts were available; this remains a limited scan, not clearance.
+- GitHub API confirms public visibility. No benchmark/model call, HOLDOUT run, visibility change, merge, tag or release was performed for this update.
+- GitHub returned no workflow runs or combined statuses for this merge commit; local Linux test results do not substitute for a hosted Windows/Linux matrix.
