@@ -23,6 +23,7 @@
 
 - PR #85 head `d7bf9d055da1557e9a5f584a5b9b834e82129894` is based on `main` SHA `44614ea22bc5967adb7ee607bce2472cc66487ee`. Hosted run `41238895406` passed on Ubuntu Python 3.11/3.12/3.13 and Windows/Python 3.12 (Windows: 448 passed, 1 skipped in 642.13s). PR #86/#87 matrices also passed. PR #88/#89 matrices passed, including the Windows lifecycle E2E and clean-install fixture smoke (Windows: 456 and 457 passed, respectively; each had 1 skip). The final release SHA is not selected.
 - The exact release SHA is not selected. The final-SHA checklist items remain open.
+- PR #85's updated history-scan and release-checklist docs at SHA `8d5862058d3509d8d0c3d1358839d381e96ae521` passed runs [41244438038](https://github.com/ObiVanBanan/BananLoop/actions/runs/41244438038) and [41244442129](https://github.com/ObiVanBanan/BananLoop/actions/runs/41244442129) on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12. Windows: 448 passed, 1 skipped. A later audit-recommendation documentation refresh is under verification.
 
 ## Head-to-head benchmark — release blocker
 
