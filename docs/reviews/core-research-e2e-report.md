@@ -63,13 +63,15 @@ No model or paid calls, benchmark treatment, validation or HOLDOUT scores were r
 - The SIGINT lifecycle runner sent a real signal during an active local agent action, observed `PAUSED_INFRA` and persisted cancellation, confirmed the child process exited, then resumed to `GOAL_MET`: 3 experiments, 7 agent calls, 4 evaluator calls, quality 0→3, `DEV_ONLY`. No model calls or HOLDOUT were configured.
 - Reproduction: `/tmp/bananloop-plan-sigint-e2e-20261101-pr87/result.json`; logs are under `/tmp/bananloop-plan-sigint-e2e-20261101-pr87/logs/`.
 
-PR #87 head `8bd6987f7ebc7a4223c6ef0ba4993212074b50ac` passed hosted run [#41236491009](https://github.com/ObiVanBanan/BananLoop/actions/runs/41236491009) on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12. The later lifecycle/install matrix runs #88/#89 have their Ubuntu Python 3.11/3.12/3.13 jobs green; Windows Python 3.12 is still running. The local Linux evidence does not prove hostile-code isolation, H2H eligibility, or a release recommendation.
+PR #87 head `8bd6987f7ebc7a4223c6ef0ba4993212074b50ac` passed hosted run [#41236491009](https://github.com/ObiVanBanan/BananLoop/actions/runs/41236491009) on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12. PR #88 run [#41237333538](https://github.com/ObiVanBanan/BananLoop/actions/runs/41237333538) passed its Windows full suite with 456 passed, 1 skipped. PR #89 run [#41237375210](https://github.com/ObiVanBanan/BananLoop/actions/runs/41237375210) passed its Windows full suite with 457 passed, 1 skipped, including the clean-install smoke on hosted CI. The local evidence does not prove hostile-code isolation, H2H eligibility, or a release recommendation.
 
 ## Current stacked verification — 2026-11-01
 
 **PR #89 head:** `472f695a6263d80d8d62875febaf394e73122f2e`, stacked on PR #88, #87, #86 and #85.
 
-- Full local suite: **456 passed, 2 skipped** on Linux/Python 3.14.7. The skips are the unavailable pinned selector source snapshot and the clean-install test's network-dependent build-isolation step. The hosted Ubuntu/Python 3.11/3.12/3.13 matrix passed, including wheel install and CPU fixture execution; Windows/Python 3.12 remains in progress.
+- Full local suite: **456 passed, 2 skipped** on Linux/Python 3.14.7. The skips are the unavailable pinned selector source snapshot and the clean-install test's network-dependent build-isolation step. The hosted Ubuntu/Python 3.11/3.12/3.13 and Windows/Python 3.12 matrix passed, including wheel install and CPU fixture execution.
 - A fresh real-SIGINT run of `examples/fixture/run_lifecycle_e2e.py` exited the CLI with code 130, persisted `PAUSED_INFRA` and the cancelled `exp:1:propose` action, confirmed the child had exited, then resumed to `GOAL_MET` with 3 experiments, 7 agent calls, 4 evaluator calls, quality 0→3, and `DEV_ONLY`. It made zero model calls and configured no HOLDOUT.
 - Reproduction: `PYTHONPATH=src /tmp/bananloop-plan-venv/bin/python examples/fixture/run_lifecycle_e2e.py --sigint --output-dir /tmp/bananloop-sigint-e2e-current-20261101`.
 - Logs and state: `/tmp/bananloop-sigint-e2e-current-20261101/result.json` and `/tmp/bananloop-sigint-e2e-current-20261101/logs/`.
+
+The documentation-only PR #85 update on head `0701f44b8196d5f7369d238a4de9830612505807` also passed its hosted Ubuntu/Windows matrix (run `41237948371`; Windows: 448 passed, 1 skipped). No PR is merged and the release SHA remains unselected.
