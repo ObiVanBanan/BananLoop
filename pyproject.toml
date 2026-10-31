@@ -21,6 +21,7 @@ bananloop-ui = "bananloop.web_ui:main"
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+pythonpath = ["src", "."]
 
 [tool.pytest-gremlins]
 # Initial, opt-in scope: evaluation and promotion decisions.
