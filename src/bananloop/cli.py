@@ -417,6 +417,11 @@ def cmd_start(args: argparse.Namespace) -> int:
                         deadline_seconds=args.deadline_seconds,
                         plateau_experiments=args.plateau,
                         selection_mode=getattr(args, "selector_mode", "deterministic"),
+                        max_model_tokens=getattr(args, "max_model_tokens", None),
+                        model_token_reserve=getattr(args, "model_token_reserve", 300000),
+                        model_token_stage_reserves=dict(
+                            entry.split("=", 1) for entry in (getattr(args, "token_reserve", None) or [])
+                        ),
                     )
         except CampaignLockError as exc:
             print(f"BananLoop error: {exc}", file=sys.stderr)
@@ -755,6 +760,7 @@ def parser() -> argparse.ArgumentParser:
     goal.add_argument("--agent-profiles", help="TOML profile file for default and role-specific agent settings")
     goal.add_argument("--selector-mode", choices=["deterministic", "llm"], default="deterministic",
                       help="opt-in LLM comparison of admissible proposals")
+    _add_token_budget_args(goal)
     goal.add_argument(
         "--prepare-only",
         action="store_true",
@@ -827,6 +833,7 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--max-experiments", type=int, default=4)
     start.add_argument("--max-attempts", type=int, default=7)
     start.add_argument("--max-agent-calls", type=int, default=18)
+    _add_token_budget_args(start)
     start.add_argument("--max-evaluator-calls", type=int, default=16)
     start.add_argument("--deadline-seconds", type=int, default=14400)
     start.add_argument("--plateau", type=int, default=3)
@@ -851,6 +858,7 @@ def parser() -> argparse.ArgumentParser:
     prepare.add_argument("--selector-mode", choices=["deterministic", "llm"], default="deterministic",
                          help="opt-in LLM comparison after preparation")
     prepare.add_argument("--request-id", help="idempotency key for preparation")
+    _add_token_budget_args(prepare)
     prepare.set_defaults(
         func=cmd_start,
         prepare_only=True,
@@ -1056,6 +1064,14 @@ def parser() -> argparse.ArgumentParser:
     list_cmd.add_argument("--json", action="store_true")
     list_cmd.set_defaults(func=cmd_campaigns_list)
     return p
+
+
+def _add_token_budget_args(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--max-model-tokens", type=int, help="opt-in charged input+output model token cap (Codex)")
+    command.add_argument("--model-token-reserve", type=int, default=300000,
+                         help="default pre-call token reservation")
+    command.add_argument("--token-reserve", action="append", metavar="STAGE=TOKEN_COUNT",
+                         help="override reservation for PROPOSE, SELECT, EXECUTE, ANALYZE, or BOOTSTRAP")
 
 
 def main() -> None:
