@@ -55,10 +55,11 @@ No model or paid calls, benchmark treatment, validation or HOLDOUT scores were r
 
 ## Bootstrap-budget candidate follow-up — 2026-11-01
 
-**Candidate:** PR #87 head `b0278de7e4e86f54e1ed4e5e8e331a9d24f09d3c`, stacked on PR #86 head `14c383a49a1ebf46e8448534f0b09c6c4333b6d4`; Linux / Python 3.14.7. No model calls, paid calls, benchmark treatment or HOLDOUT scoring were used.
+**Candidate:** PR #87 code/test commit `65b3f57be185183ff355db952cc3e6a40209c012`, stacked on PR #86 head `14c383a49a1ebf46e8448534f0b09c6c4333b6d4`; Linux / Python 3.14.7. No model calls, paid calls, benchmark treatment or HOLDOUT scoring were used.
 
-- The seven CPU-only research scenarios listed above passed again on this worktree, including improvement/promotion, failed-hypothesis reflection, plateau, composite acceptance/rejection, durable resume, and DEV-only adaptive history.
-- The full suite completed with exit code 0: 453 passed, 1 skipped. The skip is the unavailable pinned selector preregistration source snapshot.
+- The seven CPU-only research scenarios listed above passed again on this worktree, including improvement/promotion, failed-hypothesis reflection, plateau, composite acceptance/rejection, durable resume, and DEV-only adaptive history. The staged validation gate and one-time terminal HOLDOUT test also passed separately: `tests/test_engine.py::test_staged_validation_gates_promotion_and_final_holdout_runs_once`.
+- The full suite completed with exit code 0: 454 passed, 1 skipped. The skip is the unavailable pinned selector preregistration source snapshot.
+- A subprocess regression abruptly exited during a first unmetered bootstrap call; the pre-call marker remained `IN_FLIGHT`, and a retry with a cap was rejected before adapter creation.
 - The SIGINT lifecycle runner sent a real signal during an active local agent action, observed `PAUSED_INFRA` and persisted cancellation, confirmed the child process exited, then resumed to `GOAL_MET`: 3 experiments, 7 agent calls, 4 evaluator calls, quality 0→3, `DEV_ONLY`. No model calls or HOLDOUT were configured.
 - Reproduction: `/tmp/bananloop-plan-sigint-e2e-20261101-pr87/result.json`; logs are under `/tmp/bananloop-plan-sigint-e2e-20261101-pr87/logs/`.
 
