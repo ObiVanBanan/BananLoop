@@ -603,6 +603,57 @@ def test_bootstrap_token_budget_admits_before_model_call_and_imports_receipt(tmp
     assert overshoot_ledger["entries"][0]["status"] == "CONSUMED"
 
 
+def test_bootstrap_receipt_import_rolls_back_partial_campaign_initialization(tmp_path):
+    from bananloop.contracts import BudgetSpec, CampaignSpec, Direction, MetricSpec
+    from bananloop.store import StoreError
+
+    store = CampaignStore(tmp_path / "campaign.sqlite3")
+    spec = CampaignSpec(
+        goal="test bootstrap accounting transaction",
+        source_repo=str(tmp_path),
+        base_commit="a" * 40,
+        evaluation_command=["python", "evaluator.py"],
+        primary_metric=MetricSpec(
+            name="quality",
+            direction=Direction.MAXIMIZE,
+            target=1.0,
+            min_improvement=0.1,
+        ),
+        budget=BudgetSpec(max_model_tokens=100),
+    )
+    receipts = [
+        {
+            "action_id": "bootstrap:1",
+            "amount": 10,
+            "status": "CONSUMED",
+            "quality": "actual",
+            "reserved_at": "2026-11-01T00:00:00+00:00",
+            "settled_at": "2026-11-01T00:00:01+00:00",
+            "usage": {
+                "input_tokens": 8,
+                "output_tokens": 2,
+                "cached_input_tokens": 0,
+            },
+        },
+        {
+            "action_id": "bootstrap:2",
+            "amount": 10,
+            "status": "RESERVED",
+            "quality": "upper_bound",
+            "reserved_at": "2026-11-01T00:00:02+00:00",
+            "usage": None,
+        },
+    ]
+
+    try:
+        with pytest.raises(StoreError, match="must be settled"):
+            store.initialize(spec, bootstrap_token_usage=receipts)
+        for table in ("campaigns", "actions", "reservations", "events"):
+            assert store.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+    finally:
+        store.close()
+
+
 def test_bootstrap_token_budget_fails_closed_on_unknown_usage(tmp_path, monkeypatch):
     import bananloop.bootstrap as bootstrap_module
     from bananloop.agents.codex import CodexAdapter
