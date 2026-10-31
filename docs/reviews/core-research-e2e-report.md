@@ -75,3 +75,16 @@ PR #87 head `8bd6987f7ebc7a4223c6ef0ba4993212074b50ac` passed hosted run [#41236
 - Logs and state: `/tmp/bananloop-sigint-e2e-current-20261101/result.json` and `/tmp/bananloop-sigint-e2e-current-20261101/logs/`.
 
 The documentation-only PR #85 update on head `d7bf9d055da1557e9a5f584a5b9b834e82129894` also passed its hosted Ubuntu/Windows matrix (run `41238895406`; Windows: 448 passed, 1 skipped in 642.13s). No PR is merged and the release SHA remains unselected.
+
+
+## Final HOLDOUT recovery E2E — 2026-11-01
+
+**PR #91 head:** `3ab301ad499f17f1a9abb4ac7813743b6d4f1d1a`, stacked on PR #89 head `472f695a6263d80d8d62875febaf394e73122f2e`; Linux / Python 3.14.7. No model or paid calls.
+
+- The deterministic fixture reached durable `FINAL_HOLDOUT` / `GOAL_MET`, interrupted the active evaluator subprocess, persisted cancellation, and resumed the same final action. The retry completed once: one accepted evaluation, receipt, and final record event.
+- The child process exited; no experiment, agent call, or DEV evaluation ran after terminal intent. The unique HOLDOUT diagnostics canary did not appear in agent action requests or responses.
+- Full local suite on the candidate worktree: **457 passed, 2 skipped in 59.56s**. Skips: unavailable pinned selector preregistration snapshot and network-dependent clean-install build isolation.
+- Hosted run [#41246679803](https://github.com/ObiVanBanan/BananLoop/actions/runs/41246679803) passed on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12. Windows: **458 passed, 1 skipped in 602.63s**.
+- Reproduction artifacts: `/tmp/bananloop-final-holdout-e2e-20261101-retry3/result.json` and the adjacent logs directory.
+
+This verifies local fixture recovery and the test matrix. It does not establish hostile-code isolation, dataset rights, or H2H eligibility; no benchmark candidates were run.
