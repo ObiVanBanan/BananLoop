@@ -499,6 +499,173 @@ def test_bootstrap_repairs_schema_invalid_plan_without_persisting_untrusted_keys
     assert secret not in json.dumps(requests[1])
 
 
+def test_bootstrap_token_budget_admits_before_model_call_and_imports_receipt(tmp_path, monkeypatch):
+    import bananloop.bootstrap as bootstrap_module
+    from bananloop.agents.codex import CodexAdapter
+
+    repo, _ = make_repo(tmp_path)
+
+    class FakeCodex(CodexAdapter):
+        def __init__(self):
+            super().__init__(None, [], None)
+            self.calls = 0
+            self.last_token_usage = None
+
+        def probe(self):
+            return {"available": True, "version": "fixture"}
+
+        def normalize_result(self, task, result):
+            return result
+
+        def execute(self, task, workspace, timeout):
+            self.calls += 1
+            self.last_token_usage = {
+                "input_tokens": 60,
+                "output_tokens": 10,
+                "cached_input_tokens": 12,
+            }
+            evaluator = workspace / ".bananloop_eval" / "evaluator.py"
+            evaluator.parent.mkdir(parents=True, exist_ok=True)
+            evaluator.write_text(
+                "import json\n"
+                f"print(json.dumps({{'status':'ok','metrics':{{'quality':0.0}},'protocol_sha256':'{PROTOCOL_SHA256}'}}))\n",
+                encoding="utf-8",
+            )
+            return _bootstrap_payload(status="ready", needs_input=[], summary="metered fixture")
+
+    rejected_paths = RuntimePaths.for_repo(repo, tmp_path / "rejected-state")
+    rejected = FakeCodex()
+    monkeypatch.setattr(bootstrap_module, "_agent", lambda _config: rejected)
+    with pytest.raises(BootstrapError, match="insufficient_token_reserve"):
+        bootstrap_campaign(
+            repo=repo,
+            goal="improve fixture quality",
+            paths=rejected_paths,
+            agent_config=AgentConfig(kind="codex"),
+            max_model_tokens=99,
+            model_token_reserve=100,
+        )
+    assert rejected.calls == 0
+
+    paths = RuntimePaths.for_repo(repo, tmp_path / "success-state")
+    adapter = FakeCodex()
+    monkeypatch.setattr(bootstrap_module, "_agent", lambda _config: adapter)
+    plan, spec = bootstrap_campaign(
+        repo=repo,
+        goal="improve fixture quality",
+        paths=paths,
+        agent_config=AgentConfig(kind="codex"),
+        max_model_tokens=100,
+        model_token_reserve=100,
+    )
+    assert plan.status == "ready"
+    assert spec is not None and spec.budget.max_model_tokens == 100
+    assert adapter.calls == 1
+    store = CampaignStore(paths.db)
+    try:
+        summary = store.model_token_summary()
+        assert summary["charged_or_reserved"] == 70
+        assert summary["by_stage"] == {"BOOTSTRAP": 70}
+        assert summary["receipts"][0]["cached_input_tokens"] == 12
+        assert store.action("bootstrap:1")["status"] == "COMPLETED"
+    finally:
+        store.close()
+
+    overshoot_paths = RuntimePaths.for_repo(repo, tmp_path / "overshoot-state")
+    overshoot = FakeCodex()
+    original_execute = overshoot.execute
+
+    def overshoot_execute(task, workspace, timeout):
+        raw = original_execute(task, workspace, timeout)
+        overshoot.last_token_usage = {
+            "input_tokens": 90,
+            "output_tokens": 30,
+            "cached_input_tokens": 0,
+        }
+        return raw
+
+    overshoot.execute = overshoot_execute
+    monkeypatch.setattr(bootstrap_module, "_agent", lambda _config: overshoot)
+    with pytest.raises(BootstrapError, match="budget overshoot"):
+        bootstrap_campaign(
+            repo=repo,
+            goal="improve fixture quality",
+            paths=overshoot_paths,
+            agent_config=AgentConfig(kind="codex"),
+            max_model_tokens=100,
+            model_token_reserve=100,
+        )
+    overshoot_ledger = json.loads(
+        (overshoot_paths.root / "bootstrap-token-budget.json").read_text(encoding="utf-8")
+    )
+    assert overshoot_ledger["entries"][0]["amount"] == 120
+    assert overshoot_ledger["entries"][0]["status"] == "CONSUMED"
+
+
+def test_bootstrap_token_budget_fails_closed_on_unknown_usage(tmp_path, monkeypatch):
+    import bananloop.bootstrap as bootstrap_module
+    from bananloop.agents.codex import CodexAdapter
+
+    repo, _ = make_repo(tmp_path)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "unknown-state")
+
+    class UnknownCodex(CodexAdapter):
+        def __init__(self):
+            super().__init__(None, [], None)
+            self.calls = 0
+            self.last_token_usage = None
+
+        def probe(self):
+            return {"available": True, "version": "fixture"}
+
+        def execute(self, task, workspace, timeout):
+            self.calls += 1
+            return {}
+
+    adapter = UnknownCodex()
+    monkeypatch.setattr(bootstrap_module, "_agent", lambda _config: adapter)
+    with pytest.raises(BootstrapError, match="usage UNKNOWN"):
+        bootstrap_campaign(
+            repo=repo,
+            goal="improve fixture quality",
+            paths=paths,
+            agent_config=AgentConfig(kind="codex"),
+            max_model_tokens=100,
+            model_token_reserve=100,
+        )
+    assert adapter.calls == 1
+    ledger = json.loads((paths.root / "bootstrap-token-budget.json").read_text(encoding="utf-8"))
+    assert ledger["entries"][0]["status"] == "UNKNOWN"
+    with pytest.raises(BootstrapError, match="usage is UNKNOWN"):
+        bootstrap_campaign(
+            repo=repo,
+            goal="improve fixture quality",
+            paths=paths,
+            agent_config=AgentConfig(kind="codex"),
+            max_model_tokens=100,
+            model_token_reserve=100,
+        )
+    assert adapter.calls == 1
+
+
+def test_bootstrap_token_budget_cannot_be_enabled_after_unmetered_attempts(tmp_path):
+    from bananloop.bootstrap import _bootstrap_token_ledger
+
+    ledger_path = tmp_path / "state" / "bootstrap-token-budget.json"
+    record_path = ledger_path.parent / "bootstrap-plan.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text(json.dumps({"bootstrap_attempts": [{"attempt": 1}]}), encoding="utf-8")
+
+    with pytest.raises(BootstrapError, match="prior unmetered bootstrap attempts"):
+        _bootstrap_token_ledger(
+            ledger_path,
+            limit=100,
+            reserve=50,
+            stage_reserves={},
+        )
+    assert not ledger_path.exists()
+
+
 def test_bootstrap_contract_rejects_request_to_repeat_supplied_goal(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
