@@ -159,6 +159,7 @@ def build_report(store: CampaignStore) -> dict[str, Any]:
         if reservation["status"] == "UNKNOWN":
             calls_by_stage[label]["unknown_outcomes"] += 1
     resource_summary["calls_by_stage"] = calls_by_stage
+    resource_summary["model_tokens"] = store.model_token_summary()
     research_state = store.research_state()
     binding_row = store.evaluator_binding()
     receipt_by_action = {}

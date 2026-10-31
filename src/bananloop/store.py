@@ -1032,6 +1032,65 @@ class CampaignStore:
     def _resource_for_kind(kind: str) -> str:
         return "agent_call" if kind == "agent" else "evaluator_call"
 
+    def model_tokens_reserved(self) -> int:
+        """Sum spent and outstanding worst-case token commitments, including unknown outcomes."""
+        return int(self.conn.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM reservations WHERE resource='model_token'"
+        ).fetchone()[0])
+
+    def model_token_summary(self) -> dict[str, Any]:
+        budget = self.spec().budget
+        rows = self.conn.execute(
+            "SELECT a.stage,r.action_id,r.amount,r.status,r.quality "
+            "FROM reservations r JOIN actions a ON a.id=r.action_id "
+            "WHERE r.resource='model_token' ORDER BY r.id"
+        ).fetchall()
+        events = [json.loads(row[0]) for row in self.conn.execute(
+            "SELECT payload_json FROM events WHERE event_type='MODEL_TOKEN_USAGE' ORDER BY seq"
+        )]
+        return {
+            "limit": budget.max_model_tokens,
+            "charged_or_reserved": self.model_tokens_reserved(),
+            "remaining": None if budget.max_model_tokens is None else max(
+                0, budget.max_model_tokens - self.model_tokens_reserved()),
+            "by_stage": {stage: sum(int(r["amount"]) for r in rows if r["stage"] == stage)
+                         for stage in sorted({r["stage"] for r in rows})},
+            "receipts": events,
+            "unknown": [r["action_id"] for r in rows if r["quality"] == "upper_bound"],
+        }
+
+    def model_token_reserve_for_stage(self, stage: str) -> int:
+        budget = self.spec().budget
+        return budget.model_token_stage_reserves.get(stage, budget.model_token_reserve)
+
+    def settle_model_tokens(self, action_id: str, usage: dict[str, int]) -> bool:
+        """Durably charge actual usage before copying any candidate files into the workspace."""
+        from .token_budget import model_tokens
+        billed = model_tokens(usage)
+        row = self.conn.execute(
+            "SELECT id,amount,status FROM reservations "
+            "WHERE action_id=? AND resource='model_token' ORDER BY id DESC LIMIT 1",
+            (action_id,),
+        ).fetchone()
+        if row is None or row["status"] != "RESERVED":
+            raise StoreError(f"no unsettled model-token reservation for {action_id}")
+        now = utc_now()
+        with self.conn:
+            self.conn.execute(
+                "UPDATE reservations SET amount=?,quality='actual',status='CONSUMED',settled_at=? WHERE id=?",
+                (billed, now, row["id"]),
+            )
+            action = self.action(action_id)
+            self.event("MODEL_TOKEN_USAGE", {
+                "action_id": action_id, "stage": action["stage"],
+                "input_tokens": usage["input_tokens"],
+                "output_tokens": usage["output_tokens"],
+                "cached_input_tokens": usage["cached_input_tokens"],
+                "charged_tokens": billed,
+            })
+        cap = self.spec().budget.max_model_tokens
+        return cap is not None and self.model_tokens_reserved() > cap
+
     def evaluation_work_reserved(self) -> int:
         return int(self.conn.execute("SELECT COALESCE(SUM(amount),0) FROM reservations WHERE resource='evaluation_unit'").fetchone()[0])
 
@@ -1046,6 +1105,18 @@ class CampaignStore:
                     "INSERT INTO reservations(action_id,resource,amount,status,quality,reserved_at) VALUES(?,?,?,?,?,?)",
                     (action_id, "evaluation_unit", units, "RESERVED", "upper_bound", now),
                 )
+        if kind == "agent" and self.spec().budget.max_model_tokens is not None:
+            stage = self.action(action_id)["stage"]
+            reserve = self.model_token_reserve_for_stage(stage)
+            if self.model_tokens_reserved() + reserve > self.spec().budget.max_model_tokens:
+                raise StoreError(f"insufficient_token_reserve for {stage}: "
+                                 f"need {reserve}, have "
+                                 f"{self.spec().budget.max_model_tokens-self.model_tokens_reserved()}")
+            self.conn.execute(
+                "INSERT INTO reservations(action_id,resource,amount,status,quality,reserved_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (action_id, "model_token", reserve, "RESERVED", "upper_bound", now),
+            )
         self.conn.execute(
             "INSERT INTO reservations(action_id,resource,amount,status,quality,reserved_at) VALUES(?,?,?,?,?,?)",
             (action_id, self._resource_for_kind(kind), 1.0, "RESERVED", "actual", now),

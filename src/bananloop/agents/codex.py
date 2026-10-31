@@ -10,6 +10,7 @@ from typing import Any
 
 from .base import AgentAdapter, AgentError
 from ..process import ProcessError, run_process
+from ..token_budget import parse_codex_usage
 
 
 BOOTSTRAP_SCHEMA = {
@@ -328,6 +329,8 @@ class CodexAdapter(AgentAdapter):
         self.model = model
         self.extra_args = extra_args or []
         self.reasoning_effort = reasoning_effort
+        self.meter_tokens = False
+        self.last_token_usage: dict[str, int] | None = None
 
     def _resolved_command(self) -> list[str]:
         path = shutil.which("codex")
@@ -355,6 +358,7 @@ class CodexAdapter(AgentAdapter):
                 "reasoning_effort": self.reasoning_effort}
 
     def execute(self, task: dict[str, Any], workspace: Path, timeout: int) -> dict[str, Any]:
+        self.last_token_usage = None
         role = task.get("role")
         if role not in {"bootstrap", "propose", "select", "analyze", "pivot_advice", "implement"}:
             raise AgentError(f"unsupported Codex role: {role!r}")
@@ -552,6 +556,7 @@ class CodexAdapter(AgentAdapter):
                 *self._resolved_command(),
                 "exec",
                 "--ephemeral",
+                *(["--json"] if self.meter_tokens else []),
                 "--sandbox",
                 sandbox,
                 "--skip-git-repo-check",
@@ -570,13 +575,17 @@ class CodexAdapter(AgentAdapter):
             # grows; Codex's `-` prompt sentinel reads the same text from stdin.
             argv.append("-")
             try:
-                run_process(
+                executed = run_process(
                     argv,
                     cwd=workspace,
                     timeout=timeout,
                     check=True,
                     input_text=prompt,
                 )
+                if self.meter_tokens:
+                    self.last_token_usage = parse_codex_usage(executed.stdout)
+                    if self.last_token_usage is None:
+                        raise AgentError("Codex did not provide a final turn.completed token usage receipt")
                 if not result_path.exists():
                     raise AgentError("Codex completed without structured result file")
                 data = json.loads(result_path.read_text(encoding="utf-8"))
@@ -584,4 +593,6 @@ class CodexAdapter(AgentAdapter):
                     raise AgentError("Codex structured result must be a JSON object")
                 return data
             except (ProcessError, json.JSONDecodeError) as exc:
+                if self.meter_tokens and isinstance(exc, ProcessError) and exc.result is not None:
+                    self.last_token_usage = parse_codex_usage(exc.result.stdout)
                 raise AgentError(str(exc)) from exc
