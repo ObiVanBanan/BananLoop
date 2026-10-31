@@ -68,3 +68,15 @@ Repository API says `public` as of this audit. The repo setting was not changed.
 - GitHub API confirms public visibility. No benchmark/model call, HOLDOUT run, visibility change, merge, tag or release was performed for this update.
 - GitHub returned no workflow runs or combined statuses for this merge commit; local Linux test results do not substitute for a hosted Windows/Linux matrix.
 - PR #85 documentation head `d7bf9d055da1557e9a5f584a5b9b834e82129894` passed hosted run `41238895406` across Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12. The later SIGINT, bootstrap-metering, lifecycle and clean-install PRs #86–#89 also passed their hosted matrices. These remain draft PRs; no release SHA has been selected.
+
+
+## Final HOLDOUT recovery follow-up — 2026-11-01
+
+PR #91 head `3ab301ad499f17f1a9abb4ac7813743b6d4f1d1a` adds a real local CLI E2E for interruption during durable `FINAL_HOLDOUT` intent. The evaluator child is canceled and exits; explicit resume retries the same action once, producing one accepted evaluation, receipt and final record event. No experiments, agent calls or DEV evaluations resume after terminal intent, and a unique HOLDOUT diagnostics canary is absent from agent requests/responses. This is local deterministic fixture evidence, not hostile-code isolation or a benchmark result.
+
+- Local Linux/Python 3.14.7 full suite: **457 passed, 2 skipped in 59.56s**. Skips: unavailable pinned selector preregistration snapshot and network-dependent clean-install build isolation.
+- Hosted run [41246679803](https://github.com/ObiVanBanan/BananLoop/actions/runs/41246679803) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12; Windows: 458 passed, 1 skipped.
+- The report and retained reproduction artifacts are documented in [the E2E report](core-research-e2e-report.md). PR #91 remains open/draft. No H2H, model call or benchmark candidate run was made.
+- PR #85 documentation now records this result and the release checklist points to it. The resulting documentation commit is queued for hosted CI; the exact-SHA result is pending.
+
+Release recommendation remains **NOT READY**. H2H eligibility is blocked by missing explicit spend authorization, incomplete hostile-code isolation proof and unresolved task-data rights. Gitleaks findings remain unsuppressed after the suppression request was rejected; no credential was confirmed, but comprehensive secret/privacy clearance is still incomplete. No merge, visibility change, tag or release was performed.
