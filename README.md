@@ -6,7 +6,7 @@
 
 **Fresh context. Persistent memory. Measurable progress.**
 
-**Status:** `v0.1.0` Research Preview **candidate** — no tag or GitHub Release is published. GitHub reports this repository as private (checked 2026-10-30 22:09 UTC), consistent with the closed-preview intent. Collaborator access and exposed-artifact review remain separate release gates.
+**Status:** `v0.1.0` Research Preview **candidate** — no tag or GitHub Release is published. GitHub repository metadata reports this repository as public (checked 2026-10-31 00:12 UTC), which conflicts with the closed-preview intent. Collaborator access and exposed-artifact review remain separate release gates.
 
 [![Preview Candidate](https://img.shields.io/badge/v0.1.0-preview_candidate-f4bd35?style=flat-square)](CHANGELOG.md)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square)
