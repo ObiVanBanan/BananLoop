@@ -27,6 +27,17 @@ The command above was run with pytest node IDs using underscores (`then_stops`, 
 ## Limits
 
 - This is deterministic local-fixture evidence, not live acceptance with Codex or Pi.
-- Only Windows was exercised here. Linux install and lifecycle acceptance remain unverified.
+- The original run above exercised Windows only. The current-main follow-up below now adds Linux/Python 3.14 fixture and lifecycle evidence; current-SHA Windows acceptance remains unverified.
 - The OS does not isolate evaluator code as a hostile-code sandbox. This evidence does not authorize executing benchmark submissions on the host.
 - No H2H was run. The matched-resource benchmark release gate remains `BLOCKED`/`INELIGIBLE` pending spend authorization and verified evaluator isolation.
+
+
+## Current-main follow-up — 2026-10-31
+
+**Code base:** `44614ea22bc5967adb7ee607bce2472cc66487ee`; Linux, Python 3.14.7; CPU-only local fixtures and temporary Git repositories. The same seven node IDs above were rerun on this code base: **7 passed in 3.11s**. The full suite on this code base completed **448 passed, 1 skipped in 38.45s**. The skip is the unavailable pinned selector source snapshot documented above.
+
+No model or paid calls, benchmark treatment, validation or HOLDOUT scores were run. This follow-up gives current Linux fixture evidence, but does not establish Windows campaign acceptance, a hostile-code security boundary, or matched Codex Direct vs BananLoop results.
+
+- Reusable pause/resume CLI run via `examples/fixture/run_lifecycle_e2e.py` passed on Linux/Python 3.14.7. A real local CLI supervisor process was paused during an active agent subprocess; the action was cancelled, then explicit resume completed three experiments and produced the final `DEV_ONLY` report (`GOAL_MET`, quality 0→3, 7 agent calls including the interrupted call, 4 evaluator calls). No model calls; no validation or holdout configured.
+- Reproduction command: `python examples/fixture/run_lifecycle_e2e.py --output-dir /tmp/bananloop-plan-lifecycle-e2e-final`. It refuses to overwrite an existing output directory and saves JSON result plus stdout/stderr for init, pause, interrupted run, resume, status and report under `logs/`.
+- Recorded run artifacts: `/tmp/bananloop-plan-lifecycle-e2e-final/result.json` and `/tmp/bananloop-plan-lifecycle-e2e-final/logs/`.
