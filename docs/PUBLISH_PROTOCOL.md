@@ -76,7 +76,7 @@ Follow [BENCHMARK_STATUS.md](BENCHMARK_STATUS.md) and the frozen paired protocol
 
 The repository endpoint `GET /repos/ObiVanBanan/BananLoop` reports the repository as **public** (checked 2026-10-31 00:12 UTC), despite the closed-preview intent. A prior apparent private result came from a branch/PR payload lacking repository-level visibility and should be disregarded. Do not invite preview users or recommend a release until the owner resolves visibility, collaborator access and exposed-artifact review. Before any preview recommendation, audit relevant branches, history, datasets, logs and artifacts for secrets or withheld evaluation data, and rotate anything exposed. A full history-aware secrets/rights scan of *all* refs is also mandatory before any future public-opening decision.
 
-A limited local pattern scan on 2026-10-30 checked selected private-key, AWS, GitHub, Slack and credential-assignment formats across 3,999 reachable Git object IDs and found zero matches. It did not cover untracked artifacts, refs absent from the clone, all provider formats or GitHub secret-scanning alerts; it is not a completed secrets clearance.
+Two limited pattern scans found zero matches for their selected key/token formats: the 2026-10-30 scan covered 3,999 reachable Git object IDs; the 2026-11-01 scan covered 1,588 reachable blobs, 487 tracked/untracked worktree files and 2,872 added lines across accessible PR diffs. These are different scopes, do not cover all secret formats or GitHub secret-scanning alerts, and are not completed secrets/privacy/rights clearance. Recheck all refs and artifacts with a history-aware scanner before any preview recommendation.
 
 ```bash
 git fetch --all --tags --prune
