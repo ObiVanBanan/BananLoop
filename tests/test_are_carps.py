@@ -12,6 +12,22 @@ def test_upstream_exact_star_discrepancy_single_point():
     assert carps.star_discrepancy_3d(np.array([[0.5, 0.5, 0.5]], dtype=np.float64)) == pytest.approx(0.875)
 
 
+def test_random_reference_is_deterministic_for_a_case():
+    points = np.random.default_rng(2).random((800, 3), dtype=np.float64)
+    case = carps.CarpsCase("dev-reference", points, 30, 0)
+    assert carps.random_subset_baseline(case) == carps.random_subset_baseline(case)
+
+
+def test_panel_aggregation_requires_exact_case_set_and_worst_invalid_penalty():
+    good = carps.CarpsEvaluation("dev-a", 0.2, True, None, 0.1, 0)
+    invalid = carps.CarpsEvaluation("dev-b", 1.0, False, "invalid", None, 1)
+    summary = carps.summarize_panel(("dev-a", "dev-b"), (good, invalid))
+    assert summary.mean_discrepancy == pytest.approx(0.6)
+    assert summary.case_count == 2 and summary.valid_runs == 1
+    with pytest.raises(carps.CarpsError, match="exactly match"):
+        carps.summarize_panel(("dev-a", "dev-b"), (good,))
+
+
 @pytest.mark.parametrize(
     "indices",
     [

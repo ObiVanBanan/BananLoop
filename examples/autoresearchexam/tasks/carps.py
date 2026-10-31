@@ -51,6 +51,13 @@ class CarpsEvaluation:
     returncode: int | None
 
 
+@dataclass(frozen=True)
+class CarpsPanelSummary:
+    mean_discrepancy: float
+    case_count: int
+    valid_runs: int
+
+
 def _as_points(value: Any) -> list[list[float]]:
     """Validate and copy one cloud into ordinary JSON-compatible numbers."""
     try:
@@ -134,6 +141,38 @@ def star_discrepancy_3d(points: Any) -> float:
     over = closed / k - volume
     under = volume - open_box / k
     return float(max(over.max(), under.max()))
+
+
+def random_subset_baseline(case: CarpsCase) -> float:
+    """Score the pinned uniform-random subset reference for one case."""
+    points, k, seed = _validate_case(case)
+    import numpy as np
+    array = np.asarray(points, dtype=np.float64)
+    indices = np.random.default_rng(seed).choice(len(array), k, replace=False)
+    return star_discrepancy_3d(array[indices])
+
+
+def summarize_panel(
+    expected_case_ids: tuple[str, ...],
+    results: tuple[CarpsEvaluation, ...],
+) -> CarpsPanelSummary:
+    """Aggregate a frozen task tier; reject missing, duplicate, or extra cases."""
+    if not expected_case_ids or len(set(expected_case_ids)) != len(expected_case_ids):
+        raise CarpsError("expected Carps panel IDs must be non-empty and unique")
+    result_ids = [row.case_id for row in results]
+    if len(set(result_ids)) != len(result_ids) or set(result_ids) != set(expected_case_ids):
+        raise CarpsError("Carps result IDs do not exactly match the frozen panel")
+    values: list[float] = []
+    valid_runs = 0
+    for result in results:
+        if not math.isfinite(result.discrepancy) or not 0.0 <= result.discrepancy <= 1.0:
+            raise CarpsError("Carps panel contains an invalid discrepancy")
+        if result.valid:
+            valid_runs += 1
+        elif result.discrepancy != INVALID_DISCREPANCY:
+            raise CarpsError("invalid Carps results must carry the worst metric penalty")
+        values.append(result.discrepancy)
+    return CarpsPanelSummary(sum(values) / len(values), len(values), valid_runs)
 
 
 def evaluate_case(
