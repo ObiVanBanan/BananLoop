@@ -22,6 +22,7 @@ from .contracts import (
     NonRegressionSpec,
     PairedComparison,
     PivotDecisionCommand,
+    SpecLineage,
     RuntimePaths,
     StopReason,
 )
@@ -606,33 +607,117 @@ def cmd_operator_events(args: argparse.Namespace) -> int:
 
 
 def cmd_pivot_decision(args: argparse.Namespace) -> int:
-    """Record one explicit local pivot decision; this never resumes or runs a campaign."""
+    """Record a pivot decision while serializing it with run/resume transitions."""
     if args.decision == "reject" and not args.on_reject:
-        raise StoreError("pivot rejection requires --on-reject continue_old_plan, change_conditions, or end_campaign")
+        raise StoreError("pivot rejection requires --on-reject end_campaign")
+    paths = _selected_paths(args, create=False)
+    try:
+        # A concurrent resume may otherwise overwrite the terminal STOPPED
+        # transition after reading the paused state. Serialize all writer paths.
+        with CampaignLock(paths.root / "campaign.lock"):
+            if not campaign_db_initialized(paths.db):
+                raise StoreError("campaign is not initialized")
+            store = CampaignStore(paths.db)
+            try:
+                campaign_id = _operator_campaign_id(args, paths)
+                receipt = submit_pivot_decision(store, campaign_id, PivotDecisionCommand(
+                    campaign_id=campaign_id,
+                    request_id=args.request_id,
+                    proposal_id=args.proposal_id,
+                    digest=args.digest,
+                    decision=args.decision,
+                    rejection_action=args.on_reject,
+                ))
+                campaign = store.campaign()
+                print(json.dumps({
+                    "campaign_id": campaign_id,
+                    "request_id": receipt["request_id"],
+                    "proposal_id": receipt["proposal_id"],
+                    "digest": receipt["digest"],
+                    "decision": receipt["decision"],
+                    "status": receipt["status"],
+                    "result": json.loads(receipt["result_json"]),
+                    "campaign_status": campaign["status"],
+                    "automatic_execution": False,
+                }, sort_keys=True))
+            finally:
+                store.close()
+        return 0
+    except CampaignLockError as exc:
+        print(f"BananLoop error: {exc}", file=sys.stderr)
+        return 2
+
+def cmd_pivot_child(args: argparse.Namespace) -> int:
+    """Preview or initialize one approved pivot child; never execute its campaign."""
+    if args.state_dir:
+        raise StoreError("pivot child creation requires a registered campaign; --state-dir is unsupported")
     paths = _selected_paths(args, create=False)
     if not campaign_db_initialized(paths.db):
         raise StoreError("campaign is not initialized")
+    try:
+        spec_bytes = Path(args.spec_file).read_bytes()
+    except OSError as exc:
+        raise StoreError(f"cannot read pivot child spec: {exc}") from exc
+    if len(spec_bytes) > 1024 * 1024:
+        raise StoreError("pivot child spec exceeds the 1 MiB limit")
+    try:
+        child_spec = CampaignSpec.model_validate_json(spec_bytes)
+    except ValueError as exc:
+        raise StoreError(f"invalid pivot child spec: {exc}") from exc
+
     store = CampaignStore(paths.db)
     try:
         campaign_id = _operator_campaign_id(args, paths)
-        receipt = submit_pivot_decision(store, campaign_id, PivotDecisionCommand(
-            campaign_id=campaign_id,
-            request_id=args.request_id,
-            proposal_id=args.proposal_id,
-            digest=args.digest,
-            decision=args.decision,
-            rejection_action=args.on_reject,
-        ))
+        parent_spec = store.spec()
+        proposal, decision = store.approved_pivot_for_child(
+            args.proposal_id, args.digest, campaign_id,
+        )
+        if child_spec.spec_lineage is not None:
+            raise StoreError("pivot child spec cannot supply or override its lineage")
+        if Path(child_spec.source_repo).resolve() != Path(parent_spec.source_repo).resolve():
+            raise StoreError("pivot child must remain attached to the parent source repository")
+        lineage = SpecLineage(
+            parent_campaign_id=campaign_id,
+            parent_spec_hash=parent_spec.approved_hash(),
+            proposal_id=proposal.proposal_id,
+            proposal_digest=proposal.digest,
+            decision_request_id=decision["request_id"],
+        )
+        approved_child = child_spec.model_copy(update={"spec_lineage": lineage})
+        confirmed_hash = approved_child.approved_hash()
+        if args.confirmed_child_hash is None:
+            print(json.dumps({
+                "status": "CONFIRMATION_REQUIRED",
+                "campaign_id": campaign_id,
+                "proposal_id": proposal.proposal_id,
+                "proposal_digest": proposal.digest,
+                "child_spec_hash": confirmed_hash,
+                "spec_file": str(Path(args.spec_file).resolve()),
+                "child_initialized": False,
+                "automatic_execution": False,
+            }, sort_keys=True))
+            return 0
+        if args.confirmed_child_hash != confirmed_hash:
+            raise StoreError("confirmed child spec hash does not match the preview")
+        registry = CampaignRegistry(Path(args.repo))
+        child_id, child_paths, _ = Engine.create_approved_pivot_child(
+            store,
+            campaign_id,
+            proposal.proposal_id,
+            proposal.digest,
+            child_spec,
+            confirmed_hash,
+            registry=registry,
+        )
         print(json.dumps({
-            "campaign_id": campaign_id,
-            "request_id": receipt["request_id"],
-            "proposal_id": receipt["proposal_id"],
-            "digest": receipt["digest"],
-            "decision": receipt["decision"],
-            "status": receipt["status"],
-            "result": json.loads(receipt["result_json"]),
-            "campaign_status": store.campaign()["status"],
+            "status": "READY",
+            "parent_campaign_id": campaign_id,
+            "campaign_id": child_id,
+            "child_spec_hash": confirmed_hash,
+            "state_dir": str(child_paths.root),
+            "child_initialized": True,
             "automatic_execution": False,
+            "next_command": ["bananloop", "run", "--repo", str(Path(args.repo)), "--campaign-id", child_id],
         }, sort_keys=True))
     finally:
         store.close()
@@ -1010,7 +1095,7 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--yes", action="store_true", help="approve an interactive CampaignSpec without confirmation")
     init.set_defaults(func=cmd_init)
 
-    for name in ("run", "resume", "status", "operator-snapshot", "operator-events", "pivot-decision", "pause", "stop", "report", "export"):
+    for name in ("run", "resume", "status", "operator-snapshot", "operator-events", "pivot-decision", "pivot-child", "pause", "stop", "report", "export"):
         sp = sub.add_parser(name)
         sp.add_argument("--repo", default=".")
         sp.add_argument("--state-dir")
@@ -1036,10 +1121,19 @@ def parser() -> argparse.ArgumentParser:
             sp.add_argument("--digest", required=True)
             sp.add_argument("--request-id", required=True, help="idempotency key for this explicit operator decision")
             sp.add_argument(
-                "--on-reject", choices=["continue_old_plan", "change_conditions", "end_campaign"],
-                help="required for rejection; records the operator's next-step choice without executing it",
+                "--on-reject", choices=["end_campaign"],
+                help="required for rejection; atomically ends the paused campaign without running agents",
             )
             sp.set_defaults(func=cmd_pivot_decision)
+        elif name == "pivot-child":
+            sp.add_argument("--proposal-id", required=True)
+            sp.add_argument("--digest", required=True)
+            sp.add_argument("--spec-file", required=True, help="operator-authored CampaignSpec JSON for the proposed child")
+            sp.add_argument(
+                "--confirmed-child-hash",
+                help="exact child_spec_hash printed by a prior preview; required to initialize the child",
+            )
+            sp.set_defaults(func=cmd_pivot_child)
         elif name == "stop":
             sp.add_argument("--request-id", help="idempotency key for an operator command")
             sp.set_defaults(func=cmd_stop)
