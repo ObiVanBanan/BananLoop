@@ -1353,3 +1353,48 @@ def test_bootstrap_allows_leftover_uninitialized_sqlite_file(tmp_path: Path):
         assert store.campaign()["status"] == "READY"
     finally:
         store.close()
+
+
+
+def test_empty_bootstrap_token_ledger_can_be_reconfigured_before_any_invocation(tmp_path):
+    from bananloop.bootstrap import _bootstrap_token_ledger
+
+    ledger_path = tmp_path / "state" / "bootstrap-token-budget.json"
+    first = _bootstrap_token_ledger(
+        ledger_path, limit=100, reserve=50, stage_reserves={},
+    )
+    assert first == {
+        "schema_version": 1,
+        "settings": {"limit": 100, "reserve": 50, "stage_reserves": {}},
+        "entries": [],
+    }
+
+    changed = _bootstrap_token_ledger(
+        ledger_path, limit=200, reserve=75, stage_reserves={"BOOTSTRAP": 100},
+    )
+    assert changed is not None
+    assert changed["settings"] == {
+        "limit": 200,
+        "reserve": 75,
+        "stage_reserves": {"BOOTSTRAP": 100},
+    }
+    assert changed["entries"] == []
+
+    assert _bootstrap_token_ledger(
+        ledger_path, limit=None, reserve=75, stage_reserves={},
+    ) is None
+    assert not ledger_path.exists()
+
+
+def test_corrupt_bootstrap_token_ledger_cannot_be_removed(tmp_path):
+    from bananloop.bootstrap import BootstrapError, _bootstrap_token_ledger
+
+    ledger_path = tmp_path / "state" / "bootstrap-token-budget.json"
+    ledger_path.parent.mkdir(parents=True)
+    ledger_path.write_text("not-json", encoding="utf-8")
+
+    with pytest.raises(BootstrapError, match="ledger is unreadable"):
+        _bootstrap_token_ledger(
+            ledger_path, limit=None, reserve=75, stage_reserves={},
+        )
+    assert ledger_path.read_text(encoding="utf-8") == "not-json"
