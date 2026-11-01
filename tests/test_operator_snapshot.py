@@ -4,6 +4,7 @@ import json
 import argparse
 import sqlite3
 import pytest
+from threading import Event, Thread
 
 from bananloop.cli import cmd_operator_events, cmd_operator_snapshot
 from bananloop.contracts import Hypothesis, PivotProposal, PivotResourceRequest
@@ -260,6 +261,59 @@ def test_v4_database_migration_installs_campaign_event_guard(tmp_path):
         assert read_events_after(store, before["revision"])["events"][0]["type"] == "CAMPAIGN_STATE_UPDATED"
     finally:
         store.close()
+
+
+def test_snapshot_reader_sees_one_consistent_revision_during_concurrent_update(tmp_path):
+    store = make_store(tmp_path)
+    path = store.path
+    store.close()
+    writer = CampaignStore(path)
+    reader_paused = Event()
+    continue_reader = Event()
+    snapshots = []
+    failures = []
+
+    def read_in_thread():
+        reader = CampaignStore(path)
+        select_count = 0
+
+        def pause_between_snapshot_queries(statement):
+            nonlocal select_count
+            if statement.lstrip().upper().startswith("SELECT"):
+                select_count += 1
+                if select_count == 2:
+                    reader_paused.set()
+                    continue_reader.wait(timeout=5)
+
+        reader.conn.set_trace_callback(pause_between_snapshot_queries)
+        try:
+            snapshots.append(read_snapshot(reader, "campaign-a"))
+        except Exception as exc:
+            failures.append(exc)
+        finally:
+            reader.close()
+
+    thread = Thread(target=read_in_thread)
+    try:
+        thread.start()
+        assert reader_paused.wait(timeout=5)
+        writer.update_campaign(status="PAUSED_INFRA", stop_reason="concurrent writer")
+        continue_reader.set()
+        thread.join(timeout=5)
+
+        assert not thread.is_alive()
+        assert failures == []
+        assert len(snapshots) == 1
+        assert snapshots[0]["status"] == "READY"
+        assert snapshots[0]["revision"] == 1
+        latest = read_snapshot(writer, "campaign-a")
+        assert latest["status"] == "PAUSED_INFRA"
+        assert latest["revision"] == 2
+    finally:
+        continue_reader.set()
+        if thread.is_alive():
+            thread.join(timeout=5)
+        writer.close()
 
 
 def test_campaign_counter_change_advances_snapshot_and_event_revision(tmp_path):
