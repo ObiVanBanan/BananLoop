@@ -58,7 +58,7 @@ from .research import (
     portfolio_repair_context,
     synthesize_dev_failure_analysis,
 )
-from .store import CampaignStore
+from .store import CampaignStore, campaign_db_initialized
 from .registry import CampaignRegistry, RegistryError
 from .lock import CampaignLock
 from .workspace import WorkspaceError, WorkspaceManager
@@ -226,18 +226,17 @@ class Engine:
                 artifacts=state_dir / "artifacts",
                 reports=state_dir / "reports",
             )
-            if paths.db.exists():
-                existing = CampaignStore(paths.db)
-                try:
-                    if existing.spec().approved_hash() != confirmed_spec_hash:
-                        raise EngineError("pivot child request already exists with a different approved spec")
-                finally:
-                    existing.close()
-                return entry.campaign_id, paths, approved_child
+            # Serialize replay, inspection, and recovery. A crash may leave
+            # the deterministic reservation and schema-only SQLite file before
+            # initialize() commits the campaign row.
             with CampaignLock(paths.root / "campaign.lock"):
                 child_store = CampaignStore(paths.db)
                 try:
-                    child_store.initialize(approved_child)
+                    if campaign_db_initialized(paths.db):
+                        if child_store.spec().approved_hash() != confirmed_spec_hash:
+                            raise EngineError("pivot child request already exists with a different approved spec")
+                    else:
+                        child_store.initialize(approved_child)
                 finally:
                     child_store.close()
             return entry.campaign_id, paths, approved_child
