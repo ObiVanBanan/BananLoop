@@ -111,7 +111,7 @@ class BudgetSpec(BaseModel):
     @field_validator("model_token_stage_reserves")
     @classmethod
     def valid_model_token_reserves(cls, value: dict[str, int]) -> dict[str, int]:
-        allowed = {"PROPOSE", "SELECT", "EXECUTE", "ANALYZE", "BOOTSTRAP"}
+        allowed = {"PROPOSE", "SELECT", "EXECUTE", "ANALYZE", "PIVOT_ADVICE", "BOOTSTRAP"}
         if any(stage not in allowed or isinstance(amount, bool) or not isinstance(amount, int) or amount < 1
                for stage, amount in value.items()):
             raise ValueError("model_token_stage_reserves must map supported agent stages to positive integers")

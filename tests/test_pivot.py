@@ -12,7 +12,7 @@ from bananloop.agents.base import AgentError
 from bananloop.agents.codex import PIVOT_ADVICE_SCHEMA, CodexAdapter
 from bananloop.agents.pi import PiAdapter
 from bananloop.contracts import (
-    CampaignSpec, PivotDecisionCommand, PivotProposal, PivotResourceRequest,
+    BudgetSpec, CampaignSpec, PivotDecisionCommand, PivotProposal, PivotResourceRequest,
     Direction, MetricSpec, PortfolioRecord, RuntimePaths, SpecLineage,
 )
 from bananloop.engine import Engine, EngineError
@@ -313,6 +313,55 @@ def test_plateau_budget_gate_pauses_without_starting_pivot_call(tmp_path, monkey
         assert payload["reason"] == ("BUDGET_EXHAUSTED" if gate == "agent_budget" else "DEADLINE_REACHED")
         if gate == "agent_budget":
             assert campaign["agent_calls"] == engine.spec.budget.max_agent_calls
+    finally:
+        store.close()
+
+
+def test_plateau_token_reserve_blocks_pivot_before_model_call(tmp_path, monkeypatch):
+    store, engine, _, _ = make_engine(tmp_path)
+    called = []
+    try:
+        _prepare_plateau(store, engine)
+        budget = BudgetSpec.model_validate({
+            **engine.spec.budget.model_dump(),
+            "max_model_tokens": 1,
+            "model_token_reserve": 3,
+            "model_token_stage_reserves": {"PIVOT_ADVICE": 7},
+        })
+        spec = engine.spec.model_copy(update={"budget": budget})
+        store.update_campaign(spec_json=spec.model_dump_json(), spec_hash=spec.approved_hash())
+        engine.spec = spec
+        monkeypatch.setattr(
+            engine,
+            "_invoke_agent",
+            lambda *args, **kwargs: called.append(args),
+        )
+
+        assert engine._post_iteration_stop() is True
+
+        campaign = store.campaign()
+        assert campaign["status"] == "STOPPED"
+        assert campaign["stop_reason"] == "BUDGET_EXHAUSTED"
+        assert called == []
+        assert not any(action["id"].endswith(":advice") for action in store.actions())
+        reserve_events = [
+            event for event in store.events()
+            if event["event_type"] == "MODEL_TOKEN_RESERVE_BLOCKED"
+        ]
+        assert len(reserve_events) == 1
+        assert json.loads(reserve_events[0]["payload_json"]) == {
+            "stage": "PIVOT_ADVICE",
+            "required_tokens": 7,
+            "available_tokens": 1,
+            "reason": "insufficient_token_reserve",
+        }
+        blocked_events = [
+            event for event in store.events()
+            if event["event_type"] == "PIVOT_PROPOSAL_BLOCKED"
+        ]
+        assert len(blocked_events) == 1
+        assert json.loads(blocked_events[0]["payload_json"])["agent_call_started"] is False
+        assert store.pending_pivot_proposal() is None
     finally:
         store.close()
 
