@@ -284,7 +284,7 @@ def test_v4_database_migration_installs_campaign_event_guard(tmp_path):
 
     store = CampaignStore(path)
     try:
-        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 6
         before = read_snapshot(store, "campaign-a")
         store.conn.execute("UPDATE campaigns SET status='PAUSED_INFRA' WHERE id=1")
         store.conn.commit()

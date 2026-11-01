@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -163,7 +164,7 @@ class CampaignStore:
             lambda: int(self._internal_campaign_write),
         )
         version = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
-        if version > 5:
+        if version > 6:
             self.conn.close()
             raise StoreError(f"campaign database schema {version} is newer than this BananLoop version")
         if existed and version < 1:
@@ -209,6 +210,24 @@ class CampaignStore:
                 raise
         if existed and version == 3:
             backup = path.with_name(path.name + ".pre-pivot-decision-v4.bak")
+            suffix = 0
+            while True:
+                candidate = backup if suffix == 0 else backup.with_name(backup.name + f".{suffix}")
+                try:
+                    with candidate.open("xb"):
+                        pass
+                    backup = candidate
+                    break
+                except FileExistsError:
+                    suffix += 1
+            try:
+                with sqlite3.connect(backup) as destination:
+                    self.conn.backup(destination)
+            except Exception:
+                backup.unlink(missing_ok=True)
+                raise
+        if existed and version == 5:
+            backup = path.with_name(path.name + ".pre-composite-branch-v6.bak")
             suffix = 0
             while True:
                 candidate = backup if suffix == 0 else backup.with_name(backup.name + f".{suffix}")
@@ -289,9 +308,22 @@ class CampaignStore:
                 updated_at TEXT NOT NULL,
                 plan_json TEXT NOT NULL DEFAULT '[]',
                 current_step INTEGER NOT NULL DEFAULT 0,
-                final_experiment_id INTEGER
+                final_experiment_id INTEGER,
+                branch_ref TEXT
             )"""
         )
+        composite_sequence_columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(composite_sequences)")
+        }
+        if "branch_ref" not in composite_sequence_columns:
+            self.conn.execute("ALTER TABLE composite_sequences ADD COLUMN branch_ref TEXT")
+        for row in self.conn.execute(
+            "SELECT id FROM composite_sequences WHERE branch_ref IS NULL"
+        ).fetchall():
+            self.conn.execute(
+                "UPDATE composite_sequences SET branch_ref=? WHERE id=?",
+                (self.composite_branch_ref(row["id"]), row["id"]),
+            )
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS composite_steps (
                 composite_id TEXT NOT NULL REFERENCES composite_sequences(id),
@@ -345,8 +377,18 @@ class CampaignStore:
                   VALUES('CAMPAIGN_STATE_UPDATED','{{}}',strftime('%Y-%m-%dT%H:%M:%f+00:00','now'));
                 END"""
             )
-        self.conn.execute("PRAGMA user_version=5")
+        self.conn.execute("PRAGMA user_version=6")
         self.conn.commit()
+
+    @staticmethod
+    def composite_branch_ref(sequence_id: str) -> str:
+        """Return a stable, collision-resistant local Git ref for one sequence."""
+        safe_id = "".join(
+            char.lower() if char.isascii() and char.isalnum() else "-"
+            for char in sequence_id
+        ).strip("-")[:48] or "sequence"
+        suffix = hashlib.sha256(sequence_id.encode("utf-8")).hexdigest()[:12]
+        return f"refs/heads/bananloop/composites/{safe_id}-{suffix}"
 
     def _write_campaign_row(self, sql: str, parameters: tuple[Any, ...] = ()) -> sqlite3.Cursor:
         """Mark a Store-owned write so the guard trigger does not duplicate its event."""
@@ -835,9 +877,9 @@ class CampaignStore:
             if campaign["champion_snapshot"] != base_snapshot:
                 raise StoreError("composite base must be the current champion snapshot")
             self.conn.execute(
-                "INSERT INTO composite_sequences(id,campaign_id,base_snapshot,tip_snapshot,max_steps,status,created_at,updated_at,plan_json,current_step) VALUES(?,?,?,?,?,'ACTIVE',?,?,?,0)",
+                "INSERT INTO composite_sequences(id,campaign_id,base_snapshot,tip_snapshot,max_steps,status,created_at,updated_at,plan_json,current_step,branch_ref) VALUES(?,?,?,?,?,'ACTIVE',?,?,?,0,?)",
                 (sequence_id, 1, base_snapshot, base_snapshot, len(plan), now, now,
-                 json.dumps(plan, sort_keys=True)),
+                 json.dumps(plan, sort_keys=True), self.composite_branch_ref(sequence_id)),
             )
             self.event("COMPOSITE_STARTED", {"composite_id": sequence_id, "max_steps": len(plan)})
         return self.composite(sequence_id)
@@ -901,8 +943,9 @@ class CampaignStore:
             ).fetchone()
             if sequence is None:
                 self.conn.execute(
-                    "INSERT INTO composite_sequences(id,campaign_id,base_snapshot,tip_snapshot,max_steps,status,created_at,updated_at,plan_json,current_step) VALUES(?,?,?,?,?,'ACTIVE',?,?,?,0)",
-                    (sequence_id, 1, base_snapshot, base_snapshot, len(plan), now, now, plan_json),
+                    "INSERT INTO composite_sequences(id,campaign_id,base_snapshot,tip_snapshot,max_steps,status,created_at,updated_at,plan_json,current_step,branch_ref) VALUES(?,?,?,?,?,'ACTIVE',?,?,?,0,?)",
+                    (sequence_id, 1, base_snapshot, base_snapshot, len(plan), now, now,
+                     plan_json, self.composite_branch_ref(sequence_id)),
                 )
                 self.event("COMPOSITE_STARTED", {
                     "composite_id": sequence_id, "max_steps": len(plan),

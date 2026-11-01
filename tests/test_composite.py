@@ -8,6 +8,7 @@ import pytest
 from bananloop.contracts import Hypothesis, StopReason
 from bananloop.engine import ControlledInterruption
 from bananloop.store import CampaignStore, StoreError
+from bananloop.workspace import WorkspaceError
 from test_engine import git, make_engine
 
 
@@ -68,6 +69,14 @@ def _downgrade_to_v1(store):
     store.conn.commit()
 
 
+def _assert_composite_branch(sequence, engine, expected_snapshot):
+    workspace = engine.workspace.workspace
+    assert sequence["branch_ref"].startswith("refs/heads/bananloop/composites/")
+    assert git(["rev-parse", sequence["branch_ref"]], workspace) == expected_snapshot
+    current_branch = git(["symbolic-ref", "--quiet", "--short", "HEAD"], workspace)
+    assert sequence["branch_ref"] != f"refs/heads/{current_branch}"
+
+
 def test_composite_step_write_and_retry_are_atomic_and_durable(tmp_path):
     store, _engine, _repo, base = make_engine(tmp_path)
     try:
@@ -105,7 +114,7 @@ def test_composite_step_write_and_retry_are_atomic_and_durable(tmp_path):
 def test_composite_bounds_and_future_schema_migration(tmp_path):
     store, _engine, _repo, base = make_engine(tmp_path)
     try:
-        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 6
         with pytest.raises(StoreError, match="2 and 4"):
             store.create_composite("too-short", base, plan=_plan()[:1])
         store.update_campaign(champion_snapshot=base)
@@ -119,12 +128,41 @@ def test_composite_bounds_and_future_schema_migration(tmp_path):
     reopened = CampaignStore(path)
     try:
         assert reopened.composite("bounded-sequence")["status"] == "ACTIVE"
-        assert reopened.conn.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert reopened.conn.execute("PRAGMA user_version").fetchone()[0] == 6
     finally:
         reopened.close()
 
 
-def test_v1_to_v2_migration_preserves_data_and_creates_restorable_backup(tmp_path):
+def test_v5_migration_adds_stable_composite_branch_ref_and_backup(tmp_path):
+    store, _engine, _repo, base = make_engine(tmp_path)
+    path = store.path
+    try:
+        store.update_campaign(champion_snapshot=base)
+        saved = store.create_composite("legacy-sequence", base, plan=_plan())
+        expected_ref = CampaignStore.composite_branch_ref("legacy-sequence")
+        store.conn.execute("ALTER TABLE composite_sequences DROP COLUMN branch_ref")
+        store.conn.execute("PRAGMA user_version=5")
+        store.conn.commit()
+    finally:
+        store.close()
+
+    migrated = CampaignStore(path)
+    backup = path.with_name(path.name + ".pre-composite-branch-v6.bak")
+    try:
+        restored = migrated.composite(saved["id"])
+        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert restored["branch_ref"] == expected_ref
+        assert restored["tip_snapshot"] == base
+        assert backup.is_file()
+        with sqlite3.connect(backup) as old_db:
+            columns = {row[1] for row in old_db.execute("PRAGMA table_info(composite_sequences)")}
+            assert "branch_ref" not in columns
+            assert old_db.execute("PRAGMA user_version").fetchone()[0] == 5
+    finally:
+        migrated.close()
+
+
+def test_v1_migration_preserves_data_and_creates_restorable_backup(tmp_path):
     store, _engine, _repo, _base = make_engine(tmp_path)
     path = store.path
     try:
@@ -141,7 +179,7 @@ def test_v1_to_v2_migration_preserves_data_and_creates_restorable_backup(tmp_pat
     migrated = CampaignStore(path)
     backup = path.with_name(path.name + ".pre-composite-v2.bak")
     try:
-        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 6
         assert migrated.campaign()["spec_hash"]
         assert migrated.action("migration-action")["request_json"] == '{"request": "preserved"}'
         assert any(event["event_type"] == "MIGRATION_SENTINEL" for event in migrated.events())
@@ -167,7 +205,7 @@ def test_v1_migration_preserves_existing_backup_and_writes_unique_backup(tmp_pat
 
     migrated = CampaignStore(path)
     try:
-        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 6
         assert stale_backup.read_bytes() == b"preserve this older backup"
         unique_backup = path.with_name(path.name + ".pre-composite-v2.bak.1")
         assert unique_backup.is_file()
@@ -193,6 +231,9 @@ def test_composite_recovery_after_intermediate_dev_gate(tmp_path, monkeypatch, c
         expected_current_step = 1 if checkpoint_stage == "COMPOSITE_ATTEMPT_CREATED" else 0
         assert sequence["current_step"] == expected_current_step
         assert store.campaign()["champion_snapshot"] == base
+        active = store.experiment(store.campaign()["active_experiment_id"])
+        expected_ref = active["candidate_snapshot"] or sequence["tip_snapshot"]
+        _assert_composite_branch(sequence, engine, expected_ref)
         assert store.attempt(store.campaign()["active_attempt_id"])["stage"] == {
             "COMPOSITE_ATTACHED": "PROPOSE",
             "RECORD": "RECORD",
@@ -204,6 +245,9 @@ def test_composite_recovery_after_intermediate_dev_gate(tmp_path, monkeypatch, c
             assert active_exp["composite_step"] == 2
             assert active_exp["parent_snapshot"] == sequence["tip_snapshot"]
 
+        # Git refs can be reconstructed from durable sequence and in-flight state.
+        git(["update-ref", "-d", sequence["branch_ref"]], engine.workspace.workspace)
+
         monkeypatch.delenv("BANANLOOP_TEST_STOP_AFTER_STAGE")
         result = engine.run(resume=True)
         sequence = store.composite(sequence["id"])
@@ -212,6 +256,9 @@ def test_composite_recovery_after_intermediate_dev_gate(tmp_path, monkeypatch, c
         assert [step["status"] for step in sequence["steps"]] == ["INTERMEDIATE", "FINAL_REJECTED"]
         assert store.experiment(sequence["steps"][1]["experiment_id"])["parent_snapshot"] == sequence["steps"][0]["candidate_snapshot"]
         assert store.campaign()["champion_snapshot"] == base
+        _assert_composite_branch(
+            sequence, engine, sequence["steps"][-1]["candidate_snapshot"],
+        )
     finally:
         store.close()
 
@@ -284,6 +331,7 @@ def test_composite_final_acceptance_validates_and_promotes(tmp_path):
         ]
         final_snapshot = sequence["steps"][-1]["candidate_snapshot"]
         assert store.campaign()["champion_snapshot"] == final_snapshot
+        _assert_composite_branch(sequence, engine, final_snapshot)
         assert any(
             row["experiment_id"] == sequence["final_experiment_id"]
             and row["tier"] == "validation"
@@ -301,5 +349,29 @@ def test_composite_final_rejection_preserves_champion(tmp_path):
         assert sequence["status"] == "REJECTED"
         assert sequence["steps"][-1]["status"] == "FINAL_REJECTED"
         assert store.campaign()["champion_snapshot"] == base
+        _assert_composite_branch(
+            sequence, engine, sequence["steps"][-1]["candidate_snapshot"],
+        )
+    finally:
+        store.close()
+
+
+def test_divergent_composite_ref_fails_closed(tmp_path):
+    store, engine, _repo, base = make_engine(tmp_path)
+    try:
+        ref = CampaignStore.composite_branch_ref("divergent-sequence")
+        engine.workspace.ensure(base)
+        engine.workspace.ensure_branch_ref(ref, base)
+
+        value = engine.workspace.workspace / "value.txt"
+        value.write_text("1\n", encoding="utf-8")
+        first = engine.workspace.snapshot("first composite candidate")
+        engine.workspace.advance_branch_ref(ref, base, first)
+
+        engine.workspace.checkout(base)
+        value.write_text("2\n", encoding="utf-8")
+        divergent = engine.workspace.snapshot("divergent candidate")
+        with pytest.raises(WorkspaceError, match="diverges from durable snapshot"):
+            engine.workspace.reconcile_branch_ref(ref, base, divergent)
     finally:
         store.close()

@@ -8,7 +8,7 @@ import stat
 import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from .process import run_process
+from .process import ProcessError, run_process
 
 
 class WorkspaceError(RuntimeError):
@@ -64,6 +64,127 @@ class WorkspaceManager:
 
     def head(self) -> str:
         return run_process(["git", "rev-parse", "HEAD"], cwd=self.workspace, timeout=10).stdout.strip()
+
+    def ensure_branch_ref(self, ref: str, snapshot: str) -> None:
+        """Create a sequence ref at its immutable base, or verify an exact replay."""
+        self._validate_branch_ref(ref)
+        self._validate_commit(snapshot)
+        current = self._branch_ref_target(ref)
+        if current is not None:
+            if current != snapshot:
+                raise WorkspaceError(
+                    f"composite branch ref {ref} already points to a different snapshot"
+                )
+            return
+        self._update_branch_ref(ref, snapshot, expected_old="0" * len(snapshot))
+
+    def advance_branch_ref(self, ref: str, parent: str, candidate: str) -> None:
+        """Retain a composite snapshot on its branch with compare-and-swap semantics."""
+        self._validate_branch_ref(ref)
+        self._validate_commit(parent)
+        self._validate_commit(candidate)
+        if parent == candidate:
+            raise WorkspaceError("composite branch cannot advance to its parent snapshot")
+        try:
+            parents = run_process(
+                ["git", "rev-list", "--parents", "-n", "1", candidate],
+                cwd=self.workspace,
+                timeout=10,
+            ).stdout.strip().split()
+        except ProcessError as exc:
+            raise WorkspaceError(f"cannot inspect composite candidate {candidate}") from exc
+        if len(parents) < 2 or parents[1] != parent:
+            raise WorkspaceError(
+                f"composite candidate {candidate} is not a direct child of {parent}"
+            )
+        current = self._branch_ref_target(ref)
+        if current == candidate:
+            return
+        if current is None:
+            self._update_branch_ref(ref, parent, expected_old="0" * len(parent))
+            current = parent
+        if current != parent:
+            raise WorkspaceError(
+                f"composite branch ref {ref} moved from expected parent {parent} to {current}"
+            )
+        self._update_branch_ref(ref, candidate, expected_old=parent)
+
+    def reconcile_branch_ref(
+        self, ref: str, durable_tip: str, in_flight_candidate: str | None = None,
+    ) -> None:
+        """Repair a missing/lagging ref from durable sequence state; reject divergence."""
+        self._validate_branch_ref(ref)
+        self._validate_commit(durable_tip)
+        target = in_flight_candidate or durable_tip
+        self._validate_commit(target)
+        current = self._branch_ref_target(ref)
+        if current is None:
+            self._update_branch_ref(ref, target, expected_old="0" * len(target))
+            return
+        if current == target:
+            return
+        if current == durable_tip and in_flight_candidate:
+            self.advance_branch_ref(ref, durable_tip, in_flight_candidate)
+            return
+        is_ancestor = run_process(
+            ["git", "merge-base", "--is-ancestor", current, target],
+            cwd=self.workspace,
+            timeout=10,
+            check=False,
+        )
+        if is_ancestor.returncode == 0:
+            self._update_branch_ref(ref, target, expected_old=current)
+            return
+        raise WorkspaceError(
+            f"composite branch ref {ref} diverges from durable snapshot {target}"
+        )
+
+    def _validate_branch_ref(self, ref: str) -> None:
+        if not ref.startswith("refs/heads/bananloop/composites/"):
+            raise WorkspaceError("composite branch ref is outside the BananLoop namespace")
+        try:
+            run_process(["git", "check-ref-format", ref], cwd=self.workspace, timeout=10)
+        except ProcessError as exc:
+            raise WorkspaceError("composite branch ref is invalid") from exc
+
+    def _validate_commit(self, snapshot: str) -> None:
+        if (len(snapshot) not in {40, 64} or snapshot != snapshot.lower()
+                or any(char not in "0123456789abcdef" for char in snapshot)):
+            raise WorkspaceError("composite snapshot is not a Git object ID")
+        try:
+            run_process(
+                ["git", "cat-file", "-e", f"{snapshot}^{{commit}}"],
+                cwd=self.workspace,
+                timeout=10,
+            )
+        except ProcessError as exc:
+            raise WorkspaceError(f"composite snapshot {snapshot} is unavailable") from exc
+
+    def _branch_ref_target(self, ref: str) -> str | None:
+        result = run_process(
+            ["git", "rev-parse", "--verify", "--quiet", ref],
+            cwd=self.workspace,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode == 1:
+            return None
+        if result.returncode != 0:
+            raise WorkspaceError(f"cannot read composite branch ref {ref}")
+        target = result.stdout.strip().splitlines()
+        if len(target) != 1:
+            raise WorkspaceError(f"composite branch ref {ref} is ambiguous")
+        return target[0]
+
+    def _update_branch_ref(self, ref: str, snapshot: str, *, expected_old: str) -> None:
+        try:
+            run_process(
+                ["git", "update-ref", ref, snapshot, expected_old],
+                cwd=self.workspace,
+                timeout=10,
+            )
+        except ProcessError as exc:
+            raise WorkspaceError(f"cannot update composite branch ref {ref}") from exc
 
     def changed_paths(self, parent: str, candidate: str) -> list[str]:
         if parent == candidate:
