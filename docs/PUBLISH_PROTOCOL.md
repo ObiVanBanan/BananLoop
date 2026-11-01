@@ -161,3 +161,7 @@ Draft PR #94 adds opt-in bootstrap token reservation/settlement and atomic impor
 Candidate PR #96's exact final-HOLDOUT lifecycle head `e4dd1ae094571ea72b73c3a514a745e6c1d723fd` passed hosted run [#41262308357](https://github.com/ObiVanBanan/BananLoop/actions/runs/41262308357) across Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 (Windows: **460 passed, 1 skipped**). Candidate PR #97's pivot HIL head `61033cf7e4ae3b31f481a08ad5fd9b2f52e8d1c6` passed run [#41262536403](https://github.com/ObiVanBanan/BananLoop/actions/runs/41262536403) on the same matrix (Windows: **462 passed, 1 skipped**). Both are deterministic tests, with no model, paid benchmark, or official HOLDOUT calls; the skip is the unavailable selector preregistration snapshot.
 
 These draft branches do not make Issue #64 eligible and are not a release authorization. Keep the H2H gate blocked until spend metering, hostile-code isolation, and dataset rights/privacy evidence are verified.
+
+## Bootstrap-token verification note — 2026-11-01
+
+Draft PR #94 head `000d1ecbb193c2000e0ca653b6196fc64ed281bc` adds empty/corrupt-ledger regression coverage and passes the hosted Ubuntu Python 3.11/3.12/3.13 + Windows Python 3.12 matrix in run [#41269907650](https://github.com/ObiVanBanan/BananLoop/actions/runs/41269907650): **460 passed, 1 skipped per job**. Duplicate push run [#41269903688](https://github.com/ObiVanBanan/BananLoop/actions/runs/41269903688) also passed. This evidence is not provider-enforced USD metering and does not change the blocked H2H gate.

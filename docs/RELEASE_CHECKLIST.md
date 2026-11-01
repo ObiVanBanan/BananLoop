@@ -78,3 +78,7 @@ The fixtures cover local process cancellation/resume and no post-terminal replan
 ## Secret-history scan status — 2026-11-01
 
 Draft PR #90's hosted Gitleaks history scan [#41243943394](https://github.com/ObiVanBanan/BananLoop/actions/runs/41243943394) reported 14 potential findings and exited nonzero. Its triage report classifies 12 as SHA-256 content fingerprints and 2 as mock test values; no actual credential was confirmed. Findings remain unsuppressed. Treat this as documented manual triage, not a clean scan or secret/privacy clearance. The workflow is not merged, and GitHub secret-alert review remains outstanding.
+
+### Candidate CI follow-up — 2026-11-01
+
+Draft PR #94 exact head `000d1ecbb193c2000e0ca653b6196fc64ed281bc` passed hosted run [#41269907650](https://github.com/ObiVanBanan/BananLoop/actions/runs/41269907650) on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 (**460 passed, 1 skipped per job**); duplicate push run [#41269903688](https://github.com/ObiVanBanan/BananLoop/actions/runs/41269903688) passed too. PR #94 adds only bootstrap-ledger regression coverage here; it remains draft/unmerged and does not establish a provider-enforced USD cap or select a final release SHA.
