@@ -84,12 +84,22 @@ def test_broker_stages_only_candidate_and_sends_one_case(monkeypatch, tmp_path: 
         image="local/carps-runtime@sha256:" + "a" * 64,
         artifact_dir=tmp_path / "unused",
         command=("python", "-I", "/opt/are/carps_runner.py"),
+        memory_bytes=8 * 1024**3,
+        pids_limit=64,
+        tmpfs_bytes=24 * 1024**3,
+        output_limit_bytes=16 * 1024**2,
     )
     observed: dict[str, object] = {}
 
     def fake_run(spec, *, case_input):
         observed["files"] = sorted(path.name for path in spec.artifact_dir.iterdir())
         observed["request"] = json.loads(case_input)
+        observed["limits"] = (
+            spec.memory_bytes,
+            spec.pids_limit,
+            spec.tmpfs_bytes,
+            spec.output_limit_bytes,
+        )
         return CandidateResult(0, json.dumps({"ok": True, "call_s": 0.25, "result": list(range(30))}).encode(), b"")
 
     monkeypatch.setattr(carps, "run_candidate", fake_run)
@@ -104,6 +114,7 @@ def test_broker_stages_only_candidate_and_sends_one_case(monkeypatch, tmp_path: 
     assert set(request) == {"points", "k", "seed", "time_budget_s"}
     assert request["k"] == 30 and request["seed"] == 17
     assert len(request["points"]) == 800
+    assert observed["limits"] == (2 * 1024**3, 64, 256 * 1024**2, 1024**2)
     assert list(evaluator_root.iterdir()) == []
 
 
