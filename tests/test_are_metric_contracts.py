@@ -32,7 +32,22 @@ def test_imputation_skips_constant_and_single_masked_features():
     assert score_imputation_call(prediction, truth, mask) == (0.0, True)
 
 
-@pytest.mark.parametrize("raw", [np.array([1.0]), np.array([[np.nan]]), object()])
+def test_imputation_variance_threshold_skips_below_and_keeps_above():
+    truth = np.array([[0.0, 0.0], [1.4e-6, 1.5e-6]], dtype=np.float64)
+    mask = np.ones_like(truth, dtype=bool)
+    assert score_imputation_call(truth.copy(), truth, mask) == (1.0, True)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        np.array([1.0]),
+        np.array([[1.0], [np.nan]]),
+        np.array([[1], [2]], dtype=np.int64),
+        [[1.0], [2.0]],
+        object(),
+    ],
+)
 def test_invalid_imputation_output_scores_zero(raw):
     truth = np.array([[1.], [2.]])
     mask = np.ones_like(truth, dtype=bool)
@@ -70,3 +85,9 @@ def test_risk_invalid_seed_and_squared_error_cap_match_grader():
     assert risk_seed_squared_error(float("nan"), 1.0) == 100.0
     assert risk_seed_squared_error(100.0, 0.0) == 100.0
     assert risk_seed_squared_error(1.0, 0.0, valid=False) == 100.0
+
+
+def test_risk_reference_denominator_fallback_and_ratio_cap():
+    assert risk_cell_ratio(np.array([1.0, 1.0]), np.array([0.0, 0.0])) == 1.0e4
+    assert risk_cell_ratio(np.array([1.0, 1.0]), np.array([np.nan, np.nan])) == 1.0e4
+    assert risk_cell_ratio(np.array([1.0e9, 1.0e9]), np.array([1.0e-3, 1.0e-3])) == 1.0e4
