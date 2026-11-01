@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
+import pytest
+
 from bananloop.agents.codex import BOOTSTRAP_SCHEMA, HYPOTHESIS_SCHEMA, CodexAdapter, SELECTION_SCHEMA, selection_schema_for_task
+from bananloop.process import ProcessCancelled, process_control
 
 
 def test_bootstrap_protocol_manifest_schema_is_strict_and_total():
@@ -116,6 +120,31 @@ def test_codex_exec_sends_large_task_via_stdin_not_argv(tmp_path: Path, monkeypa
     assert captured["input_text"] is not None
     assert "x" * 20000 in captured["input_text"]
     assert "remove only transient cache artifacts" in captured["input_text"]
+
+
+def test_active_fake_codex_cli_is_cancelled_by_process_control(tmp_path: Path, monkeypatch):
+    """Exercise cancellation through CodexAdapter without invoking Codex or a model."""
+    started = tmp_path / "fake-codex-started"
+    fake_codex = tmp_path / "fake_codex.py"
+    fake_codex.write_text(
+        "from pathlib import Path\\n"
+        "import time\\n"
+        f"Path({String.raw`${str(started)!r}`}).write_text('started', encoding='utf-8')\\n"
+        "time.sleep(60)\\n",
+        encoding="utf-8",
+    )
+    adapter = CodexAdapter()
+    monkeypatch.setattr(adapter, "_resolved_command", lambda: [sys.executable, str(fake_codex)])
+
+    with process_control(lambda: "USER_STOPPED" if started.exists() else None):
+        with pytest.raises(ProcessCancelled, match="USER_STOPPED"):
+            adapter.execute(
+                {"role": "propose", "goal": "fake CLI cancellation fixture"},
+                tmp_path,
+                timeout=10,
+            )
+
+    assert started.exists()
 
 
 def test_implement_prompt_does_not_block_on_supervisor_owned_tests(tmp_path: Path, monkeypatch):
