@@ -201,6 +201,7 @@ def _write_fake_codex_cli(bin_dir: Path, markers: Path) -> None:
         "    counter.write_text(str(count))\n"
         "    if count == 1:\n"
         "        (root/'codex-propose-ready').write_text('ready')\n"
+        "        (root/'codex-propose-pid').write_text(str(__import__('os').getpid()))\n"
         "        time.sleep(4)\n"
         "        (root/'codex-survived-cancel').write_text('survived')\n"
         "    hypothesis={\n"
@@ -344,6 +345,163 @@ def run_fake_codex_recovery(output_dir: Path) -> dict[str, object]:
     return summary
 
 
+def run_fake_codex_crash_recovery(output_dir: Path) -> dict[str, object]:
+    """Hard-kill the CLI, stop its detached fixture child, then test recovery."""
+    output_dir.mkdir(parents=True, exist_ok=False)
+    repo = output_dir / "fixture"
+    state = output_dir / "state"
+    logs = output_dir / "logs"
+    fake_bin = output_dir / "fake-bin"
+    logs.mkdir()
+    py_source = Path(__file__).resolve().parents[2] / "src"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(py_source) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
+    _write_fake_codex_cli(fake_bin, output_dir)
+    subprocess.run(
+        [sys.executable, str(Path(__file__).with_name("create_fixture.py")), str(repo)],
+        check=True, capture_output=True, text=True,
+    )
+    cli = ["--repo", str(repo), "--state-dir", str(state)]
+    init_args = [
+        "init", *cli, "--goal", "Raise quality to 3 while regressions stay at zero",
+        "--eval-cmd", "python evaluator.py", "--metric", "quality", "--direction", "maximize",
+        "--target", "3", "--min-improvement", "0.5", "--guard", "regressions<=0",
+        "--check", "tests", "--editable", "value.txt", "--editable", "guard.txt",
+        "--protect", "evaluator.py", "--protect", "agent.py", "--agent", "codex",
+        "--max-experiments", "1", "--max-attempts", "2", "--max-agent-calls", "8",
+        "--max-evaluator-calls", "5", "--selector-mode", "deterministic",
+    ]
+    _run_cli(init_args, repo=repo, env=env, log_dir=logs, name="init")
+
+    process = subprocess.Popen(
+        [sys.executable, "-m", "bananloop.cli", "run", *cli], cwd=repo, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        **({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+           else {"start_new_session": True}),
+    )
+    ready = output_dir / "codex-propose-ready"
+    deadline = time.monotonic() + 20
+    while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if not ready.exists():
+        stdout, stderr = process.communicate(timeout=10)
+        raise RuntimeError(f"fake Codex did not start; stdout={stdout!r}; stderr={stderr!r}")
+
+    # This bypasses the graceful cancellation handler to leave the durable action RUNNING.
+    if os.name == "nt":
+        killed = subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if killed.returncode:
+            raise RuntimeError(f"could not hard-kill lifecycle process tree: {killed.stderr}")
+    else:
+        os.killpg(process.pid, signal.SIGKILL)
+    stdout, stderr = process.communicate(timeout=15)
+    (logs / "crashed-run.stdout.txt").write_text(stdout, encoding="utf-8")
+    (logs / "crashed-run.stderr.txt").write_text(stderr, encoding="utf-8")
+    # CodexAdapter deliberately starts its command in a separate session, so a hard
+    # kill of the CLI cannot imply that its child is gone. Confirm and terminate the
+    # fixture child explicitly before opting into the documented retry behavior.
+    child_pid_file = output_dir / "codex-propose-pid"
+    if child_pid_file.exists():
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(child_pid), "/F"],
+                capture_output=True, text=True, timeout=15,
+            )
+        else:
+            try:
+                os.kill(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    time.sleep(4.2)
+    if (output_dir / "codex-survived-cancel").exists():
+        raise RuntimeError("fake Codex child survived hard-killing the CLI process tree")
+
+    db_path = state / "campaign.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT status FROM actions WHERE id='exp:1:propose'").fetchone()
+        campaign_status = conn.execute("SELECT status FROM campaigns WHERE id=1").fetchone()
+        if row is None or row[0] != "RUNNING":
+            raise RuntimeError(f"hard crash did not preserve the orphaned RUNNING action: {row}")
+        if campaign_status is None or campaign_status[0] != "RUNNING":
+            raise RuntimeError(f"unexpected campaign status after hard crash: {campaign_status}")
+    calls_file = output_dir / "calls.jsonl"
+    calls_after_crash = calls_file.read_text(encoding="utf-8").splitlines()
+
+    # The default path must refuse to guess whether the interrupted action took effect.
+    ordinary = subprocess.run(
+        [sys.executable, "-m", "bananloop.cli", "resume", *cli], cwd=repo, env=env,
+        capture_output=True, text=True, timeout=45,
+    )
+    (logs / "resume-unknown-outcome.stdout.txt").write_text(ordinary.stdout, encoding="utf-8")
+    (logs / "resume-unknown-outcome.stderr.txt").write_text(ordinary.stderr, encoding="utf-8")
+    if ordinary.returncode == 0 or "was running when process stopped" not in ordinary.stderr:
+        raise RuntimeError(
+            "ordinary resume did not fail closed on an orphaned RUNNING action: "
+            f"rc={ordinary.returncode}, stderr={ordinary.stderr[-2000:]}"
+        )
+    if calls_file.read_text(encoding="utf-8").splitlines() != calls_after_crash:
+        raise RuntimeError("ordinary resume unexpectedly reinvoked the orphaned action")
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT status FROM actions WHERE id='exp:1:propose'").fetchone()
+        campaign_after_refusal = conn.execute("SELECT status FROM campaigns WHERE id=1").fetchone()
+        if row is None or row[0] != "RUNNING":
+            raise RuntimeError("failed closed resume changed the orphaned action status")
+        if campaign_after_refusal is None or campaign_after_refusal[0] != "PAUSED_INFRA":
+            raise RuntimeError(
+                "unknown-outcome refusal did not persist the safe PAUSED_INFRA state: "
+                f"{campaign_after_refusal}"
+            )
+
+    _run_cli(
+        ["resume", *cli, "--retry-running-action"], repo=repo, env=env,
+        log_dir=logs, name="resume-explicit-retry", timeout=90,
+    )
+    status = _run_cli(["status", *cli], repo=repo, env=env, log_dir=logs, name="status")
+    report = _run_cli(["report", *cli], repo=repo, env=env, log_dir=logs, name="report")
+    if "status: GOAL_MET" not in status or "Final assessment: **DEV_ONLY**" not in report:
+        raise RuntimeError("hard-crash recovery did not complete with a DEV-only report")
+    calls = [json.loads(line) for line in calls_file.read_text(encoding="utf-8").splitlines()]
+    roles = [row["role"] for row in calls]
+    if roles.count("propose") != 2 or roles.count("implement") != 1:
+        raise RuntimeError(f"explicit recovery replayed or skipped an action: {roles}")
+    with sqlite3.connect(db_path) as conn:
+        action_status = conn.execute(
+            "SELECT status FROM actions WHERE id='exp:1:propose'"
+        ).fetchone()
+        reservation_statuses = [row[0] for row in conn.execute(
+            "SELECT status FROM reservations WHERE action_id='exp:1:propose' ORDER BY id"
+        )]
+    if action_status is None or action_status[0] != "COMPLETED":
+        raise RuntimeError("retried proposal action was not durably completed")
+    if not reservation_statuses or "UNKNOWN" not in reservation_statuses:
+        raise RuntimeError(f"unknown pre-crash usage was not preserved: {reservation_statuses}")
+
+    summary: dict[str, object] = {
+        "interruption": "SIGKILL_CLI_ORCHESTRATOR" if os.name != "nt" else "TASKKILL_CLI_ORCHESTRATOR",
+        "status": "GOAL_MET",
+        "campaign_status_after_crash": campaign_status[0],
+        "final_assessment": "DEV_ONLY",
+        "model_calls": 0,
+        "holdout_configured": False,
+        "orphaned_action": "exp:1:propose",
+        "default_resume": "UNKNOWN_OUTCOME_REFUSED",
+        "campaign_status_after_default_resume": campaign_after_refusal[0],
+        "proposal_invocations": roles.count("propose"),
+        "implementation_invocations": roles.count("implement"),
+        "proposal_reservations": reservation_statuses,
+        "logs": str(logs),
+    }
+    (output_dir / "result.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -358,12 +516,18 @@ def main() -> None:
         "--fake-codex-recovery", action="store_true",
         help="interrupt and resume through CodexAdapter using a local fake Codex executable",
     )
+    parser.add_argument(
+        "--fake-codex-crash-recovery", action="store_true",
+        help="hard-kill the CLI, stop the detached fake Codex child and retry unknown outcome",
+    )
     args = parser.parse_args()
     output_dir = Path(args.output_dir) if args.output_dir else Path(tempfile.mkdtemp(prefix="bananloop-lifecycle-"))
-    if args.fake_codex_recovery and args.sigint:
-        parser.error("--sigint and --fake-codex-recovery are separate scenarios")
+    if sum((args.fake_codex_recovery, args.fake_codex_crash_recovery, args.sigint)) > 1:
+        parser.error("lifecycle scenario options are mutually exclusive")
     result = (
-        run_fake_codex_recovery(output_dir)
+        run_fake_codex_crash_recovery(output_dir)
+        if args.fake_codex_crash_recovery
+        else run_fake_codex_recovery(output_dir)
         if args.fake_codex_recovery
         else run(output_dir, sigint=args.sigint)
     )
