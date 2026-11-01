@@ -127,14 +127,18 @@ def test_active_fake_codex_cli_is_cancelled_by_process_control(tmp_path: Path, m
     started = tmp_path / "fake-codex-started"
     fake_codex = tmp_path / "fake_codex.py"
     fake_codex.write_text(
-        "from pathlib import Path\\n"
-        "import time\\n"
-        f"Path({String.raw`${str(started)!r}`}).write_text('started', encoding='utf-8')\\n"
-        "time.sleep(60)\\n",
+        "from pathlib import Path\n"
+        "import sys, time\n"
+        "Path(sys.argv[1]).write_text('started', encoding='utf-8')\n"
+        "time.sleep(60)\n",
         encoding="utf-8",
     )
     adapter = CodexAdapter()
-    monkeypatch.setattr(adapter, "_resolved_command", lambda: [sys.executable, str(fake_codex)])
+    monkeypatch.setattr(
+        adapter,
+        "_resolved_command",
+        lambda: [sys.executable, str(fake_codex), str(started)],
+    )
 
     with process_control(lambda: "USER_STOPPED" if started.exists() else None):
         with pytest.raises(ProcessCancelled, match="USER_STOPPED"):
