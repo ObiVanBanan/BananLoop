@@ -115,3 +115,9 @@ This verifies the current-base deterministic CLI recovery fixture and full platf
 **Candidate code head:** draft PR #94, `6d88f67eaca957c399533c63d00ac49397f78a8d`; based on current lifecycle head PR #93. Full hosted run [#41259572837](https://github.com/ObiVanBanan/BananLoop/actions/runs/41259572837) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12. Windows: **458 passed, 1 skipped in 642.39s**; the skip is the unavailable pinned selector preregistration snapshot.
 
 Deterministic fake-adapter tests verify that insufficient reserve prevents the model call; an empty ledger allows correcting reserve or removing the cap before any attempt; any reserved/unknown/consumed attempt locks settings; known usage imports atomically; and overshoot/unknown usage fail closed. The rollback regression confirms partial campaign initialization leaves campaign, action, reservation, and event tables empty. No real model, benchmark candidate, or HOLDOUT calls were made. This demonstrates local token accounting only, not USD spend enforcement or evaluator isolation.
+
+
+## CLI HIL approval-to-report journey — 2026-11-01
+
+- The offline `--hil-pivot-cli` scenario uses the real CLI, `CampaignRegistry`, SQLite state and a local command-agent fixture. It displays a seeded pending proposal as `PAUSED_NEEDS_INPUT`; `operator-snapshot` exposes the intact proposal ID/digest; approval reuses the exact receipt on request replay; child creation requires preview plus the exact child-spec hash; the child is explicitly run to a `GOAL_MET` `DEV_ONLY` report. A terminal resume replay does not add agent calls.
+- Focused Linux/Python 3.14.7 result: **1 passed**. No model calls or HOLDOUT were configured. The fixture seeds the pivot proposal; it does not show autonomous proposal generation.
