@@ -23,7 +23,7 @@ jobs:
       - run: python -m pip install -U pip
       - run: python -m pip install -e ".[test]"
       - run: python -m pip install numpy==2.2.6
-      - run: pytest
+      - run: pytest -ra
 
   docker-smoke:
     runs-on: ubuntu-latest
