@@ -2404,3 +2404,88 @@ def test_issue60_crash_retry_preserves_old_upper_bound_and_reserves_again(tmp_pa
         assert store.resource_summary()["unknown_outcomes"] >= 1
     finally:
         store.close()
+
+
+def test_engine_run_executes_dev_grounded_reframe_at_plateau(tmp_path: Path):
+    """A real fixture campaign reframes after repeated no-effect DEV trials."""
+    store, engine, _, _ = make_engine(tmp_path)
+
+    class PlateauAgent(AgentAdapter):
+        def __init__(self):
+            self.proposal_modes = []
+            self.pivot_calls = 0
+
+        def probe(self):
+            return {"available": True, "version": "fixture"}
+
+        def execute(self, task, workspace, timeout):
+            role = task["role"]
+            if role == "propose":
+                mode = task["planning_mode"]
+                self.proposal_modes.append(mode)
+                ordinal = len(self.proposal_modes)
+                refs = [f"exp:{ordinal - 1}"] if ordinal > 1 else ["INSUFFICIENT_EVIDENCE"]
+                prior = [ordinal - 1] if ordinal > 1 else []
+                return {"candidates": [{
+                    "candidate_id": f"plateau-{ordinal}",
+                    "hypothesis": {
+                        "hypothesis": f"test reframing {ordinal}",
+                        "rationale": "Use the latest DEV result to test a different mechanism.",
+                        "expected_effect": "Change quality if the mechanism is useful.",
+                        "files_or_area": ["value.txt"],
+                        "falsification_condition": "quality remains unchanged",
+                        "mechanism_key": f"plateau-mechanism-{ordinal}",
+                        "prior_experiment_refs": prior,
+                        "novelty_rationale": "The preceding zero-effect DEV trial motivates a distinct mechanism." if prior else "Initial fixture hypothesis.",
+                    },
+                    "evidence_refs": refs,
+                    "suspected_failure_mode": "",
+                    "predicted_observable": "quality metric",
+                    "discriminating_test": "same frozen fixture evaluator",
+                    "scope_eligibility": True,
+                    "estimated_agent_calls": 1,
+                    "estimated_evaluator_calls": 1,
+                    "estimated_work_units": None,
+                    "rationale": "bounded deterministic fixture trial",
+                    "uncertainty": "toy measurement",
+                    "inference": "agent_inference",
+                }]}
+            if role == "implement":
+                # Each edit is materially different, but all represent numeric zero.
+                (workspace / "value.txt").write_text("0." + "0" * len(self.proposal_modes) + "\n")
+                return {"summary": "zero-effect fixture edit", "changed_paths": ["value.txt"],
+                        "verification_notes": "fixture", "blockers": []}
+            if role == "pivot_advice":
+                self.pivot_calls += 1
+                return {
+                    "proposed_architecture": "Try a bounded alternate quality path.",
+                    "rationale": "Three distinct mechanism probes had no DEV effect.",
+                    "expected_effect": "A changed mechanism may affect quality.",
+                    "changed_scope": ["value.txt"],
+                    "resources": {"additional_agent_calls": 1, "additional_evaluator_calls": 1,
+                                  "additional_evaluation_units": None, "notes": "operator review required"},
+                }
+            raise AssertionError(f"unexpected fixture role: {role}")
+
+    fake_agent = PlateauAgent()
+    engine.agent = fake_agent
+    try:
+        result = engine.run()
+        assert result["status"] == "PAUSED_NEEDS_INPUT"
+        assert result["stop_reason"] == "PAUSED_NEEDS_INPUT"
+        assert fake_agent.proposal_modes == ["exploit", "explore", "reframe"]
+        assert fake_agent.pivot_calls == 1
+        experiments = store.experiments()
+        assert len(experiments) == 3
+        assert [row["status"] for row in experiments] == ["REJECTED"] * 3
+        assert store.campaign()["non_improve_streak"] == 3
+        assert store.campaign()["champion_snapshot"] == store.campaign()["baseline_snapshot"]
+        portfolios = [json.loads(row["payload_json"]) for row in store.events()
+                      if row["event_type"] == "PORTFOLIO_DECISION"]
+        assert [row["strategy"] for row in portfolios] == ["exploit", "explore", "reframe"]
+        proposal = store.pending_pivot_proposal()
+        assert proposal is not None and proposal["status"] == "PENDING"
+        assert store.campaign()["agent_calls"] == 7
+        assert store.campaign()["evaluator_calls"] == 4
+    finally:
+        store.close()
