@@ -221,6 +221,38 @@ def test_direct_campaign_row_update_advances_snapshot_cursor(tmp_path):
         store.close()
 
 
+def test_direct_campaign_delete_and_insert_advance_snapshot_cursor(tmp_path):
+    store = make_store(tmp_path)
+    try:
+        before = read_snapshot(store, "campaign-a")
+        original = store.campaign()
+        columns = tuple(original)
+        placeholders = ",".join("?" for _ in columns)
+        column_sql = ",".join(columns)
+
+        store.conn.execute("DELETE FROM campaigns WHERE id=1")
+        store.conn.commit()
+        store.conn.execute(
+            f"INSERT INTO campaigns({column_sql}) VALUES({placeholders})",
+            tuple(original[column] for column in columns),
+        )
+        store.conn.commit()
+
+        after = read_snapshot(store, "campaign-a")
+        page = read_events_after(store, before["revision"])
+
+        assert after["status"] == before["status"]
+        assert after["revision"] == before["revision"] + 2
+        assert page["cursor"] == after["revision"]
+        assert [event["type"] for event in page["events"]] == [
+            "CAMPAIGN_STATE_UPDATED",
+            "CAMPAIGN_STATE_UPDATED",
+        ]
+        assert [event["payload"] for event in page["events"]] == [{}, {}]
+    finally:
+        store.close()
+
+
 def test_unregistered_sqlite_writer_cannot_bypass_campaign_event_guard(tmp_path):
     store = make_store(tmp_path)
     path = store.path
