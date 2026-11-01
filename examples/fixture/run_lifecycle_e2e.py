@@ -450,8 +450,14 @@ def run_fake_codex_crash_recovery(output_dir: Path) -> dict[str, object]:
         raise RuntimeError("ordinary resume unexpectedly reinvoked the orphaned action")
     with sqlite3.connect(db_path) as conn:
         row = conn.execute("SELECT status FROM actions WHERE id='exp:1:propose'").fetchone()
+        campaign_after_refusal = conn.execute("SELECT status FROM campaigns WHERE id=1").fetchone()
         if row is None or row[0] != "RUNNING":
             raise RuntimeError("failed closed resume changed the orphaned action status")
+        if campaign_after_refusal is None or campaign_after_refusal[0] != "PAUSED_INFRA":
+            raise RuntimeError(
+                "unknown-outcome refusal did not persist the safe PAUSED_INFRA state: "
+                f"{campaign_after_refusal}"
+            )
 
     _run_cli(
         ["resume", *cli, "--retry-running-action"], repo=repo, env=env,
@@ -486,6 +492,7 @@ def run_fake_codex_crash_recovery(output_dir: Path) -> dict[str, object]:
         "holdout_configured": False,
         "orphaned_action": "exp:1:propose",
         "default_resume": "UNKNOWN_OUTCOME_REFUSED",
+        "campaign_status_after_default_resume": campaign_after_refusal[0],
         "proposal_invocations": roles.count("propose"),
         "implementation_invocations": roles.count("implement"),
         "proposal_reservations": reservation_statuses,
