@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import signal
@@ -357,6 +358,173 @@ def run_fake_codex_recovery(output_dir: Path) -> dict[str, object]:
     return summary
 
 
+def run_hil_pivot_cli(output_dir: Path) -> dict[str, object]:
+    """Exercise operator decision, digest-confirmed child, execution and report."""
+    from bananloop.contracts import (
+        AgentConfig, BudgetSpec, CampaignSpec, Direction, MetricSpec,
+        PivotProposal, PivotResourceRequest, RuntimePaths,
+    )
+    from bananloop.registry import CampaignRegistry
+    from bananloop.store import CampaignStore
+    from bananloop.workspace import current_commit
+
+    output_dir.mkdir(parents=True, exist_ok=False)
+    repo = output_dir / "fixture"
+    state = output_dir / "state"
+    logs = output_dir / "logs"
+    logs.mkdir()
+    py_source = Path(__file__).resolve().parents[2] / "src"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(py_source) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    isolated_home = tempfile.TemporaryDirectory(prefix="bl-hil-")
+    env["HOME"] = isolated_home.name
+    env["USERPROFILE"] = isolated_home.name
+    subprocess.run(
+        [sys.executable, str(Path(__file__).with_name("create_fixture.py")), str(repo)],
+        check=True, capture_output=True, text=True,
+    )
+    agent = output_dir / "hil_agent.py"
+    _write_slow_first_proposal(agent, output_dir, first_sleep=0)
+    project_digest = hashlib.sha256(str(repo.resolve()).encode("utf-8")).hexdigest()[:16]
+    registry_paths = RuntimePaths.for_repo(
+        repo, Path(isolated_home.name) / ".bananloop" / "projects" / project_digest,
+    )
+    registry = CampaignRegistry(repo, registry_paths)
+    entry, campaign_root, _ = registry.reserve("Raise quality to 3", "hil-parent")
+    spec = CampaignSpec(
+        goal="Raise quality to 3 while regressions stay at zero",
+        source_repo=str(repo),
+        base_commit=current_commit(repo),
+        evaluation_command=[sys.executable, "evaluator.py"],
+        primary_metric=MetricSpec(
+            name="quality", direction=Direction.MAXIMIZE, target=3.0, min_improvement=0.5,
+        ),
+        mandatory_checks=["tests"],
+        editable_scope=["value.txt", "guard.txt"],
+        protected_paths=["evaluator.py", "agent.py"],
+        agent=AgentConfig(kind="command", command=[sys.executable, str(agent)]),
+        budget=BudgetSpec(max_experiments=5, max_attempts=6, max_agent_calls=12,
+                          max_evaluator_calls=8),
+    )
+    parent = CampaignStore(campaign_root / "campaign.sqlite3")
+    parent.initialize(spec)
+    parent.update_campaign(status="PAUSED_NEEDS_INPUT", stop_reason="PAUSED_NEEDS_INPUT")
+    proposal = PivotProposal.build(
+        spec_hash=spec.approved_hash(), trigger_experiment_ordinal=1,
+        current_architecture="single stage", proposed_architecture="bounded two stage",
+        rationale="operator-reviewable fixture change", expected_effect="reach target safely",
+        changed_scope=["value.txt", "guard.txt"],
+        resources=PivotResourceRequest(additional_agent_calls=2, additional_evaluator_calls=2,
+                                       notes="bounded local fixture"),
+    )
+    parent.save_pivot_proposal(proposal, "operator approval required")
+    parent.close()
+
+    cli = ["--repo", str(repo), "--campaign-id", entry.campaign_id]
+    stopped = _run_cli(["status", *cli], repo=repo, env=env, log_dir=logs, name="parent-status")
+    if "status: PAUSED_NEEDS_INPUT" not in stopped or "stop_reason: PAUSED_NEEDS_INPUT" not in stopped:
+        raise RuntimeError("operator CLI did not show the pending stop and reason")
+    operator_view = json.loads(_run_cli(
+        ["operator-snapshot", *cli], repo=repo, env=env, log_dir=logs,
+        name="parent-operator-snapshot",
+    ))
+    pivot_review = operator_view.get("pivot_review") or {}
+    displayed_proposal = pivot_review.get("proposal") or {}
+    proposal_id = displayed_proposal.get("proposal_id")
+    proposal_digest = displayed_proposal.get("digest")
+    if (
+        not pivot_review.get("integrity_valid")
+        or pivot_review.get("status") != "PENDING"
+        or proposal_id != proposal.proposal_id
+        or proposal_digest != proposal.digest
+    ):
+        raise RuntimeError("operator snapshot did not display the intact pending proposal identity")
+    decision_args = [
+        "pivot-decision", *cli, "--decision", "approve", "--proposal-id", proposal_id,
+        "--digest", proposal_digest, "--request-id", "operator-approval-1",
+    ]
+    first_decision = _run_cli(decision_args, repo=repo, env=env, log_dir=logs, name="approve")
+    repeated_decision = _run_cli(
+        decision_args, repo=repo, env=env, log_dir=logs, name="approve-replay",
+    )
+    first_receipt = json.loads(first_decision)
+    repeated_receipt = json.loads(repeated_decision)
+    if first_receipt != repeated_receipt or first_receipt["status"] != "APPROVED":
+        raise RuntimeError("operator approval or its idempotent replay failed")
+
+    child_spec = spec.model_copy(update={"goal": "Approved pivot child: " + spec.goal})
+    spec_file = output_dir / "child-spec.json"
+    spec_file.write_text(child_spec.model_dump_json(), encoding="utf-8")
+    child_args = [
+        "pivot-child", *cli, "--proposal-id", proposal_id,
+        "--digest", proposal_digest, "--spec-file", str(spec_file),
+    ]
+    preview = json.loads(_run_cli(child_args, repo=repo, env=env, log_dir=logs, name="child-preview"))
+    if preview["status"] != "CONFIRMATION_REQUIRED" or preview["child_initialized"]:
+        raise RuntimeError("child spec preview unexpectedly initialized a campaign")
+    created = json.loads(_run_cli(
+        [*child_args, "--confirmed-child-hash", preview["child_spec_hash"]],
+        repo=repo, env=env, log_dir=logs, name="child-confirm",
+    ))
+    if created["status"] != "READY" or created["automatic_execution"]:
+        raise RuntimeError("confirmed child creation did not stop for explicit run")
+
+    child_cli = ["--repo", str(repo), "--campaign-id", created["campaign_id"]]
+    _run_cli(["run", *child_cli], repo=repo, env=env, log_dir=logs, name="child-run", timeout=90)
+    status = _run_cli(["status", *child_cli], repo=repo, env=env, log_dir=logs, name="child-status")
+    report = _run_cli(["report", *child_cli], repo=repo, env=env, log_dir=logs, name="child-report")
+    if "status: GOAL_MET" not in status or "Final assessment: **DEV_ONLY**" not in report:
+        raise RuntimeError("approved child did not finish with its DEV-only report")
+    agent_calls_before_resume = int((output_dir / "agent-calls").read_text(encoding="utf-8"))
+    repeated_run = _run_cli(
+        ["resume", *child_cli], repo=repo, env=env, log_dir=logs, name="child-resume-replay",
+        timeout=30,
+    )
+    agent_calls_after_resume = int((output_dir / "agent-calls").read_text(encoding="utf-8"))
+    final_status = _run_cli(
+        ["status", *child_cli], repo=repo, env=env, log_dir=logs, name="child-final-status",
+    )
+    if "status: GOAL_MET" not in final_status or agent_calls_after_resume != agent_calls_before_resume:
+        raise RuntimeError("idempotent child resume changed its terminal result or repeated agent work")
+    child_store = CampaignStore(Path(created["state_dir"]) / "campaign.sqlite3")
+    try:
+        lineage = child_store.spec().spec_lineage
+        child_counts = child_store.campaign()
+        decision_count = int(parent_decision_count(campaign_root / "campaign.sqlite3"))
+    finally:
+        child_store.close()
+    if lineage is None or lineage.decision_request_id != "operator-approval-1" or decision_count != 1:
+        raise RuntimeError("approval lineage or idempotent decision receipt was not preserved")
+    summary: dict[str, object] = {
+        "status": "GOAL_MET",
+        "operator_stop_visible": True,
+        "proposal_identity_displayed": True,
+        "approval_request_id": "operator-approval-1",
+        "approval_replay": "same_receipt",
+        "decision_receipts": decision_count,
+        "child_campaign_id": created["campaign_id"],
+        "child_lineage_parent": lineage.parent_campaign_id,
+        "child_status": "GOAL_MET",
+        "child_experiments": child_counts["experiment_count"],
+        "agent_calls_before_terminal_resume": agent_calls_before_resume,
+        "agent_calls_after_terminal_resume": agent_calls_after_resume,
+        "final_assessment": "DEV_ONLY",
+        "model_calls": 0,
+        "holdout_configured": False,
+        "resume_replay_output": repeated_run.strip(),
+        "logs": str(logs),
+    }
+    (output_dir / "result.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
+
+
+def parent_decision_count(db_path: Path) -> int:
+    with sqlite3.connect(db_path) as conn:
+        return int(conn.execute("SELECT COUNT(*) FROM pivot_decisions").fetchone()[0])
+
+
 def _write_holdout_evaluator(
     path: Path,
     *,
@@ -620,12 +788,18 @@ def main() -> None:
         "--interrupt-final-holdout", action="store_true",
         help="interrupt a real active FINAL_HOLDOUT evaluator, then resume without replanning",
     )
+    parser.add_argument(
+        "--hil-pivot-cli", action="store_true",
+        help="exercise CLI stop visibility, idempotent approval, confirmed child, run and report",
+    )
     args = parser.parse_args()
     output_dir = Path(args.output_dir) if args.output_dir else Path(tempfile.mkdtemp(prefix="bananloop-lifecycle-"))
-    if sum((args.sigint, args.fake_codex_recovery, args.interrupt_final_holdout)) > 1:
+    if sum((args.sigint, args.fake_codex_recovery, args.interrupt_final_holdout, args.hil_pivot_cli)) > 1:
         parser.error("lifecycle scenario options are mutually exclusive")
     result = (
-        run_final_holdout_recovery(output_dir)
+        run_hil_pivot_cli(output_dir)
+        if args.hil_pivot_cli
+        else run_final_holdout_recovery(output_dir)
         if args.interrupt_final_holdout
         else run_fake_codex_recovery(output_dir)
         if args.fake_codex_recovery
