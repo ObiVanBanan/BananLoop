@@ -300,7 +300,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Final assessment: **{report['final_assessment']}**",
         f"- Goal: {report['goal']}",
         f"- Primary metric: `{report['primary_metric']}`",
-        f"- Baseline → final: `{report['baseline']}` → `{report['final_champion']}` (delta `{report['delta']}`)",
+        f"- Baseline -> final: `{report['baseline']}` -> `{report['final_champion']}` (delta `{report['delta']}`)",
         f"- Baseline snapshot: `{report['baseline_snapshot']}`",
         f"- Champion snapshot: `{report['champion_snapshot']}`",
         "",
@@ -311,9 +311,9 @@ def render_markdown(report: dict[str, Any]) -> str:
     validation = protocol["validation"]
     holdout = protocol["holdout"]
     lines += [
-        f"- Dev: `{protocol['dev']['baseline']}` → `{protocol['dev']['champion']}`",
+        f"- Dev: `{protocol['dev']['baseline']}` -> `{protocol['dev']['champion']}`",
         (
-            f"- Validation: `{validation['baseline']}` → `{validation['champion']}` "
+            f"- Validation: `{validation['baseline']}` -> `{validation['champion']}` "
             f"(delta `{validation['delta']}`)"
             if validation["configured"]
             else "- Validation: not configured"

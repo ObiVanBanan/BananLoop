@@ -52,6 +52,14 @@ python examples/fixture/run_lifecycle_e2e.py --output-dir /tmp/bananloop-lifecyc
 
 This uses only a deterministic local fixture (no model calls) and writes a disposable project, campaign state, result JSON and command logs under a new output directory. The final report is DEV-only; it does not configure validation or holdout.
 
+To exercise operating-system interruption and recovery instead, use:
+
+```bash
+python examples/fixture/run_lifecycle_e2e.py --sigint --output-dir /tmp/bananloop-sigint-run
+```
+
+This sends SIGINT on POSIX or CTRL_BREAK on Windows to the active CLI subprocess. The runner checks the resumable `PAUSED_INFRA` state, the persisted cancellation receipt, that the agent child did not survive, and the final DEV-only report after resume. It uses the same disposable fixture and makes no model calls.
+
 ## Option B — independent Luna smoke evidence
 
 A QA agent tested the opt-in semantic selector on `examples/calibration/mini_matcher` on October 29, 2026. This was one fresh CPU-only campaign:
