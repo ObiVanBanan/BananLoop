@@ -198,10 +198,9 @@ def run_hil_pivot_cli(output_dir: Path) -> dict[str, object]:
     env["PYTHONPATH"] = str(py_source) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
     )
-    isolated_home = output_dir / "home"
-    isolated_home.mkdir()
-    env["HOME"] = str(isolated_home)
-    env["USERPROFILE"] = str(isolated_home)
+    isolated_home = tempfile.TemporaryDirectory(prefix="bl-hil-")
+    env["HOME"] = isolated_home.name
+    env["USERPROFILE"] = isolated_home.name
     subprocess.run(
         [sys.executable, str(Path(__file__).with_name("create_fixture.py")), str(repo)],
         check=True, capture_output=True, text=True,
@@ -210,7 +209,7 @@ def run_hil_pivot_cli(output_dir: Path) -> dict[str, object]:
     _write_slow_first_proposal(agent, output_dir, first_sleep=0)
     project_digest = hashlib.sha256(str(repo.resolve()).encode("utf-8")).hexdigest()[:16]
     registry_paths = RuntimePaths.for_repo(
-        repo, isolated_home / ".bananloop" / "projects" / project_digest,
+        repo, Path(isolated_home.name) / ".bananloop" / "projects" / project_digest,
     )
     registry = CampaignRegistry(repo, registry_paths)
     entry, campaign_root, _ = registry.reserve("Raise quality to 3", "hil-parent")
