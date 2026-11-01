@@ -109,3 +109,9 @@ This verifies local fixture recovery and the test matrix. It does not establish 
 - The report renderer now uses ASCII arrows, satisfying the E2E CP-1252 encoding check. The first attempt failed on Unicode arrows; exact-head run #41257406221 passed after the fix.
 
 This verifies the current-base deterministic CLI recovery fixture and full platform matrix. It does not prove cancellation of a live Codex/model process, evaluator isolation, dataset rights, H2H eligibility, or release readiness. PR #93 remains draft and unmerged.
+
+## Bootstrap token-admission regression suite — 2026-11-01
+
+**Candidate code head:** draft PR #94, `6d88f67eaca957c399533c63d00ac49397f78a8d`; based on current lifecycle head PR #93. Full hosted run [#41259572837](https://github.com/ObiVanBanan/BananLoop/actions/runs/41259572837) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12. Windows: **458 passed, 1 skipped in 642.39s**; the skip is the unavailable pinned selector preregistration snapshot.
+
+Deterministic fake-adapter tests verify that insufficient reserve prevents the model call; an empty ledger allows correcting reserve or removing the cap before any attempt; any reserved/unknown/consumed attempt locks settings; known usage imports atomically; and overshoot/unknown usage fail closed. The rollback regression confirms partial campaign initialization leaves campaign, action, reservation, and event tables empty. No real model, benchmark candidate, or HOLDOUT calls were made. This demonstrates local token accounting only, not USD spend enforcement or evaluator isolation.
