@@ -62,7 +62,15 @@ def _bootstrap_token_ledger(
 ) -> dict[str, Any] | None:
     if limit is None:
         if path.exists():
-            raise BootstrapError("bootstrap token budget settings cannot be removed after metered attempts")
+            try:
+                prior_ledger = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise BootstrapError("bootstrap token ledger is unreadable; refusing to remove its settings") from exc
+            if not isinstance(prior_ledger, dict) or not isinstance(prior_ledger.get("entries"), list):
+                raise BootstrapError("bootstrap token ledger is invalid; refusing to remove its settings")
+            if prior_ledger["entries"]:
+                raise BootstrapError("bootstrap token budget settings cannot be removed after metered attempts")
+            path.unlink()
         return None
     if not path.exists():
         unmetered_path = path.parent / "bootstrap-unmetered-invocations.json"
@@ -97,7 +105,11 @@ def _bootstrap_token_ledger(
     if path.exists():
         ledger = json.loads(path.read_text(encoding="utf-8"))
         if ledger.get("settings") != settings:
-            raise BootstrapError("bootstrap token budget settings changed; use the original settings to resume")
+            entries = ledger.get("entries", [])
+            if entries:
+                raise BootstrapError("bootstrap token budget settings changed; use the original settings to resume")
+            ledger["settings"] = settings
+            _write_bootstrap_token_ledger(path, ledger)
         stranded = [entry for entry in ledger.get("entries", []) if entry["status"] == "RESERVED"]
         if stranded:
             for entry in stranded:
