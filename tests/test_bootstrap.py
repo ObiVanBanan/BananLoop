@@ -603,6 +603,92 @@ def test_bootstrap_token_budget_admits_before_model_call_and_imports_receipt(tmp
     assert overshoot_ledger["entries"][0]["status"] == "CONSUMED"
 
 
+def test_bootstrap_token_budget_settings_can_change_before_first_call(tmp_path, monkeypatch):
+    import bananloop.bootstrap as bootstrap_module
+    from bananloop.agents.codex import CodexAdapter
+
+    repo, _ = make_repo(tmp_path)
+
+    class FakeCodex(CodexAdapter):
+        def __init__(self):
+            super().__init__(None, [], None)
+            self.calls = 0
+            self.last_token_usage = None
+
+        def probe(self):
+            return {"available": True, "version": "fixture"}
+
+        def normalize_result(self, task, result):
+            return result
+
+        def execute(self, task, workspace, timeout):
+            self.calls += 1
+            self.last_token_usage = {
+                "input_tokens": 8,
+                "output_tokens": 2,
+                "cached_input_tokens": 1,
+            }
+            return _bootstrap_payload(
+                status="needs_input",
+                needs_input=["confirm the goal"],
+                summary="waiting for operator input",
+            )
+
+    adapter = FakeCodex()
+    monkeypatch.setattr(bootstrap_module, "_agent", lambda _config: adapter)
+
+    corrected_paths = RuntimePaths.for_repo(repo, tmp_path / "corrected-state")
+    with pytest.raises(BootstrapError, match="insufficient_token_reserve"):
+        bootstrap_campaign(
+            repo=repo,
+            goal="improve fixture quality",
+            paths=corrected_paths,
+            agent_config=AgentConfig(kind="codex"),
+            max_model_tokens=99,
+            model_token_reserve=100,
+        )
+    assert adapter.calls == 0
+    plan, spec = bootstrap_campaign(
+        repo=repo,
+        goal="improve fixture quality",
+        paths=corrected_paths,
+        agent_config=AgentConfig(kind="codex"),
+        max_model_tokens=99,
+        model_token_reserve=50,
+    )
+    assert plan.status == "needs_input"
+    assert spec is None
+    assert adapter.calls == 1
+    corrected_ledger = json.loads(
+        (corrected_paths.root / "bootstrap-token-budget.json").read_text(encoding="utf-8")
+    )
+    assert corrected_ledger["settings"]["reserve"] == 50
+    assert corrected_ledger["entries"][0]["status"] == "CONSUMED"
+
+    uncapped_paths = RuntimePaths.for_repo(repo, tmp_path / "uncapped-state")
+    with pytest.raises(BootstrapError, match="insufficient_token_reserve"):
+        bootstrap_campaign(
+            repo=repo,
+            goal="improve fixture quality",
+            paths=uncapped_paths,
+            agent_config=AgentConfig(kind="codex"),
+            max_model_tokens=99,
+            model_token_reserve=100,
+        )
+    assert adapter.calls == 1
+    plan, spec = bootstrap_campaign(
+        repo=repo,
+        goal="improve fixture quality",
+        paths=uncapped_paths,
+        agent_config=AgentConfig(kind="codex"),
+        max_model_tokens=None,
+    )
+    assert plan.status == "needs_input"
+    assert spec is None
+    assert adapter.calls == 2
+    assert not (uncapped_paths.root / "bootstrap-token-budget.json").exists()
+
+
 def test_bootstrap_receipt_import_rolls_back_partial_campaign_initialization(tmp_path):
     from bananloop.contracts import BudgetSpec, CampaignSpec, Direction, MetricSpec
     from bananloop.store import StoreError
