@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import shlex
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -12,21 +14,24 @@ import time
 from pathlib import Path
 
 
-def _write_slow_first_proposal(agent_path: Path, root: Path) -> None:
+def _write_slow_first_proposal(agent_path: Path, root: Path, *, first_sleep: int = 60) -> None:
     ready = root / "first-agent-ready"
     calls = root / "agent-calls"
+    survived = root / "agent-survived-interrupt"
     agent_path.write_text(
         "import json, sys, time\n"
         "from pathlib import Path\n"
         f"ready=Path({str(ready)!r})\n"
         f"calls=Path({str(calls)!r})\n"
+        f"survived=Path({str(survived)!r})\n"
         "req=json.load(sys.stdin)\n"
         "n=int(calls.read_text())+1 if calls.exists() else 1\n"
         "calls.write_text(str(n))\n"
         "if req['role'] == 'propose':\n"
         "    if n == 1:\n"
         "        ready.write_text('ready')\n"
-        "        time.sleep(60)\n"
+        f"        time.sleep({first_sleep})\n"
+        "        survived.write_text('child survived interrupt')\n"
         "    idx=len(req.get('history', []))+1\n"
         "    print(json.dumps({'hypothesis':f'fixture step {idx}',"
         "'rationale':'pause/resume lifecycle fixture',"
@@ -64,7 +69,7 @@ def _run_cli(
     return result.stdout
 
 
-def run(output_dir: Path) -> dict[str, object]:
+def run(output_dir: Path, *, sigint: bool = False) -> dict[str, object]:
     output_dir.mkdir(parents=True, exist_ok=False)
     repo = output_dir / "fixture"
     state = output_dir / "state"
@@ -79,7 +84,7 @@ def run(output_dir: Path) -> dict[str, object]:
         check=True, capture_output=True, text=True,
     )
     agent = output_dir / "lifecycle_agent.py"
-    _write_slow_first_proposal(agent, output_dir)
+    _write_slow_first_proposal(agent, output_dir, first_sleep=3 if sigint else 60)
     cli = ["--repo", str(repo), "--state-dir", str(state)]
     init_args = [
         "init", *cli, "--goal", "Raise quality to 3 while regressions stay at zero",
@@ -95,6 +100,8 @@ def run(output_dir: Path) -> dict[str, object]:
     process = subprocess.Popen(
         [sys.executable, "-m", "bananloop.cli", "run", *cli], cwd=repo, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        **({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+           else {"start_new_session": True}),
     )
     ready = output_dir / "first-agent-ready"
     deadline = time.monotonic() + 15
@@ -104,16 +111,36 @@ def run(output_dir: Path) -> dict[str, object]:
         stdout, stderr = process.communicate(timeout=5)
         raise RuntimeError(f"agent did not start; stdout={stdout!r}; stderr={stderr!r}")
 
-    pause_output = _run_cli(["pause", *cli], repo=repo, env=env, log_dir=logs, name="pause")
+    if sigint:
+        process.send_signal(signal.CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGINT)
+        pause_output = "SIGINT sent to active CLI process"
+    else:
+        pause_output = _run_cli(["pause", *cli], repo=repo, env=env, log_dir=logs, name="pause")
     stdout, stderr = process.communicate(timeout=10)
-    (logs / "run-before-pause.stdout.txt").write_text(stdout, encoding="utf-8")
-    (logs / "run-before-pause.stderr.txt").write_text(stderr, encoding="utf-8")
-    if process.returncode:
-        raise RuntimeError(f"run after pause exited {process.returncode}: {stderr[-2000:]}")
+    (logs / "interrupted-run.stdout.txt").write_text(stdout, encoding="utf-8")
+    (logs / "interrupted-run.stderr.txt").write_text(stderr, encoding="utf-8")
+    expected_returncode = 130 if sigint else 0
+    if process.returncode != expected_returncode:
+        raise RuntimeError(f"run after interruption exited {process.returncode}: {stderr[-2000:]}")
+    if sigint:
+        if "interrupted by user" not in stderr.lower():
+            raise RuntimeError("SIGINT did not produce the CLI interruption message")
+        time.sleep(3.2)
+        if (output_dir / "agent-survived-interrupt").exists():
+            raise RuntimeError("the cancelled agent subprocess survived SIGINT")
+        with sqlite3.connect(state / "campaign.sqlite3") as conn:
+            cancelled = [json.loads(row[0]) for row in conn.execute(
+                "SELECT payload_json FROM events WHERE event_type='ACTION_CANCELLED'"
+            )]
+        if not any(row.get("action_id") == "exp:1:propose" for row in cancelled):
+            raise RuntimeError("SIGINT did not persist cancellation for the active agent action")
 
     paused_status = _run_cli(["status", *cli], repo=repo, env=env, log_dir=logs, name="paused-status")
-    if "status: PAUSED_USER" not in paused_status or "stop_reason: USER_PAUSED" not in paused_status:
-        raise RuntimeError("pause did not persist the expected resumable campaign state")
+    expected_pause = ("status: PAUSED_INFRA", "stop_reason: PAUSED_INFRA") if sigint else (
+        "status: PAUSED_USER", "stop_reason: USER_PAUSED",
+    )
+    if any(value not in paused_status for value in expected_pause):
+        raise RuntimeError("interruption did not persist the expected resumable campaign state")
     _run_cli(["resume", *cli], repo=repo, env=env, log_dir=logs, name="resume", timeout=60)
     status = _run_cli(["status", *cli], repo=repo, env=env, log_dir=logs, name="status")
     report = _run_cli(["report", *cli], repo=repo, env=env, log_dir=logs, name="report")
@@ -133,7 +160,8 @@ def run(output_dir: Path) -> dict[str, object]:
 
     summary: dict[str, object] = {
         "pause_output": pause_output.strip(),
-        "paused_status": "PAUSED_USER",
+        "interruption": "SIGINT" if sigint else "typed_pause",
+        "paused_status": "PAUSED_INFRA" if sigint else "PAUSED_USER",
         "status": "GOAL_MET",
         **values,
         "champion": "0.0 -> 3.0",
@@ -154,9 +182,13 @@ def main() -> None:
         "--output-dir",
         help="new directory for the disposable repo, campaign state and logs (defaults to a new temp directory)",
     )
+    parser.add_argument(
+        "--sigint", action="store_true",
+        help="send a real SIGINT/CTRL_BREAK to the active CLI subprocess, then resume",
+    )
     args = parser.parse_args()
     output_dir = Path(args.output_dir) if args.output_dir else Path(tempfile.mkdtemp(prefix="bananloop-lifecycle-"))
-    print(json.dumps(run(output_dir), indent=2))
+    print(json.dumps(run(output_dir, sigint=args.sigint), indent=2))
 
 
 if __name__ == "__main__":
