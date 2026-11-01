@@ -21,3 +21,14 @@ are adapted from the pinned AutoResearchExam v1.1 commit
 Changes: the scorer and deterministic reference-sampling rules are isolated for
 synthetic contract tests. No benchmark datasets or candidate runner code are included.
 AutoResearchExam is distributed under Apache License 2.0; see LICENSE.autoresearchexam.
+
+
+Imputation output-contract attribution
+
+The array-type, floating-dtype, shape, finite-value, and invalid-cell handling in
+metric_contracts.py is adapted from the pinned AutoResearchExam v1.1 commit
+23c0d92e11af1dea821f972b5f0a739060958002, file
+budgeted-imputation-mcar50/environment/are-grader-ctx/grader_core.py
+(source blob caa454534ed456fe174561fe22d3dc99ffeccb0a). Changes: validation is
+isolated for synthetic tests; no task data or grader harness is included.
+AutoResearchExam is distributed under Apache License 2.0; see LICENSE.autoresearchexam.
