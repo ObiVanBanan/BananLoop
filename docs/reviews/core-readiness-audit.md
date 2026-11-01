@@ -95,3 +95,11 @@ Draft PR #93 rebases the SIGINT recovery work directly on current PR #85 head `0
 The exact-head pytest suite includes the real lifecycle runner in typed-pause and SIGINT/CTRL_BREAK modes. Windows CLI temporarily maps SIGBREAK to the interruption path and restores the previous handler; the runner verifies persisted cancellation, child termination, resumable pause, resume, and a final DEV-only report. Report arrows use ASCII so output is CP-1252 encodable. No model/HOLDOUT or benchmark candidate was run. PR #86 was closed as a stale divergent stack and superseded by draft PR #93.
 
 This closes the current-base CLI process-recovery matrix check. It does not verify cancellation of a live Codex model subprocess or hostile-code isolation. Release recommendation remains **NOT READY** because H2H spend/isolation/data-rights gates, comprehensive privacy/secret clearance, and final-main acceptance remain outstanding. No merge, tag, release, or visibility change was performed.
+
+## Bootstrap token-budget candidate on current lifecycle base — 2026-11-01
+
+Draft PR #94 rebases bootstrap admission onto the current PR #93 lifecycle/SIGBREAK head. Code head `6d88f67eaca957c399533c63d00ac49397f78a8d` passed hosted run [#41259572837](https://github.com/ObiVanBanan/BananLoop/actions/runs/41259572837) on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12; Windows: **458 passed, 1 skipped in 642.39s** (the skip is the unavailable pinned selector preregistration snapshot).
+
+The opt-in candidate reserves tokens before bootstrap model calls, settles from Codex receipts, atomically imports known usage, and fails closed on unknown/interrupted attempts. Regression tests cover no-call reserve rejection and retry with corrected settings, empty-ledger cap removal, settings lock after settlement, overshoot, unknown usage, and atomic rollback. These tests use fake adapters; no real model calls, paid experiments, benchmark candidate, or HOLDOUT scoring ran. The accounting remains local token metering, not provider-enforced USD.
+
+PR #94 is draft/unmerged. The Issue #64 H2H gate remains **BLOCKED / INELIGIBLE**: the shared $3 USD cap, evaluator/agent isolation, and data-rights/privacy evidence are not established. Release recommendation remains **NOT READY**.

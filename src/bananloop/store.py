@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -595,16 +596,52 @@ class CampaignStore:
     def close(self) -> None:
         self.conn.close()
 
-    def initialize(self, spec: CampaignSpec) -> None:
+    def initialize(
+        self,
+        spec: CampaignSpec,
+        *,
+        bootstrap_token_usage: list[dict[str, Any]] | None = None,
+    ) -> None:
         if self.conn.execute("SELECT 1 FROM campaigns WHERE id=1").fetchone():
             raise StoreError("campaign already exists for this state directory")
+        bootstrap_total = sum(int(item.get("amount", 0)) for item in bootstrap_token_usage or [])
+        if (
+            spec.budget.max_model_tokens is not None
+            and bootstrap_total > spec.budget.max_model_tokens
+        ):
+            raise StoreError("bootstrap token usage exceeds the approved model-token budget")
         now = utc_now()
-        self.conn.execute(
-            "INSERT INTO campaigns(id,spec_json,spec_hash,status,created_at,updated_at) VALUES(1,?,?,?,?,?)",
-            (spec.model_dump_json(), spec.approved_hash(), "READY", now, now),
-        )
-        self.event("CAMPAIGN_CREATED", {"spec_hash": spec.approved_hash()})
-        self.conn.commit()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO campaigns(id,spec_json,spec_hash,status,created_at,updated_at) VALUES(1,?,?,?,?,?)",
+                (spec.model_dump_json(), spec.approved_hash(), "READY", now, now),
+            )
+            for item in bootstrap_token_usage or []:
+                usage = item.get("usage")
+                if item.get("status") != "CONSUMED" or item.get("quality") != "actual" or not isinstance(usage, dict):
+                    raise StoreError("bootstrap token usage must be settled before campaign initialization")
+                action_id = str(item["action_id"])
+                request = {"role": "bootstrap", "attempt": action_id}
+                request_json = json.dumps(request, sort_keys=True)
+                self.conn.execute(
+                    "INSERT INTO actions(id,experiment_id,stage,kind,status,request_hash,request_json,created_at,updated_at) "
+                    "VALUES(?,NULL,'BOOTSTRAP','agent','COMPLETED',?,?,?,?)",
+                    (action_id, hashlib.sha256(request_json.encode("utf-8")).hexdigest(), request_json, now, now),
+                )
+                self.conn.execute(
+                    "INSERT INTO reservations(action_id,resource,amount,status,quality,reserved_at,settled_at) "
+                    "VALUES(?,'model_token',?,'CONSUMED','actual',?,?)",
+                    (action_id, int(item["amount"]), item["reserved_at"], item.get("settled_at", now)),
+                )
+                self.event("MODEL_TOKEN_USAGE", {
+                    "action_id": action_id,
+                    "stage": "BOOTSTRAP",
+                    "input_tokens": int(usage["input_tokens"]),
+                    "output_tokens": int(usage["output_tokens"]),
+                    "cached_input_tokens": int(usage["cached_input_tokens"]),
+                    "charged_tokens": int(item["amount"]),
+                })
+            self.event("CAMPAIGN_CREATED", {"spec_hash": spec.approved_hash()})
 
     def campaign(self) -> dict[str, Any]:
         row = self.conn.execute("SELECT * FROM campaigns WHERE id=1").fetchone()
