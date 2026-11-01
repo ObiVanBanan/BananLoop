@@ -209,6 +209,7 @@ def test_end_to_end_accept_reject_accept_and_source_unchanged(tmp_path: Path):
         report = build_report(store)
         assert len(report["research_state"]["portfolios"]) == 3
         markdown = render_markdown(report)
+        markdown.encode("cp1252")
         assert "Planning portfolios" in markdown
         assert "DEV lessons" in markdown
         assert "estimated cost 1 agent calls + 1 evaluator calls" in markdown
