@@ -98,3 +98,14 @@ This verifies local fixture recovery and the test matrix. It does not establish 
 - Exact-head hosted run [#41250697408](https://github.com/ObiVanBanan/BananLoop/actions/runs/41250697408) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12. Windows: **460 passed, 1 skipped in 697.26s**; the skip is the unavailable pinned selector preregistration snapshot.
 - The pre-lock-fix local run reported 459 passed, 2 skipped and the focused pivot/HIL suite 22 passed. The current fetched CLI/test files compiled, and a local Linux lock primitive check confirmed a second writer is rejected; the exact updated head received the full hosted matrix above.
 - No model calls, benchmark candidate, HOLDOUT score, merge, tag or release were performed. PR #92 remains draft.
+
+## Current-base CLI lifecycle E2E matrix — 2026-11-01
+
+**Exact candidate:** draft PR #93 head `f0f5c14a506a54a870bb62a9738884dc40a626c8`, based on PR #85 head `0809af87418a66c1eda67c402b3bfefa5320aec4`. No model calls, paid calls, benchmark candidates, or HOLDOUT scoring.
+
+- Hosted run [#41257406221](https://github.com/ObiVanBanan/BananLoop/actions/runs/41257406221) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12. Windows full suite: **452 passed, 1 skipped in 484.18s**; the skip is the unavailable pinned selector preregistration snapshot.
+- The suite runs `tests/test_lifecycle_e2e.py` in both typed-pause and real SIGINT/CTRL_BREAK modes. Each mode reaches `GOAL_MET` and `DEV_ONLY`; the test asserts zero model calls, no configured HOLDOUT, and the expected persisted pause status.
+- The runner checks cancellation of the active agent child, absence of its post-interruption sentinel, and successful resume. On Windows, the CLI maps CTRL_BREAK/SIGBREAK to its interruption handler only during `engine.run`, then restores the prior handler.
+- The report renderer now uses ASCII arrows, satisfying the E2E CP-1252 encoding check. The first attempt failed on Unicode arrows; exact-head run #41257406221 passed after the fix.
+
+This verifies the current-base deterministic CLI recovery fixture and full platform matrix. It does not prove cancellation of a live Codex/model process, evaluator isolation, dataset rights, H2H eligibility, or release readiness. PR #93 remains draft and unmerged.
