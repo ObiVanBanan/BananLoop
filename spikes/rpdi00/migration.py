@@ -22,8 +22,11 @@ def migrate_v4_to_v5(database_path: str | Path, backup_path: str | Path, *,
         integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
         if integrity != "ok":
             raise ContractError("CORRUPT_DATABASE", integrity)
-        with sqlite3.connect(backup) as backup_db:
+        backup_db = sqlite3.connect(backup)
+        try:
             db.backup(backup_db)
+        finally:
+            backup_db.close()
         db.execute("BEGIN IMMEDIATE")
         db.execute("CREATE TABLE graph_meta(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL CHECK(revision>=0))")
         db.execute("INSERT INTO graph_meta VALUES(1,0)")
