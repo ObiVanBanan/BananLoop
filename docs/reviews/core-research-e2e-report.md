@@ -113,5 +113,5 @@ This verifies the current-base deterministic CLI recovery fixture and full platf
 
 ## Hard-crash unknown-outcome recovery — 2026-11-01
 
-- The offline `--fake-codex-crash-recovery` scenario SIGKILLs the real CLI during a proposal, confirms both campaign and action remain `RUNNING`, and proves ordinary resume refuses to replay it. The harness explicitly stops the detached fake Codex child before invoking `resume --retry-running-action`; the recovered campaign emits a DEV-only report with the prior usage reservation retained as `UNKNOWN`.
+- The offline `--fake-codex-crash-recovery` scenario SIGKILLs the real CLI during a proposal, confirms both campaign and action remain `RUNNING`, and proves ordinary resume refuses to replay it and persists `PAUSED_INFRA`. The harness explicitly stops the detached fake Codex child before invoking `resume --retry-running-action`; the recovered campaign emits a DEV-only report with the prior usage reservation retained as `UNKNOWN`.
 - Focused local Linux/Python 3.14.7 result: **1 passed**. This does not prove automatic descendant cleanup after abrupt parent death or hosted Windows behavior. Graceful SIGINT/CTRL_BREAK cancellation is covered separately.
