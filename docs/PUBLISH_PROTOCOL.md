@@ -150,3 +150,7 @@ If approved, create a GitHub Release from this exact tag titled **BananLoop v0.1
 - File known limitations and roadmap items without inventing benchmark wins.
 - Share benchmark evidence with invited collaborators only after review, including exact evaluator, dataset split, seeds, budgets, costs, protocol deviations and limitations.
 - Recheck GitHub Actions status; CI failing to start because of billing is not equivalent to passing CI.
+
+## Bootstrap token accounting candidate — 2026-11-01
+
+Draft PR #94 adds opt-in bootstrap token reservation/settlement and atomic import of known receipts for the candidate branch. Its code head `6d88f67eaca957c399533c63d00ac49397f78a8d` passed full hosted Ubuntu 3.11/3.12/3.13 and Windows 3.12 tests in run [#41259572837](https://github.com/ObiVanBanan/BananLoop/actions/runs/41259572837). The accounting is local and based on Codex token receipts. It is not provider-enforced USD metering; `main` bootstrap remains outside this candidate change, and no Issue #64 spend-cap claim follows from these tests. Do not run paid experiments or generated code on the host until every Issue #64 gate is separately proven.

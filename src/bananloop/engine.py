@@ -477,10 +477,23 @@ class Engine:
         """Block pivot advice before reserving a call outside approved limits."""
         campaign = self.store.campaign()
         reason = None
+        token_reserve_blocked = False
         if deadline_reached(campaign["created_at"], self.spec.budget):
             reason = StopReason.DEADLINE_REACHED.value
         elif campaign["agent_calls"] >= self.spec.budget.max_agent_calls:
             reason = StopReason.BUDGET_EXHAUSTED.value
+        elif self.spec.budget.max_model_tokens is not None:
+            reserve = self.store.model_token_reserve_for_stage("PIVOT_ADVICE")
+            available = self.spec.budget.max_model_tokens - self.store.model_tokens_reserved()
+            if reserve > available:
+                reason = StopReason.BUDGET_EXHAUSTED.value
+                token_reserve_blocked = True
+                self.store.event("MODEL_TOKEN_RESERVE_BLOCKED", {
+                    "stage": "PIVOT_ADVICE",
+                    "required_tokens": reserve,
+                    "available_tokens": max(0, available),
+                    "reason": "insufficient_token_reserve",
+                })
         if reason is None:
             return False
         self.store.event("PIVOT_PROPOSAL_BLOCKED", {
@@ -491,7 +504,11 @@ class Engine:
             "agent_call_started": False,
         })
         self.store.conn.commit()
-        self._stop(StopReason.PAUSED_NEEDS_INPUT)
+        self._stop(
+            StopReason.BUDGET_EXHAUSTED
+            if token_reserve_blocked
+            else StopReason.PAUSED_NEEDS_INPUT
+        )
         return True
 
     def _control_reason(self) -> str | None:
