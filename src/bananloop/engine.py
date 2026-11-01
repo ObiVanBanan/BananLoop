@@ -1579,6 +1579,13 @@ class Engine:
                 sequence_id, self.store.campaign()["champion_snapshot"], plan=plan,
                 experiment_id=experiment_id,
             )
+            sequence = self.store.composite(sequence_id)
+            try:
+                self.workspace.ensure_branch_ref(
+                    sequence["branch_ref"], sequence["base_snapshot"],
+                )
+            except WorkspaceError as exc:
+                self._pause_for_composite_branch_ref(sequence, exc)
             self._checkpoint("COMPOSITE_ATTACHED")
             hypothesis = selected.composite_steps[0]
         self._refresh_research_state()
@@ -1802,6 +1809,15 @@ class Engine:
             self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
             raise EngineError(f"candidate snapshot failed: {exc}") from exc
 
+        if exp.get("composite_id"):
+            sequence = self.store.composite(exp["composite_id"])
+            try:
+                self.workspace.advance_branch_ref(
+                    sequence["branch_ref"], exp["parent_snapshot"], snapshot,
+                )
+            except WorkspaceError as exc:
+                self._pause_for_composite_branch_ref(sequence, exc)
+
         self.store.event(
             "CANDIDATE_SNAPSHOT_RECORDED",
             {"experiment_id": experiment_id, **proof},
@@ -1809,6 +1825,34 @@ class Engine:
         self.store.conn.commit()
         self.store.set_stage(attempt_id, "VERIFY")
         self._checkpoint("VERIFY")
+
+    def _reconcile_active_composite_ref(self) -> None:
+        sequence = self.store.active_composite()
+        if sequence is None:
+            return
+        campaign = self.store.campaign()
+        candidate = None
+        experiment_id = campaign.get("active_experiment_id")
+        if experiment_id is not None:
+            experiment = self.store.experiment(int(experiment_id))
+            if experiment.get("composite_id") == sequence["id"]:
+                candidate = experiment.get("candidate_snapshot")
+        try:
+            self.workspace.reconcile_branch_ref(
+                sequence["branch_ref"], sequence["tip_snapshot"], candidate,
+            )
+        except WorkspaceError as exc:
+            self._pause_for_composite_branch_ref(sequence, exc)
+
+    def _pause_for_composite_branch_ref(self, sequence: dict[str, Any], exc: WorkspaceError) -> None:
+        self.store.event("COMPOSITE_BRANCH_REF_FAILED", {
+            "composite_id": sequence["id"],
+            "branch_ref": sequence["branch_ref"],
+            "error": str(exc)[:500],
+        })
+        self.store.conn.commit()
+        self._stop(StopReason.PAUSED_INFRA, CampaignStatus.PAUSED_INFRA)
+        raise CampaignHalted() from exc
 
     def _stage_verify(self, attempt_id: int, experiment_id: int) -> None:
         exp = self.store.experiment(experiment_id)
@@ -2664,6 +2708,7 @@ class Engine:
         self._ensure_evaluator_binding(verify_runtime=False)
         self.workspace.ensure(self.spec.base_commit)
         self._baseline()
+        self._reconcile_active_composite_ref()
         if self._post_iteration_stop():
             return self.store.campaign()
 
