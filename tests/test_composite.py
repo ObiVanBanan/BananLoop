@@ -105,7 +105,7 @@ def test_composite_step_write_and_retry_are_atomic_and_durable(tmp_path):
 def test_composite_bounds_and_future_schema_migration(tmp_path):
     store, _engine, _repo, base = make_engine(tmp_path)
     try:
-        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 5
         with pytest.raises(StoreError, match="2 and 4"):
             store.create_composite("too-short", base, plan=_plan()[:1])
         store.update_campaign(champion_snapshot=base)
@@ -119,7 +119,7 @@ def test_composite_bounds_and_future_schema_migration(tmp_path):
     reopened = CampaignStore(path)
     try:
         assert reopened.composite("bounded-sequence")["status"] == "ACTIVE"
-        assert reopened.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert reopened.conn.execute("PRAGMA user_version").fetchone()[0] == 5
     finally:
         reopened.close()
 
@@ -141,7 +141,7 @@ def test_v1_to_v2_migration_preserves_data_and_creates_restorable_backup(tmp_pat
     migrated = CampaignStore(path)
     backup = path.with_name(path.name + ".pre-composite-v2.bak")
     try:
-        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 5
         assert migrated.campaign()["spec_hash"]
         assert migrated.action("migration-action")["request_json"] == '{"request": "preserved"}'
         assert any(event["event_type"] == "MIGRATION_SENTINEL" for event in migrated.events())
@@ -167,7 +167,7 @@ def test_v1_migration_preserves_existing_backup_and_writes_unique_backup(tmp_pat
 
     migrated = CampaignStore(path)
     try:
-        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 5
         assert stale_backup.read_bytes() == b"preserve this older backup"
         unique_backup = path.with_name(path.name + ".pre-composite-v2.bak.1")
         assert unique_backup.is_file()

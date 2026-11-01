@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import argparse
+import sqlite3
+import pytest
 
 from bananloop.cli import cmd_operator_events, cmd_operator_snapshot
 from bananloop.contracts import Hypothesis, PivotProposal, PivotResourceRequest
@@ -192,6 +194,70 @@ def test_campaign_state_change_advances_snapshot_and_event_revision(tmp_path):
         assert page["events"][-1]["seq"] == after["revision"]
         assert page["events"][-1]["type"] == "CAMPAIGN_STATE_UPDATED"
         assert page["events"][-1]["payload"] == {}
+    finally:
+        store.close()
+
+
+def test_direct_campaign_row_update_advances_snapshot_cursor(tmp_path):
+    store = make_store(tmp_path)
+    try:
+        before = read_snapshot(store, "campaign-a")
+        store.conn.execute(
+            "UPDATE campaigns SET status=?,stop_reason=? WHERE id=1",
+            ("PAUSED_INFRA", "direct database update"),
+        )
+        store.conn.commit()
+
+        after = read_snapshot(store, "campaign-a")
+        page = read_events_after(store, before["revision"])
+
+        assert after["status"] == "PAUSED_INFRA"
+        assert after["revision"] > before["revision"]
+        assert page["cursor"] == after["revision"]
+        assert [event["type"] for event in page["events"]] == ["CAMPAIGN_STATE_UPDATED"]
+        assert page["events"][0]["payload"] == {}
+    finally:
+        store.close()
+
+
+def test_unregistered_sqlite_writer_cannot_bypass_campaign_event_guard(tmp_path):
+    store = make_store(tmp_path)
+    path = store.path
+    store.close()
+
+    raw = sqlite3.connect(path)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            raw.execute("UPDATE campaigns SET status='PAUSED_INFRA' WHERE id=1")
+    finally:
+        raw.close()
+
+    store = CampaignStore(path)
+    try:
+        view = read_snapshot(store, "campaign-a")
+        assert view["status"] == "READY"
+        assert view["revision"] == 1
+    finally:
+        store.close()
+
+
+def test_v4_database_migration_installs_campaign_event_guard(tmp_path):
+    store = make_store(tmp_path)
+    path = store.path
+    store.close()
+    with sqlite3.connect(path) as raw:
+        raw.execute("DROP TRIGGER campaign_update_event_guard")
+        raw.execute("PRAGMA user_version=4")
+
+    store = CampaignStore(path)
+    try:
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 5
+        before = read_snapshot(store, "campaign-a")
+        store.conn.execute("UPDATE campaigns SET status='PAUSED_INFRA' WHERE id=1")
+        store.conn.commit()
+        after = read_snapshot(store, "campaign-a")
+        assert after["revision"] > before["revision"]
+        assert read_events_after(store, before["revision"])["events"][0]["type"] == "CAMPAIGN_STATE_UPDATED"
     finally:
         store.close()
 
