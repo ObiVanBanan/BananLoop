@@ -26,6 +26,11 @@ class SandboxError(RuntimeError):
     pass
 
 
+class SandboxCleanupError(SandboxError):
+    """The daemon could not confirm that a candidate container is gone."""
+
+
+
 _PINNED_IMAGE = re.compile(r"^[^\s,]+@sha256:[0-9a-f]{64}$")
 
 
