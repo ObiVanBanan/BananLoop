@@ -30,8 +30,15 @@ after the agent stops and keep it outside the agent workspace.
 This helper does **not** implement the trusted evaluator, case partitioning,
 agent isolation, model proxy, USD accounting, disk quota for Docker daemon
 metadata, task-level timeouts, or integration with BananLoop's command
-evaluator/readiness path. An inert Docker preflight passed on the target
-Windows host, but this does not qualify the Issue #64 benchmark. No task,
+evaluator/readiness path. Hosted Ubuntu CI runs [#41241757018](https://github.com/ObiVanBanan/BananLoop/actions/runs/41241757018)
+and [#41241752717](https://github.com/ObiVanBanan/BananLoop/actions/runs/41241752717)
+built the runtime image and passed an inert probe through production
+`run_candidate`. The probe verified the container's non-root UID, dropped
+capabilities, no-new-privileges, seccomp, read-only root/artifact, blocked
+egress, and CPU/memory/PID limits. It did **not** run on target Windows Docker
+Desktop: this desktop session could not access the Docker Desktop pipe. Windows
+host behavior, evaluator ACL/process isolation, model proxy isolation, USD
+accounting, and the daemon's total disk use remain unverified. No task,
 benchmark candidate, model, DEV, VALIDATION, or HOLDOUT run was performed.
 
 Tests use a fake Docker process and verify the generated policy, allowlisted
