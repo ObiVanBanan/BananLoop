@@ -516,7 +516,21 @@ def test_pivot_child_cli_requires_hash_confirmation_and_replay_is_idempotent(
         assert preview["status"] == "CONFIRMATION_REQUIRED"
         assert preview["child_initialized"] is False
         assert preview["automatic_execution"] is False
-        assert len(list((registry.root / "campaigns").glob("*/campaign.sqlite3"))) == 1
+
+        # Reproduce a crash after registry reservation and SQLite schema creation,
+        # but before the child campaign row is initialized.
+        child_request_id = (
+            f"pivot-child:{entry.campaign_id}:{proposal.proposal_id}:"
+            f"{proposal.digest}:{preview['child_spec_hash']}"
+        )
+        _entry, reserved_child_dir, _created = registry.reserve(
+            child_spec.goal, child_request_id,
+        )
+        reserved_db = reserved_child_dir / "campaign.sqlite3"
+        interrupted = CampaignStore(reserved_db)
+        interrupted.close()
+        from bananloop.store import campaign_db_initialized
+        assert not campaign_db_initialized(reserved_db)
 
         confirmed_args = cli.parser().parse_args([*prefix, "--confirmed-child-hash", preview["child_spec_hash"]])
         assert cli.cmd_pivot_child(confirmed_args) == 0
