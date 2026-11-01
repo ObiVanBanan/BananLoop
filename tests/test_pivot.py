@@ -12,7 +12,7 @@ from bananloop.agents.base import AgentError
 from bananloop.agents.codex import PIVOT_ADVICE_SCHEMA, CodexAdapter
 from bananloop.agents.pi import PiAdapter
 from bananloop.contracts import (
-    BudgetSpec, CampaignSpec, PivotDecisionCommand, PivotProposal, PivotResourceRequest,
+    AgentConfig, BudgetSpec, CampaignSpec, PivotDecisionCommand, PivotProposal, PivotResourceRequest,
     Direction, MetricSpec, PortfolioRecord, RuntimePaths, SpecLineage,
 )
 from bananloop.engine import Engine, EngineError
@@ -328,7 +328,10 @@ def test_plateau_token_reserve_blocks_pivot_before_model_call(tmp_path, monkeypa
             "model_token_reserve": 3,
             "model_token_stage_reserves": {"PIVOT_ADVICE": 7},
         })
-        spec = engine.spec.model_copy(update={"budget": budget})
+        spec = engine.spec.model_copy(update={
+            "budget": budget,
+            "agent": AgentConfig(kind="codex"),
+        })
         store.update_campaign(spec_json=spec.model_dump_json(), spec_hash=spec.approved_hash())
         engine.spec = spec
         monkeypatch.setattr(
