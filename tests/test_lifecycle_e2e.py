@@ -43,6 +43,39 @@ def test_lifecycle_runner_recovers_and_reports_dev_only(tmp_path: Path, sigint: 
     report.encode("cp1252")
     assert "Baseline -> final:" in report
 
+
+def test_final_holdout_interrupt_resumes_once_without_adaptive_replanning(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    script = repo_root / "examples" / "fixture" / "run_lifecycle_e2e.py"
+    output_dir = tmp_path / "final-holdout-interruption"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(repo_root / "src") + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--output-dir", str(output_dir), "--interrupt-final-holdout"],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["status"] == "GOAL_MET"
+    assert summary["final_assessment"] == "ACCEPTED"
+    assert summary["interrupted_stage"] == "FINAL_HOLDOUT"
+    assert summary["pending_stop_reason"] == "GOAL_MET"
+    assert summary["cancelled_holdout_calls"] == 1
+    assert summary["total_holdout_invocations"] == 2
+    assert summary["completed_holdout_evaluations"] == 1
+    assert summary["completed_holdout_receipts"] == 1
+    assert summary["final_holdout_recorded_events"] == 1
+    assert summary["agent_calls_after_terminal_intent"] == 0
+
 def test_fake_codex_cli_signal_cancellation_recovers_through_full_lifecycle(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     script = repo_root / "examples" / "fixture" / "run_lifecycle_e2e.py"
