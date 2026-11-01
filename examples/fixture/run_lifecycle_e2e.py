@@ -247,9 +247,24 @@ def run_hil_pivot_cli(output_dir: Path) -> dict[str, object]:
     stopped = _run_cli(["status", *cli], repo=repo, env=env, log_dir=logs, name="parent-status")
     if "status: PAUSED_NEEDS_INPUT" not in stopped or "stop_reason: PAUSED_NEEDS_INPUT" not in stopped:
         raise RuntimeError("operator CLI did not show the pending stop and reason")
+    operator_view = json.loads(_run_cli(
+        ["operator-snapshot", *cli], repo=repo, env=env, log_dir=logs,
+        name="parent-operator-snapshot",
+    ))
+    pivot_review = operator_view.get("pivot_review") or {}
+    displayed_proposal = pivot_review.get("proposal") or {}
+    proposal_id = displayed_proposal.get("proposal_id")
+    proposal_digest = displayed_proposal.get("digest")
+    if (
+        not pivot_review.get("integrity_valid")
+        or pivot_review.get("status") != "PENDING"
+        or proposal_id != proposal.proposal_id
+        or proposal_digest != proposal.digest
+    ):
+        raise RuntimeError("operator snapshot did not display the intact pending proposal identity")
     decision_args = [
-        "pivot-decision", *cli, "--decision", "approve", "--proposal-id", proposal.proposal_id,
-        "--digest", proposal.digest, "--request-id", "operator-approval-1",
+        "pivot-decision", *cli, "--decision", "approve", "--proposal-id", proposal_id,
+        "--digest", proposal_digest, "--request-id", "operator-approval-1",
     ]
     first_decision = _run_cli(decision_args, repo=repo, env=env, log_dir=logs, name="approve")
     repeated_decision = _run_cli(
@@ -264,8 +279,8 @@ def run_hil_pivot_cli(output_dir: Path) -> dict[str, object]:
     spec_file = output_dir / "child-spec.json"
     spec_file.write_text(child_spec.model_dump_json(), encoding="utf-8")
     child_args = [
-        "pivot-child", *cli, "--proposal-id", proposal.proposal_id,
-        "--digest", proposal.digest, "--spec-file", str(spec_file),
+        "pivot-child", *cli, "--proposal-id", proposal_id,
+        "--digest", proposal_digest, "--spec-file", str(spec_file),
     ]
     preview = json.loads(_run_cli(child_args, repo=repo, env=env, log_dir=logs, name="child-preview"))
     if preview["status"] != "CONFIRMATION_REQUIRED" or preview["child_initialized"]:
@@ -283,15 +298,17 @@ def run_hil_pivot_cli(output_dir: Path) -> dict[str, object]:
     report = _run_cli(["report", *child_cli], repo=repo, env=env, log_dir=logs, name="child-report")
     if "status: GOAL_MET" not in status or "Final assessment: **DEV_ONLY**" not in report:
         raise RuntimeError("approved child did not finish with its DEV-only report")
+    agent_calls_before_resume = int((output_dir / "agent-calls").read_text(encoding="utf-8"))
     repeated_run = _run_cli(
         ["resume", *child_cli], repo=repo, env=env, log_dir=logs, name="child-resume-replay",
         timeout=30,
     )
+    agent_calls_after_resume = int((output_dir / "agent-calls").read_text(encoding="utf-8"))
     final_status = _run_cli(
         ["status", *child_cli], repo=repo, env=env, log_dir=logs, name="child-final-status",
     )
-    if "status: GOAL_MET" not in final_status:
-        raise RuntimeError("idempotent child resume changed its terminal result")
+    if "status: GOAL_MET" not in final_status or agent_calls_after_resume != agent_calls_before_resume:
+        raise RuntimeError("idempotent child resume changed its terminal result or repeated agent work")
     child_store = CampaignStore(Path(created["state_dir"]) / "campaign.sqlite3")
     try:
         lineage = child_store.spec().spec_lineage
@@ -304,6 +321,7 @@ def run_hil_pivot_cli(output_dir: Path) -> dict[str, object]:
     summary: dict[str, object] = {
         "status": "GOAL_MET",
         "operator_stop_visible": True,
+        "proposal_identity_displayed": True,
         "approval_request_id": "operator-approval-1",
         "approval_replay": "same_receipt",
         "decision_receipts": decision_count,
@@ -311,6 +329,8 @@ def run_hil_pivot_cli(output_dir: Path) -> dict[str, object]:
         "child_lineage_parent": lineage.parent_campaign_id,
         "child_status": "GOAL_MET",
         "child_experiments": child_counts["experiment_count"],
+        "agent_calls_before_terminal_resume": agent_calls_before_resume,
+        "agent_calls_after_terminal_resume": agent_calls_after_resume,
         "final_assessment": "DEV_ONLY",
         "model_calls": 0,
         "holdout_configured": False,
