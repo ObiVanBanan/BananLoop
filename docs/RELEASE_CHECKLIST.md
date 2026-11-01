@@ -56,3 +56,9 @@
 - [ ] Update README/CHANGELOG from the final measured report; distinguish exploratory DEV signals from independently evaluated comparisons.
 
 **No cost-matched or independently held-out superiority over ordinary Codex has yet been established by the mini matcher or exploratory DEV comparisons.**
+
+## Current-base lifecycle recovery evidence — 2026-11-01
+
+Draft PR #93 head `f0f5c14a506a54a870bb62a9738884dc40a626c8`, stacked on PR #85 head `0809af87418a66c1eda67c402b3bfefa5320aec4`, passed [hosted run #41257406221](https://github.com/ObiVanBanan/BananLoop/actions/runs/41257406221) on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 (Windows: **452 passed, 1 skipped**). The exact-head suite exercises typed pause and real SIGINT/CTRL_BREAK lifecycle recovery. PR #86 was closed as a stale divergent stack and superseded by #93.
+
+This is candidate-branch evidence, not final-main acceptance. Release recommendation remains **NOT READY**: Issue #64's spend cap and evaluator isolation are unproven, benchmark data rights/privacy remain unresolved, and the repository visibility discrepancy and comprehensive secret review remain open. No merge, tag, release, or visibility change was performed.
