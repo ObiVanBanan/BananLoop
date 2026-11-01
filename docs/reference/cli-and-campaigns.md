@@ -567,9 +567,8 @@ The deterministic engine scenarios in `tests/test_composite.py` verify sequence 
 When a plateau produces a proposal, the campaign enters `PAUSED_NEEDS_INPUT`.
 `bananloop operator-snapshot --repo . --campaign-id <id>` projects the proposal
 ID, SHA-256 digest, current and proposed architecture, rationale, expected
-effect, changed scope, resource estimates, and integrity status. The Pi
-operator screen shows the same fields in its progress panel. A decision is only
-accepted while the proposal is intact, pending, and bound to the displayed
+effect, changed scope, resource estimates, and integrity status. A decision is
+only accepted while the proposal is intact, pending, and bound to the displayed
 digest.
 
 Approve or reject with an explicit local command. Use the exact ID and digest
@@ -580,20 +579,38 @@ bananloop pivot-decision --repo . --campaign-id <id> --decision approve `
   --proposal-id <pivot-id> --digest <sha256> --request-id <unique-request-id>
 ```
 
-Rejection requires an explicit next-step choice:
+For v0.1, the CLI supports an explicit terminal rejection:
 
 ```powershell
 bananloop pivot-decision --repo . --campaign-id <id> --decision reject `
   --proposal-id <pivot-id> --digest <sha256> --request-id <unique-request-id> `
-  --on-reject continue_old_plan
+  --on-reject end_campaign
 ```
 
-`--on-reject` accepts `continue_old_plan`, `change_conditions`, or
-`end_campaign`. It records the operator's choice; it does not resume, edit a
-spec, or stop the campaign automatically. In the Pi screen, enter
-`/pivot approve <pivot-id> <sha256>` or
-`/pivot reject <pivot-id> <sha256> <choice>`. The screen rereads the committed
-snapshot before submitting. A changed, stale, or invalid proposal requires a
-fresh review and exact digest entry. Approval only records consent; creating a
-successor campaign and running it remain separate explicit actions. No model
-output can approve or reject a proposal.
+This atomically records the rejection and ends the paused parent as
+`STOPPED/USER_STOPPED`, preserving its champion without invoking an agent.
+`continue_old_plan` and `change_conditions` do not have a supported v0.1
+continuation path and are not offered by the CLI.
+
+After approval, prepare an operator-authored CampaignSpec JSON for the child.
+The first command prints the canonical child hash and does not initialize it:
+
+```powershell
+bananloop pivot-child --repo . --campaign-id <id> `
+  --proposal-id <pivot-id> --digest <sha256> --spec-file .\child.json
+```
+
+Review `child.json`, then confirm the exact `child_spec_hash` from the preview:
+
+```powershell
+bananloop pivot-child --repo . --campaign-id <id> `
+  --proposal-id <pivot-id> --digest <sha256> --spec-file .\child.json `
+  --confirmed-child-hash <child-spec-sha256>
+```
+
+The child is initialized in `READY`; the command prints its ID and the next
+`bananloop run` invocation. It does not execute an agent or evaluator.
+Repeating the same confirmed command returns the same child campaign without
+duplicating its state or events. The experimental Pi operator screen is
+deferred and is not a v0.1 acceptance path for pivot decisions. No model output
+can approve or reject a proposal.
