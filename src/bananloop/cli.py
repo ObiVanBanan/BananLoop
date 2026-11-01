@@ -10,7 +10,20 @@ from pathlib import Path
 
 from .bootstrap import BootstrapError, bootstrap_campaign
 from .agent_profiles import AgentProfileError, load_agent_profiles
-from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, NonRegressionSpec, PairedComparison, PivotDecisionCommand, RuntimePaths
+from .contracts import (
+    AgentConfig,
+    BudgetSpec,
+    CampaignSpec,
+    CampaignStatus,
+    Direction,
+    GuardrailSpec,
+    MetricSpec,
+    NonRegressionSpec,
+    PairedComparison,
+    PivotDecisionCommand,
+    RuntimePaths,
+    StopReason,
+)
 from .codex_hook import main as codex_hook_main
 from .engine import ControlledInterruption, Engine, EngineError
 from .export import export_champion
@@ -494,6 +507,15 @@ def cmd_run(args: argparse.Namespace, resume: bool = False) -> int:
                 print(str(exc), file=sys.stderr)
                 return 130
             except KeyboardInterrupt:
+                campaign = store.campaign()
+                if (
+                    campaign["status"] in {CampaignStatus.READY.value, CampaignStatus.RUNNING.value}
+                    and campaign["stage"] != "FINAL_HOLDOUT"
+                ):
+                    store.update_campaign(
+                        status=CampaignStatus.PAUSED_INFRA.value,
+                        stop_reason=StopReason.PAUSED_INFRA.value,
+                    )
                 print("BananLoop interrupted by user. Active local agent process was cancelled.", file=sys.stderr)
                 return 130
             except EngineError as exc:
