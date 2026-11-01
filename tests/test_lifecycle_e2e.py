@@ -72,3 +72,38 @@ def test_fake_codex_cli_signal_cancellation_recovers_through_full_lifecycle(tmp_
     assert summary["cancelled_action"] == "exp:1:propose"
     assert summary["proposal_invocations"] == 2
     assert summary["implementation_invocations"] == 1
+
+def test_fake_codex_hard_crash_requires_explicit_unknown_outcome_retry(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    script = repo_root / "examples" / "fixture" / "run_lifecycle_e2e.py"
+    output_dir = tmp_path / "fake-codex-crash-recovery"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(repo_root / "src") + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--output-dir", str(output_dir),
+         "--fake-codex-crash-recovery"],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["status"] == "GOAL_MET"
+    assert summary["final_assessment"] == "DEV_ONLY"
+    assert summary["model_calls"] == 0
+    assert summary["holdout_configured"] is False
+    assert summary["campaign_status_after_crash"] == "RUNNING"
+    assert summary["default_resume"] == "UNKNOWN_OUTCOME_REFUSED"
+    assert summary["campaign_status_after_default_resume"] == "PAUSED_INFRA"
+    assert summary["proposal_invocations"] == 2
+    assert summary["implementation_invocations"] == 1
+    assert "UNKNOWN" in summary["proposal_reservations"]
+    report = (output_dir / "logs" / "report.stdout.txt").read_text(encoding="utf-8")
+    assert "Baseline -> final:" in report
