@@ -664,6 +664,20 @@ def test_bootstrap_token_budget_settings_can_change_before_first_call(tmp_path, 
     )
     assert corrected_ledger["settings"]["reserve"] == 50
     assert corrected_ledger["entries"][0]["status"] == "CONSUMED"
+    with pytest.raises(BootstrapError, match="settings changed"):
+        bootstrap_module._bootstrap_token_ledger(
+            corrected_paths.root / "bootstrap-token-budget.json",
+            limit=99,
+            reserve=49,
+            stage_reserves={},
+        )
+    with pytest.raises(BootstrapError, match="cannot be removed after metered attempts"):
+        bootstrap_module._bootstrap_token_ledger(
+            corrected_paths.root / "bootstrap-token-budget.json",
+            limit=None,
+            reserve=0,
+            stage_reserves={},
+        )
 
     uncapped_paths = RuntimePaths.for_repo(repo, tmp_path / "uncapped-state")
     with pytest.raises(BootstrapError, match="insufficient_token_reserve"):
