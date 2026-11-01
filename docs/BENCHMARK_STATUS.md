@@ -53,3 +53,10 @@ The **benchmark gate is BLOCKED / INELIGIBLE**: Issue #64 sets a $3 USD maximum,
 Draft PR #94 code head `6d88f67eaca957c399533c63d00ac49397f78a8d` passed hosted run [#41259572837](https://github.com/ObiVanBanan/BananLoop/actions/runs/41259572837) on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 (Windows: **458 passed, 1 skipped in 642.39s**). The skip is the unavailable pinned selector preregistration snapshot. The opt-in candidate admits bootstrap calls against the local token ledger, imports known receipts atomically, and fails closed for unknown/interrupted usage; tests use fake adapters and no model calls.
 
 This remains receipt-based token accounting, not provider-enforced USD settlement or the Issue #64 shared **$3 USD** cap. Bootstrap accounting is not present in `main`; PR #94 is draft and unmerged. H2H remains **BLOCKED / INELIGIBLE** pending actual USD accounting, evaluator/agent isolation, and benchmark data rights/privacy evidence. No candidate, model, or HOLDOUT run was made.
+
+
+## Lifecycle and HIL verification — 2026-11-01
+
+Draft PR #96 exact head `e4dd1ae094571ea72b73c3a514a745e6c1d723fd` passed full hosted matrix run [#41262308357](https://github.com/ObiVanBanan/BananLoop/actions/runs/41262308357); Windows: **460 passed, 1 skipped**. Draft PR #97 exact head `61033cf7e4ae3b31f481a08ad5fd9b2f52e8d1c6` passed full matrix run [#41262536403](https://github.com/ObiVanBanan/BananLoop/actions/runs/41262536403); Windows: **462 passed, 1 skipped**. Both cover deterministic lifecycle/HIL fixtures; neither runs a model or official benchmark HOLDOUT. The skip is the unavailable selector preregistration snapshot.
+
+These results do not change benchmark eligibility. Issue #64 remains **BLOCKED / INELIGIBLE** for lack of provider-verifiable shared USD spend, evaluator/agent isolation, and complete task data-rights/privacy evidence.
