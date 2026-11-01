@@ -227,26 +227,50 @@ def _capture_bounded(stream, buffer: bytearray, limit: int, overflow: threading.
             return
 
 
-def _kill_container(executable: str, name: str) -> None:
-    # A timeout may kill the Docker CLI while the daemon-owned container keeps
-    # running. Address only this invocation's unpredictable name.
+def _kill_container(executable: str, name: str) -> bool:
+    """Stop and remove this invocation, confirming absence before reuse."""
+    rm_result = None
     for operation in ("kill", "rm"):
         args = [executable, operation]
         if operation == "rm":
             args.append("--force")
         args.append(name)
         try:
-            subprocess.run(
+            result = subprocess.run(
                 args,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 timeout=5,
                 check=False,
                 env=_docker_cli_env(),
             )
         except (OSError, subprocess.TimeoutExpired):
-            pass
+            return False
+        if operation == "rm":
+            rm_result = result
+    if rm_result is not None and rm_result.returncode == 0:
+        return True
+    # A nonzero rm can mean that --rm already removed an exited container.
+    # Distinguish that case from a daemon error or a still-running container.
+    try:
+        inspected = subprocess.run(
+            [executable, "inspect", "--format", "{{.Id}}", name],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+            env=_docker_cli_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if inspected.returncode == 0:
+        return False
+    return "no such" in inspected.stderr.lower()
 
 
 def _docker_cli_env() -> dict[str, str]:
@@ -357,12 +381,17 @@ def run_candidate(spec: CandidateSandbox, *, case_input: bytes) -> CandidateResu
             raise SandboxError("candidate exceeded the bounded output limit")
         completed = True
     finally:
+        cleanup_confirmed = True
         if not completed:
-            _kill_container(spec.docker_executable, name)
+            cleanup_confirmed = _kill_container(spec.docker_executable, name)
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
         for stream in (proc.stdin, proc.stdout, proc.stderr):
             if stream is not None:
                 stream.close()
+        if not cleanup_confirmed:
+            raise SandboxError(
+                "candidate container cleanup could not be confirmed; quarantine this runner before continuing"
+            )
     return CandidateResult(proc.returncode, bytes(output), bytes(errors))
