@@ -345,7 +345,7 @@ def render_markdown(report: dict[str, Any]) -> str:
     for exp in report["experiments"]:
         hypothesis = (exp["hypothesis"] or {}).get("hypothesis", "-")
         decision = exp["decision"] or {}
-        lines.append(f"- #{exp['ordinal']} **{exp['status']}** — {hypothesis}; delta={decision.get('delta', '-')}; failure={exp['failure_category'] or '-'}")
+        lines.append(f"- #{exp['ordinal']} **{exp['status']}** -- {hypothesis}; delta={decision.get('delta', '-')}; failure={exp['failure_category'] or '-'}")
         proof = exp.get("candidate_proof")
         if proof:
             lines.append(
