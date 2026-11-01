@@ -27,20 +27,30 @@ class _RegistryLock:
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.file = self.path.open("a+b")
-        self.file.seek(0, os.SEEK_END)
-        if self.file.tell() == 0:
-            self.file.write(b"0")
-            self.file.flush()
-        self.file.seek(0)
-        if os.name == "nt":
-            import msvcrt
+        try:
+            # Lock byte 0 before touching the initial byte. On Windows,
+            # msvcrt.locking permits this one-byte range to extend past EOF.
+            self.file.seek(0)
+            if os.name == "nt":
+                import msvcrt
 
-            msvcrt.locking(self.file.fileno(), msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
+                msvcrt.locking(self.file.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
 
-            fcntl.flock(self.file.fileno(), fcntl.LOCK_EX)
-        return self
+                fcntl.flock(self.file.fileno(), fcntl.LOCK_EX)
+
+            self.file.seek(0, os.SEEK_END)
+            if self.file.tell() == 0:
+                self.file.write(b"0")
+                self.file.flush()
+            self.file.seek(0)
+            return self
+        except BaseException:
+            # Closing the file releases the platform lock, if it was acquired.
+            self.file.close()
+            self.file = None
+            raise
 
     def __exit__(self, exc_type, exc, tb):
         if self.file is None:
