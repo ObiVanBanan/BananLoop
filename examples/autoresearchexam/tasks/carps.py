@@ -233,6 +233,10 @@ def evaluate_case(
         artifact_dir=staged,
         timeout_seconds=TIME_BUDGET_SECONDS + 5,
         cpu_count=1.0,
+        memory_bytes=min(sandbox.memory_bytes, 2 * 1024**3),
+        pids_limit=min(sandbox.pids_limit, 64),
+        tmpfs_bytes=min(sandbox.tmpfs_bytes, 256 * 1024**2),
+        output_limit_bytes=min(sandbox.output_limit_bytes, 1024**2),
         input_limit_bytes=min(sandbox.input_limit_bytes, 16 * 1024**2),
     )
     try:
