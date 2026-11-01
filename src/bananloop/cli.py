@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import shlex
+import signal
 import sys
 import uuid
 from pathlib import Path
@@ -468,6 +469,10 @@ def _open(args: argparse.Namespace) -> tuple[RuntimePaths, CampaignStore, Engine
     return paths, store, Engine(store, workspace, progress=progress)
 
 
+def _raise_keyboard_interrupt(_signum: int, _frame: object) -> None:
+    raise KeyboardInterrupt
+
+
 def cmd_run(args: argparse.Namespace, resume: bool = False) -> int:
     repo = Path(args.repo).resolve()
     paths = _selected_paths(args)
@@ -484,12 +489,19 @@ def cmd_run(args: argparse.Namespace, resume: bool = False) -> int:
                     if receipt["status"] == "COMPLETED":
                         print(json.dumps({"campaign_id": _operator_campaign_id(args, paths), "status": store.campaign()["status"], "request_id": control_request_id, "already_completed": True}))
                         return 0
-                campaign = engine.run(
-                    resume=resume,
-                    retry_running_actions=bool(getattr(args, "retry_running_action", False)),
-                    retry_failed_actions=bool(getattr(args, "retry_failed_action", False)),
-                    agent_timeout_seconds=getattr(args, "agent_timeout_seconds", None),
-                )
+                previous_sigbreak = None
+                if hasattr(signal, "SIGBREAK"):
+                    previous_sigbreak = signal.signal(signal.SIGBREAK, _raise_keyboard_interrupt)
+                try:
+                    campaign = engine.run(
+                        resume=resume,
+                        retry_running_actions=bool(getattr(args, "retry_running_action", False)),
+                        retry_failed_actions=bool(getattr(args, "retry_failed_action", False)),
+                        agent_timeout_seconds=getattr(args, "agent_timeout_seconds", None),
+                    )
+                finally:
+                    if previous_sigbreak is not None:
+                        signal.signal(signal.SIGBREAK, previous_sigbreak)
                 if control_request_id:
                     reconcile_control(store, control_request_id)
                 payload = {
