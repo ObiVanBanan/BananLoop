@@ -101,6 +101,7 @@ def test_fake_codex_hard_crash_requires_explicit_unknown_outcome_retry(tmp_path:
     assert summary["holdout_configured"] is False
     assert summary["campaign_status_after_crash"] == "RUNNING"
     assert summary["default_resume"] == "UNKNOWN_OUTCOME_REFUSED"
+    assert summary["campaign_status_after_default_resume"] == "PAUSED_INFRA"
     assert summary["proposal_invocations"] == 2
     assert summary["implementation_invocations"] == 1
     assert "UNKNOWN" in summary["proposal_reservations"]
