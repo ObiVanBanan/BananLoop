@@ -48,8 +48,12 @@ class _RegistryLock:
             return self
         except BaseException:
             # Closing the file releases the platform lock, if it was acquired.
-            self.file.close()
+            file = self.file
             self.file = None
+            try:
+                file.close()
+            except OSError:
+                pass
             raise
 
     def __exit__(self, exc_type, exc, tb):
