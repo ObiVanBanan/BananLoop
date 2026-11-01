@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 
@@ -356,6 +357,251 @@ def run_fake_codex_recovery(output_dir: Path) -> dict[str, object]:
     return summary
 
 
+def _write_holdout_evaluator(
+    path: Path,
+    *,
+    calls: Path,
+    ready: Path,
+    survived: Path,
+    marker: str,
+) -> None:
+    path.write_text(
+        "import json, sys, time\n"
+        "from pathlib import Path\n"
+        f"calls=Path({str(calls)!r})\n"
+        f"ready=Path({str(ready)!r})\n"
+        f"survived=Path({str(survived)!r})\n"
+        f"marker={marker!r}\n"
+        "count=int(calls.read_text())+1 if calls.exists() else 1\n"
+        "calls.write_text(str(count))\n"
+        "if count == 1:\n"
+        "    ready.write_text('ready')\n"
+        "    time.sleep(6)\n"
+        "    survived.write_text('holdout process survived interruption')\n"
+        "value=float(Path('value.txt').read_text().strip())\n"
+        "regression=float(Path('guard.txt').read_text().strip())\n"
+        "print(json.dumps({'schema_version':1,'status':'ok',"
+        "'metrics':{'quality':value,'regressions':regression},"
+        "'checks':{'tests':True},'diagnostics':{'private_holdout_marker':marker}}))\n",
+        encoding="utf-8",
+    )
+
+
+def _campaign_counts(db: Path) -> dict[str, int | str | None]:
+    with sqlite3.connect(db) as conn:
+        row = conn.execute(
+            "SELECT status,stage,stop_reason,experiment_count,attempt_count,agent_calls "
+            "FROM campaigns WHERE id=1"
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("campaign database was not initialized")
+        return {
+            "status": row[0],
+            "stage": row[1],
+            "stop_reason": row[2],
+            "experiment_count": int(row[3]),
+            "attempt_count": int(row[4]),
+            "agent_calls": int(row[5]),
+            "agent_actions": int(conn.execute(
+                "SELECT COUNT(*) FROM actions WHERE kind='agent'"
+            ).fetchone()[0]),
+            "dev_evaluations": int(conn.execute(
+                "SELECT COUNT(*) FROM evaluations WHERE tier='dev'"
+            ).fetchone()[0]),
+        }
+
+
+def run_final_holdout_recovery(output_dir: Path) -> dict[str, object]:
+    """Interrupt a real final HOLDOUT subprocess and prove resume cannot replan."""
+    output_dir.mkdir(parents=True, exist_ok=False)
+    repo = output_dir / "fixture"
+    state = output_dir / "state"
+    logs = output_dir / "logs"
+    logs.mkdir()
+    py_source = Path(__file__).resolve().parents[2] / "src"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(py_source) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+
+    subprocess.run(
+        [sys.executable, str(Path(__file__).with_name("create_fixture.py")), str(repo)],
+        check=True, capture_output=True, text=True,
+    )
+    marker = f"PRIVATE_HOLDOUT_CANARY_{uuid.uuid4().hex}"
+    holdout_script = repo / "holdout_evaluator.py"
+    holdout_calls = output_dir / "holdout-calls"
+    holdout_ready = output_dir / "holdout-ready"
+    holdout_survived = output_dir / "holdout-survived-interrupt"
+    _write_holdout_evaluator(
+        holdout_script,
+        calls=holdout_calls,
+        ready=holdout_ready,
+        survived=holdout_survived,
+        marker=marker,
+    )
+    subprocess.run(
+        ["git", "add", "holdout_evaluator.py"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "freeze final holdout fixture"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    )
+
+    agent = output_dir / "lifecycle_agent.py"
+    _write_slow_first_proposal(agent, output_dir, first_sleep=0)
+    cli = ["--repo", str(repo), "--state-dir", str(state)]
+    init_args = [
+        "init", *cli, "--goal", "Raise quality to 3 while regressions stay at zero",
+        "--eval-cmd", "python evaluator.py", "--holdout-eval-cmd",
+        shlex.join([
+            sys.executable, "holdout_evaluator.py", str(holdout_calls),
+            str(holdout_ready), str(holdout_survived), marker,
+        ]),
+        "--holdout-timeout-seconds", "60",
+        "--metric", "quality", "--direction", "maximize", "--target", "3",
+        "--min-improvement", "0.5", "--guard", "regressions<=0",
+        "--check", "tests", "--editable", "value.txt", "--editable", "guard.txt",
+        "--protect", "evaluator.py", "--protect", "agent.py",
+        "--protect", "holdout_evaluator.py", "--agent-hide", "holdout_evaluator.py",
+        "--agent", "command", "--agent-cmd", shlex.join([sys.executable, str(agent)]),
+        "--max-experiments", "5", "--max-attempts", "6", "--max-agent-calls", "12",
+        "--max-evaluator-calls", "8",
+    ]
+    _run_cli(init_args, repo=repo, env=env, log_dir=logs, name="init")
+
+    process = subprocess.Popen(
+        [sys.executable, "-m", "bananloop.cli", "run", *cli], cwd=repo, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        **({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+           else {"start_new_session": True}),
+    )
+    deadline = time.monotonic() + 90
+    ready_for_interrupt = False
+    while process.poll() is None and time.monotonic() < deadline:
+        if holdout_ready.exists():
+            counts = _campaign_counts(state / "campaign.sqlite3")
+            with sqlite3.connect(state / "campaign.sqlite3") as conn:
+                action = conn.execute(
+                    "SELECT status FROM actions WHERE id='final:holdout'"
+                ).fetchone()
+            if (
+                counts["stage"] == "FINAL_HOLDOUT"
+                and counts["stop_reason"] == "GOAL_MET"
+                and action is not None
+                and action[0] == "RUNNING"
+            ):
+                ready_for_interrupt = True
+                break
+        time.sleep(0.05)
+    if not ready_for_interrupt:
+        stdout, stderr = process.communicate(timeout=10)
+        raise RuntimeError(
+            "campaign did not enter its active final HOLDOUT; "
+            f"stdout={stdout[-2000:]!r}; stderr={stderr[-2000:]!r}"
+        )
+
+    process.send_signal(signal.CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGINT)
+    stdout, stderr = process.communicate(timeout=15)
+    (logs / "interrupted-holdout.stdout.txt").write_text(stdout, encoding="utf-8")
+    (logs / "interrupted-holdout.stderr.txt").write_text(stderr, encoding="utf-8")
+    if process.returncode != 130 or "interrupted by user" not in stderr.lower():
+        raise RuntimeError(f"HOLDOUT interruption was not persisted: {stderr[-2000:]}")
+
+    pending = _campaign_counts(state / "campaign.sqlite3")
+    with sqlite3.connect(state / "campaign.sqlite3") as conn:
+        action_status = conn.execute(
+            "SELECT status FROM actions WHERE id='final:holdout'"
+        ).fetchone()
+        holdout_evaluations = int(conn.execute(
+            "SELECT COUNT(*) FROM evaluations WHERE tier='holdout'"
+        ).fetchone()[0])
+        holdout_receipts = int(conn.execute(
+            "SELECT COUNT(*) FROM evaluation_receipts WHERE action_id='final:holdout'"
+        ).fetchone()[0])
+    if (
+        pending["status"] != "RUNNING"
+        or pending["stage"] != "FINAL_HOLDOUT"
+        or pending["stop_reason"] != "GOAL_MET"
+        or action_status is None
+        or action_status[0] != "CANCELLED"
+        or holdout_evaluations != 0
+        or holdout_receipts != 0
+    ):
+        raise RuntimeError(f"unexpected state after interrupted HOLDOUT: {pending}")
+    time.sleep(7.2)
+    if holdout_survived.exists():
+        raise RuntimeError("the cancelled HOLDOUT subprocess survived the interruption")
+
+    calls_before_resume = int(holdout_calls.read_text(encoding="utf-8"))
+    agent_count_before_resume = int((output_dir / "agent-calls").read_text(encoding="utf-8"))
+    _run_cli(["resume", *cli], repo=repo, env=env, log_dir=logs, name="resume", timeout=90)
+    status = _run_cli(["status", *cli], repo=repo, env=env, log_dir=logs, name="status")
+    report = _run_cli(["report", *cli], repo=repo, env=env, log_dir=logs, name="report")
+    if "status: GOAL_MET" not in status or "Final assessment: **ACCEPTED**" not in report:
+        raise RuntimeError("resumed final HOLDOUT did not complete with an accepted report")
+
+    final_counts = _campaign_counts(state / "campaign.sqlite3")
+    with sqlite3.connect(state / "campaign.sqlite3") as conn:
+        conn.row_factory = sqlite3.Row
+        final_action = conn.execute(
+            "SELECT status,response_json FROM actions WHERE id='final:holdout'"
+        ).fetchone()
+        receipt = conn.execute(
+            "SELECT receipt_json FROM evaluation_receipts WHERE action_id='final:holdout'"
+        ).fetchone()
+        holdout_result = conn.execute(
+            "SELECT result_json FROM evaluations WHERE tier='holdout'"
+        ).fetchone()
+        holdout_evaluations = int(conn.execute(
+            "SELECT COUNT(*) FROM evaluations WHERE tier='holdout'"
+        ).fetchone()[0])
+        recorded = int(conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type='FINAL_HOLDOUT_RECORDED'"
+        ).fetchone()[0])
+        agent_rows = [dict(row) for row in conn.execute(
+            "SELECT request_json,response_json FROM actions WHERE kind='agent'"
+        )]
+    if final_action is None or final_action["status"] != "COMPLETED":
+        raise RuntimeError("final HOLDOUT action did not complete")
+    action_result = json.loads(final_action["response_json"])
+    holdout_result_json = json.loads(holdout_result["result_json"]) if holdout_result is not None else {}
+    if (
+        int(holdout_calls.read_text(encoding="utf-8")) != 2
+        or calls_before_resume != 1
+        or holdout_evaluations != 1
+        or receipt is None
+        or holdout_result is None
+        or recorded != 1
+        or action_result.get("diagnostics", {}).get("private_holdout_marker") != marker
+        or holdout_result_json.get("diagnostics", {}).get("private_holdout_marker") != marker
+        or marker in json.dumps(agent_rows)
+        or int((output_dir / "agent-calls").read_text(encoding="utf-8")) != agent_count_before_resume
+        or any(final_counts[key] != pending[key] for key in (
+            "experiment_count", "attempt_count", "agent_calls", "agent_actions", "dev_evaluations",
+        ))
+    ):
+        raise RuntimeError("final HOLDOUT replay leaked feedback or re-entered adaptive planning")
+
+    summary: dict[str, object] = {
+        "status": "GOAL_MET",
+        "final_assessment": "ACCEPTED",
+        "interrupted_stage": "FINAL_HOLDOUT",
+        "pending_stop_reason": "GOAL_MET",
+        "cancelled_holdout_calls": calls_before_resume,
+        "total_holdout_invocations": int(holdout_calls.read_text(encoding="utf-8")),
+        "completed_holdout_evaluations": holdout_evaluations,
+        "completed_holdout_receipts": 1,
+        "final_holdout_recorded_events": recorded,
+        "agent_calls_after_terminal_intent": 0,
+        "experiment_count": final_counts["experiment_count"],
+        "logs": str(logs),
+    }
+    (output_dir / "result.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -370,12 +616,18 @@ def main() -> None:
         "--fake-codex-recovery", action="store_true",
         help="interrupt and resume through CodexAdapter using a local fake Codex executable",
     )
+    parser.add_argument(
+        "--interrupt-final-holdout", action="store_true",
+        help="interrupt a real active FINAL_HOLDOUT evaluator, then resume without replanning",
+    )
     args = parser.parse_args()
     output_dir = Path(args.output_dir) if args.output_dir else Path(tempfile.mkdtemp(prefix="bananloop-lifecycle-"))
-    if args.fake_codex_recovery and args.sigint:
-        parser.error("--sigint and --fake-codex-recovery are separate scenarios")
+    if sum((args.sigint, args.fake_codex_recovery, args.interrupt_final_holdout)) > 1:
+        parser.error("lifecycle scenario options are mutually exclusive")
     result = (
-        run_fake_codex_recovery(output_dir)
+        run_final_holdout_recovery(output_dir)
+        if args.interrupt_final_holdout
+        else run_fake_codex_recovery(output_dir)
         if args.fake_codex_recovery
         else run(output_dir, sigint=args.sigint)
     )
