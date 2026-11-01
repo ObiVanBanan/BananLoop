@@ -103,3 +103,30 @@ Draft PR #94 rebases bootstrap admission onto the current PR #93 lifecycle/SIGBR
 The opt-in candidate reserves tokens before bootstrap model calls, settles from Codex receipts, atomically imports known usage, and fails closed on unknown/interrupted attempts. Regression tests cover no-call reserve rejection and retry with corrected settings, empty-ledger cap removal, settings lock after settlement, overshoot, unknown usage, and atomic rollback. These tests use fake adapters; no real model calls, paid experiments, benchmark candidate, or HOLDOUT scoring ran. The accounting remains local token metering, not provider-enforced USD.
 
 PR #94 is draft/unmerged. The Issue #64 H2H gate remains **BLOCKED / INELIGIBLE**: the shared $3 USD cap, evaluator/agent isolation, and data-rights/privacy evidence are not established. Release recommendation remains **NOT READY**.
+
+
+## Lifecycle and HIL verification update — 2026-11-01
+
+The candidate stack now includes the deterministic final-HOLDOUT interruption/recovery fixture and the v0.1 CLI pivot HIL path. PR #96 exact head `e4dd1ae094571ea72b73c3a514a745e6c1d723fd` passed full hosted run [#41262308357](https://github.com/ObiVanBanan/BananLoop/actions/runs/41262308357) on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 (Windows: **460 passed, 1 skipped in 732.30s**). PR #97 exact head `61033cf7e4ae3b31f481a08ad5fd9b2f52e8d1c6` passed full hosted run [#41262536403](https://github.com/ObiVanBanan/BananLoop/actions/runs/41262536403) on the same matrix (Windows: **462 passed, 1 skipped in 523.60s**). The skip in both is the unavailable pinned selector preregistration snapshot.
+
+The final-HOLDOUT fixture interrupts a real local evaluator subprocess after terminal intent, resumes the same action once, checks one completed evaluation/receipt/final event, and verifies no adaptive replanning or diagnostic-canary leakage. The HIL CLI serializes pivot decisions with the campaign lock, commits terminal rejection and STOPPED atomically, previews child specs before exact hash confirmation, creates an idempotent READY child, and recovers a schema-only crash reservation. These are deterministic local fixtures; they do not run an official benchmark HOLDOUT, model, or paid experiment.
+
+PRs #96 and #97 remain draft and unmerged. Release recommendation remains **NOT READY**: Issue #64 spend metering, hostile-code isolation, and data-rights/privacy gates remain unresolved.
+
+
+## Secret-history scan follow-up — 2026-11-01
+
+The draft Gitleaks workflow in [PR #90](https://github.com/ObiVanBanan/BananLoop/pull/90) scanned reachable history, fetched branch/tag refs, and pull-request head refs in hosted run [#41243943394](https://github.com/ObiVanBanan/BananLoop/actions/runs/41243943394). It reported 14 potential `generic-api-key` findings and exited nonzero. The report manually classifies 12 as SHA-256 candidate-content fingerprints and 2 as deterministic mock confirmation-token test values; no actual credential was confirmed. Findings remain unsuppressed and the workflow is still a draft, so this is triage evidence, not a passing secret-clearance gate. GitHub secret-alert access and comprehensive rights/privacy review remain unavailable.
+
+
+## Benchmark data provenance cross-check — 2026-11-01
+
+At the pinned AutoResearchExam v1.1 commit `23c0d92e11af1dea821f972b5f0a739060958002`, the [Carps public example manifest](https://github.com/bespokelabsai/AutoResearchExam/blob/23c0d92e11af1dea821f972b5f0a739060958002/carps-star-discrepancy-subset-select/environment/app/data/examples/manifest.json) lists cloud IDs, files, dimensions, and subset sizes, but no data origin or license. The [Carps task instructions](https://github.com/bespokelabsai/AutoResearchExam/blob/23c0d92e11af1dea821f972b5f0a739060958002/carps-star-discrepancy-subset-select/instruction.md) likewise identify these as example clouds without source provenance. PR #84's pinned blob hashes establish byte identity, not reuse or redistribution rights.
+
+The pinned [Budgeted Imputation instructions](https://github.com/bespokelabsai/AutoResearchExam/blob/23c0d92e11af1dea821f972b5f0a739060958002/budgeted-imputation-mcar50/instruction.md) describe six complete DEV tables and a manifest but do not identify their sources or licenses. The pinned [Risk Estimator instructions](https://github.com/bespokelabsai/AutoResearchExam/blob/23c0d92e11af1dea821f972b5f0a739060958002/label-efficient-risk-estimator/instruction.md) describe twelve labeled DEV pools and disjoint held-out shards from unnamed corpora, with no source/license/privacy metadata. The task TOMLs isolate graders from the network and agent environments, but that does not supply data provenance.
+
+The official [UCI Bike Sharing](https://archive.ics.uci.edu/dataset/275/bike+sharing+dataset) and [UCI Wine Quality](https://archive.ics.uci.edu/dataset/186/wine+quality) records state CC BY 4.0. However, the AutoResearchExam task manifests do not link hashes to those exact UCI records or versions, so those licenses cannot be attributed to the task's bundled tables from current evidence. The other Imputation sources, all Carps clouds, and Risk pools remain unidentified. Data-rights/privacy clearance remains incomplete.
+
+### Bootstrap-ledger test follow-up — 2026-11-01
+
+PR #94 exact head `000d1ecbb193c2000e0ca653b6196fc64ed281bc` passed hosted matrix run [#41269907650](https://github.com/ObiVanBanan/BananLoop/actions/runs/41269907650): Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12, each **460 passed, 1 skipped**. The added tests cover empty-ledger reconfiguration/removal and fail-closed handling of a corrupt ledger. PR #94 remains draft/unmerged; this does not establish provider-enforced USD accounting or H2H eligibility.

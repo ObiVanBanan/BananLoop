@@ -115,3 +115,16 @@ This verifies the current-base deterministic CLI recovery fixture and full platf
 **Candidate code head:** draft PR #94, `6d88f67eaca957c399533c63d00ac49397f78a8d`; based on current lifecycle head PR #93. Full hosted run [#41259572837](https://github.com/ObiVanBanan/BananLoop/actions/runs/41259572837) passed Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12. Windows: **458 passed, 1 skipped in 642.39s**; the skip is the unavailable pinned selector preregistration snapshot.
 
 Deterministic fake-adapter tests verify that insufficient reserve prevents the model call; an empty ledger allows correcting reserve or removing the cap before any attempt; any reserved/unknown/consumed attempt locks settings; known usage imports atomically; and overshoot/unknown usage fail closed. The rollback regression confirms partial campaign initialization leaves campaign, action, reservation, and event tables empty. No real model, benchmark candidate, or HOLDOUT calls were made. This demonstrates local token accounting only, not USD spend enforcement or evaluator isolation.
+
+
+## Final-HOLDOUT recovery and pivot HIL — 2026-11-01
+
+PR #96 exact head `e4dd1ae094571ea72b73c3a514a745e6c1d723fd` passed full hosted run [#41262308357](https://github.com/ObiVanBanan/BananLoop/actions/runs/41262308357) across Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12. Windows: **460 passed, 1 skipped in 732.30s**; skip: unavailable pinned selector preregistration snapshot.
+
+PR #97 rebases the v0.1 pivot HIL changes onto that exact lifecycle/bootstrap/clean-install/final-HOLDOUT stack. Exact head `61033cf7e4ae3b31f481a08ad5fd9b2f52e8d1c6` passed full hosted run [#41262536403](https://github.com/ObiVanBanan/BananLoop/actions/runs/41262536403) on the same matrix. Windows: **462 passed, 1 skipped in 523.60s**; same selector-snapshot skip.
+
+Coverage includes actual local process interruption during terminal FINAL_HOLDOUT and single-action recovery without replanning or canary leakage; pivot decision lock contention; atomic rejection/STOPPED receipt; approved child preview/hash confirmation/idempotent READY creation; and recovery when a crash left the reserved child's SQLite schema but no campaign row. Tests use local deterministic fixtures. No model, paid benchmark, or official HOLDOUT was run. These runs validate candidate branches, not final `main` or release readiness; Issue #64 remains **BLOCKED / INELIGIBLE**.
+
+## Bootstrap-ledger regression CI follow-up — 2026-11-01
+
+The bootstrap ledger regression additions on draft PR #94 head `000d1ecbb193c2000e0ca653b6196fc64ed281bc` passed hosted run [#41269907650](https://github.com/ObiVanBanan/BananLoop/actions/runs/41269907650), across Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 (**460 passed, 1 skipped per job**). The tests cover reconfiguration/removal before any invocation and refusal to remove corrupt state. No model or official benchmark HOLDOUT was run; token receipts do not provide USD enforcement.

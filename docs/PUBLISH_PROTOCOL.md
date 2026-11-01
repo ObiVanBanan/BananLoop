@@ -154,3 +154,14 @@ If approved, create a GitHub Release from this exact tag titled **BananLoop v0.1
 ## Bootstrap token accounting candidate — 2026-11-01
 
 Draft PR #94 adds opt-in bootstrap token reservation/settlement and atomic import of known receipts for the candidate branch. Its code head `6d88f67eaca957c399533c63d00ac49397f78a8d` passed full hosted Ubuntu 3.11/3.12/3.13 and Windows 3.12 tests in run [#41259572837](https://github.com/ObiVanBanan/BananLoop/actions/runs/41259572837). The accounting is local and based on Codex token receipts. It is not provider-enforced USD metering; `main` bootstrap remains outside this candidate change, and no Issue #64 spend-cap claim follows from these tests. Do not run paid experiments or generated code on the host until every Issue #64 gate is separately proven.
+
+
+## Lifecycle/HIL evidence update — 2026-11-01
+
+Candidate PR #96's exact final-HOLDOUT lifecycle head `e4dd1ae094571ea72b73c3a514a745e6c1d723fd` passed hosted run [#41262308357](https://github.com/ObiVanBanan/BananLoop/actions/runs/41262308357) across Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 (Windows: **460 passed, 1 skipped**). Candidate PR #97's pivot HIL head `61033cf7e4ae3b31f481a08ad5fd9b2f52e8d1c6` passed run [#41262536403](https://github.com/ObiVanBanan/BananLoop/actions/runs/41262536403) on the same matrix (Windows: **462 passed, 1 skipped**). Both are deterministic tests, with no model, paid benchmark, or official HOLDOUT calls; the skip is the unavailable selector preregistration snapshot.
+
+These draft branches do not make Issue #64 eligible and are not a release authorization. Keep the H2H gate blocked until spend metering, hostile-code isolation, and dataset rights/privacy evidence are verified.
+
+## Bootstrap-token verification note — 2026-11-01
+
+Draft PR #94 head `000d1ecbb193c2000e0ca653b6196fc64ed281bc` adds empty/corrupt-ledger regression coverage and passes the hosted Ubuntu Python 3.11/3.12/3.13 + Windows Python 3.12 matrix in run [#41269907650](https://github.com/ObiVanBanan/BananLoop/actions/runs/41269907650): **460 passed, 1 skipped per job**. Duplicate push run [#41269903688](https://github.com/ObiVanBanan/BananLoop/actions/runs/41269903688) also passed. This evidence is not provider-enforced USD metering and does not change the blocked H2H gate.

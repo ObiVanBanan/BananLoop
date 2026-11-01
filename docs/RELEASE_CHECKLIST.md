@@ -66,3 +66,19 @@ This is candidate-branch evidence, not final-main acceptance. Release recommenda
 ## Bootstrap token admission candidate — 2026-11-01
 
 Draft PR #94 code head `6d88f67eaca957c399533c63d00ac49397f78a8d` passed run [#41259572837](https://github.com/ObiVanBanan/BananLoop/actions/runs/41259572837) on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 (Windows: **458 passed, 1 skipped**). It adds opt-in local token admission/receipt accounting for bootstrap and fails closed on unknown/interrupted usage. It does not provide provider-enforced USD accounting or prove the Issue #64 shared $3 cap; no model/H2H/HOLDOUT experiment ran. PR #94 remains draft. Release recommendation remains **NOT READY**.
+
+
+## Lifecycle and operator HIL candidate evidence — 2026-11-01
+
+Draft PR #96 final-HOLDOUT interruption/recovery exact head `e4dd1ae094571ea72b73c3a514a745e6c1d723fd` passed full hosted run [#41262308357](https://github.com/ObiVanBanan/BananLoop/actions/runs/41262308357) on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 (Windows: **460 passed, 1 skipped**). Draft PR #97 pivot HIL exact head `61033cf7e4ae3b31f481a08ad5fd9b2f52e8d1c6` passed run [#41262536403](https://github.com/ObiVanBanan/BananLoop/actions/runs/41262536403) on the same matrix (Windows: **462 passed, 1 skipped**). The skip is the unavailable pinned selector preregistration snapshot.
+
+The fixtures cover local process cancellation/resume and no post-terminal replanning, plus locked/idempotent pivot decisions and crash recovery for a hash-approved child campaign. No real model, benchmark candidate, or official HOLDOUT calls were made. Both PRs remain draft. These candidate-branch tests do not clear Issue #64's spend/isolation/rights gates or constitute final-main acceptance. Release recommendation remains **NOT READY**; no merge, tag, release, or visibility change was performed.
+
+
+## Secret-history scan status — 2026-11-01
+
+Draft PR #90's hosted Gitleaks history scan [#41243943394](https://github.com/ObiVanBanan/BananLoop/actions/runs/41243943394) reported 14 potential findings and exited nonzero. Its triage report classifies 12 as SHA-256 content fingerprints and 2 as mock test values; no actual credential was confirmed. Findings remain unsuppressed. Treat this as documented manual triage, not a clean scan or secret/privacy clearance. The workflow is not merged, and GitHub secret-alert review remains outstanding.
+
+### Candidate CI follow-up — 2026-11-01
+
+Draft PR #94 exact head `000d1ecbb193c2000e0ca653b6196fc64ed281bc` passed hosted run [#41269907650](https://github.com/ObiVanBanan/BananLoop/actions/runs/41269907650) on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 (**460 passed, 1 skipped per job**); duplicate push run [#41269903688](https://github.com/ObiVanBanan/BananLoop/actions/runs/41269903688) passed too. PR #94 adds only bootstrap-ledger regression coverage here; it remains draft/unmerged and does not establish a provider-enforced USD cap or select a final release SHA.
