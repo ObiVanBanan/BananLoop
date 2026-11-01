@@ -99,10 +99,12 @@ def test_hil_cli_approval_continues_child_campaign_to_report(tmp_path: Path) -> 
     summary = json.loads(result.stdout)
     assert summary["status"] == "GOAL_MET"
     assert summary["operator_stop_visible"] is True
+    assert summary["proposal_identity_displayed"] is True
     assert summary["approval_replay"] == "same_receipt"
     assert summary["decision_receipts"] == 1
     assert summary["child_lineage_parent"]
     assert summary["child_status"] == "GOAL_MET"
+    assert summary["agent_calls_after_terminal_resume"] == summary["agent_calls_before_terminal_resume"]
     assert summary["final_assessment"] == "DEV_ONLY"
     assert summary["model_calls"] == 0
     assert summary["holdout_configured"] is False
