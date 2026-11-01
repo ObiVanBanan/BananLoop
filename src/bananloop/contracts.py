@@ -438,9 +438,9 @@ class CampaignSpec(BaseModel):
         if self.holdout_timeout_seconds is not None and not self.holdout_command:
             raise ValueError("holdout_timeout_seconds requires holdout_command")
         if self.budget.max_model_tokens is not None:
-            for role in ("propose", "select", "implement", "analyze"):
+            for role in ("bootstrap", "propose", "select", "implement", "analyze"):
                 if self.agent.for_role(role).kind != "codex":
-                    raise ValueError("max_model_tokens requires Codex adapter for all model stages")
+                    raise ValueError("max_model_tokens requires Codex adapter for all model stages, including bootstrap")
         minimum_calls = 1 + int(bool(self.validation_command)) + int(bool(self.holdout_command))
         if self.budget.max_evaluator_calls < minimum_calls:
             raise ValueError(
