@@ -118,6 +118,32 @@ def test_broker_stages_only_candidate_and_sends_one_case(monkeypatch, tmp_path: 
     assert list(evaluator_root.iterdir()) == []
 
 
+def test_cleanup_uncertainty_aborts_case_instead_of_scoring_penalty(monkeypatch, tmp_path: Path):
+    candidate_root = tmp_path / "agent-artifact"
+    candidate_root.mkdir()
+    (candidate_root / "select_subset.py").write_text("# frozen candidate\n", encoding="utf-8")
+    evaluator_root = tmp_path / "private-evaluator"
+    evaluator_root.mkdir()
+    points = np.random.default_rng(4).random((800, 3), dtype=np.float64)
+    sandbox = CandidateSandbox(
+        image="local/carps-runtime@sha256:" + "c" * 64,
+        artifact_dir=tmp_path / "unused",
+        command=("python", "-I", "/opt/are/carps_runner.py"),
+    )
+
+    def unconfirmed_cleanup(*_args, **_kwargs):
+        raise carps.SandboxCleanupError("candidate container cleanup could not be confirmed")
+
+    monkeypatch.setattr(carps, "run_candidate", unconfirmed_cleanup)
+    with pytest.raises(carps.SandboxCleanupError, match="cleanup could not be confirmed"):
+        carps.evaluate_case(
+            sandbox,
+            carps.CarpsCase("dev-cleanup", points, 30, 23),
+            evaluator_root=evaluator_root,
+            candidate_root=candidate_root,
+        )
+
+
 def test_invalid_result_gets_worst_metric_and_never_scores(monkeypatch, tmp_path: Path):
     candidate_root = tmp_path / "agent-artifact"
     candidate_root.mkdir()
