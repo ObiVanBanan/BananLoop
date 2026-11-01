@@ -24,10 +24,9 @@ def score_imputation_call(raw: object, truth: np.ndarray, mask: np.ndarray) -> t
     """Score one imputer return; invalid output follows the task's zero-score rule."""
     truth_array = np.asarray(truth, dtype=np.float64)
     mask_array = np.asarray(mask, dtype=bool)
-    try:
-        prediction = np.asarray(raw, dtype=np.float64)
-    except (TypeError, ValueError, OverflowError):
+    if not isinstance(raw, np.ndarray) or raw.dtype.kind != "f":
         return 0.0, False
+    prediction = np.ascontiguousarray(raw, dtype=np.float64)
     if (
         truth_array.ndim != 2
         or prediction.shape != truth_array.shape
