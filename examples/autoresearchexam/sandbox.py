@@ -275,7 +275,10 @@ def _kill_container(executable: str, name: str) -> bool:
         return False
     if inspected.returncode == 0:
         return False
-    return "no such" in inspected.stderr.lower()
+    diagnostic = inspected.stderr.strip().lower()
+    return diagnostic.startswith("error: no such object:") or diagnostic.startswith(
+        "error response from daemon: no such container:"
+    )
 
 
 def _docker_cli_env() -> dict[str, str]:
@@ -396,7 +399,7 @@ def run_candidate(spec: CandidateSandbox, *, case_input: bytes) -> CandidateResu
             if stream is not None:
                 stream.close()
         if not cleanup_confirmed:
-            raise SandboxError(
+            raise SandboxCleanupError(
                 "candidate container cleanup could not be confirmed; quarantine this runner before continuing"
             )
     return CandidateResult(proc.returncode, bytes(output), bytes(errors))
