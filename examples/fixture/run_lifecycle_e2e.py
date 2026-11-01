@@ -323,6 +323,18 @@ def run_fake_codex_recovery(output_dir: Path) -> dict[str, object]:
     report = _run_cli(["report", *cli], repo=repo, env=env, log_dir=logs, name="report")
     if "status: GOAL_MET" not in status or "Final assessment: **DEV_ONLY**" not in report:
         raise RuntimeError("resumed fake-Codex campaign did not finish with a DEV-only report")
+    with sqlite3.connect(state / "campaign.sqlite3") as conn:
+        completed_action = conn.execute(
+            "SELECT status FROM actions WHERE id='exp:1:propose'"
+        ).fetchone()
+        proposal_reservations = [row[0] for row in conn.execute(
+            "SELECT status FROM reservations "
+            "WHERE action_id='exp:1:propose' AND resource='agent_call' ORDER BY id"
+        )]
+    if completed_action is None or completed_action[0] != "COMPLETED":
+        raise RuntimeError("resumed proposal action did not complete under its original ID")
+    if proposal_reservations != ["CANCELLED", "CONSUMED"]:
+        raise RuntimeError(f"proposal call reservations were not cancelled then consumed: {proposal_reservations}")
     calls = [json.loads(line) for line in (output_dir / "calls.jsonl").read_text().splitlines()]
     if [row["role"] for row in calls].count("propose") != 2 or [
         row["role"] for row in calls
