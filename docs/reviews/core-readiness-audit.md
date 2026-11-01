@@ -103,3 +103,12 @@ Draft PR #94 rebases bootstrap admission onto the current PR #93 lifecycle/SIGBR
 The opt-in candidate reserves tokens before bootstrap model calls, settles from Codex receipts, atomically imports known usage, and fails closed on unknown/interrupted attempts. Regression tests cover no-call reserve rejection and retry with corrected settings, empty-ledger cap removal, settings lock after settlement, overshoot, unknown usage, and atomic rollback. These tests use fake adapters; no real model calls, paid experiments, benchmark candidate, or HOLDOUT scoring ran. The accounting remains local token metering, not provider-enforced USD.
 
 PR #94 is draft/unmerged. The Issue #64 H2H gate remains **BLOCKED / INELIGIBLE**: the shared $3 USD cap, evaluator/agent isolation, and data-rights/privacy evidence are not established. Release recommendation remains **NOT READY**.
+
+
+## Lifecycle and HIL verification update — 2026-11-01
+
+The candidate stack now includes the deterministic final-HOLDOUT interruption/recovery fixture and the v0.1 CLI pivot HIL path. PR #96 exact head `e4dd1ae094571ea72b73c3a514a745e6c1d723fd` passed full hosted run [#41262308357](https://github.com/ObiVanBanan/BananLoop/actions/runs/41262308357) on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 (Windows: **460 passed, 1 skipped in 732.30s**). PR #97 exact head `61033cf7e4ae3b31f481a08ad5fd9b2f52e8d1c6` passed full hosted run [#41262536403](https://github.com/ObiVanBanan/BananLoop/actions/runs/41262536403) on the same matrix (Windows: **462 passed, 1 skipped in 523.60s**). The skip in both is the unavailable pinned selector preregistration snapshot.
+
+The final-HOLDOUT fixture interrupts a real local evaluator subprocess after terminal intent, resumes the same action once, checks one completed evaluation/receipt/final event, and verifies no adaptive replanning or diagnostic-canary leakage. The HIL CLI serializes pivot decisions with the campaign lock, commits terminal rejection and STOPPED atomically, previews child specs before exact hash confirmation, creates an idempotent READY child, and recovers a schema-only crash reservation. These are deterministic local fixtures; they do not run an official benchmark HOLDOUT, model, or paid experiment.
+
+PRs #96 and #97 remain draft and unmerged. Release recommendation remains **NOT READY**: Issue #64 spend metering, hostile-code isolation, and data-rights/privacy gates remain unresolved.
