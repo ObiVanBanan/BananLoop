@@ -119,5 +119,5 @@ Deterministic fake-adapter tests verify that insufficient reserve prevents the m
 
 ## CLI HIL approval-to-report journey — 2026-11-01
 
-- The offline `--hil-pivot-cli` scenario uses the real CLI, `CampaignRegistry`, SQLite state and a local command-agent fixture. It displays a seeded pending proposal as `PAUSED_NEEDS_INPUT`, approves the immutable proposal ID/digest, verifies exact receipt replay for a repeated request ID, requires preview plus the exact child-spec hash, explicitly runs the child, and checks the final `GOAL_MET` `DEV_ONLY` report.
+- The offline `--hil-pivot-cli` scenario uses the real CLI, `CampaignRegistry`, SQLite state and a local command-agent fixture. It displays a seeded pending proposal as `PAUSED_NEEDS_INPUT`; `operator-snapshot` exposes the intact proposal ID/digest; approval reuses the exact receipt on request replay; child creation requires preview plus the exact child-spec hash; the child is explicitly run to a `GOAL_MET` `DEV_ONLY` report. A terminal resume replay does not add agent calls.
 - Focused Linux/Python 3.14.7 result: **1 passed**. No model calls or HOLDOUT were configured. The fixture seeds the pivot proposal; it does not show autonomous proposal generation.
