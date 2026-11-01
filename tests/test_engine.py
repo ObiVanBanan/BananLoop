@@ -207,6 +207,9 @@ def test_end_to_end_accept_reject_accept_and_source_unchanged(tmp_path: Path):
                  if decision["candidate_id"] == item["selected_candidate_id"])["selection_reason"]
             for item in portfolio_events
         )
+        for experiment in experiments:
+            assert store.action(f"exp:{experiment['id']}:propose")["stage"] == "PROPOSE"
+            assert store.action(f"exp:{experiment['id']}:implement")["stage"] == "EXECUTE"
         report = build_report(store)
         assert len(report["research_state"]["portfolios"]) == 3
         markdown = render_markdown(report)
@@ -1205,6 +1208,8 @@ def test_dev_failure_analyzer_sees_public_teacher_answer_but_proposer_does_not(t
         engine._stage_analyze(attempt_id, experiment_id)
 
         assert store.attempt(attempt_id)["stage"] == "REJECT"
+        analyze_action = store.action(f"exp:{experiment_id}:analyze-dev-failures")
+        assert analyze_action is not None and analyze_action["stage"] == "ANALYZE"
         assert analyzer.task is not None
         rendered_task = json.dumps(analyzer.task, ensure_ascii=False)
         # Analyzer gets the exact public DEV teacher example.
@@ -2205,6 +2210,9 @@ def test_llm_selector_invalid_responses_always_fall_back(tmp_path: Path, monkeyp
         assert events and all(e["status"] == "FALLBACK" for e in events)
         for event in events:
             assert event["deterministic_candidate_id"].startswith("step-")
+        select_actions = [a for a in store.actions() if a["id"].endswith(":semantic-select")]
+        assert select_actions
+        assert all(a["stage"] == "SELECT" for a in select_actions)
     finally:
         store.close()
 
