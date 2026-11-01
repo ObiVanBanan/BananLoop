@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 import bananloop.engine as engine_module
-from bananloop.agents.base import AgentAdapter
+from bananloop.agents.base import AgentAdapter, AgentError
+from bananloop.agents.codex import CodexAdapter
 from bananloop.contracts import AgentConfig, BudgetSpec, CampaignSpec, CandidateDecision, Direction, EvaluationAsset, EvaluationResult, GuardrailSpec, Hypothesis, HypothesisCandidate, MetricSpec, PortfolioRecord, RuntimePaths
 from bananloop.engine import ControlledInterruption, Engine, EngineError, UnknownActionOutcome, _hash_payload
 from bananloop.evaluator_binding import EvaluatorBinding, canonical_hash, make_binding, runtime_descriptor
@@ -206,9 +207,13 @@ def test_end_to_end_accept_reject_accept_and_source_unchanged(tmp_path: Path):
                  if decision["candidate_id"] == item["selected_candidate_id"])["selection_reason"]
             for item in portfolio_events
         )
+        for experiment in experiments:
+            assert store.action(f"exp:{experiment['id']}:propose")["stage"] == "PROPOSE"
+            assert store.action(f"exp:{experiment['id']}:implement")["stage"] == "EXECUTE"
         report = build_report(store)
         assert len(report["research_state"]["portfolios"]) == 3
         markdown = render_markdown(report)
+        markdown.encode("cp1252")
         assert "Planning portfolios" in markdown
         assert "DEV lessons" in markdown
         assert "estimated cost 1 agent calls + 1 evaluator calls" in markdown
@@ -1203,6 +1208,8 @@ def test_dev_failure_analyzer_sees_public_teacher_answer_but_proposer_does_not(t
         engine._stage_analyze(attempt_id, experiment_id)
 
         assert store.attempt(attempt_id)["stage"] == "REJECT"
+        analyze_action = store.action(f"exp:{experiment_id}:analyze-dev-failures")
+        assert analyze_action is not None and analyze_action["stage"] == "ANALYZE"
         assert analyzer.task is not None
         rendered_task = json.dumps(analyzer.task, ensure_ascii=False)
         # Analyzer gets the exact public DEV teacher example.
@@ -2203,6 +2210,9 @@ def test_llm_selector_invalid_responses_always_fall_back(tmp_path: Path, monkeyp
         assert events and all(e["status"] == "FALLBACK" for e in events)
         for event in events:
             assert event["deterministic_candidate_id"].startswith("step-")
+        select_actions = [a for a in store.actions() if a["id"].endswith(":semantic-select")]
+        assert select_actions
+        assert all(a["stage"] == "SELECT" for a in select_actions)
     finally:
         store.close()
 
@@ -2402,5 +2412,185 @@ def test_issue60_crash_retry_preserves_old_upper_bound_and_reserves_again(tmp_pa
         assert [row["status"] for row in token_reservations] == ["UNKNOWN", "RESERVED"]
         assert store.model_token_summary()["unknown"] == ["exp:1:implement", "exp:1:implement"]
         assert store.resource_summary()["unknown_outcomes"] >= 1
+    finally:
+        store.close()
+
+
+_ISSUE60_STAGE_RESERVES = {
+    "PROPOSE": ("propose", 11),
+    "SELECT": ("select", 13),
+    "EXECUTE": ("implement", 17),
+    "ANALYZE": ("analyze", 19),
+}
+
+
+def _issue60_stage_metered_engine(tmp_path: Path, *, limit: int):
+    store, engine, _, _ = make_engine(tmp_path)
+    spec = engine.spec.model_copy(deep=True)
+    spec.budget.max_model_tokens = limit
+    spec.budget.model_token_reserve = 23
+    spec.budget.model_token_stage_reserves = {
+        stage: reserve for stage, (_, reserve) in _ISSUE60_STAGE_RESERVES.items()
+    }
+    spec.agent = AgentConfig(kind="codex")
+    store.update_campaign(spec_json=spec.model_dump_json(), spec_hash=spec.approved_hash())
+    engine.spec = spec
+    engine.workspace.ensure(spec.base_commit)
+
+    class FakeCodex(CodexAdapter):
+        def __init__(self):
+            super().__init__(None, [], None)
+            self.calls = 0
+            self.last_token_usage = None
+            self.fail_first = False
+            self.reserved_at_call = []
+
+        def execute(self, task, workspace, timeout):
+            self.calls += 1
+            self.reserved_at_call.append(store.model_tokens_reserved())
+            if self.fail_first and self.calls == 1:
+                self.last_token_usage = {
+                    "input_tokens": 6, "output_tokens": 2, "cached_input_tokens": 1,
+                }
+                raise AgentError("fixture failure after metered usage")
+            self.last_token_usage = (
+                {"input_tokens": 6, "output_tokens": 2, "cached_input_tokens": 1}
+                if self.calls == 1
+                else {"input_tokens": 2, "output_tokens": 1, "cached_input_tokens": 0}
+            )
+            return {"ok": True, "role": task["role"]}
+
+    adapter = FakeCodex()
+    engine.agent = adapter
+    return store, engine, adapter
+
+
+@pytest.mark.parametrize(("stage", "role", "reserve"), [
+    (stage, role, reserve)
+    for stage, (role, reserve) in _ISSUE60_STAGE_RESERVES.items()
+])
+def test_issue60_each_agent_stage_uses_its_exact_reserve_and_usage_stage(
+    tmp_path: Path, stage: str, role: str, reserve: int,
+):
+    store, engine, adapter = _issue60_stage_metered_engine(tmp_path, limit=reserve)
+    action_id = f"fixture:{stage.lower()}"
+    request = {"role": role}
+    try:
+        result = engine._action(
+            action_id=action_id,
+            experiment_id=None,
+            stage=stage,
+            kind="agent",
+            request=request,
+            invoke=lambda: engine._invoke_agent(request, timeout=30, apply_changes=False),
+        )
+        assert result["role"] == role
+        assert adapter.calls == 1
+        assert adapter.reserved_at_call == [reserve]
+        assert store.action(action_id)["status"] == "COMPLETED"
+        reservations = [
+            row for row in store.reservations()
+            if row["action_id"] == action_id and row["resource"] == "model_token"
+        ]
+        assert [(row["amount"], row["status"]) for row in reservations] == [(8, "CONSUMED")]
+        usage_events = [
+            json.loads(row["payload_json"]) for row in store.events()
+            if row["event_type"] == "MODEL_TOKEN_USAGE"
+        ]
+        assert usage_events == [{
+            "action_id": action_id, "stage": stage,
+            "input_tokens": 6, "output_tokens": 2,
+            "cached_input_tokens": 1, "charged_tokens": 8,
+        }]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(("stage", "role", "reserve"), [
+    (stage, role, reserve)
+    for stage, (role, reserve) in _ISSUE60_STAGE_RESERVES.items()
+])
+def test_issue60_each_agent_stage_blocks_before_call_below_its_reserve(
+    tmp_path: Path, stage: str, role: str, reserve: int,
+):
+    store, engine, adapter = _issue60_stage_metered_engine(tmp_path, limit=reserve - 1)
+    action_id = f"fixture:{stage.lower()}"
+    request = {"role": role}
+    try:
+        with pytest.raises(engine_module.CampaignHalted):
+            engine._action(
+                action_id=action_id,
+                experiment_id=None,
+                stage=stage,
+                kind="agent",
+                request=request,
+                invoke=lambda: engine._invoke_agent(request, timeout=30, apply_changes=False),
+            )
+        assert adapter.calls == 0
+        assert store.action(action_id) is None
+        blocked = [
+            json.loads(row["payload_json"]) for row in store.events()
+            if row["event_type"] == "MODEL_TOKEN_RESERVE_BLOCKED"
+        ]
+        assert blocked == [{
+            "stage": stage, "required_tokens": reserve,
+            "available_tokens": reserve - 1, "reason": "insufficient_token_reserve",
+        }]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(("stage", "role", "reserve"), [
+    (stage, role, reserve)
+    for stage, (role, reserve) in _ISSUE60_STAGE_RESERVES.items()
+])
+def test_issue60_each_agent_stage_retry_keeps_prior_receipt_charged(
+    tmp_path: Path, stage: str, role: str, reserve: int,
+):
+    store, engine, adapter = _issue60_stage_metered_engine(tmp_path, limit=reserve * 2)
+    adapter.fail_first = True
+    action_id = f"fixture:{stage.lower()}"
+    request = {"role": role}
+    invoke = lambda: engine._invoke_agent(request, timeout=30, apply_changes=False)
+    try:
+        with pytest.raises(AgentError, match="fixture failure"):
+            engine._action(
+                action_id=action_id,
+                experiment_id=None,
+                stage=stage,
+                kind="agent",
+                request=request,
+                invoke=invoke,
+            )
+        assert store.model_tokens_reserved() == 8
+        assert store.action(action_id)["status"] == "FAILED"
+
+        engine._retry_failed_actions = True
+        engine._action(
+            action_id=action_id,
+            experiment_id=None,
+            stage=stage,
+            kind="agent",
+            request=request,
+            invoke=invoke,
+        )
+
+        assert adapter.calls == 2
+        assert adapter.reserved_at_call == [reserve, 8 + reserve]
+        assert store.action(action_id)["status"] == "COMPLETED"
+        assert store.model_tokens_reserved() == 11
+        reservations = [
+            row for row in store.reservations()
+            if row["action_id"] == action_id and row["resource"] == "model_token"
+        ]
+        assert [(row["amount"], row["status"]) for row in reservations] == [
+            (8, "CONSUMED"), (3, "CONSUMED"),
+        ]
+        usage_events = [
+            json.loads(row["payload_json"]) for row in store.events()
+            if row["event_type"] == "MODEL_TOKEN_USAGE"
+        ]
+        assert [row["stage"] for row in usage_events] == [stage, stage]
+        assert [row["charged_tokens"] for row in usage_events] == [8, 3]
     finally:
         store.close()
