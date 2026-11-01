@@ -17,7 +17,7 @@ import shutil
 import tempfile
 from typing import Any
 
-from ..sandbox import CandidateSandbox, SandboxError, run_candidate, stage_candidate_artifact
+from ..sandbox import CandidateSandbox, SandboxCleanupError, SandboxError, run_candidate, stage_candidate_artifact
 
 
 UPSTREAM_REPOSITORY = "bespokelabsai/AutoResearchExam"
@@ -233,12 +233,21 @@ def evaluate_case(
         artifact_dir=staged,
         timeout_seconds=TIME_BUDGET_SECONDS + 5,
         cpu_count=1.0,
+        memory_bytes=min(sandbox.memory_bytes, 2 * 1024**3),
+        pids_limit=min(sandbox.pids_limit, 64),
+        tmpfs_bytes=min(sandbox.tmpfs_bytes, 256 * 1024**2),
+        output_limit_bytes=min(sandbox.output_limit_bytes, 1024**2),
         input_limit_bytes=min(sandbox.input_limit_bytes, 16 * 1024**2),
     )
     try:
         # The independent scorer runs only after the candidate container exits.
         try:
             result = run_candidate(case_sandbox, case_input=payload)
+        except SandboxCleanupError:
+            # An unknown daemon-owned container must stop the whole evaluation.
+            # It is not an ordinary candidate failure that can receive a score
+            # penalty while later cases continue on the same runner.
+            raise
         except SandboxError as exc:
             return CarpsEvaluation(case.case_id, INVALID_DISCREPANCY, False, str(exc)[:240], None, None)
         if result.returncode != 0:

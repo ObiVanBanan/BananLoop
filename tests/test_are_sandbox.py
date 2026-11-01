@@ -10,6 +10,8 @@ import pytest
 from examples.autoresearchexam.sandbox import (
     CandidateSandbox,
     SandboxError,
+    SandboxCleanupError,
+    _kill_container,
     docker_argv,
     run_candidate,
     stage_candidate_artifact,
@@ -140,6 +142,56 @@ def test_image_metadata_rejects_implicit_volumes_and_credentials(tmp_path, monke
 
     with pytest.raises(SandboxError):
         _validate_image(spec)
+
+
+def test_unconfirmed_container_cleanup_fails_closed(tmp_path, monkeypatch):
+    spec = _spec(tmp_path / "artifact", output_limit_bytes=4)
+
+    class FakeProcess:
+        def __init__(self, *args, **kwargs):
+            self.stdin = io.BytesIO()
+            self.stdout = io.BytesIO(b"0123456789")
+            self.stderr = io.BytesIO(b"")
+            self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    def fake_docker(args, **kwargs):
+        operation = args[1]
+        if operation == "image":
+            return SimpleNamespace(returncode=0, stdout="null|[]", stderr="")
+        if operation in {"kill", "rm"}:
+            return SimpleNamespace(returncode=1, stdout="", stderr="daemon unavailable")
+        if operation == "inspect":
+            return SimpleNamespace(returncode=0, stdout="still-running", stderr="")
+        pytest.fail(f"unexpected Docker operation: {operation}")
+
+    monkeypatch.setattr("examples.autoresearchexam.sandbox.subprocess.Popen", FakeProcess)
+    monkeypatch.setattr("examples.autoresearchexam.sandbox.subprocess.run", fake_docker)
+
+    with pytest.raises(SandboxCleanupError, match="cleanup could not be confirmed"):
+        run_candidate(spec, case_input=b"")
+
+
+def test_missing_docker_socket_is_not_proof_of_container_absence(monkeypatch):
+    diagnostics = iter([
+        "Cannot connect to the Docker daemon: No such file or directory",
+        "Cannot connect to the Docker daemon: No such file or directory",
+        "Cannot connect to the Docker daemon: No such file or directory",
+    ])
+
+    def unavailable_daemon(*_args, **_kwargs):
+        return SimpleNamespace(returncode=1, stdout="", stderr=next(diagnostics))
+
+    monkeypatch.setattr("examples.autoresearchexam.sandbox.subprocess.run", unavailable_daemon)
+    assert not _kill_container("docker", "bananloop-candidate-" + "2" * 32)
 
 
 def test_bounded_output_stops_an_overproducing_docker_client(tmp_path, monkeypatch):
