@@ -112,3 +112,8 @@ The candidate stack now includes the deterministic final-HOLDOUT interruption/re
 The final-HOLDOUT fixture interrupts a real local evaluator subprocess after terminal intent, resumes the same action once, checks one completed evaluation/receipt/final event, and verifies no adaptive replanning or diagnostic-canary leakage. The HIL CLI serializes pivot decisions with the campaign lock, commits terminal rejection and STOPPED atomically, previews child specs before exact hash confirmation, creates an idempotent READY child, and recovers a schema-only crash reservation. These are deterministic local fixtures; they do not run an official benchmark HOLDOUT, model, or paid experiment.
 
 PRs #96 and #97 remain draft and unmerged. Release recommendation remains **NOT READY**: Issue #64 spend metering, hostile-code isolation, and data-rights/privacy gates remain unresolved.
+
+
+## Secret-history scan follow-up — 2026-11-01
+
+The draft Gitleaks workflow in [PR #90](https://github.com/ObiVanBanan/BananLoop/pull/90) scanned reachable history, fetched branch/tag refs, and pull-request head refs in hosted run [#41243943394](https://github.com/ObiVanBanan/BananLoop/actions/runs/41243943394). It reported 14 potential `generic-api-key` findings and exited nonzero. The report manually classifies 12 as SHA-256 candidate-content fingerprints and 2 as deterministic mock confirmation-token test values; no actual credential was confirmed. Findings remain unsuppressed and the workflow is still a draft, so this is triage evidence, not a passing secret-clearance gate. GitHub secret-alert access and comprehensive rights/privacy review remain unavailable.
