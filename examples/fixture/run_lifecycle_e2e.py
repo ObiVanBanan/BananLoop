@@ -201,7 +201,7 @@ def _write_fake_codex_cli(bin_dir: Path, markers: Path) -> None:
         "    counter.write_text(str(count))\n"
         "    if count == 1:\n"
         "        (root/'codex-propose-ready').write_text('ready')\n"
-        "        time.sleep(60)\n"
+        "        time.sleep(4)\n"
         "        (root/'codex-survived-cancel').write_text('survived')\n"
         "    hypothesis={\n"
         "      'hypothesis':'Raise quality to the target while preserving the guard',\n"
@@ -300,6 +300,7 @@ def run_fake_codex_recovery(output_dir: Path) -> dict[str, object]:
         raise RuntimeError(f"interrupted Codex campaign exited {process.returncode}: {stderr[-2000:]}")
     if "interrupted by user" not in stderr.lower():
         raise RuntimeError("signal did not reach the BananLoop CLI interruption handler")
+    time.sleep(4.2)
     if (output_dir / "codex-survived-cancel").exists():
         raise RuntimeError("fake Codex subprocess survived process-control cancellation")
     with sqlite3.connect(state / "campaign.sqlite3") as conn:
