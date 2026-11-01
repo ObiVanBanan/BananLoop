@@ -8,6 +8,7 @@ from core import (
     init_parent, init_registry, mark_dispatched, mutate_graph, reconcile_child_saga,
     record_unknown, validate_spec,
 )
+from migration import migrate_v4_to_v5
 
 
 class RPDI00ContractSpike(unittest.TestCase):
@@ -22,6 +23,21 @@ class RPDI00ContractSpike(unittest.TestCase):
         db = connect(path)
         try:
             return db.execute(sql, args).fetchone()[0]
+        finally:
+            db.close()
+
+    def make_v4_fixture(self, path):
+        db = connect(path)
+        try:
+            db.executescript("""
+            CREATE TABLE campaigns(id INTEGER PRIMARY KEY CHECK(id=1), approved_hash TEXT NOT NULL);
+            CREATE TABLE evaluator_bindings(id INTEGER PRIMARY KEY CHECK(id=1), protocol_id TEXT NOT NULL, content_hash TEXT NOT NULL);
+            CREATE TABLE evaluation_receipts(receipt_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+            INSERT INTO campaigns VALUES(1,'legacy-approved-sha256');
+            INSERT INTO evaluator_bindings VALUES(1,'legacy-v1','legacy-protocol-sha256');
+            INSERT INTO evaluation_receipts VALUES('receipt-1','{"score":0.75,"source":"dev"}');
+            PRAGMA user_version=4;
+            """)
         finally:
             db.close()
 
@@ -139,6 +155,28 @@ class RPDI00ContractSpike(unittest.TestCase):
         self.assertEqual(self.scalar(registry, "SELECT state FROM children"), "ACTIVE")
         with self.assertRaisesRegex(ContractError, "exceeds root cap"):
             create_child_saga(parent, registry, self.root / "child2.db", "alloc2", "child2", 9)
+
+    def test_v4_migration_adds_v5_schema_and_preserves_legacy_hashes_and_receipts(self):
+        dbpath, backup = self.root / "legacy-v4.db", self.root / "legacy-v4.backup.db"
+        self.make_v4_fixture(dbpath)
+        migrate_v4_to_v5(dbpath, backup)
+        self.assertEqual(self.scalar(dbpath, "PRAGMA user_version"), 5)
+        self.assertEqual(self.scalar(dbpath, "PRAGMA integrity_check"), "ok")
+        self.assertEqual(self.scalar(dbpath, "SELECT approved_hash FROM campaigns WHERE id=1"), "legacy-approved-sha256")
+        self.assertEqual(self.scalar(dbpath, "SELECT content_hash FROM evaluator_bindings WHERE id=1"), "legacy-protocol-sha256")
+        self.assertEqual(self.scalar(dbpath, "SELECT payload FROM evaluation_receipts WHERE receipt_id='receipt-1'"), '{"score":0.75,"source":"dev"}')
+        self.assertEqual(self.scalar(backup, "PRAGMA user_version"), 4)
+        self.assertEqual(self.scalar(backup, "SELECT approved_hash FROM campaigns WHERE id=1"), "legacy-approved-sha256")
+
+    def test_v4_migration_rolls_back_partial_schema_on_injected_crash(self):
+        dbpath, backup = self.root / "legacy-v4.db", self.root / "legacy-v4.backup.db"
+        self.make_v4_fixture(dbpath)
+        with self.assertRaisesRegex(RuntimeError, "injected migration crash"):
+            migrate_v4_to_v5(dbpath, backup, fail_after_schema=True)
+        self.assertEqual(self.scalar(dbpath, "PRAGMA user_version"), 4)
+        self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='graph_meta'"), 0)
+        self.assertEqual(self.scalar(dbpath, "SELECT approved_hash FROM campaigns WHERE id=1"), "legacy-approved-sha256")
+        self.assertEqual(self.scalar(backup, "PRAGMA user_version"), 4)
 
 
 if __name__ == "__main__":

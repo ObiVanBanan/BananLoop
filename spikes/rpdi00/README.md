@@ -1,6 +1,6 @@
 # RPDI-00 executable spike
 
-This stdlib-only prototype exercises the riskiest v0.2 contracts without changing the v0.1 application. It intentionally lives outside `src/bananloop`.
+This stdlib-only prototype exercises the riskiest v0.2 contracts without changing the v0.1 Engine. It intentionally lives outside `src/bananloop`; pytest is configured to discover this suite alongside the existing tests.
 
 Run:
 

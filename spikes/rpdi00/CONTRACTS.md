@@ -39,6 +39,10 @@ Parent-side allocation is reserved before touching the registry or child DB. `al
 
 The prototype injects a crash after child DB initialization, then reconciles and asserts one allocation, one registry row, and unchanged root escrow. It does not claim crash proof on Windows or across real power loss; the local deterministic test validates restart logic at that boundary.
 
+## v4→v5 migration spike
+
+The migration fixture exercises additive schema creation under an exclusive SQLite transaction. It runs `integrity_check`, takes a SQLite backup before migration, creates v0.2 graph/job tables, and advances `user_version` only at the commit boundary. A failure injected after table creation must roll back the new schema and preserve v4. The success fixture verifies the campaign `approved_hash`, legacy evaluator binding hash, evaluation receipt bytes, and pre-upgrade backup remain intact. This is a minimal contract fixture, not a complete production migration or a substitute for opening representative campaign databases.
+
 ## Contract gate evidence and remaining proof
 
 Run from repository root:
@@ -47,7 +51,7 @@ Run from repository root:
 python3 -m unittest discover -s spikes/rpdi00 -v
 ```
 
-The six tests cover graph state/event rollback and idempotency, stale revision, reservation/lease rollback, parallel budget caps, unknown usage, evidence-only spec/package behavior, and child escrow recovery. A successful local run is necessary but not sufficient to authorize RPDI-01/02: a reviewer must accept this contract package, then platform CI must repeat the suite on Linux and Windows. Production migrations, API transport, AND/OR readiness, stale-worker completion fencing, lease reclaim, and v1 DB compatibility are explicitly outside this spike and remain gated work.
+The eight tests cover graph state/event rollback and idempotency, stale revision, reservation/lease rollback, parallel budget caps, unknown usage, evidence-only spec/package behavior, child escrow recovery, and v4 migration preservation/rollback. A successful local run is necessary but not sufficient to authorize RPDI-01/02: a reviewer must accept this contract package, then platform CI must repeat the suite on Linux and Windows. Production API transport, AND/OR readiness, stale-worker completion fencing, and lease reclaim remain gated work.
 
 ## Proposed typed API boundary
 
