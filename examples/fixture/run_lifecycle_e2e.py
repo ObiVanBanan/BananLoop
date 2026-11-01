@@ -176,6 +176,173 @@ def run(output_dir: Path, *, sigint: bool = False) -> dict[str, object]:
     return summary
 
 
+
+def _write_fake_codex_cli(bin_dir: Path, markers: Path) -> None:
+    """Create an offline Codex CLI stand-in for process-tree recovery tests."""
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    fake = bin_dir / "fake_codex.py"
+    fake.write_text(
+        "import json, sys, time\n"
+        "from pathlib import Path\n"
+        f"root=Path({str(markers)!r})\n"
+        "if '--version' in sys.argv:\n"
+        "    print('codex-cli fake-lifecycle')\n"
+        "    raise SystemExit(0)\n"
+        "args=sys.argv[1:]\n"
+        "out=Path(args[args.index('-o')+1])\n"
+        "prompt=sys.stdin.read()\n"
+        "task=json.loads(prompt.rsplit('\\n\\n',1)[-1])\n"
+        "role=task['role']\n"
+        "with (root/'calls.jsonl').open('a',encoding='utf-8') as f:\n"
+        "    f.write(json.dumps({'role':role})+'\\n')\n"
+        "if role == 'propose':\n"
+        "    counter=root/'proposals'\n"
+        "    count=int(counter.read_text())+1 if counter.exists() else 1\n"
+        "    counter.write_text(str(count))\n"
+        "    if count == 1:\n"
+        "        (root/'codex-propose-ready').write_text('ready')\n"
+        "        time.sleep(60)\n"
+        "        (root/'codex-survived-cancel').write_text('survived')\n"
+        "    hypothesis={\n"
+        "      'hypothesis':'Raise quality to the target while preserving the guard',\n"
+        "      'rationale':'deterministic local fake CLI fixture',\n"
+        "      'expected_effect':'quality reaches 3 with zero regressions',\n"
+        "      'files_or_area':['value.txt','guard.txt'],\n"
+        "      'falsification_condition':'quality remains below 3 or regressions exceed zero',\n"
+        "      'mechanism_key':'fake-codex-quality-target',\n"
+        "      'relation':'new','prior_experiment_refs':[],\n"
+        "      'novelty_rationale':'single controlled fixture mechanism',\n"
+        "      'target_failure_signal':'','failure_mechanism':''}\n"
+        "    candidate={'candidate_id':'fake-codex-target','hypothesis':hypothesis,\n"
+        "      'evidence_refs':['INSUFFICIENT_EVIDENCE'],'suspected_failure_mode':'',\n"
+        "      'predicted_observable':'quality reaches 3','discriminating_test':'evaluate the fixture',\n"
+        "      'scope_eligibility':True,'estimated_agent_calls':1,'estimated_evaluator_calls':1,\n"
+        "      'estimated_work_units':None,'rationale':'local fake CLI','uncertainty':'fixture only',\n"
+        "      'inference':'agent_inference'}\n"
+        "    result={'candidates':[candidate]}\n"
+        "    result.update({key:None for key in ('hypothesis','rationale','expected_effect',\n"
+        "      'files_or_area','falsification_condition','mechanism_key','relation',\n"
+        "      'prior_experiment_refs','novelty_rationale','target_failure_signal','failure_mechanism')})\n"
+        "elif role == 'implement':\n"
+        "    Path('value.txt').write_text('3\\n',encoding='utf-8')\n"
+        "    Path('guard.txt').write_text('0\\n',encoding='utf-8')\n"
+        "    result={'summary':'set fixture target','changed_paths':['value.txt','guard.txt'],\n"
+        "      'verification_notes':'offline fake Codex CLI','blockers':[]}\n"
+        "else:\n"
+        "    raise SystemExit('unexpected fake Codex role: '+role)\n"
+        "out.write_text(json.dumps(result),encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    if os.name == "nt":
+        (bin_dir / "codex.cmd").write_text(
+            f'@echo off\r\n"{sys.executable}" "%~dp0fake_codex.py" %*\r\n',
+            encoding="utf-8",
+        )
+    else:
+        launcher = bin_dir / "codex"
+        launcher.write_text(
+            f'#!/bin/sh\nexec "{sys.executable}" "{fake}" "$@"\n',
+            encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+
+
+def run_fake_codex_recovery(output_dir: Path) -> dict[str, object]:
+    """Interrupt and resume the actual CLI -> CodexAdapter -> fake CLI path."""
+    output_dir.mkdir(parents=True, exist_ok=False)
+    repo = output_dir / "fixture"
+    state = output_dir / "state"
+    logs = output_dir / "logs"
+    fake_bin = output_dir / "fake-bin"
+    logs.mkdir()
+    py_source = Path(__file__).resolve().parents[2] / "src"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(py_source) + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
+    _write_fake_codex_cli(fake_bin, output_dir)
+    subprocess.run(
+        [sys.executable, str(Path(__file__).with_name("create_fixture.py")), str(repo)],
+        check=True, capture_output=True, text=True,
+    )
+    cli = ["--repo", str(repo), "--state-dir", str(state)]
+    init_args = [
+        "init", *cli, "--goal", "Raise quality to 3 while regressions stay at zero",
+        "--eval-cmd", "python evaluator.py", "--metric", "quality", "--direction", "maximize",
+        "--target", "3", "--min-improvement", "0.5", "--guard", "regressions<=0",
+        "--check", "tests", "--editable", "value.txt", "--editable", "guard.txt",
+        "--protect", "evaluator.py", "--protect", "agent.py", "--agent", "codex",
+        "--max-experiments", "1", "--max-attempts", "2", "--max-agent-calls", "8",
+        "--max-evaluator-calls", "5", "--selector-mode", "deterministic",
+    ]
+    _run_cli(init_args, repo=repo, env=env, log_dir=logs, name="init")
+
+    process = subprocess.Popen(
+        [sys.executable, "-m", "bananloop.cli", "run", *cli], cwd=repo, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        **({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+           else {"start_new_session": True}),
+    )
+    ready = output_dir / "codex-propose-ready"
+    deadline = time.monotonic() + 20
+    while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if not ready.exists():
+        stdout, stderr = process.communicate(timeout=10)
+        raise RuntimeError(f"fake Codex did not start; stdout={stdout!r}; stderr={stderr!r}")
+
+    process.send_signal(signal.CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGINT)
+    stdout, stderr = process.communicate(timeout=15)
+    (logs / "interrupted-run.stdout.txt").write_text(stdout, encoding="utf-8")
+    (logs / "interrupted-run.stderr.txt").write_text(stderr, encoding="utf-8")
+    if process.returncode != 130:
+        raise RuntimeError(f"interrupted Codex campaign exited {process.returncode}: {stderr[-2000:]}")
+    if "interrupted by user" not in stderr.lower():
+        raise RuntimeError("signal did not reach the BananLoop CLI interruption handler")
+    if (output_dir / "codex-survived-cancel").exists():
+        raise RuntimeError("fake Codex subprocess survived process-control cancellation")
+    with sqlite3.connect(state / "campaign.sqlite3") as conn:
+        action = conn.execute(
+            "SELECT status FROM actions WHERE id='exp:1:propose'"
+        ).fetchone()
+        cancelled = [json.loads(row[0]) for row in conn.execute(
+            "SELECT payload_json FROM events WHERE event_type='ACTION_CANCELLED'"
+        )]
+    if action is None or action[0] != "CANCELLED" or not any(
+        row.get("action_id") == "exp:1:propose" for row in cancelled
+    ):
+        raise RuntimeError("active Codex proposal cancellation was not durably recorded")
+
+    paused = _run_cli(["status", *cli], repo=repo, env=env, log_dir=logs, name="paused-status")
+    if "status: PAUSED_INFRA" not in paused:
+        raise RuntimeError("Codex interruption did not persist PAUSED_INFRA")
+    _run_cli(["resume", *cli], repo=repo, env=env, log_dir=logs, name="resume", timeout=90)
+    status = _run_cli(["status", *cli], repo=repo, env=env, log_dir=logs, name="status")
+    report = _run_cli(["report", *cli], repo=repo, env=env, log_dir=logs, name="report")
+    if "status: GOAL_MET" not in status or "Final assessment: **DEV_ONLY**" not in report:
+        raise RuntimeError("resumed fake-Codex campaign did not finish with a DEV-only report")
+    calls = [json.loads(line) for line in (output_dir / "calls.jsonl").read_text().splitlines()]
+    if [row["role"] for row in calls].count("propose") != 2 or [
+        row["role"] for row in calls
+    ].count("implement") != 1:
+        raise RuntimeError(f"resume repeated or skipped a fake Codex action: {calls}")
+    summary: dict[str, object] = {
+        "interruption": "SIGINT" if os.name != "nt" else "CTRL_BREAK",
+        "status": "GOAL_MET",
+        "paused_status": "PAUSED_INFRA",
+        "final_assessment": "DEV_ONLY",
+        "model_calls": 0,
+        "holdout_configured": False,
+        "cancelled_action": "exp:1:propose",
+        "proposal_invocations": 2,
+        "implementation_invocations": 1,
+        "logs": str(logs),
+    }
+    (output_dir / "result.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -186,9 +353,20 @@ def main() -> None:
         "--sigint", action="store_true",
         help="send a real SIGINT/CTRL_BREAK to the active CLI subprocess, then resume",
     )
+    parser.add_argument(
+        "--fake-codex-recovery", action="store_true",
+        help="interrupt and resume through CodexAdapter using a local fake Codex executable",
+    )
     args = parser.parse_args()
     output_dir = Path(args.output_dir) if args.output_dir else Path(tempfile.mkdtemp(prefix="bananloop-lifecycle-"))
-    print(json.dumps(run(output_dir, sigint=args.sigint), indent=2))
+    if args.fake_codex_recovery and args.sigint:
+        parser.error("--sigint and --fake-codex-recovery are separate scenarios")
+    result = (
+        run_fake_codex_recovery(output_dir)
+        if args.fake_codex_recovery
+        else run(output_dir, sigint=args.sigint)
+    )
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":
