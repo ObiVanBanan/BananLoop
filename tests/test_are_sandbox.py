@@ -10,6 +10,8 @@ import pytest
 from examples.autoresearchexam.sandbox import (
     CandidateSandbox,
     SandboxError,
+    SandboxCleanupError,
+    _kill_container,
     docker_argv,
     run_candidate,
     stage_candidate_artifact,
@@ -174,8 +176,22 @@ def test_unconfirmed_container_cleanup_fails_closed(tmp_path, monkeypatch):
     monkeypatch.setattr("examples.autoresearchexam.sandbox.subprocess.Popen", FakeProcess)
     monkeypatch.setattr("examples.autoresearchexam.sandbox.subprocess.run", fake_docker)
 
-    with pytest.raises(SandboxError, match="cleanup could not be confirmed"):
+    with pytest.raises(SandboxCleanupError, match="cleanup could not be confirmed"):
         run_candidate(spec, case_input=b"")
+
+
+def test_missing_docker_socket_is_not_proof_of_container_absence(monkeypatch):
+    diagnostics = iter([
+        "Cannot connect to the Docker daemon: No such file or directory",
+        "Cannot connect to the Docker daemon: No such file or directory",
+        "Cannot connect to the Docker daemon: No such file or directory",
+    ])
+
+    def unavailable_daemon(*_args, **_kwargs):
+        return SimpleNamespace(returncode=1, stdout="", stderr=next(diagnostics))
+
+    monkeypatch.setattr("examples.autoresearchexam.sandbox.subprocess.run", unavailable_daemon)
+    assert not _kill_container("docker", "bananloop-candidate-" + "2" * 32)
 
 
 def test_bounded_output_stops_an_overproducing_docker_client(tmp_path, monkeypatch):
