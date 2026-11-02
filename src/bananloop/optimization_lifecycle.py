@@ -126,10 +126,12 @@ class OptimizationAttemptCoordinator:
                 protocol_digest=spec.evaluation.content_sha256,
                 candidate_snapshot_id=payload["candidate_snapshot_id"],
             )
-            if (receipt.source_snapshot_id != payload["source_snapshot_id"]
+            if (receipt.protocol_id != spec.evaluation.protocol_id
+                    or receipt.protocol_version != spec.evaluation.version
+                    or receipt.source_snapshot_id != payload["source_snapshot_id"]
                     or receipt.tier != "dev"):
                 raise OptimizationLifecycleError(
-                    "candidate-ready receipt must match the source snapshot and DEV tier"
+                    "candidate-ready receipt must match the pinned protocol, source snapshot, and DEV tier"
                 )
             return receipt
         except Exception as exc:
