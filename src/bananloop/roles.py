@@ -11,8 +11,9 @@ import re
 import sqlite3
 import time
 import tomllib
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -68,6 +69,8 @@ class RoleDefinitionV1(BaseModel):
     def valid_instance_range(self) -> "RoleDefinitionV1":
         if self.min_instances > self.max_instances:
             raise ValueError("min_instances cannot exceed max_instances")
+        if self.tokens_per_instance < self.calls_per_instance:
+            raise ValueError("tokens_per_instance must cover at least one token per allocated call")
         return self
 
 
@@ -268,6 +271,7 @@ class TeamManifestV1(BaseModel):
             "adapter": member.role.adapter,
             "allocated_agent_calls": member.role.calls_per_instance,
             "allocated_model_tokens": member.role.tokens_per_instance,
+            "per_call_model_token_limit": member.role.tokens_per_instance // member.role.calls_per_instance,
             "action_id": action_id,
             "context_digest": context_digest,
             "capability_policy_digest": _digest(member.role.capability_policy.model_dump(mode="json")),
@@ -406,7 +410,7 @@ class TeamFactoryV1:
         total_tokens = sum(member.role.tokens_per_instance for member in members)
         if total_calls > request.available_agent_calls:
             raise RoleContractError("requested team exceeds available agent-call budget")
-        if total_tokens > request.available_model_tokens:
+        if request.available_model_tokens is not None and total_tokens > request.available_model_tokens:
             raise RoleContractError("requested team exceeds available model-token budget")
         return TeamManifestV1.build(campaign_id=request.campaign_id, spec_hash=request.spec_hash,
                                     registry=registry, members=tuple(members))
@@ -448,17 +452,114 @@ class RoleContextV1(BaseModel):
         return _digest(self.model_dump(mode="json"))
 
 
-def build_role_context(member: TeamMemberV1, source: dict[str, Any]) -> RoleContextV1:
-    """Rebuild a fresh role-only view, discarding every field outside the allowlist."""
+class RoleContextValueV1(BaseModel):
+    """Value plus Core-assigned provenance; worker text cannot choose its class."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    value: Any
+    classification: Literal[
+        "PUBLIC_SPEC", "PUBLIC_NODE", "DEV_AGGREGATE", "CORE_BUDGET",
+        "ROLE_SPECIALIZATION", "VALIDATION", "HOLDOUT", "SECRET",
+    ]
+    source_ref: str = Field(pattern=r"^(campaign|graph|research|budget|role|evidence)://[^\s]{1,500}$")
+
+    @model_validator(mode="after")
+    def source_matches_classification(self) -> "RoleContextValueV1":
+        prefixes = {
+            "PUBLIC_SPEC": "campaign://spec/",
+            "PUBLIC_NODE": "graph://nodes/",
+            "DEV_AGGREGATE": "research://",
+            "CORE_BUDGET": "budget://",
+            "ROLE_SPECIALIZATION": "role://specialization/",
+            "VALIDATION": "evidence://validation/",
+            "HOLDOUT": "evidence://holdout/",
+            "SECRET": "role://private/",
+        }
+        if not self.source_ref.startswith(prefixes[self.classification]):
+            raise ValueError("role context source reference does not match its classification")
+        return self
+
+
+class RoleContextSourceV1(BaseModel):
+    """Trusted-Core projection of data eligible for role-context construction."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    campaign_goal: RoleContextValueV1
+    fields: dict[str, RoleContextValueV1] = Field(default_factory=dict)
+
+
+_SAFE_CLASSIFICATIONS = {
+    "campaign_goal": {"PUBLIC_SPEC"},
+    "node_id": {"PUBLIC_NODE"},
+    "node_phase": {"PUBLIC_NODE"},
+    "public_task": {"PUBLIC_SPEC", "PUBLIC_NODE"},
+    "evidence_refs": {"PUBLIC_NODE", "DEV_AGGREGATE"},
+    "dev_summary": {"DEV_AGGREGATE"},
+    "constraints": {"PUBLIC_SPEC", "PUBLIC_NODE"},
+    "budget_remaining": {"CORE_BUDGET"},
+    "specialization_notes": {"ROLE_SPECIALIZATION"},
+}
+
+
+def build_role_context(member: TeamMemberV1, source: RoleContextSourceV1) -> RoleContextV1:
+    """Rebuild a fresh role-only view from typed Core projections, excluding restricted classes."""
+    if not isinstance(source, RoleContextSourceV1):
+        raise RoleContractError("role context requires a typed Core provenance projection")
+    if source.campaign_goal.classification != "PUBLIC_SPEC":
+        raise RoleContractError("campaign goal context must come from the approved public spec")
     allowed = set(member.role.context_fields)
-    selected: dict[str, Any] = {"role_id": member.role.role_id}
-    for name in allowed:
-        if name in source:
-            selected[name] = source[name]
-    if "campaign_goal" not in selected:
-        raise RoleContractError("role context requires the campaign goal")
+    selected: dict[str, Any] = {
+        "role_id": member.role.role_id,
+        "campaign_goal": source.campaign_goal.value,
+    }
+    for name in allowed - {"campaign_goal"}:
+        datum = source.fields.get(name)
+        if datum is None or datum.classification not in _SAFE_CLASSIFICATIONS[name]:
+            continue
+        selected[name] = datum.value
     context = RoleContextV1.model_validate(selected)
-    return RoleContextV1.model_validate(context.model_dump(mode="python"))
+    return RoleContextV1.model_validate(context.model_dump(mode="python", exclude_unset=True))
+
+
+@dataclass(frozen=True, slots=True)
+class PinnedRoleExecutorV1:
+    """Trusted adapter binding created from a verified manifest member.
+
+    The dispatcher receives provider/model/version as immutable keywords and
+    cannot choose a fallback through worker request data.
+    """
+
+    manifest_digest: str
+    member: TeamMemberV1
+    _invoke: Callable[..., dict[str, Any]] = field(repr=False, compare=False)
+
+    @classmethod
+    def from_manifest(cls, manifest: TeamManifestV1, instance_id: str,
+                      invoke: Callable[..., dict[str, Any]]) -> "PinnedRoleExecutorV1":
+        return cls(manifest_digest=manifest.manifest_digest,
+                   member=manifest.member(instance_id), _invoke=invoke)
+
+    def dispatch(self, request: dict[str, Any], gateway: Any) -> dict[str, Any]:
+        binding = request.get("role_binding")
+        role = self.member.role
+        if (not isinstance(binding, dict)
+                or binding.get("team_manifest_digest") != self.manifest_digest
+                or binding.get("role_instance_id") != self.member.instance_id
+                or binding.get("role_id") != role.role_id
+                or binding.get("provider") != role.provider
+                or binding.get("model") != role.model
+                or binding.get("model_version") != role.model_version
+                or binding.get("adapter") != role.adapter
+                or binding.get("prompt_digest") != role.prompt_digest):
+            raise RoleContractError("job does not match this pinned role executor")
+        return self._invoke(
+            request, gateway,
+            adapter=role.adapter, provider=role.provider, model=role.model,
+            model_version=role.model_version, prompt_digest=role.prompt_digest,
+            max_model_tokens=role.tokens_per_instance // role.calls_per_instance,
+        )
 
 
 class TeamManifestAuthority:
@@ -489,6 +590,16 @@ class TeamManifestAuthority:
           PRIMARY KEY(campaign_id,manifest_digest,role_instance_id)
         )
         """)
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS team_role_token_allocations (
+          campaign_id TEXT NOT NULL,
+          manifest_digest TEXT NOT NULL,
+          role_instance_id TEXT NOT NULL,
+          role_id TEXT NOT NULL,
+          tokens_limit INTEGER NOT NULL CHECK(tokens_limit>0),
+          PRIMARY KEY(campaign_id,manifest_digest,role_instance_id)
+        )
+        """)
         self.conn.executescript("""
         CREATE TRIGGER IF NOT EXISTS team_manifest_pins_no_update
         BEFORE UPDATE ON team_manifest_pins BEGIN SELECT RAISE(ABORT,'team manifest pins are immutable'); END;
@@ -498,6 +609,10 @@ class TeamManifestAuthority:
         BEFORE UPDATE ON team_role_call_allocations BEGIN SELECT RAISE(ABORT,'team role allocations are immutable'); END;
         CREATE TRIGGER IF NOT EXISTS team_role_allocations_no_delete
         BEFORE DELETE ON team_role_call_allocations BEGIN SELECT RAISE(ABORT,'team role allocations are immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS team_role_token_allocations_no_update
+        BEFORE UPDATE ON team_role_token_allocations BEGIN SELECT RAISE(ABORT,'team role token allocations are immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS team_role_token_allocations_no_delete
+        BEFORE DELETE ON team_role_token_allocations BEGIN SELECT RAISE(ABORT,'team role token allocations are immutable'); END;
         """)
 
     def close(self) -> None:
@@ -519,6 +634,11 @@ class TeamManifestAuthority:
                     "INSERT INTO team_role_call_allocations(campaign_id,manifest_digest,role_instance_id,role_id,calls_limit) VALUES(?,?,?,?,?)",
                     [(manifest.campaign_id, manifest.manifest_digest, member.instance_id,
                       member.role.role_id, member.role.calls_per_instance) for member in manifest.members],
+                )
+                self.conn.executemany(
+                    "INSERT INTO team_role_token_allocations(campaign_id,manifest_digest,role_instance_id,role_id,tokens_limit) VALUES(?,?,?,?,?)",
+                    [(manifest.campaign_id, manifest.manifest_digest, member.instance_id,
+                      member.role.role_id, member.role.tokens_per_instance) for member in manifest.members],
                 )
             elif (row["spec_hash"], row["registry_digest"], row["manifest_digest"], row["manifest_json"]) != (
                     manifest.spec_hash, manifest.registry_digest, manifest.manifest_digest, encoded):
@@ -553,3 +673,13 @@ class TeamManifestAuthority:
                           for member in manifest.members)
         if actual != expected:
             raise RoleContractError("durable role call allocations do not match the pinned manifest")
+        token_rows = self.conn.execute(
+            "SELECT role_instance_id,role_id,tokens_limit FROM team_role_token_allocations WHERE campaign_id=? AND manifest_digest=? ORDER BY role_instance_id",
+            (manifest.campaign_id, manifest.manifest_digest),
+        ).fetchall()
+        actual_tokens = [(row["role_instance_id"], row["role_id"], int(row["tokens_limit"]))
+                         for row in token_rows]
+        expected_tokens = sorted((member.instance_id, member.role.role_id, member.role.tokens_per_instance)
+                                 for member in manifest.members)
+        if actual_tokens != expected_tokens:
+            raise RoleContractError("durable role token allocations do not match the pinned manifest")
