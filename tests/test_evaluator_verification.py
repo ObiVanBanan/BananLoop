@@ -18,6 +18,7 @@ from bananloop.evaluator_verification import (
     VerifierReceiptV1,
     make_verifier_receipt,
 )
+from bananloop.contracts import parse_campaign_spec_document
 from bananloop.trusted_evaluator import (
     EvaluatorBudgetProofV1,
     EvaluatorExecutionV1,
@@ -203,8 +204,38 @@ def test_durable_evaluator_run_receipt_requires_and_binds_frozen_approval():
         authority._append_proposal(proposal)
         authority._append_verified_receipt(approval)
         protocol = proposal.protocol
+        optimization_spec = parse_campaign_spec_document({
+            "schema_version": 2, "mode": "OPTIMIZATION",
+            "goal": "Run the approved evaluator against candidate snapshots",
+            "source_repo": "https://example.invalid/repo", "base_commit": "a" * 40,
+            "autonomy": {"mode": "SUPERVISED", "scope_digest": "b" * 64, "scope_version": 1},
+            "budget": {"max_experiments": 5, "max_attempts": 8, "max_agent_calls": 20,
+                       "max_evaluator_calls": 10, "deadline_seconds": 3600,
+                       "plateau_experiments": 3},
+            "role_registry_digest": "c" * 64,
+            "evaluation": {
+                "protocol_id": protocol.protocol_id, "version": protocol.version,
+                "content_sha256": protocol.content_digest(),
+                "approval_digest": approval.approval_digest,
+            },
+            "parent": None,
+        })
+        runtime_spec_hash = optimization_spec.approved_hash()
+        assert optimization_spec.evaluation.approval_digest == approval.approval_digest
+        assert runtime_spec_hash != proposal.spec_hash
+        assert authority.require_frozen_reference(
+            protocol.protocol_id, protocol.version, protocol.content_digest(),
+            approval.approval_digest, campaign_id=proposal.campaign_id,
+            spec_hash=proposal.spec_hash,
+        ) == approval
+        with pytest.raises(EvaluatorVerificationError, match="does not match"):
+            authority.require_frozen_reference(
+                protocol.protocol_id, protocol.version, protocol.content_digest(),
+                approval.approval_digest, campaign_id=proposal.campaign_id,
+                spec_hash=runtime_spec_hash,
+            )
         executions = tuple(EvaluatorExecutionV1(
-            campaign_id=proposal.campaign_id, spec_hash=proposal.spec_hash,
+            campaign_id=proposal.campaign_id, spec_hash=runtime_spec_hash,
             approval_digest=approval.approval_digest, protocol_id=protocol.protocol_id,
             protocol_version=protocol.version, protocol_digest=protocol.content_digest(),
             source_snapshot_id=protocol.source_snapshot_id,
@@ -216,7 +247,7 @@ def test_durable_evaluator_run_receipt_requires_and_binds_frozen_approval():
             output_artifact_digests=(),
         ) for _ in range(protocol.repeatability_runs))
         proofs = tuple(EvaluatorBudgetProofV1(
-            campaign_id=proposal.campaign_id, spec_hash=proposal.spec_hash,
+            campaign_id=proposal.campaign_id, spec_hash=runtime_spec_hash,
             job_id=f"evaluator-job-{index}", fence=1,
             receipt_digest=str(index) * 64, actual_amount=1,
             actual_usage={"evaluator_calls": 1},
@@ -225,13 +256,13 @@ def test_durable_evaluator_run_receipt_requires_and_binds_frozen_approval():
         assert authority.append_run_receipt(run_receipt) == run_receipt
         assert authority.require_run_receipt(
             run_receipt.receipt_digest, campaign_id=proposal.campaign_id,
-            spec_hash=proposal.spec_hash, approval_digest=approval.approval_digest,
+            spec_hash=runtime_spec_hash, approval_digest=approval.approval_digest,
             protocol_digest=protocol.content_digest(), candidate_snapshot_id="b" * 40,
         ) == run_receipt
         with pytest.raises(EvaluatorVerificationError, match="cross-bound"):
             authority.require_run_receipt(
                 run_receipt.receipt_digest, campaign_id=proposal.campaign_id,
-                spec_hash=proposal.spec_hash, approval_digest=approval.approval_digest,
+                spec_hash=runtime_spec_hash, approval_digest=approval.approval_digest,
                 protocol_digest=protocol.content_digest(), candidate_snapshot_id="c" * 40,
             )
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
@@ -241,7 +272,7 @@ def test_durable_evaluator_run_receipt_requires_and_binds_frozen_approval():
             item, candidate_snapshot_id=protocol.source_snapshot_id,
         ) for item in executions)
         baseline_proofs = tuple(EvaluatorBudgetProofV1(
-            campaign_id=proposal.campaign_id, spec_hash=proposal.spec_hash,
+            campaign_id=proposal.campaign_id, spec_hash=runtime_spec_hash,
             job_id=f"baseline-job-{index}", fence=1,
             receipt_digest=f"{index + 3:x}" * 64, actual_amount=1,
             actual_usage={"evaluator_calls": 1},
@@ -252,7 +283,7 @@ def test_durable_evaluator_run_receipt_requires_and_binds_frozen_approval():
         authority.append_run_receipt(baseline_receipt)
         from bananloop.evaluator_verification import _digest
         evidence_fields = {
-            "campaign_id": proposal.campaign_id, "spec_hash": proposal.spec_hash,
+            "campaign_id": proposal.campaign_id, "spec_hash": runtime_spec_hash,
             "source_snapshot_id": protocol.source_snapshot_id,
             "approval_digest": approval.approval_digest,
             "protocol_digest": protocol.content_digest(),
