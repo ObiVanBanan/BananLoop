@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -110,6 +111,27 @@ def test_v2_specs_are_frozen_and_approved_hash_is_canonical():
     assert len(spec.feature_flags.flag_hash()) == 64
     with pytest.raises(ValidationError):
         spec.goal = "mutated"
+
+
+def test_optional_capability_policy_preserves_legacy_v2_hash_and_binds_explicit_policy():
+    legacy = parse_campaign_spec_document(exploration_spec())
+    payload = legacy.model_dump(mode="json")
+    payload["autonomy"].pop("capability_policy", None)
+    old_hash = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                                        ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+    assert legacy.approved_hash() == old_hash
+
+    explicit = parse_campaign_spec_document(exploration_spec(autonomy={
+        "mode": "SUPERVISED", "scope_digest": SHA, "scope_version": 1,
+        "capability_policy": {"policy_version": 1, "tools": ["read_file"],
+                              "read_paths": ["src/**"], "backend": "ISOLATED"},
+    }))
+    assert explicit.approved_hash() != legacy.approved_hash()
+    with pytest.raises(ValidationError):
+        parse_campaign_spec_document(exploration_spec(autonomy={
+            "mode": "SUPERVISED", "scope_digest": SHA, "scope_version": 1,
+            "capability_policy": {"read_paths": ["../private/**"]},
+        }))
     with pytest.raises(ValidationError):
         spec.budget.max_attempts = 100
 

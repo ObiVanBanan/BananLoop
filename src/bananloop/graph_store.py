@@ -173,6 +173,12 @@ class GraphRepository:
             raise GraphStoreError("graph metadata is missing")
         return int(row["revision"])
 
+    def command_response(self, idempotency_key: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT response_json FROM commands WHERE idempotency_key=?", (idempotency_key,)
+        ).fetchone()
+        return json.loads(row[0]) if row is not None else None
+
     def mutate(self, request: MutateGraph | dict[str, Any] | str) -> dict[str, Any]:
         if not isinstance(request, MutateGraph):
             request = MutateGraph.from_document(request)

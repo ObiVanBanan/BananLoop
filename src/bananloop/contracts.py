@@ -5,7 +5,7 @@ import json
 import re
 from datetime import datetime, timezone
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator, model_validator
@@ -543,14 +543,70 @@ class CampaignSpec(BaseModel):
         return hashlib.sha256(payload.encode()).hexdigest()
 
 
+CapabilityToolV2 = Literal[
+    "read_file", "list_files", "write_file", "write_artifact", "run_command", "commit_candidate"
+]
+CapabilityPathV2 = Annotated[str, Field(min_length=1, max_length=500)]
+
+
+class CapabilityPolicyV2(BaseModel):
+    """Campaign-level ceiling for v2 worker tools; grants may only narrow it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    policy_version: Literal[1] = 1
+    tools: tuple[CapabilityToolV2, ...] = Field(default=(), max_length=64)
+    read_paths: tuple[CapabilityPathV2, ...] = Field(default=(), max_length=256)
+    write_paths: tuple[CapabilityPathV2, ...] = Field(default=(), max_length=256)
+    backend: Literal["LOCAL", "ISOLATED"] = "ISOLATED"
+    network_access: bool = False
+
+    @field_validator("read_paths", "write_paths")
+    @classmethod
+    def canonical_paths(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        forbidden = {".git", ".bananloop_eval", "holdout", "validation", "evaluator", "evaluation", "secret", "secrets", "credentials"}
+        normalized: list[str] = []
+        for value in values:
+            if (not value or "\\" in value or "\x00" in value
+                    or PurePosixPath(value).is_absolute() or PureWindowsPath(value).drive):
+                raise ValueError("capability paths must be safe POSIX-relative patterns")
+            path = PurePosixPath(value)
+            if not path.parts or path.as_posix() in {"", "."} or any(part in {".", ".."} for part in path.parts):
+                raise ValueError("capability path pattern cannot traverse its workspace")
+            lower = [part.lower() for part in path.parts]
+            if any(part in forbidden or part.startswith(".env") or
+                   re.search(r"(evaluator|evaluation|validation|holdout|secret|credential)", part)
+                   for part in lower):
+                raise ValueError("capability policy cannot grant protected paths")
+            normalized.append(path.as_posix())
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("capability path patterns must be unique")
+        return tuple(sorted(normalized))
+
+    @field_validator("tools")
+    @classmethod
+    def canonical_tools(cls, values: tuple[CapabilityToolV2, ...]) -> tuple[CapabilityToolV2, ...]:
+        if len(values) != len(set(values)):
+            raise ValueError("capability tools must be unique")
+        return tuple(sorted(values))
+
+    @model_validator(mode="after")
+    def isolated_commands_only(self) -> "CapabilityPolicyV2":
+        if "run_command" in self.tools and self.backend != "ISOLATED":
+            raise ValueError("run_command requires the ISOLATED backend")
+        return self
+
+
 class AutonomySpecV2(BaseModel):
-    """Immutable scope envelope for a v2 campaign; enforcement lands in RPDI-06/12."""
+    """Immutable scope envelope for a v2 campaign."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     mode: Literal["FULL_AUTO", "SUPERVISED"]
     scope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     scope_version: int = Field(ge=1)
+    # Omitted on older v2 specs to preserve their frozen approved hash.
+    capability_policy: CapabilityPolicyV2 | None = None
 
 
 class FrozenEvaluatorRefV2(BaseModel):
@@ -688,7 +744,10 @@ class _CampaignSpecV2Base(BaseModel):
 
     def approved_hash(self) -> str:
         """Return the v2 canonical digest without modifying v1 hash semantics."""
-        payload = json.dumps(self.model_dump(mode="json"), sort_keys=True,
+        data = self.model_dump(mode="json")
+        if data["autonomy"].get("capability_policy") is None:
+            data["autonomy"].pop("capability_policy", None)
+        payload = json.dumps(data, sort_keys=True,
                              separators=(",", ":"), ensure_ascii=False, allow_nan=False)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
