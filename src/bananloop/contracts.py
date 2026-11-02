@@ -610,13 +610,16 @@ class AutonomySpecV2(BaseModel):
 
 
 class FrozenEvaluatorRefV2(BaseModel):
-    """Shape-only reference to a future verifier-approved frozen evaluator."""
+    """Content-addressed evaluator reference with an optional verifier receipt pin."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     protocol_id: str = Field(min_length=1, max_length=200)
     version: int = Field(ge=1)
     content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # Omitted on earlier v2 specs; approved_hash strips the absent value so
+    # existing v2 campaign identities remain byte-for-byte stable.
+    approval_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class ParentCampaignRefV2(BaseModel):
@@ -747,6 +750,8 @@ class _CampaignSpecV2Base(BaseModel):
         data = self.model_dump(mode="json")
         if data["autonomy"].get("capability_policy") is None:
             data["autonomy"].pop("capability_policy", None)
+        if isinstance(data.get("evaluation"), dict) and data["evaluation"].get("approval_digest") is None:
+            data["evaluation"].pop("approval_digest", None)
         payload = json.dumps(data, sort_keys=True,
                              separators=(",", ":"), ensure_ascii=False, allow_nan=False)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()

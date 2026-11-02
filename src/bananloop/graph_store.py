@@ -205,7 +205,7 @@ def _has_verified_completion(payload_json: str) -> bool:
 class GraphRepository:
     """Transactional RPDI-02 graph repository over an already migrated v5 database."""
 
-    def __init__(self, connection: sqlite3.Connection):
+    def __init__(self, connection: sqlite3.Connection, *, campaign_id: str | None = None):
         self.conn = connection
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys=ON")
@@ -215,16 +215,62 @@ class GraphRepository:
         version = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
         if version != 5:
             raise GraphStoreError(f"graph repository requires schema version 5; found {version}")
+        self._campaign_id = None
+        if campaign_id is not None:
+            self.bind_campaign_id(campaign_id)
 
     @classmethod
-    def open(cls, path: str) -> "GraphRepository":
+    def open(cls, path: str, *, campaign_id: str | None = None) -> "GraphRepository":
         conn = sqlite3.connect(path, timeout=10, isolation_level=None)
         conn.execute("PRAGMA foreign_keys=ON")
         try:
-            return cls(conn)
+            return cls(conn, campaign_id=campaign_id)
         except Exception:
             conn.close()
             raise
+
+    def bind_campaign_id(self, campaign_id: str) -> None:
+        """Bind this graph DB to one immutable external campaign identity."""
+        if not isinstance(campaign_id, str) or not campaign_id or len(campaign_id) > 200:
+            raise GraphStoreError("campaign identity must be nonempty and bounded")
+        self.conn.execute("SAVEPOINT graph_campaign_identity_bind")
+        try:
+            self.conn.execute("CREATE TABLE IF NOT EXISTS graph_campaign_identity ("
+                              "id INTEGER PRIMARY KEY CHECK(id=1), campaign_id TEXT NOT NULL UNIQUE)")
+            self.conn.execute("CREATE TRIGGER IF NOT EXISTS graph_campaign_identity_no_update "
+                              "BEFORE UPDATE ON graph_campaign_identity BEGIN "
+                              "SELECT RAISE(ABORT,'campaign identity is immutable'); END")
+            self.conn.execute("CREATE TRIGGER IF NOT EXISTS graph_campaign_identity_no_delete "
+                              "BEFORE DELETE ON graph_campaign_identity BEGIN "
+                              "SELECT RAISE(ABORT,'campaign identity is immutable'); END")
+            self.conn.execute("INSERT OR IGNORE INTO graph_campaign_identity(id,campaign_id) VALUES(1,?)",
+                              (campaign_id,))
+            row = self.conn.execute("SELECT campaign_id FROM graph_campaign_identity WHERE id=1").fetchone()
+            if row is None or row[0] != campaign_id:
+                raise GraphStoreError("graph database is already bound to a different campaign")
+            self.conn.execute("RELEASE SAVEPOINT graph_campaign_identity_bind")
+        except Exception:
+            self.conn.execute("ROLLBACK TO SAVEPOINT graph_campaign_identity_bind")
+            self.conn.execute("RELEASE SAVEPOINT graph_campaign_identity_bind")
+            raise
+        self._campaign_id = campaign_id
+
+    @property
+    def campaign_id(self) -> str | None:
+        if self._campaign_id is not None:
+            return self._campaign_id
+        exists = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='graph_campaign_identity'"
+        ).fetchone()
+        if exists is None:
+            return None
+        row = self.conn.execute("SELECT campaign_id FROM graph_campaign_identity WHERE id=1").fetchone()
+        return str(row[0]) if row is not None else None
+
+    @property
+    def evaluator_protocols(self):
+        from .evaluator_verification import EvaluatorProtocolAuthority
+        return EvaluatorProtocolAuthority(self.conn)
 
     def close(self) -> None:
         self.conn.close()
@@ -559,6 +605,7 @@ class GraphRepository:
         if row["status"] != "COMPLETED":
             raise GraphStoreError("research phase can change only after the current phase is completed")
         payload = json.loads(row["payload_json"])
+        self._validate_verifier_phase_evidence(change, payload)
         payload["last_phase_transition"] = {
             "from_phase": change.from_phase, "to_phase": change.to_phase, "guard": change.guard,
             "actor": change.actor, "evidence_refs": list(change.evidence_refs),
@@ -572,6 +619,66 @@ class GraphRepository:
         ).rowcount
         if changed != 1:
             raise GraphStoreError("phase transition lost its node revision race")
+
+    def _validate_verifier_phase_evidence(self, change: TransitionNodePhase,
+                                         node_payload: dict[str, Any]) -> None:
+        from .contracts import OptimizationCampaignSpecV2
+        from .evaluator_verification import EvaluatorVerificationError
+
+        spec = self.campaign_spec()
+        approval_refs = [ref.removeprefix("verifier://approval/") for ref in change.evidence_refs
+                         if isinstance(ref, str) and ref.startswith("verifier://approval/")]
+        receipt_refs = [ref.removeprefix("verifier://receipt/") for ref in change.evidence_refs
+                        if isinstance(ref, str) and ref.startswith("verifier://receipt/")]
+        integration_refs = [ref.removeprefix("integration://receipt/") for ref in change.evidence_refs
+                            if isinstance(ref, str) and ref.startswith("integration://receipt/")]
+        try:
+            if change.guard == "PROTOCOL_FROZEN":
+                if not isinstance(spec, OptimizationCampaignSpecV2) or spec.evaluation.approval_digest is None:
+                    raise GraphStoreError("protocol freeze requires an Optimization spec pinned to verifier approval")
+                if approval_refs != [spec.evaluation.approval_digest]:
+                    raise GraphStoreError("protocol freeze evidence must cite the exact pinned verifier approval")
+                campaign_id = self.campaign_id
+                if campaign_id is None:
+                    raise GraphStoreError("protocol freeze requires an immutable graph campaign identity")
+                frozen = self.evaluator_protocols.require_frozen_reference(
+                    spec.evaluation.protocol_id, spec.evaluation.version,
+                    spec.evaluation.content_sha256, spec.evaluation.approval_digest,
+                    campaign_id=campaign_id,
+                )
+                if node_payload.get("source_snapshot_id") != frozen.source_snapshot_id:
+                    raise GraphStoreError("protocol approval source snapshot does not match the scheduled node")
+            elif change.guard == "PROTOCOL_REJECTED":
+                if len(receipt_refs) != 1:
+                    raise GraphStoreError("protocol rejection requires one durable verifier receipt reference")
+                campaign_id = self.campaign_id
+                if campaign_id is None:
+                    raise GraphStoreError("protocol rejection requires an immutable graph campaign identity")
+                rejected = self.evaluator_protocols.require_rejected_proposal(
+                    receipt_refs[0], spec_hash=spec.approved_hash(), campaign_id=campaign_id,
+                )
+                if node_payload.get("source_snapshot_id") != rejected.source_snapshot_id:
+                    raise GraphStoreError("protocol rejection source snapshot does not match the scheduled node")
+            elif change.guard in {"VERIFIED_RESULT", "REGRESSION_FAILED"}:
+                if not isinstance(spec, OptimizationCampaignSpecV2) or spec.evaluation.approval_digest is None:
+                    raise GraphStoreError("integration verification requires a pinned Optimization evaluator")
+                if len(integration_refs) != 1:
+                    raise GraphStoreError("integration phase transition requires one durable verifier receipt")
+                candidate_snapshot_id = node_payload.get("candidate_snapshot_id")
+                if not isinstance(candidate_snapshot_id, str):
+                    raise GraphStoreError("integration phase transition has no pinned candidate snapshot")
+                campaign_id = self.campaign_id
+                if campaign_id is None:
+                    raise GraphStoreError("integration verification requires an immutable graph campaign identity")
+                self.evaluator_protocols.require_integration_decision(
+                    integration_refs[0], decision="PASS" if change.guard == "VERIFIED_RESULT" else "FAIL",
+                    campaign_id=campaign_id, approval_digest=spec.evaluation.approval_digest,
+                    spec_hash=spec.approved_hash(), source_snapshot_id=node_payload.get("source_snapshot_id", ""),
+                    protocol_digest=spec.evaluation.content_sha256,
+                    candidate_snapshot_id=candidate_snapshot_id,
+                )
+        except EvaluatorVerificationError as exc:
+            raise GraphStoreError(str(exc)) from exc
 
     def _transition_node_status(self, change: TransitionNodeStatus) -> None:
         allowed = {

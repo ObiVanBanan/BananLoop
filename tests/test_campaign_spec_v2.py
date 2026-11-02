@@ -115,6 +115,21 @@ def test_v2_specs_are_frozen_and_approved_hash_is_canonical():
         spec.budget.max_attempts = 100
 
 
+def test_adding_optional_verifier_receipt_pin_preserves_old_hash_when_omitted():
+    legacy_shape = optimization_spec()
+    explicit_absent = optimization_spec(evaluation={
+        "protocol_id": "benchmark-quality", "version": 2, "content_sha256": SHA,
+        "approval_digest": None,
+    })
+    old_ref_hash = parse_campaign_spec_document(legacy_shape).approved_hash()
+    assert parse_campaign_spec_document(explicit_absent).approved_hash() == old_ref_hash
+    approved = optimization_spec(evaluation={
+        "protocol_id": "benchmark-quality", "version": 2, "content_sha256": SHA,
+        "approval_digest": "b" * 64,
+    })
+    assert parse_campaign_spec_document(approved).approved_hash() != old_ref_hash
+
+
 def test_optional_capability_policy_preserves_legacy_v2_hash_and_binds_explicit_policy():
     legacy = parse_campaign_spec_document(exploration_spec())
     payload = legacy.model_dump(mode="json")
