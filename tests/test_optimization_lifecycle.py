@@ -146,3 +146,27 @@ def test_candidate_evaluation_does_not_redrive_indeterminate_job():
     assert trusted.runs == []
     assert trusted.finalized == []
     assert graph.mutations == []
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [("source_snapshot_id", "f" * 40), ("tier", "validation")],
+)
+def test_candidate_ready_replay_rejects_stale_source_or_non_dev_receipt(
+    field, invalid_value,
+):
+    graph, _, trusted, coordinator = _setup()
+    setattr(graph._receipt, field, invalid_value)
+    graph.node["phase"] = "VERIFICATION"
+    graph.node["status"] = "PENDING"
+    graph.node["payload"]["last_phase_transition"] = {
+        "from_phase": "OPTIMIZATION", "to_phase": "VERIFICATION",
+        "guard": "CANDIDATE_READY", "actor": "CORE",
+        "evidence_refs": [f"evaluator://receipt/{graph._receipt.receipt_digest}"],
+    }
+
+    with pytest.raises(OptimizationLifecycleError, match="durable evaluator receipt"):
+        coordinator.evaluate_candidate(node_id="candidate-1")
+
+    assert trusted.enqueued == []
+    assert trusted.runs == []
+    assert graph.mutations == []
