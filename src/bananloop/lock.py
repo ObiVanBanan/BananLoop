@@ -19,6 +19,11 @@ class CampaignLock:
         self.path = path
         self._file: BinaryIO | None = None
 
+    @property
+    def acquired(self) -> bool:
+        """Whether this lock instance currently owns the OS lock."""
+        return self._file is not None
+
     def acquire(self) -> "CampaignLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
