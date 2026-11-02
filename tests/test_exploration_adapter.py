@@ -49,7 +49,7 @@ def _graph(path, spec):
     return graph
 
 
-def _role_registry():
+def _role_registry(context_fields=("campaign_goal", "node_id", "node_phase", "public_task", "evidence_refs", "dev_summary")):
     return RoleRegistryV1(
         registry_id="test-exploration",
         version=1,
@@ -61,7 +61,7 @@ def _role_registry():
                 "tools": ["read_file", "list_files", "write_artifact", "commit_candidate"],
                 "read_paths": ["README.md"], "write_paths": ["**"], "backend": "LOCAL",
             },
-            context_fields=("campaign_goal", "node_id", "node_phase", "public_task", "evidence_refs", "dev_summary"),
+            context_fields=context_fields,
             min_instances=1, max_instances=1, calls_per_instance=2, tokens_per_instance=200,
         ),),
     )
@@ -225,6 +225,65 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
         graph.close()
 
 
+@pytest.mark.parametrize("research_field", ["evidence_refs", "dev_summary"])
+def test_research_projection_respects_independent_role_context_allowlists(tmp_path, research_field):
+    source = tmp_path / "source"
+    _source_repo(source)
+    fields = ("campaign_goal", "node_id", "node_phase", "public_task", research_field)
+    roles = _role_registry(context_fields=fields)
+    spec = ExplorationCampaignSpecV2.model_validate({
+        "schema_version": 2, "mode": "EXPLORATION", "goal": "map evidence",
+        "source_repo": str(source), "base_commit": "HEAD",
+        "autonomy": {"mode": "SUPERVISED", "scope_digest": "a" * 64, "scope_version": 1,
+                      "capability_policy": {"policy_version": 1,
+                                            "tools": ["read_file", "list_files", "write_artifact", "commit_candidate"],
+                                            "read_paths": ["README.md"], "write_paths": ["**"],
+                                            "backend": "LOCAL"}},
+        "budget": {}, "role_registry_digest": roles.digest(), "evaluation": None,
+    })
+    graph = _graph(tmp_path / "campaign.sqlite3", spec)
+    registry_path = tmp_path / "registry.sqlite3"
+    budget = BudgetLedger(registry_path)
+    budget.create_root("campaign-test", {"agent_calls": 2})
+    budget.close()
+    queue = DurableWorkerQueue(registry_path)
+    adapter = EvidenceOnlyAttemptAdapter(graph=graph, queue=queue, campaign_id="campaign-test",
+                                         state_root=tmp_path, role_registry=roles)
+    try:
+        first = adapter.enqueue(node_id="explore", visible_paths=["README.md"])
+
+        def produce_evidence(_request, gateway, **_pin):
+            content = b"research evidence"
+            digest = hashlib.sha256(content).hexdigest()
+            gateway.write_artifact("evidence.txt", content)
+            return {"node_id": "explore", "evidence_refs": ["observation:1"],
+                    "artifacts": [{"path": "evidence.txt", "sha256": digest}],
+                    "limitations": [], "next_experiment": "replicate",
+                    "research_findings": [{"claim_key": "effect:feature", "statement": "Observed effect.",
+                        "stance": "SUPPORTS", "kind": "CAUSAL_INFERENCE", "confidence": 0.4,
+                        "evidence_refs": [f"artifact://sha256/{digest}"]}]}
+
+        _, _, executor = _pinned_executor(queue, graph, "campaign-test", roles, first, produce_evidence)
+        adapter.run_one(job_id=first["job_id"], worker_id="worker-test", executor=executor)
+        adapter.publish_completed(first["job_id"])
+        graph.mutate({"command_id": "add-second", "idempotency_key": "add-second",
+                      "expected_graph_revision": graph.graph_revision(),
+                      "changes": [{"type": "AddNode", "node_id": "explore-second", "phase": "EXPLORATION"}]})
+
+        second = adapter.enqueue(node_id="explore-second", visible_paths=["README.md"])
+        context = second["request"]["role_context"]
+        assert research_field in context
+        other = "dev_summary" if research_field == "evidence_refs" else "evidence_refs"
+        assert other not in context
+        if research_field == "dev_summary":
+            assert "effect:feature" in context[research_field]
+        else:
+            assert context[research_field]
+    finally:
+        queue.close()
+        graph.close()
+
+
 def test_revocation_blocks_exploration_graph_commit(tmp_path):
     source = tmp_path / "source"
     _source_repo(source)
@@ -285,6 +344,21 @@ def test_evidence_only_output_rejects_optimization_scores():
             "claim_key": "hidden", "statement": "must not enter the ledger",
             "stance": "SUPPORTS", "kind": "OBSERVATION", "evidence_refs": ["artifact://sha256/x"],
             "classification": "HOLDOUT",
+        })
+
+
+@pytest.mark.parametrize("path", [
+    "src/validation/../features.py", ".git/config", "src/my_holdout_notes.py",
+    ".env.local", "C:/private/token.py",
+])
+def test_research_finding_rejects_protected_or_noncanonical_intervention_paths(path):
+    with pytest.raises(ValidationError):
+        ResearchFindingV1.model_validate({
+            "claim_key": "safe:path", "statement": "bounded source change",
+            "stance": "SUPPORTS", "kind": "OBSERVATION",
+            "evidence_refs": ["artifact://sha256/" + "a" * 64],
+            "intervention_type": "feature_representation", "algorithmic_layer": "features",
+            "affected_paths": [path],
         })
 
 
