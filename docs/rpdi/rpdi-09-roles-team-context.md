@@ -31,11 +31,11 @@ validation/holdout and another role's private notes, are discarded. Each worker
 job must persist `TeamManifestV1.job_binding(...)` in its immutable queue
 request, including the manifest, registry, spec and role-context digests. The
 durable worker queue remains the final campaign-call reservation and fencing
-authority. Role-instance call allocations are reserved transactionally at
-queue insertion and identical retries reuse the same reservation. Model-token
-allocations are immutable ceilings checked against the approved campaign cap
-when the team is built; provider-receipt token settlement remains owned by the
-RPDI-03/04 runtime path.
+authority. Role-instance call and per-call token ceilings are reserved
+transactionally at queue insertion; identical retries reuse the same
+reservation. The trusted executor receives the pinned per-call token ceiling.
+Provider-receipt token settlement and ambiguous-call reconciliation remain
+owned by the RPDI-03/04 runtime path.
 
 ## Legacy compatibility
 
