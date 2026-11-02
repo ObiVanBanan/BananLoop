@@ -14,6 +14,7 @@ from bananloop.contracts import ExplorationCampaignSpecV2
 from bananloop.exploration import EvidenceAdapterError, EvidenceOnlyAttemptAdapter, EvidenceOnlyOutputV2
 from bananloop.graph_store import GraphRepository
 from bananloop.migrations import create_v5_graph_schema
+from bananloop.roles import RoleDefinitionV1, RoleRegistryV1
 from bananloop.worker_queue import DurableWorkerQueue
 
 
@@ -44,9 +45,28 @@ def _graph(path, spec):
     return graph
 
 
+def _role_registry():
+    return RoleRegistryV1(
+        registry_id="test-exploration",
+        version=1,
+        roles=(RoleDefinitionV1(
+            role_id="researcher", adapter="codex", provider="openai", model="gpt-6-luna",
+            model_version="test-pin-v1", prompt_digest="c" * 64,
+            capability_policy={
+                "policy_version": 1,
+                "tools": ["read_file", "list_files", "write_artifact", "commit_candidate"],
+                "read_paths": ["README.md"], "write_paths": ["**"], "backend": "LOCAL",
+            },
+            context_fields=("campaign_goal", "node_id", "node_phase", "public_task", "evidence_refs"),
+            min_instances=1, max_instances=1, calls_per_instance=1, tokens_per_instance=100,
+        ),),
+    )
+
+
 def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
     source = tmp_path / "source"
     base = _source_repo(source)
+    roles = _role_registry()
     spec = ExplorationCampaignSpecV2.model_validate({
         "schema_version": 2, "mode": "EXPLORATION", "goal": "map evidence",
         "source_repo": str(source), "base_commit": "HEAD",
@@ -55,7 +75,7 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
                                             "tools": ["read_file", "list_files", "write_artifact", "commit_candidate"],
                                             "read_paths": ["README.md"], "write_paths": ["**"],
                                             "backend": "LOCAL"}},
-        "budget": {}, "role_registry_digest": "b" * 64, "evaluation": None,
+        "budget": {}, "role_registry_digest": roles.digest(), "evaluation": None,
     })
     graph = _graph(tmp_path / "campaign.sqlite3", spec)
     registry_path = tmp_path / "registry.sqlite3"
@@ -63,9 +83,19 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
     ledger.create_root("campaign-test", {"agent_calls": 2})
     ledger.close()
     queue = DurableWorkerQueue(registry_path)
-    adapter = EvidenceOnlyAttemptAdapter(graph=graph, queue=queue, campaign_id="campaign-test", state_root=tmp_path)
+    adapter = EvidenceOnlyAttemptAdapter(graph=graph, queue=queue, campaign_id="campaign-test",
+                                         state_root=tmp_path, role_registry=roles)
+    executor_binding = {"adapter": "codex", "provider": "openai", "model": "gpt-6-luna",
+                        "model_version": "test-pin-v1"}
     try:
         job = adapter.enqueue(node_id="explore", visible_paths=["README.md"])
+        assert job["request"]["team_manifest_digest"]
+        assert job["request"]["role_binding"]["role_id"] == "researcher"
+        assert job["request"]["role_context"]["campaign_goal"] == "map evidence"
+        with pytest.raises(EvidenceAdapterError, match="pinned role"):
+            adapter.run_one(job_id=job["job_id"], worker_id="worker-test", execute=lambda *_: {},
+                            executor_binding={**executor_binding, "model": "fallback-model"})
+        assert queue.get_job(job["job_id"])["state"] == "READY"
         assert job["request"]["approved_base_ref"] == "HEAD"
         assert job["request"]["base_commit"] == base
         assert graph.conn.execute("SELECT status FROM research_nodes WHERE node_id='explore'").fetchone()[0] == "READY"
@@ -85,7 +115,8 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
                     "artifacts": [{"path": "observation.txt", "sha256": hashlib.sha256(content).hexdigest()}],
                     "limitations": ["single observation"], "next_experiment": "repeat with control"}
 
-        adapter.run_one(job_id=job["job_id"], worker_id="worker-test", execute=execute)
+        adapter.run_one(job_id=job["job_id"], worker_id="worker-test", execute=execute,
+                        executor_binding=executor_binding)
         artifact = tmp_path / "rpdi05" / "artifacts" / f"{job['job_id']}-f1" / "observation.txt"
         artifact.write_bytes(b"changed after completion")
         with pytest.raises(EvidenceAdapterError, match="changed after"):
@@ -103,6 +134,7 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
 def test_revocation_blocks_exploration_graph_commit(tmp_path):
     source = tmp_path / "source"
     _source_repo(source)
+    roles = _role_registry()
     spec = ExplorationCampaignSpecV2.model_validate({
         "schema_version": 2, "mode": "EXPLORATION", "goal": "map evidence",
         "source_repo": str(source), "base_commit": "HEAD",
@@ -111,7 +143,7 @@ def test_revocation_blocks_exploration_graph_commit(tmp_path):
                                             "tools": ["read_file", "write_artifact", "commit_candidate"],
                                             "read_paths": ["README.md"], "write_paths": ["**"],
                                             "backend": "LOCAL"}},
-        "budget": {}, "role_registry_digest": "b" * 64, "evaluation": None,
+        "budget": {}, "role_registry_digest": roles.digest(), "evaluation": None,
     })
     graph = _graph(tmp_path / "campaign.sqlite3", spec)
     registry_path = tmp_path / "registry.sqlite3"
@@ -119,7 +151,10 @@ def test_revocation_blocks_exploration_graph_commit(tmp_path):
     ledger.create_root("campaign-test", {"agent_calls": 2})
     ledger.close()
     queue = DurableWorkerQueue(registry_path)
-    adapter = EvidenceOnlyAttemptAdapter(graph=graph, queue=queue, campaign_id="campaign-test", state_root=tmp_path)
+    adapter = EvidenceOnlyAttemptAdapter(graph=graph, queue=queue, campaign_id="campaign-test",
+                                         state_root=tmp_path, role_registry=roles)
+    executor_binding = {"adapter": "codex", "provider": "openai", "model": "gpt-6-luna",
+                        "model_version": "test-pin-v1"}
     try:
         job = adapter.enqueue(node_id="explore", visible_paths=["README.md"])
 
@@ -129,7 +164,8 @@ def test_revocation_blocks_exploration_graph_commit(tmp_path):
             return {"node_id": "explore", "artifacts": [{"path": "evidence.txt", "sha256": hashlib.sha256(content).hexdigest()}],
                     "next_experiment": "repeat"}
 
-        adapter.run_one(job_id=job["job_id"], worker_id="worker-test", execute=execute)
+        adapter.run_one(job_id=job["job_id"], worker_id="worker-test", execute=execute,
+                        executor_binding=executor_binding)
         grant = job["request"]["capability_grant"]
         authority = CapabilityAuthority(registry_path)
         try:
