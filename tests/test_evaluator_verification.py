@@ -1064,7 +1064,9 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
         ),
         expected_registry_digest=registry.digest(),
     )
-    TeamManifestAuthority(db_path).pin(manifest)
+    pinned_manifest_authority = TeamManifestAuthority(db_path)
+    pinned_manifest_authority.pin(manifest)
+    pinned_manifest_authority.close()
     researcher = next(member for member in manifest.members
                       if member.role.role_id == "researcher")
     verifier = next(member for member in manifest.members
