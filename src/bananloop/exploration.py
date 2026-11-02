@@ -29,6 +29,7 @@ from .roles import (
     RoleContractError, RoleContextV1, RoleRegistryV1, TeamFactoryV1,
     TeamManifestAuthority, TeamRequestV1, build_role_context,
 )
+from .research_ledger import ResearchFindingV1, ResearchLedger, ResearchLedgerError
 from .worker_queue import DurableWorkerQueue, WorkerQueueError
 from .scheduler import HybridScheduler
 
@@ -51,6 +52,7 @@ class EvidenceOnlyOutputV2(BaseModel):
     artifacts: tuple[ArtifactDigestV2, ...] = ()
     limitations: tuple[str, ...] = ()
     next_experiment: str = Field(min_length=1, max_length=4000)
+    research_findings: tuple[ResearchFindingV1, ...] = Field(default=(), max_length=64)
 
     @field_validator("evidence_refs", "limitations")
     @classmethod
@@ -64,6 +66,9 @@ class EvidenceOnlyOutputV2(BaseModel):
         paths = [item.path for item in self.artifacts]
         if len(paths) != len(set(paths)):
             raise ValueError("artifact paths must be unique")
+        claims = [item.claim_key for item in self.research_findings]
+        if len(claims) != len(set(claims)):
+            raise ValueError("research finding claim keys must be unique within one result")
         return self
 
 
@@ -197,10 +202,7 @@ class EvidenceOnlyAttemptAdapter:
         if researcher is None:
             raise EvidenceAdapterError("pinned team manifest has no researcher instance")
         try:
-            role_context_source = RoleContextSourceV1(
-                campaign_goal={"value": spec.goal, "classification": "PUBLIC_SPEC",
-                               "source_ref": "campaign://spec/goal"},
-                fields={
+            context_fields = {
                     "node_id": {"value": node_id, "classification": "PUBLIC_NODE",
                                 "source_ref": f"graph://nodes/{node_id}"},
                     "node_phase": {"value": target_node["phase"], "classification": "PUBLIC_NODE",
@@ -212,9 +214,51 @@ class EvidenceOnlyAttemptAdapter:
                     "budget_remaining": {"value": {"agent_calls": spec.budget.max_agent_calls},
                                          "classification": "CORE_BUDGET",
                                          "source_ref": f"budget://campaign/{self.campaign_id}"},
-                },
+            }
+            role_context_source = RoleContextSourceV1(
+                campaign_goal={"value": spec.goal, "classification": "PUBLIC_SPEC",
+                               "source_ref": "campaign://spec/goal"},
+                fields=context_fields,
             )
             role_context = build_role_context(researcher, role_context_source)
+            protocol_digest = ResearchLedger.protocol_digest_for_binding(
+                team_manifest.job_binding(
+                    researcher.instance_id, action_id=f"exploration:{node_id}",
+                    context_digest=role_context.digest(),
+                )
+            )
+            projection = ResearchLedger(self.graph.conn).project(
+                campaign_ids=(self.campaign_id,), source_snapshot_id=resolved_commit,
+                protocol_digest=protocol_digest,
+            )
+            if projection.evidence:
+                source_ref = f"research://ledger/{projection.projection_digest}"
+                if "evidence_refs" in researcher.role.context_fields:
+                    context_fields["evidence_refs"] = {
+                        "value": tuple(item.evidence_id for item in projection.evidence),
+                        "classification": "DEV_AGGREGATE", "source_ref": source_ref,
+                    }
+                if "dev_summary" in researcher.role.context_fields:
+                    summary_lines = [
+                        f"{item.claim_key} [{item.status}]: " + " | ".join(item.statements)
+                        for item in projection.causal_memory
+                    ]
+                    if projection.contradictions:
+                        summary_lines.append(
+                            f"{len(projection.contradictions)} conflicting public DEV finding(s) are retained separately."
+                        )
+                    context_fields["dev_summary"] = {
+                        "value": "\n".join(summary_lines)[:12000],
+                        "classification": "DEV_AGGREGATE", "source_ref": source_ref,
+                    }
+                    context_fields["evidence_refs"] = {
+                        "value": tuple(item.evidence_id for item in projection.evidence),
+                        "classification": "DEV_AGGREGATE", "source_ref": source_ref,
+                    }
+                    role_context = build_role_context(
+                        researcher, RoleContextSourceV1(campaign_goal=role_context_source.campaign_goal,
+                                                        fields=context_fields),
+                    )
         except Exception as exc:
             raise EvidenceAdapterError(f"cannot build isolated researcher context: {type(exc).__name__}") from exc
         role_binding = team_manifest.job_binding(
@@ -414,7 +458,10 @@ class EvidenceOnlyAttemptAdapter:
         if job["state"] != "COMPLETED" or durable["result"] is None:
             raise EvidenceAdapterError("job has no durable evidence result")
         result = EvidenceOnlyOutputV2.model_validate(durable["result"])
-        encoded = _canonical(result.model_dump(mode="json"))
+        # Hash the exact durable worker payload. Re-serializing through the
+        # current model would add fields introduced after an older job was
+        # committed and break crash-safe replay across schema additions.
+        encoded = _canonical(durable["result"])
         if _sha(encoded.encode()) != durable["output_digest"]:
             raise EvidenceAdapterError("durable worker output digest failed verification")
         request = job["request"]
@@ -507,7 +554,9 @@ class EvidenceOnlyAttemptAdapter:
         try:
             completion = ExplorationCompletionV2.model_validate(payload)
             if self.graph.command_response(payload["idempotency_key"]) is not None:
-                return self.graph.complete_exploration(completion)
+                replay = self.graph.complete_exploration(completion)
+                ResearchLedger(self.graph.conn).ingest_completed_job(self.graph, self.queue, job_id)
+                return replay
             grant = CapabilityGrantV1.model_validate(request["capability_grant"])
             authority = CapabilityAuthority(self.queue.path)
             try:
@@ -516,9 +565,14 @@ class EvidenceOnlyAttemptAdapter:
                 gateway = ToolGateway(queue=self.queue, authority=authority, grant=grant,
                                       fence=int(durable["fence"]), workspace=workspace,
                                       artifacts=artifact_directory, backend=backend)
-                return gateway.commit_evidence(lambda: self.graph.complete_exploration(completion))
+                def commit_completion_and_ledger():
+                    response = self.graph.complete_exploration(completion)
+                    ResearchLedger(self.graph.conn).ingest_completed_job(self.graph, self.queue, job_id)
+                    return response
+
+                return gateway.commit_evidence(commit_completion_and_ledger)
             finally:
                 authority.close()
-        except (GraphStoreError, CapabilityDenied, SandboxUnavailable) as exc:
+        except (GraphStoreError, CapabilityDenied, SandboxUnavailable, ResearchLedgerError) as exc:
             raise EvidenceAdapterError(str(exc)) from exc
 
