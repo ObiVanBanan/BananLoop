@@ -3,11 +3,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shlex
 import sys
 import uuid
 from pathlib import Path
 
+from .application import CampaignApplication
 from .bootstrap import BootstrapError, bootstrap_campaign
 from .agent_profiles import AgentProfileError, load_agent_profiles
 from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, NonRegressionSpec, PairedComparison, PivotDecisionCommand, RuntimePaths
@@ -16,8 +18,7 @@ from .engine import ControlledInterruption, Engine, EngineError
 from .export import export_champion
 from .integrity import EvaluationIntegrityError, discover_evaluation_assets, evaluation_fingerprint
 from .lock import CampaignLock, CampaignLockError
-from .operator_control import OperatorCommand, reconcile_control, submit_control, submit_pivot_decision
-from .operator_snapshot import read_events_after, read_snapshot
+from .operator_control import reconcile_control
 from .report import build_report, render_markdown
 from .registry import CampaignRegistry, RegistryError, assert_safe_campaign_db
 from .store import CampaignStore, StoreError, campaign_db_initialized
@@ -464,10 +465,9 @@ def cmd_run(args: argparse.Namespace, resume: bool = False) -> int:
             try:
                 control_request_id = getattr(args, "request_id", None) if resume else None
                 if control_request_id:
-                    paths = _selected_paths(args)
-                    receipt = submit_control(store, _operator_campaign_id(args, paths), OperatorCommand(
-                        _operator_campaign_id(args, paths), control_request_id, "resume",
-                    ))
+                    app = CampaignApplication(args.repo, campaign_id=getattr(args, "campaign_id", None),
+                                              state_dir=getattr(args, "state_dir", None))
+                    receipt = app.control("resume", control_request_id, store=store)
                     if receipt["status"] == "COMPLETED":
                         print(json.dumps({"campaign_id": _operator_campaign_id(args, paths), "status": store.campaign()["status"], "request_id": control_request_id, "already_completed": True}))
                         return 0
@@ -507,76 +507,66 @@ def cmd_run(args: argparse.Namespace, resume: bool = False) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    repo = Path(args.repo).resolve()
-    paths = _selected_paths(args, create=False)
-    if not campaign_db_initialized(paths.db):
-        payload = {
-            "status": "RESERVED",
-            "stage": "BOOTSTRAP",
-            "campaign_id": _display_campaign_id(args, paths),
-            "state": str(paths.root),
-            "initialized": False,
-            "hint": "rerun the same bananloop goal to continue bootstrap",
-        }
-        print(
-            json.dumps(payload, indent=2)
-            if args.json
-            else "\n".join(f"{k}: {v}" for k, v in payload.items())
-        )
-        return 0
-    store = CampaignStore(paths.db)
-    try:
-        c = store.campaign()
-        data = {k: c[k] for k in ("status", "stop_reason", "stage", "baseline_snapshot", "champion_snapshot", "experiment_count", "attempt_count", "agent_calls", "evaluator_calls", "non_improve_streak", "created_at", "updated_at")}
-        data["campaign_id"] = _display_campaign_id(args, paths)
-        data["initialized"] = True
-        data["resources"] = store.resource_summary()
-        data["resources"]["model_tokens"] = store.model_token_summary()
-        data["evaluations"] = _status_evaluation_summary(build_report(store)["measurements"])
-        research = store.research_state()
-        if research:
-            data["planning_mode"] = research.get("planning_mode")
-        print(json.dumps(data, indent=2) if args.json else "\n".join(f"{k}: {v}" for k, v in data.items()))
-    finally:
-        store.close()
+    data = CampaignApplication(
+        args.repo, campaign_id=getattr(args, "campaign_id", None),
+        state_dir=getattr(args, "state_dir", None),
+    ).status()
+    print(json.dumps(data, indent=2) if args.json else "\n".join(f"{k}: {v}" for k, v in data.items()))
     return 0
 
 
 def cmd_operator_snapshot(args: argparse.Namespace) -> int:
-    paths = _selected_paths(args, create=False)
-    if not campaign_db_initialized(paths.db):
-        raise StoreError("campaign is not initialized")
-    store = CampaignStore(paths.db)
-    try:
-        print(json.dumps(read_snapshot(store, _operator_campaign_id(args, paths)), sort_keys=True))
-    finally:
-        store.close()
+    app = CampaignApplication(args.repo, campaign_id=getattr(args, "campaign_id", None),
+                              state_dir=getattr(args, "state_dir", None))
+    print(json.dumps(app.snapshot(), sort_keys=True))
     return 0
 
 
 def cmd_operator_events(args: argparse.Namespace) -> int:
-    paths = _selected_paths(args, create=False)
-    if not campaign_db_initialized(paths.db):
-        raise StoreError("campaign is not initialized")
-    store = CampaignStore(paths.db)
-    try:
-        print(json.dumps(read_events_after(store, args.after, limit=args.limit), sort_keys=True))
-    finally:
-        store.close()
+    app = CampaignApplication(args.repo, campaign_id=getattr(args, "campaign_id", None),
+                              state_dir=getattr(args, "state_dir", None))
+    print(json.dumps(app.events(args.after, args.limit), sort_keys=True))
     return 0
+
+
+def cmd_graph_snapshot(args: argparse.Namespace) -> int:
+    app = CampaignApplication(args.repo, campaign_id=getattr(args, "campaign_id", None))
+    print(json.dumps(app.graph_snapshot(), sort_keys=True))
+    return 0
+
+
+def cmd_graph_mutate(args: argparse.Namespace) -> int:
+    document = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    app = CampaignApplication(args.repo, campaign_id=getattr(args, "campaign_id", None))
+    receipt = app.mutate_graph(document, args.idempotency_key)
+    print(json.dumps(receipt, sort_keys=True))
+    return 0
+
+
+def _status_evaluation_summary(measurements: list[dict]) -> list[dict]:
+    """Keep status output aggregate-only; full reports have a separate command."""
+    return [{
+        "experiment_id": item.get("experiment_id"),
+        "tier": item.get("tier"),
+        "metrics": {
+            name: metric.get("value")
+            for name, metric in ((item.get("result") or {}).get("metrics") or {}).items()
+        },
+        "checks": {
+            name: check.get("passed")
+            for name, check in ((item.get("result") or {}).get("checks") or {}).items()
+        },
+    } for item in measurements]
 
 
 def cmd_pivot_decision(args: argparse.Namespace) -> int:
     """Record one explicit local pivot decision; this never resumes or runs a campaign."""
     if args.decision == "reject" and not args.on_reject:
         raise StoreError("pivot rejection requires --on-reject continue_old_plan, change_conditions, or end_campaign")
-    paths = _selected_paths(args, create=False)
-    if not campaign_db_initialized(paths.db):
-        raise StoreError("campaign is not initialized")
-    store = CampaignStore(paths.db)
-    try:
-        campaign_id = _operator_campaign_id(args, paths)
-        receipt = submit_pivot_decision(store, campaign_id, PivotDecisionCommand(
+    app = CampaignApplication(args.repo, campaign_id=getattr(args, "campaign_id", None),
+                              state_dir=getattr(args, "state_dir", None))
+    with app.open_store() as (store, campaign_id):
+        receipt = app.pivot_decision(PivotDecisionCommand(
             campaign_id=campaign_id,
             request_id=args.request_id,
             proposal_id=args.proposal_id,
@@ -584,40 +574,8 @@ def cmd_pivot_decision(args: argparse.Namespace) -> int:
             decision=args.decision,
             rejection_action=args.on_reject,
         ))
-        print(json.dumps({
-            "campaign_id": campaign_id,
-            "request_id": receipt["request_id"],
-            "proposal_id": receipt["proposal_id"],
-            "digest": receipt["digest"],
-            "decision": receipt["decision"],
-            "status": receipt["status"],
-            "result": json.loads(receipt["result_json"]),
-            "campaign_status": store.campaign()["status"],
-            "automatic_execution": False,
-        }, sort_keys=True))
-    finally:
-        store.close()
+        print(json.dumps(CampaignApplication.pivot_receipt(campaign_id, receipt, store), sort_keys=True))
     return 0
-
-
-def _status_evaluation_summary(measurements: list[dict]) -> list[dict]:
-    """Keep status output aggregate-only; full reports have a separate command."""
-    summary = []
-    for item in measurements:
-        result = item.get("result") or {}
-        summary.append({
-            "experiment_id": item.get("experiment_id"),
-            "tier": item.get("tier"),
-            "metrics": {
-                name: metric.get("value")
-                for name, metric in (result.get("metrics") or {}).items()
-            },
-            "checks": {
-                name: check.get("passed")
-                for name, check in (result.get("checks") or {}).items()
-            },
-        })
-    return summary
 
 
 def cmd_stop(args: argparse.Namespace) -> int:
@@ -630,9 +588,8 @@ def cmd_stop(args: argparse.Namespace) -> int:
             print("Campaign is already terminal.")
             return 0
         request_id = getattr(args, "request_id", None) or uuid.uuid4().hex
-        submit_control(store, _operator_campaign_id(args, paths), OperatorCommand(
-            _operator_campaign_id(args, paths), request_id, "end",
-        ))
+        CampaignApplication(args.repo, campaign_id=getattr(args, "campaign_id", None),
+                            state_dir=getattr(args, "state_dir", None)).control("end", request_id, store=store)
         try:
             with CampaignLock(paths.root / "campaign.lock"):
                 # No live owner: reconcile a stop without launching an agent.
@@ -661,9 +618,8 @@ def cmd_pause(args: argparse.Namespace) -> int:
         if campaign["status"] in {"STOPPED", "GOAL_MET"}:
             raise StoreError("terminal campaign cannot be paused")
         request_id = getattr(args, "request_id", None) or uuid.uuid4().hex
-        submit_control(store, _operator_campaign_id(args, paths), OperatorCommand(
-            _operator_campaign_id(args, paths), request_id, "pause",
-        ))
+        CampaignApplication(args.repo, campaign_id=getattr(args, "campaign_id", None),
+                            state_dir=getattr(args, "state_dir", None)).control("pause", request_id, store=store)
         try:
             with CampaignLock(paths.root / "campaign.lock"):
                 spec = store.spec()
@@ -712,6 +668,22 @@ def cmd_export(args: argparse.Namespace) -> int:
     except CampaignLockError as exc:
         raise StoreError("stop or pause the campaign before exporting its champion") from exc
     print(f"Champion patch, manifest and operator reports exported to {output}")
+    return 0
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    from .api import create_server
+
+    token = args.token or os.environ.get("BANANLOOP_API_TOKEN")
+    server = create_server(args.repo, args.host, args.port, token=token)
+    print(f"BananLoop API listening on {server.server_address[0]}:{server.server_address[1]}", flush=True)
+    try:
+        server.serve_forever(poll_interval=0.2)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.shutdown()
+        server.server_close()
     return 0
 
 
@@ -1033,6 +1005,26 @@ def parser() -> argparse.ArgumentParser:
     list_cmd.add_argument("--repo", default=".")
     list_cmd.add_argument("--json", action="store_true")
     list_cmd.set_defaults(func=cmd_campaigns_list)
+
+    graph = sub.add_parser("graph", help="inspect or mutate a v2 research graph")
+    graph_sub = graph.add_subparsers(dest="graph_command", required=True)
+    graph_snapshot = graph_sub.add_parser("snapshot", help="show redacted node readiness state")
+    graph_snapshot.add_argument("--repo", default=".")
+    graph_snapshot.add_argument("--campaign-id", required=True)
+    graph_snapshot.set_defaults(func=cmd_graph_snapshot)
+    graph_mutate = graph_sub.add_parser("mutate", help="apply one typed, idempotent graph command")
+    graph_mutate.add_argument("--repo", default=".")
+    graph_mutate.add_argument("--campaign-id", required=True)
+    graph_mutate.add_argument("--input", required=True, help="JSON file containing one canonical graph command")
+    graph_mutate.add_argument("--idempotency-key", required=True)
+    graph_mutate.set_defaults(func=cmd_graph_mutate)
+
+    serve = sub.add_parser("serve", help="serve the loopback-first REST, OpenAPI and SSE API")
+    serve.add_argument("--repo", default=".")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument("--token", help="bearer token; required when binding outside loopback (or BANANLOOP_API_TOKEN)")
+    serve.set_defaults(func=cmd_serve)
     return p
 
 

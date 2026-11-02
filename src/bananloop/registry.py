@@ -292,7 +292,14 @@ class CampaignRegistry:
             finally:
                 conn.close()
 
-    def resolve(self, campaign_id: str | None = None) -> tuple[Path, str | None]:
+    def resolve(
+        self, campaign_id: str | None = None, *, activate: bool = True,
+    ) -> tuple[Path, str | None]:
+        """Resolve campaign state, optionally without changing the CLI active campaign.
+
+        Read-only API requests pass ``activate=False`` so selecting a campaign in
+        an HTTP URL cannot silently change which campaign a later CLI command uses.
+        """
         self.ensure_legacy()
         with _RegistryLock(self.lock_path):
             conn = self._connect()
@@ -307,7 +314,7 @@ class CampaignRegistry:
                 row = conn.execute("SELECT * FROM campaign_index WHERE campaign_id=?", (campaign_id,)).fetchone()
                 if row is None:
                     raise RegistryError(f"unknown campaign-id: {campaign_id}")
-                if campaign_id != "legacy":
+                if activate and campaign_id != "legacy":
                     conn.execute("UPDATE project_meta SET active_campaign_id=? WHERE id=1", (campaign_id,))
                 conn.commit()
                 return self._validate_state_path(row["state_path"], row["origin"]), campaign_id
