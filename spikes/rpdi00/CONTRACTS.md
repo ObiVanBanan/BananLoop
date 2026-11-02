@@ -27,11 +27,11 @@ The graph has typed nodes and `REQUIRES`, `DERIVED_FROM`, and `RELATED_TO` edges
 
 | Entity | States exercised by this spike | Guard / consequence |
 |---|---|---|
-| Job | `READY -> LEASED -> DISPATCHED -> UNKNOWN` | Claim atomically allocates a monotonically increasing fence, lease, immutable request hash, reservation, and event. Dispatch is a separately persisted boundary. |
-| Reservation | `RESERVED -> DISPATCHED -> UNKNOWN` | `spent + reserved + unknown + requested <= cap`; unknown usage is retained against the cap. |
-| Worker result | current fence only | Stale or expired fence must not publish, promote, access evaluator, or mutate graph. Quarantine is allowed for diagnostics. |
+| Job | `READY -> LEASED -> DISPATCHED -> COMPLETED|UNKNOWN`; expired pre-dispatch `LEASED -> READY` | Claim atomically allocates a monotonically increasing fence, lease, immutable request hash, per-fence reservation, and event. Dispatch is a separately persisted boundary. |
+| Reservation | `RESERVED -> RELEASED` before dispatch; `RESERVED -> DISPATCHED -> SETTLED|UNKNOWN` after dispatch | `spent + reserved + unknown + requested <= cap`; unknown usage is retained against the cap. Every claim generation has a distinct reservation. |
+| Worker result | current, unexpired fence only | Stale or expired fence cannot publish. Result, event, and measured budget settlement commit atomically. |
 
-The prototype's atomic claim uses one Core-owned SQLite transaction. A deterministic injected exception before commit verifies that no job state, reservation, or event leaks. Concurrent claims are serialized by SQLite and cannot over-reserve. Lease expiry/reclaim policy and successful measured settlement require later executable spikes before production implementation.
+The prototype's atomic claim uses one Core-owned SQLite transaction. A deterministic injected exception before commit verifies that no job state, reservation, or event leaks. Concurrent claims are serialized by SQLite and cannot over-reserve. A recovery pass releases only expired leases that have no durable dispatch marker; an expired dispatched job becomes `UNKNOWN`, remains charged against the cap, and is not claimable. External providers may be called only after `DispatchJob` commits. Result settlement is fenced and idempotent. Provider-authoritative reconciliation of `UNKNOWN`, lease renewal, multi-process worker supervision, and production caller ordering remain gated work.
 
 ## Child campaign budget escrow
 
@@ -41,7 +41,7 @@ The prototype injects a crash after child DB initialization, then reconciles and
 
 ## v4→v5 migration spike
 
-The migration fixture exercises additive schema creation under an exclusive SQLite transaction. It runs `integrity_check`, takes a SQLite backup before migration, creates v0.2 graph/job tables, and advances `user_version` only at the commit boundary. A failure injected after table creation must roll back the new schema and preserve v4. The success fixture verifies the campaign `approved_hash`, legacy evaluator binding hash, evaluation receipt bytes, and pre-upgrade backup remain intact. This is a minimal contract fixture, not a complete production migration or a substitute for opening representative campaign databases.
+The fixture is built through the repository's real v4 `CampaignStore` and populated with a v1 campaign, evaluator binding, action, reservation, event, and evaluation receipt. The migration first obtains SQLite's single-writer reservation with `BEGIN IMMEDIATE`; while that reservation is held, a separate read connection copies a consistent pre-migration backup. The migration then adds v0.2 graph/job tables and advances `user_version` only at the commit boundary. A failure injected after table creation must roll back the new schema and preserve v4. The success fixture compares legacy `spec_hash`, evaluator binding hash, receipt bytes, actions, reservations, events, and the pre-upgrade backup, and checks referential integrity. The v1 `CampaignStore` intentionally rejects schema v5; opening upgraded databases through a v2 adapter remains a required RPDI-02 integration proof.
 
 ## Contract gate evidence and remaining proof
 
@@ -51,7 +51,7 @@ Run from repository root:
 python3 -m unittest discover -s spikes/rpdi00 -v
 ```
 
-The eight tests cover graph state/event rollback and idempotency, stale revision, reservation/lease rollback, parallel budget caps, unknown usage, evidence-only spec/package behavior, child escrow recovery, and v4 migration preservation/rollback. A successful local run is necessary but not sufficient to authorize RPDI-01/02: a reviewer must accept this contract package, then platform CI must repeat the suite on Linux and Windows. Production API transport, AND/OR readiness, stale-worker completion fencing, and lease reclaim remain gated work.
+The tests cover graph state/event rollback and idempotency, stale revision, reservation/lease rollback and recovery, parallel budget caps, unknown usage, fenced result settlement, evidence-only spec/package behavior, child escrow recovery, and v4 migration preservation/rollback. A successful local run is necessary but not sufficient to authorize RPDI-01/02: a reviewer must accept this contract package, then platform CI must repeat the suite on Linux and Windows. Production API transport, provider reconciliation, AND/OR readiness, and production worker supervision remain gated work.
 
 ## Proposed typed API boundary
 

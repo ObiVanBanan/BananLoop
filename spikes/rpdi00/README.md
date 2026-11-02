@@ -1,6 +1,6 @@
 # RPDI-00 executable spike
 
-This stdlib-only prototype exercises the riskiest v0.2 contracts without changing the v0.1 Engine. It intentionally lives outside `src/bananloop`; pytest is configured to discover this suite alongside the existing tests.
+This prototype exercises the riskiest v0.2 contracts without changing the v0.1 Engine. The core spike uses only the Python standard library; its migration fixture imports the project runtime to build a representative v4 database through the real `CampaignStore`. It intentionally lives outside `src/bananloop`; pytest is configured to discover this suite alongside the existing tests.
 
 Run:
 

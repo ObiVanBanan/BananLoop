@@ -74,10 +74,11 @@ def init_campaign(path: str | Path, budget_cap: int = 100) -> None:
         CREATE TABLE IF NOT EXISTS edges(src TEXT NOT NULL REFERENCES nodes(node_id), dst TEXT NOT NULL REFERENCES nodes(node_id), kind TEXT NOT NULL CHECK(kind IN ('REQUIRES','DERIVED_FROM','RELATED_TO')), PRIMARY KEY(src,dst,kind));
         CREATE TABLE IF NOT EXISTS commands(command_id TEXT PRIMARY KEY, idem_key TEXT UNIQUE NOT NULL, payload_hash TEXT NOT NULL, response TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, payload TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS budget(id INTEGER PRIMARY KEY CHECK(id=1), cap INTEGER NOT NULL, reserved INTEGER NOT NULL DEFAULT 0, spent INTEGER NOT NULL DEFAULT 0, unknown INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS budget(id INTEGER PRIMARY KEY CHECK(id=1), cap INTEGER NOT NULL CHECK(cap>=0), reserved INTEGER NOT NULL DEFAULT 0 CHECK(reserved>=0), spent INTEGER NOT NULL DEFAULT 0 CHECK(spent>=0), unknown INTEGER NOT NULL DEFAULT 0 CHECK(unknown>=0));
         INSERT OR IGNORE INTO budget(id,cap) VALUES(1, 100);
         CREATE TABLE IF NOT EXISTS jobs(job_id TEXT PRIMARY KEY, node_id TEXT NOT NULL, status TEXT NOT NULL, fence INTEGER NOT NULL DEFAULT 0, lease_until REAL, request_hash TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS reservations(action_id TEXT PRIMARY KEY, job_id TEXT UNIQUE NOT NULL REFERENCES jobs(job_id), amount INTEGER NOT NULL, state TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS reservations(action_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(job_id), fence INTEGER NOT NULL, amount INTEGER NOT NULL, state TEXT NOT NULL, UNIQUE(job_id,fence));
+        CREATE TABLE IF NOT EXISTS job_results(job_id TEXT PRIMARY KEY REFERENCES jobs(job_id), fence INTEGER NOT NULL, output_digest TEXT NOT NULL, actual_amount INTEGER NOT NULL);
         """)
         db.execute("UPDATE budget SET cap=? WHERE id=1", (budget_cap,))
     finally:
@@ -164,7 +165,7 @@ def enqueue_job(path: str | Path, job_id: str, node_id: str, request: dict[str, 
 
 
 def claim_job(path: str | Path, job_id: str, reserve: int, lease_seconds: int = 30,
-              *, fail_before_commit: bool = False) -> dict[str, Any]:
+              *, now: float | None = None, fail_before_commit: bool = False) -> dict[str, Any]:
     if reserve <= 0 or lease_seconds <= 0:
         raise ContractError("INVALID_RESERVATION", "reserve and lease duration must be positive")
     db = connect(path)
@@ -177,11 +178,15 @@ def claim_job(path: str | Path, job_id: str, reserve: int, lease_seconds: int = 
         if budget["spent"] + budget["reserved"] + budget["unknown"] + reserve > budget["cap"]:
             raise ContractError("BUDGET_EXHAUSTED", "reservation exceeds campaign cap")
         fence = job["fence"] + 1
-        lease_until = time.time() + lease_seconds
-        action_id = "act_" + job_id
-        db.execute("UPDATE budget SET reserved=reserved+? WHERE id=1", (reserve,))
-        db.execute("INSERT INTO reservations VALUES(?,?,?,'RESERVED')", (action_id, job_id, reserve))
-        db.execute("UPDATE jobs SET status='LEASED',fence=?,lease_until=? WHERE job_id=? AND status='READY'", (fence, lease_until, job_id))
+        lease_until = (time.time() if now is None else now) + lease_seconds
+        action_id = f"act_{job_id}_{fence}"
+        changed = db.execute("UPDATE budget SET reserved=reserved+? WHERE id=1 AND spent+reserved+unknown+?<=cap", (reserve, reserve)).rowcount
+        if changed != 1:
+            raise ContractError("BUDGET_EXHAUSTED", "reservation exceeds campaign cap")
+        db.execute("INSERT INTO reservations VALUES(?,?,?,?,'RESERVED')", (action_id, job_id, fence, reserve))
+        changed = db.execute("UPDATE jobs SET status='LEASED',fence=?,lease_until=? WHERE job_id=? AND status='READY'", (fence, lease_until, job_id)).rowcount
+        if changed != 1:
+            raise ContractError("JOB_NOT_READY", "job changed before lease commit")
         db.execute("INSERT INTO events(kind,payload) VALUES('JOB_LEASED',?)", (json.dumps({"job_id": job_id, "fence": fence, "action_id": action_id}),))
         if fail_before_commit:
             raise RuntimeError("injected crash before claim commit")
@@ -196,15 +201,18 @@ def claim_job(path: str | Path, job_id: str, reserve: int, lease_seconds: int = 
         db.close()
 
 
-def mark_dispatched(path: str | Path, job_id: str, fence: int) -> None:
+def mark_dispatched(path: str | Path, job_id: str, fence: int, *, now: float | None = None) -> None:
     """Persist dispatch boundary; crash after this point must be reconciled as UNKNOWN."""
     db = connect(path)
     try:
         db.execute("BEGIN IMMEDIATE")
-        changed = db.execute("UPDATE jobs SET status='DISPATCHED' WHERE job_id=? AND fence=? AND status='LEASED'", (job_id, fence)).rowcount
+        effective_now = time.time() if now is None else now
+        changed = db.execute("UPDATE jobs SET status='DISPATCHED' WHERE job_id=? AND fence=? AND status='LEASED' AND lease_until>?", (job_id, fence, effective_now)).rowcount
         if changed != 1:
-            raise ContractError("STALE_LEASE", "lease fence no longer owns this job")
-        db.execute("UPDATE reservations SET state='DISPATCHED' WHERE job_id=?", (job_id,))
+            raise ContractError("STALE_LEASE", "lease fence is stale or expired")
+        reserved = db.execute("UPDATE reservations SET state='DISPATCHED' WHERE job_id=? AND fence=? AND state='RESERVED'", (job_id, fence)).rowcount
+        if reserved != 1:
+            raise ContractError("RESERVATION_MISSING", "current lease has no open reservation")
         db.execute("INSERT INTO events(kind,payload) VALUES('JOB_DISPATCHED',?)", (json.dumps({"job_id": job_id, "fence": fence}),))
         db.execute("COMMIT")
     except Exception:
@@ -215,18 +223,120 @@ def mark_dispatched(path: str | Path, job_id: str, fence: int) -> None:
         db.close()
 
 
+def _mark_unknown_in_transaction(db: sqlite3.Connection, job_id: str, fence: int) -> None:
+    job = db.execute("SELECT status FROM jobs WHERE job_id=? AND fence=?", (job_id, fence)).fetchone()
+    reservation = db.execute("SELECT amount,state FROM reservations WHERE job_id=? AND fence=?", (job_id, fence)).fetchone()
+    if not job or job["status"] != "DISPATCHED" or not reservation or reservation["state"] != "DISPATCHED":
+        raise ContractError("STALE_LEASE", "only dispatched current lease can become unknown")
+    changed = db.execute("UPDATE budget SET reserved=reserved-?, unknown=unknown+? WHERE id=1 AND reserved>=?", (reservation["amount"], reservation["amount"], reservation["amount"])).rowcount
+    if changed != 1:
+        raise ContractError("BUDGET_INVARIANT", "reserved balance cannot cover dispatched reservation")
+    changed = db.execute("UPDATE jobs SET status='UNKNOWN' WHERE job_id=? AND fence=? AND status='DISPATCHED'", (job_id, fence)).rowcount
+    if changed != 1:
+        raise ContractError("STALE_LEASE", "job changed before UNKNOWN commit")
+    changed = db.execute("UPDATE reservations SET state='UNKNOWN' WHERE job_id=? AND fence=? AND state='DISPATCHED'", (job_id, fence)).rowcount
+    if changed != 1:
+        raise ContractError("RESERVATION_INVARIANT", "reservation changed before UNKNOWN commit")
+    db.execute("INSERT INTO events(kind,payload) VALUES('JOB_UNKNOWN',?)", (json.dumps({"job_id": job_id, "fence": fence}),))
+
+
 def record_unknown(path: str | Path, job_id: str, fence: int) -> None:
     db = connect(path)
     try:
         db.execute("BEGIN IMMEDIATE")
-        job = db.execute("SELECT status FROM jobs WHERE job_id=? AND fence=?", (job_id, fence)).fetchone()
-        if not job or job["status"] != "DISPATCHED":
-            raise ContractError("STALE_LEASE", "only dispatched current lease can become unknown")
-        db.execute("UPDATE jobs SET status='UNKNOWN' WHERE job_id=?", (job_id,))
-        db.execute("UPDATE reservations SET state='UNKNOWN' WHERE job_id=?", (job_id,))
-        db.execute("UPDATE budget SET reserved=reserved-(SELECT amount FROM reservations WHERE job_id=?), unknown=unknown+(SELECT amount FROM reservations WHERE job_id=?) WHERE id=1", (job_id, job_id))
-        db.execute("INSERT INTO events(kind,payload) VALUES('JOB_UNKNOWN',?)", (json.dumps({"job_id": job_id, "fence": fence}),))
+        _mark_unknown_in_transaction(db, job_id, fence)
         db.execute("COMMIT")
+    except Exception:
+        if db.in_transaction:
+            db.execute("ROLLBACK")
+        raise
+    finally:
+        db.close()
+
+
+def recover_expired_jobs(path: str | Path, *, now: float) -> dict[str, int]:
+    """Release expired pre-dispatch leases; retain dispatched calls as UNKNOWN."""
+    db = connect(path)
+    reclaimed = unknown = 0
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        expired = db.execute(
+            "SELECT job_id,fence,status FROM jobs WHERE status IN ('LEASED','DISPATCHED') AND lease_until<=? ORDER BY job_id",
+            (now,),
+        ).fetchall()
+        for job in expired:
+            if job["status"] == "LEASED":
+                reservation = db.execute(
+                    "SELECT amount FROM reservations WHERE job_id=? AND fence=? AND state='RESERVED'",
+                    (job["job_id"], job["fence"]),
+                ).fetchone()
+                if not reservation:
+                    raise ContractError("RESERVATION_MISSING", "expired lease has no open reservation")
+                changed = db.execute("UPDATE budget SET reserved=reserved-? WHERE id=1 AND reserved>=?", (reservation["amount"], reservation["amount"])).rowcount
+                if changed != 1:
+                    raise ContractError("BUDGET_INVARIANT", "reserved balance cannot cover expired lease")
+                changed = db.execute("UPDATE reservations SET state='RELEASED' WHERE job_id=? AND fence=? AND state='RESERVED'", (job["job_id"], job["fence"])).rowcount
+                if changed != 1:
+                    raise ContractError("RESERVATION_INVARIANT", "expired lease reservation changed")
+                changed = db.execute("UPDATE jobs SET status='READY',fence=fence+1,lease_until=NULL WHERE job_id=? AND fence=? AND status='LEASED'", (job["job_id"], job["fence"])).rowcount
+                if changed != 1:
+                    raise ContractError("STALE_LEASE", "expired lease changed before reclaim")
+                db.execute("INSERT INTO events(kind,payload) VALUES('JOB_LEASE_EXPIRED',?)", (json.dumps({"job_id": job["job_id"], "invalidated_fence": job["fence"], "next_fence": job["fence"] + 2}),))
+                reclaimed += 1
+            else:
+                _mark_unknown_in_transaction(db, job["job_id"], job["fence"])
+                db.execute("UPDATE jobs SET lease_until=NULL WHERE job_id=? AND fence=?", (job["job_id"], job["fence"]))
+                unknown += 1
+        db.execute("COMMIT")
+        return {"reclaimed": reclaimed, "unknown": unknown}
+    except Exception:
+        if db.in_transaction:
+            db.execute("ROLLBACK")
+        raise
+    finally:
+        db.close()
+
+
+def complete_job(path: str | Path, job_id: str, fence: int, *, output_digest: str,
+                 actual_amount: int, now: float | None = None) -> dict[str, Any]:
+    """Persist an on-time result and settle its reservation under the current fence."""
+    if not output_digest or actual_amount < 0:
+        raise ContractError("INVALID_RESULT", "output digest and non-negative actual amount are required")
+    db = connect(path)
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        prior = db.execute("SELECT fence,output_digest,actual_amount FROM job_results WHERE job_id=?", (job_id,)).fetchone()
+        if prior:
+            if (prior["fence"], prior["output_digest"], prior["actual_amount"]) == (fence, output_digest, actual_amount):
+                db.execute("COMMIT")
+                return {"job_id": job_id, "fence": fence, "output_digest": output_digest, "actual_amount": actual_amount}
+            raise ContractError("RESULT_CONFLICT", "job already has a different committed result")
+        effective_now = time.time() if now is None else now
+        job = db.execute("SELECT status,fence,lease_until FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+        reservation = db.execute("SELECT amount,state FROM reservations WHERE job_id=? AND fence=?", (job_id, fence)).fetchone()
+        if (not job or job["status"] != "DISPATCHED" or job["fence"] != fence or
+                job["lease_until"] is None or job["lease_until"] <= effective_now or
+                not reservation or reservation["state"] != "DISPATCHED"):
+            raise ContractError("STALE_LEASE", "result does not own an unexpired dispatched lease")
+        if actual_amount > reservation["amount"]:
+            raise ContractError("RESERVATION_EXCEEDED", "actual amount exceeds the reservation")
+        changed = db.execute(
+            "UPDATE jobs SET status='COMPLETED' WHERE job_id=? AND status='DISPATCHED' AND fence=? AND lease_until>?",
+            (job_id, fence, effective_now),
+        ).rowcount
+        if changed != 1:
+            raise ContractError("STALE_LEASE", "job lease changed before result commit")
+        changed = db.execute("UPDATE budget SET reserved=reserved-?, spent=spent+? WHERE id=1 AND reserved>=?", (reservation["amount"], actual_amount, reservation["amount"])).rowcount
+        if changed != 1:
+            raise ContractError("BUDGET_INVARIANT", "reserved balance cannot cover result settlement")
+        changed = db.execute("UPDATE reservations SET state='SETTLED' WHERE job_id=? AND fence=? AND state='DISPATCHED'", (job_id, fence)).rowcount
+        if changed != 1:
+            raise ContractError("RESERVATION_INVARIANT", "dispatched reservation changed before settlement")
+        db.execute("INSERT INTO job_results VALUES(?,?,?,?)", (job_id, fence, output_digest, actual_amount))
+        response = {"job_id": job_id, "fence": fence, "output_digest": output_digest, "actual_amount": actual_amount}
+        db.execute("INSERT INTO events(kind,payload) VALUES('JOB_COMPLETED',?)", (json.dumps(response, sort_keys=True),))
+        db.execute("COMMIT")
+        return response
     except Exception:
         if db.in_transaction:
             db.execute("ROLLBACK")
