@@ -110,6 +110,7 @@ class OptimizationAttemptCoordinator:
 
     def verify_candidate(
         self, *, node_id: str, baseline_run_receipt_digest: str,
+        candidate_validation_run_receipt_digest: str,
         executor: Any, worker_id: str,
     ) -> IntegrationVerifierReceiptV1:
         node = self._node(node_id)
@@ -158,7 +159,7 @@ class OptimizationAttemptCoordinator:
         try:
             job, _evidence = self.integration_verifier.enqueue_integration(
                 baseline_run_receipt_digest=baseline_run_receipt_digest,
-                candidate_run_receipt_digest=evaluator_ref.removeprefix("evaluator://receipt/"),
+                candidate_run_receipt_digest=candidate_validation_run_receipt_digest,
             )
             verifier_job_id = job["job_id"]
             queue = self.integration_verifier.queue
