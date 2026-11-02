@@ -1086,7 +1086,7 @@ class TrustedEvaluatorAdapter:
         evidence = IntegrationCoreEvidenceV1(
             evidence_digest=_digest(fields), **fields,
         )
-        authority.append_integration_evidence(evidence)
+        authority._append_integration_evidence(evidence)
         return evidence
 
     def _manifest_for_receipt(self, receipt: EvaluatorRunReceiptV1) -> ProtocolManifest:

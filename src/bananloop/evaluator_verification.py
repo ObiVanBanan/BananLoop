@@ -788,8 +788,8 @@ class EvaluatorProtocolAuthority:
             raise EvaluatorVerificationError("integration decision is not supported by matching Core evidence")
         return receipt
 
-    def append_integration_evidence(self, evidence: IntegrationCoreEvidenceV1) -> IntegrationCoreEvidenceV1:
-        """Append Core-computed checks only when bound evaluator receipts exist."""
+    def _append_integration_evidence(self, evidence: IntegrationCoreEvidenceV1) -> IntegrationCoreEvidenceV1:
+        """Internal Core-only append after the trusted evaluator derived evidence."""
         proposal, _ = self.approved_protocol(evidence.approval_digest)
         self.require_frozen_reference(
             protocol_id=proposal.protocol.protocol_id,
@@ -809,8 +809,11 @@ class EvaluatorProtocolAuthority:
             protocol_digest=evidence.protocol_digest,
             candidate_snapshot_id=evidence.candidate_snapshot_id,
         )
-        if (baseline.tier != candidate.tier
-                or baseline.tier_manifest_sha256 != candidate.tier_manifest_sha256
+        if baseline.tier != "validation" or candidate.tier != "validation":
+            raise EvaluatorVerificationError(
+                "integration evidence requires VALIDATION receipts; HOLDOUT cannot feed graph decisions"
+            )
+        if (baseline.tier_manifest_sha256 != candidate.tier_manifest_sha256
                 or baseline.case_count != candidate.case_count):
             raise EvaluatorVerificationError("integration evidence run receipts use different evaluator scopes")
         encoded = _canonical(evidence.model_dump(mode="json"))

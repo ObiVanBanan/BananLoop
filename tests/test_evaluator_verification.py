@@ -34,6 +34,8 @@ def _protocol() -> EvaluatorProtocolV1:
             tier="dev", manifest_sha256="c" * 64, case_count=12,
         ), EvaluatorTierManifestV1(
             tier="holdout", manifest_sha256="d" * 64, case_count=20,
+        ), EvaluatorTierManifestV1(
+            tier="validation", manifest_sha256="9" * 64, case_count=16,
         )), repeatability_runs=3,
     )
 
@@ -206,10 +208,10 @@ def test_durable_evaluator_run_receipt_requires_and_binds_frozen_approval():
             approval_digest=approval.approval_digest, protocol_id=protocol.protocol_id,
             protocol_version=protocol.version, protocol_digest=protocol.content_digest(),
             source_snapshot_id=protocol.source_snapshot_id,
-            candidate_snapshot_id="b" * 40, tier="dev",
+            candidate_snapshot_id="b" * 40, tier="validation",
             evaluator_bundle_sha256=protocol.evaluator_bundle_sha256,
-            tier_manifest_sha256=protocol.tiers[0].manifest_sha256,
-            case_count=protocol.tiers[0].case_count, result_digest="9" * 64,
+            tier_manifest_sha256=protocol.tiers[2].manifest_sha256,
+            case_count=protocol.tiers[2].case_count, result_digest="9" * 64,
             repeatability_runs=protocol.repeatability_runs,
             output_artifact_digests=(),
         ) for _ in range(protocol.repeatability_runs))
@@ -270,7 +272,30 @@ def test_durable_evaluator_run_receipt_requires_and_binds_frozen_approval():
         evidence = IntegrationCoreEvidenceV1(
             evidence_digest=_digest(evidence_fields), **evidence_fields,
         )
-        assert authority.append_integration_evidence(evidence) == evidence
+        assert authority._append_integration_evidence(evidence) == evidence
+
+        holdout_tier = protocol.tiers[1]
+        holdout_candidate = EvaluatorRunReceiptV1.from_completed_runs(tuple(
+            replace(item, tier="holdout", tier_manifest_sha256=holdout_tier.manifest_sha256,
+                    case_count=holdout_tier.case_count) for item in executions
+        ), proofs)
+        holdout_baseline = EvaluatorRunReceiptV1.from_completed_runs(tuple(
+            replace(item, candidate_snapshot_id=protocol.source_snapshot_id, tier="holdout",
+                    tier_manifest_sha256=holdout_tier.manifest_sha256,
+                    case_count=holdout_tier.case_count) for item in executions
+        ), baseline_proofs)
+        authority.append_run_receipt(holdout_candidate)
+        authority.append_run_receipt(holdout_baseline)
+        holdout_fields = {
+            **evidence_fields,
+            "baseline_run_receipt_digest": holdout_baseline.receipt_digest,
+            "candidate_run_receipt_digest": holdout_candidate.receipt_digest,
+        }
+        holdout_evidence = IntegrationCoreEvidenceV1(
+            evidence_digest=_digest(holdout_fields), **holdout_fields,
+        )
+        with pytest.raises(EvaluatorVerificationError, match="HOLDOUT cannot feed graph decisions"):
+            authority._append_integration_evidence(holdout_evidence)
     finally:
         conn.close()
 
