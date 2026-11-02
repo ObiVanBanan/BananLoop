@@ -508,6 +508,11 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(
         baseline_result if digest == baseline.result_digest else candidate_result
     )
     trusted._verify_budget_proofs = lambda *_args, **_kwargs: True
+    # This focused adapter test seeds the VALIDATION receipt; the full lifecycle
+    # test below exercises real evaluator enqueue/dispatch/settlement.
+    trusted.queue = SimpleNamespace(get_job=lambda _job_id: {"state": "COMPLETED"})
+    trusted.enqueue_repeatability = lambda **_kwargs: ("validation-1", "validation-2")
+    trusted.finalize_repeatability = lambda _job_ids: candidate
 
     team = TeamFactoryV1.build(
         registry,
