@@ -962,7 +962,6 @@ class TrustedEvaluatorAdapter:
         authority.require_frozen_reference(
             reference.protocol_id, reference.version, reference.content_sha256,
             reference.approval_digest, campaign_id=self.campaign_id,
-            spec_hash=spec.approved_hash(),
         )
         baseline = authority.require_run_receipt(
             baseline_run_receipt_digest, campaign_id=self.campaign_id,
