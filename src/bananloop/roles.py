@@ -460,7 +460,7 @@ class RoleContextValueV1(BaseModel):
     value: Any
     classification: Literal[
         "PUBLIC_SPEC", "PUBLIC_NODE", "DEV_AGGREGATE", "CORE_BUDGET",
-        "ROLE_SPECIALIZATION", "VALIDATION", "HOLDOUT", "SECRET",
+        "ROLE_SPECIALIZATION", "PUBLIC_EVIDENCE", "VALIDATION", "HOLDOUT", "SECRET",
     ]
     source_ref: str = Field(pattern=r"^(campaign|graph|research|budget|role|evidence)://[^\s]{1,500}$")
 
@@ -472,6 +472,7 @@ class RoleContextValueV1(BaseModel):
             "DEV_AGGREGATE": "research://",
             "CORE_BUDGET": "budget://",
             "ROLE_SPECIALIZATION": "role://specialization/",
+            "PUBLIC_EVIDENCE": "evidence://integration/",
             "VALIDATION": "evidence://validation/",
             "HOLDOUT": "evidence://holdout/",
             "SECRET": "role://private/",
@@ -494,7 +495,7 @@ _SAFE_CLASSIFICATIONS = {
     "campaign_goal": {"PUBLIC_SPEC"},
     "node_id": {"PUBLIC_NODE"},
     "node_phase": {"PUBLIC_NODE"},
-    "public_task": {"PUBLIC_SPEC", "PUBLIC_NODE"},
+    "public_task": {"PUBLIC_SPEC", "PUBLIC_NODE", "PUBLIC_EVIDENCE"},
     "evidence_refs": {"PUBLIC_NODE", "DEV_AGGREGATE"},
     "dev_summary": {"DEV_AGGREGATE"},
     "constraints": {"PUBLIC_SPEC", "PUBLIC_NODE"},
