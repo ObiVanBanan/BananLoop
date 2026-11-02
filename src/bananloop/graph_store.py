@@ -625,6 +625,15 @@ class GraphRepository:
         from .contracts import OptimizationCampaignSpecV2
         from .evaluator_verification import EvaluatorVerificationError
 
+        if change.guard not in {"PROTOCOL_FROZEN", "PROTOCOL_REJECTED", "VERIFIED_RESULT", "REGRESSION_FAILED"}:
+            return
+        has_campaign = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='campaigns'"
+        ).fetchone()
+        if has_campaign is None:
+            if change.guard == "PROTOCOL_FROZEN":
+                raise GraphStoreError("protocol freeze requires an Optimization spec pinned to verifier approval")
+            raise GraphStoreError("verifier transition requires an initialized campaign spec")
         spec = self.campaign_spec()
         approval_refs = [ref.removeprefix("verifier://approval/") for ref in change.evidence_refs
                          if isinstance(ref, str) and ref.startswith("verifier://approval/")]

@@ -150,7 +150,7 @@ def test_verifier_receipt_cannot_be_replayed_against_another_campaign_or_protoco
         with pytest.raises(ValidationError, match="digest"):
             VerifierReceiptV1.model_validate(changed.model_dump(mode="json"))
         changed_source = proposal.model_copy(update={"source_snapshot_id": "9" * 40})
-        with pytest.raises(ValidationError, match="digest"):
+        with pytest.raises(ValidationError, match="source snapshots differ"):
             MetricDiscoveryProposalV1.model_validate(changed_source.model_dump(mode="json"))
     finally:
         conn.close()
