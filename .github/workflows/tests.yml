@@ -5,6 +5,13 @@ on:
     branches: [main, "codex/**"]
   pull_request:
 
+# Keep the newest test run for each source branch. Push and pull_request
+# events intentionally share a group so duplicate triggers don't queue a
+# second full OS/Python matrix for the same head.
+concurrency:
+  group: tests-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   pytest:
     runs-on: ${{ matrix.os }}
