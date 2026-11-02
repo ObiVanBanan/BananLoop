@@ -112,7 +112,7 @@ def init_campaign(path: str | Path, budget_cap: int = 100, *,
         statements = (
             "CREATE TABLE IF NOT EXISTS graph_meta(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL)",
             "INSERT OR IGNORE INTO graph_meta VALUES(1, 0)",
-            "CREATE TABLE IF NOT EXISTS nodes(node_id TEXT PRIMARY KEY, payload TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS nodes(node_id TEXT PRIMARY KEY, payload TEXT NOT NULL, phase TEXT NOT NULL DEFAULT 'EXPLORATION', status TEXT NOT NULL DEFAULT 'READY', revision INTEGER NOT NULL DEFAULT 0)",
             "CREATE TABLE IF NOT EXISTS edges(src TEXT NOT NULL REFERENCES nodes(node_id), dst TEXT NOT NULL REFERENCES nodes(node_id), kind TEXT NOT NULL CHECK(kind IN ('REQUIRES','DERIVED_FROM','RELATED_TO')), PRIMARY KEY(src,dst,kind))",
             "CREATE TABLE IF NOT EXISTS commands(command_id TEXT PRIMARY KEY, idem_key TEXT UNIQUE NOT NULL, payload_hash TEXT NOT NULL, response TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, payload TEXT NOT NULL)",
@@ -126,6 +126,12 @@ def init_campaign(path: str | Path, budget_cap: int = 100, *,
         )
         for statement in statements:
             db.execute(statement)
+        node_columns = {row["name"] for row in db.execute("PRAGMA table_info(nodes)")}
+        for column, declaration in (("phase", "TEXT NOT NULL DEFAULT 'EXPLORATION'"),
+                                    ("status", "TEXT NOT NULL DEFAULT 'READY'"),
+                                    ("revision", "INTEGER NOT NULL DEFAULT 0")):
+            if column not in node_columns:
+                db.execute(f"ALTER TABLE nodes ADD COLUMN {column} {declaration}")
         _ensure_immutable_triggers(db, "exploration_completions", "exploration_completion", "COMPLETION_CONFLICT")
         _ensure_immutable_triggers(db, "completion_evidence", "completion_evidence", "COMPLETION_CONFLICT")
         db.execute("UPDATE budget SET cap=? WHERE id=1", (budget_cap,))
@@ -210,7 +216,7 @@ def mutate_graph(path: str | Path, *, command_id: str, idempotency_key: str,
             raise ContractError("REVISION_CONFLICT", f"current revision is {meta['revision']}")
         for change in changes:
             if change["type"] == "AddNode":
-                db.execute("INSERT INTO nodes VALUES(?,?)", (change["node_id"], json.dumps(change.get("payload", {}), sort_keys=True)))
+                db.execute("INSERT INTO nodes(node_id,payload) VALUES(?,?)", (change["node_id"], json.dumps(change.get("payload", {}), sort_keys=True)))
             elif change["type"] == "AddEdge":
                 if change["kind"] not in {"REQUIRES", "DERIVED_FROM", "RELATED_TO"}:
                     raise ContractError("INVALID_GRAPH", "unknown edge kind")
@@ -473,8 +479,11 @@ def persist_exploration_completion(path: str | Path, spec: dict[str, Any], *,
         meta = db.execute("SELECT revision FROM graph_meta WHERE id=1").fetchone()
         if not meta or meta["revision"] != expected_graph_revision:
             raise ContractError("REVISION_CONFLICT", "completion graph revision is stale")
-        if not db.execute("SELECT 1 FROM nodes WHERE node_id=?", (node_id,)).fetchone():
+        node = db.execute("SELECT phase,status FROM nodes WHERE node_id=?", (node_id,)).fetchone()
+        if not node:
             raise ContractError("INVALID_COMPLETION", "completion node does not exist")
+        if (node["phase"], node["status"]) != ("EXPLORATION", "READY"):
+            raise ContractError("NODE_NOT_READY", "node is not in the evidence-only completion state")
         evidence = []
         for ref in refs:
             result = db.execute("""SELECT j.node_id,j.status,j.fence,j.request_hash,
@@ -486,7 +495,7 @@ def persist_exploration_completion(path: str | Path, spec: dict[str, Any], *,
                 raise ContractError("INVALID_EVIDENCE", f"evidence ref {ref} is not a current completed job for this node")
             evidence.append({"evidence_ref": ref, "artifact_digest": result["output_digest"],
                              "source_request_hash": result["request_hash"], "fence": result["result_fence"]})
-        if sorted(item["artifact_digest"] for item in evidence) != digests:
+        if {item["artifact_digest"] for item in evidence} != set(digests):
             raise ContractError("INVALID_EVIDENCE", "artifact digests must match the referenced job results")
         package = complete_exploration(spec, node_id=node_id, evidence_refs=refs,
                                        artifact_digests=digests, limitations=limitations,
@@ -496,6 +505,10 @@ def persist_exploration_completion(path: str | Path, spec: dict[str, Any], *,
                              (new_revision, expected_graph_revision)).rowcount
         if changed != 1:
             raise ContractError("REVISION_CONFLICT", "completion revision compare-and-swap failed")
+        changed = db.execute("""UPDATE nodes SET phase='CONSOLIDATION',status='COMPLETED',revision=revision+1
+                               WHERE node_id=? AND phase='EXPLORATION' AND status='READY'""", (node_id,)).rowcount
+        if changed != 1:
+            raise ContractError("NODE_NOT_READY", "node changed before completion commit")
         package.update({"completion_id": completion_id,
                         "source_graph_revision": expected_graph_revision,
                         "graph_revision": new_revision})

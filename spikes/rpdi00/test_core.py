@@ -50,6 +50,23 @@ class RPDI00ContractSpike(unittest.TestCase):
                                       child_id=child_id, child_path=child_path, amount=amount,
                                       approved_scope=scope, child_spec=spec, approved_by="trusted-parent-core")
 
+    def test_init_campaign_upgrades_legacy_nodes_without_losing_payload(self):
+        dbpath = self.root / "legacy-nodes.db"
+        db = sqlite3.connect(dbpath)
+        try:
+            db.execute("CREATE TABLE nodes(node_id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+            db.execute("INSERT INTO nodes VALUES('legacy-node','{\"kept\":true}')")
+            db.commit()
+        finally:
+            db.close()
+        init_campaign(dbpath)
+        db = connect(dbpath)
+        try:
+            row = db.execute("SELECT node_id,payload,phase,status,revision FROM nodes WHERE node_id='legacy-node'").fetchone()
+            self.assertEqual(tuple(row), ("legacy-node", '{"kept":true}', "EXPLORATION", "READY", 0))
+        finally:
+            db.close()
+
     def make_v4_fixture(self, path):
         """Build a representative v4 database using the real legacy store."""
         from bananloop.contracts import AgentConfig, CampaignSpec, Direction, MetricSpec
@@ -277,9 +294,14 @@ class RPDI00ContractSpike(unittest.TestCase):
         mark_dispatched(dbpath, "job1", lease["fence"], now=101)
         complete_job(dbpath, "job1", lease["fence"], output_digest="sha256:artifact-1",
                      actual_amount=2, now=102)
+        enqueue_job(dbpath, "job2", "n1", {"prompt": "same artifact from second evidence job"})
+        lease2 = claim_job(dbpath, "job2", reserve=3, now=110)
+        mark_dispatched(dbpath, "job2", lease2["fence"], now=111)
+        complete_job(dbpath, "job2", lease2["fence"], output_digest="sha256:artifact-1",
+                     actual_amount=2, now=112)
         spec = {"schema_version": 2, "mode": "EXPLORATION", "goal": "explain behavior", "evaluation": None}
         args = {"completion_id": "complete1", "idempotency_key": "complete-key",
-                "expected_graph_revision": 1, "node_id": "n1", "evidence_refs": ["job1"],
+                "expected_graph_revision": 1, "node_id": "n1", "evidence_refs": ["job2", "job1"],
                 "artifact_digests": ["sha256:artifact-1"], "limitations": ["single run"],
                 "next_experiment": "repeat with control"}
         with self.assertRaisesRegex(RuntimeError, "before commit"):
@@ -295,10 +317,14 @@ class RPDI00ContractSpike(unittest.TestCase):
         self.assertNotIn("reward", package)
         self.assertEqual(package["source_graph_revision"], 1)
         self.assertEqual(package["graph_revision"], 2)
+        self.assertEqual(package["evidence_refs"], ["job1", "job2"])
         self.assertEqual(persist_exploration_completion(dbpath, spec, **args), package)
         self.assertEqual(self.scalar(dbpath, "SELECT revision FROM graph_meta"), 2)
+        self.assertEqual(self.scalar(dbpath, "SELECT phase FROM nodes WHERE node_id='n1'"), "CONSOLIDATION")
+        self.assertEqual(self.scalar(dbpath, "SELECT status FROM nodes WHERE node_id='n1'"), "COMPLETED")
+        self.assertEqual(self.scalar(dbpath, "SELECT revision FROM nodes WHERE node_id='n1'"), 1)
         self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM exploration_completions"), 1)
-        self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM completion_evidence"), 1)
+        self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM completion_evidence"), 2)
         self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM events"), event_count + 1)
         self.assertEqual(self.scalar(dbpath, "SELECT source_request_hash FROM completion_evidence"), lease["request_hash"])
         db = connect(dbpath)
@@ -324,6 +350,19 @@ class RPDI00ContractSpike(unittest.TestCase):
         self.assertEqual(self.scalar(dbpath, "SELECT revision FROM graph_meta"), 1)
         self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM exploration_completions"), 0)
         self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM events"), 1)
+        enqueue_job(dbpath, "job1", "n1", {"prompt": "valid evidence"})
+        lease = claim_job(dbpath, "job1", reserve=1, now=100)
+        mark_dispatched(dbpath, "job1", lease["fence"], now=101)
+        complete_job(dbpath, "job1", lease["fence"], output_digest="sha256:actual",
+                     actual_amount=1, now=102)
+        with self.assertRaisesRegex(ContractError, "must match the referenced job results"):
+            persist_exploration_completion(
+                dbpath, spec, completion_id="complete2", idempotency_key="different-key",
+                expected_graph_revision=1, node_id="n1", evidence_refs=["job1"],
+                artifact_digests=["sha256:forged"], limitations=[], next_experiment="repeat")
+        self.assertEqual(self.scalar(dbpath, "SELECT revision FROM graph_meta"), 1)
+        self.assertEqual(self.scalar(dbpath, "SELECT status FROM nodes WHERE node_id='n1'"), "READY")
+        self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM exploration_completions"), 0)
 
     def test_child_escrow_saga_recovers_after_intermediate_crash(self):
         parent, registry, child = (self.root / "parent.db", self.root / "registry.db", self.root / "child.db")
