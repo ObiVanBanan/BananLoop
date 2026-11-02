@@ -22,6 +22,9 @@ from .contracts import utc_now
 _WORKER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
 _JOB_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_RESOURCES = frozenset({
+    "agent_calls", "evaluator_calls", "model_tokens", "evaluation_units", "experiments", "attempts",
+})
 
 
 class WorkerQueueError(RuntimeError):
@@ -88,6 +91,20 @@ class DurableWorkerQueue:
           response_json TEXT NOT NULL,
           created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS worker_job_resource_bounds (
+          job_id TEXT NOT NULL REFERENCES worker_jobs(job_id),
+          resource TEXT NOT NULL,
+          upper_bound INTEGER NOT NULL CHECK(upper_bound>0),
+          PRIMARY KEY(job_id,resource)
+        );
+        CREATE TABLE IF NOT EXISTS worker_job_reservations (
+          job_id TEXT NOT NULL REFERENCES worker_jobs(job_id),
+          fence INTEGER NOT NULL CHECK(fence>0),
+          resource TEXT NOT NULL,
+          upper_bound INTEGER NOT NULL CHECK(upper_bound>0),
+          reservation_id TEXT NOT NULL UNIQUE,
+          PRIMARY KEY(job_id,fence,resource)
+        );
         CREATE TABLE IF NOT EXISTS team_role_call_jobs (
           job_id TEXT PRIMARY KEY REFERENCES worker_jobs(job_id),
           campaign_id TEXT NOT NULL,
@@ -127,6 +144,14 @@ class DurableWorkerQueue:
           BEFORE UPDATE ON team_role_allocation_releases BEGIN SELECT RAISE(ABORT,'team allocation releases are immutable'); END;
         CREATE TRIGGER IF NOT EXISTS team_role_allocation_releases_no_delete
           BEFORE DELETE ON team_role_allocation_releases BEGIN SELECT RAISE(ABORT,'team allocation releases are immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS worker_job_resource_bounds_no_update
+          BEFORE UPDATE ON worker_job_resource_bounds BEGIN SELECT RAISE(ABORT,'worker job resource bounds are immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS worker_job_resource_bounds_no_delete
+          BEFORE DELETE ON worker_job_resource_bounds BEGIN SELECT RAISE(ABORT,'worker job resource bounds are immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS worker_job_reservations_no_update
+          BEFORE UPDATE ON worker_job_reservations BEGIN SELECT RAISE(ABORT,'worker job reservations are immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS worker_job_reservations_no_delete
+          BEFORE DELETE ON worker_job_reservations BEGIN SELECT RAISE(ABORT,'worker job reservations are immutable'); END;
         """)
         self.ledger = BudgetLedger.attach(self.conn)
 
@@ -146,6 +171,7 @@ class DurableWorkerQueue:
     def enqueue(
         self, *, job_id: str, enqueue_key: str, campaign_id: str, action_id: str,
         resource: str, upper_bound: int, request: dict[str, Any],
+        resource_bounds: dict[str, int] | None = None,
         role_allocation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Persist immutable job input; an identical enqueue key replays safely."""
@@ -194,10 +220,16 @@ class DurableWorkerQueue:
                     or binding.get("allocated_model_tokens") != role_allocation["tokens_limit"]
                     or binding.get("per_call_model_token_limit") != role_allocation["token_upper_bound"]):
                 raise WorkerQueueError("immutable job request is not bound to its role allocation")
-        if resource not in {"agent_calls", "evaluator_calls", "model_tokens", "evaluation_units", "experiments", "attempts"}:
+        if resource not in _RESOURCES:
             raise WorkerQueueError(f"unsupported resource: {resource}")
         if isinstance(upper_bound, bool) or not isinstance(upper_bound, int) or upper_bound <= 0:
             raise WorkerQueueError("upper_bound must be a positive integer")
+        if resource_bounds is None:
+            normalized_bounds = {resource: upper_bound}
+        else:
+            normalized_bounds = self._validate_resource_bounds(resource_bounds)
+            if normalized_bounds.get(resource) != upper_bound:
+                raise WorkerQueueError("primary resource and upper_bound must match resource_bounds")
         now = utc_now()
         with self._transaction():
             replay = self.conn.execute("SELECT * FROM worker_jobs WHERE enqueue_key=?", (enqueue_key,)).fetchone()
@@ -207,6 +239,8 @@ class DurableWorkerQueue:
                           replay["resource"], int(replay["upper_bound"]), replay["request_hash"])
                 if actual != expected:
                     raise WorkerQueueError("enqueue key was reused with different job content")
+                if self._resource_bounds(job_id) != normalized_bounds:
+                    raise WorkerQueueError("enqueue key was reused with different resource bounds")
                 allocation = self.conn.execute(
                     "SELECT * FROM team_role_call_jobs WHERE job_id=?", (job_id,),
                 ).fetchone()
@@ -272,6 +306,10 @@ class DurableWorkerQueue:
                 "VALUES(?,?,?,?,?,?,?,?,'READY',?,?)",
                 (job_id, enqueue_key, campaign_id, action_id, resource, upper_bound, request_hash, request_json, now, now),
             )
+            self.conn.executemany(
+                "INSERT INTO worker_job_resource_bounds(job_id,resource,upper_bound) VALUES(?,?,?)",
+                [(job_id, key, value) for key, value in normalized_bounds.items()],
+            )
             if role_allocation is not None:
                 self.conn.execute(
                     "INSERT INTO team_role_call_jobs(job_id,campaign_id,manifest_digest,role_instance_id,role_id,upper_bound,request_hash) VALUES(?,?,?,?,?,?,?)",
@@ -284,7 +322,8 @@ class DurableWorkerQueue:
                      role_allocation["role_instance_id"], role_allocation["role_id"],
                      role_allocation["token_upper_bound"] * upper_bound, request_hash),
                 )
-            self._event(job_id, "JOB_ENQUEUED", 0, {"request_hash": request_hash})
+            self._event(job_id, "JOB_ENQUEUED", 0,
+                        {"request_hash": request_hash, "resource_bounds": normalized_bounds})
             return self._job_view(self.conn.execute("SELECT * FROM worker_jobs WHERE job_id=?", (job_id,)).fetchone())
 
     def claim(self, job_id: str, worker_id: str, *, lease_seconds: int, now: float | None = None,
@@ -304,7 +343,8 @@ class DurableWorkerQueue:
                 raise WorkerQueueError("job is missing or not READY")
             fence = int(job["fence"]) + 1
             action_id = f"{job['action_id']}:{fence}"
-            reservation_id = f"job:{job_id}:f{fence}:{job['resource']}"
+            resource_bounds = self._resource_bounds(job_id)
+            reservations: dict[str, str] = {}
             enqueue_alloc = self.conn.execute(
                 "SELECT allocation_id,state FROM child_allocations WHERE child_id=?",
                 (job["campaign_id"],),
@@ -316,18 +356,27 @@ class DurableWorkerQueue:
             else:
                 allocation_id = None
             try:
-                self.ledger.reserve_action(
-                    reservation_id=reservation_id,
-                    campaign_id=job["campaign_id"],
-                    action_id=action_id,
-                    resource=job["resource"],
-                    amount=int(job["upper_bound"]),
-                    idempotency_key=reservation_id,
-                    fence=fence,
-                    allocation_id=allocation_id,
-                )
+                for resource_name, amount in resource_bounds.items():
+                    reservation_id = f"job:{job_id}:f{fence}:{resource_name}"
+                    self.ledger.reserve_action(
+                        reservation_id=reservation_id,
+                        campaign_id=job["campaign_id"],
+                        action_id=action_id,
+                        resource=resource_name,
+                        amount=amount,
+                        idempotency_key=reservation_id,
+                        fence=fence,
+                        allocation_id=allocation_id,
+                    )
+                    reservations[resource_name] = reservation_id
+                    self.conn.execute(
+                        "INSERT INTO worker_job_reservations(job_id,fence,resource,upper_bound,reservation_id) "
+                        "VALUES(?,?,?,?,?)",
+                        (job_id, fence, resource_name, amount, reservation_id),
+                    )
             except BudgetLedgerError as exc:
                 raise WorkerBudgetError(str(exc)) from exc
+            reservation_id = reservations[job["resource"]]
             lease_until = effective_now + lease_seconds
             changed = self.conn.execute(
                 "UPDATE worker_jobs SET state='LEASED',fence=?,lease_owner=?,lease_until=?,reservation_id=?,updated_at=? "
@@ -337,11 +386,13 @@ class DurableWorkerQueue:
             if changed != 1:
                 raise WorkerQueueError("job state changed during claim")
             self._event(job_id, "JOB_LEASED", fence,
-                        {"worker_id": worker_id, "reservation_id": reservation_id, "lease_until": lease_until})
+                        {"worker_id": worker_id, "reservation_id": reservation_id,
+                         "reservations": reservations, "lease_until": lease_until})
             if fail_before_commit:
                 raise RuntimeError("injected failure before atomic claim commit")
             return {"job_id": job_id, "worker_id": worker_id, "fence": fence,
                     "lease_until": lease_until, "reservation_id": reservation_id,
+                    "reservations": reservations, "resource_bounds": resource_bounds,
                     "request_hash": job["request_hash"], "request": json.loads(job["request_json"])}
 
     def mark_dispatched(self, job_id: str, worker_id: str, fence: int, *, now: float | None = None) -> None:
@@ -357,11 +408,15 @@ class DurableWorkerQueue:
             ).rowcount
             if changed != 1:
                 raise WorkerQueueError("lease expired before dispatch")
+            reservations = self._reservation_rows(job)
             try:
-                self.ledger.mark_dispatched(job["reservation_id"], fence=fence)
+                for item in reservations:
+                    self.ledger.mark_dispatched(item["reservation_id"], fence=fence)
             except BudgetLedgerError as exc:
                 raise WorkerBudgetError(str(exc)) from exc
-            self._event(job_id, "JOB_DISPATCHED", fence, {"reservation_id": job["reservation_id"]})
+            self._event(job_id, "JOB_DISPATCHED", fence,
+                        {"reservation_id": job["reservation_id"],
+                         "reservations": {item["resource"]: item["reservation_id"] for item in reservations}})
 
     def renew(self, job_id: str, worker_id: str, fence: int, *, lease_seconds: int,
               now: float | None = None) -> float:
@@ -385,7 +440,8 @@ class DurableWorkerQueue:
 
     def complete(
         self, job_id: str, worker_id: str, fence: int, *, output_digest: str,
-        actual_amount: int, receipt_digest: str, now: float | None = None,
+        receipt_digest: str, actual_amount: int | None = None,
+        actual_usage: dict[str, int] | None = None, now: float | None = None,
         result_payload: dict[str, Any] | None = None, fail_before_commit: bool = False,
     ) -> dict[str, Any]:
         """Commit a result and settle its reservation under the active fence.
@@ -399,7 +455,8 @@ class DurableWorkerQueue:
             raise WorkerQueueError("fence must be a nonnegative integer")
         self._validate_digest(output_digest, "output_digest")
         self._validate_digest(receipt_digest, "receipt_digest")
-        if isinstance(actual_amount, bool) or not isinstance(actual_amount, int) or actual_amount < 0:
+        if actual_amount is not None and (isinstance(actual_amount, bool)
+                                          or not isinstance(actual_amount, int) or actual_amount < 0):
             raise WorkerQueueError("actual_amount must be a nonnegative integer")
         result_json = None
         if result_payload is not None:
@@ -418,31 +475,46 @@ class DurableWorkerQueue:
             raise WorkerQueueError("now must be a finite timestamp")
         with self._transaction():
             prior = self.conn.execute("SELECT * FROM worker_results WHERE job_id=?", (job_id,)).fetchone()
+            job = self.conn.execute("SELECT * FROM worker_jobs WHERE job_id=?", (job_id,)).fetchone()
+            if job is None:
+                raise WorkerQueueError("unknown job")
+            usage = self._normalize_actual_usage(
+                job, actual_amount=actual_amount, actual_usage=actual_usage,
+            )
+            primary_amount = usage[job["resource"]]
             if prior is not None:
-                expected = (fence, output_digest, actual_amount, receipt_digest)
+                prior_response = json.loads(prior["response_json"])
+                expected = (fence, output_digest, primary_amount, receipt_digest, usage)
                 actual = (int(prior["fence"]), prior["output_digest"],
-                          int(prior["actual_amount"]), prior["receipt_digest"])
+                          int(prior["actual_amount"]), prior["receipt_digest"],
+                          prior_response.get("actual_usage", {job["resource"]: int(prior["actual_amount"])}))
                 if expected != actual:
                     raise WorkerQueueError("job already has a different committed result")
                 return json.loads(prior["response_json"])
             job = self._owned_job(job_id, worker_id, fence, state="DISPATCHED", now=effective_now)
             try:
-                self.ledger.settle_action(job["reservation_id"], actual=actual_amount,
-                                          quality="actual", receipt_digest=receipt_digest,
-                                          fence=fence)
+                for item in self._reservation_rows(job):
+                    self.ledger.settle_action(item["reservation_id"], actual=usage[item["resource"]],
+                                              quality="actual", receipt_digest=receipt_digest,
+                                              fence=fence)
             except BudgetLedgerError as exc:
                 raise WorkerBudgetError(str(exc)) from exc
-            budget = self.ledger.snapshot(job["campaign_id"])[job["resource"]]
-            budget_breached = budget["spent"] + budget["reserved"] + budget["unknown"] > budget["cap"]
+            snapshot = self.ledger.snapshot(job["campaign_id"])
+            budget_breached_by_resource = {
+                name: snapshot[name]["spent"] + snapshot[name]["reserved"] + snapshot[name]["unknown"]
+                > snapshot[name]["cap"] for name in usage
+            }
+            budget_breached = any(budget_breached_by_resource.values())
             response = {"job_id": job_id, "fence": fence, "output_digest": output_digest,
-                        "actual_amount": actual_amount, "receipt_digest": receipt_digest,
-                        "budget_breached": budget_breached}
+                        "actual_amount": primary_amount, "actual_usage": usage,
+                        "receipt_digest": receipt_digest, "budget_breached": budget_breached,
+                        "budget_breached_by_resource": budget_breached_by_resource}
             if result_payload is not None:
                 response["result"] = result_payload
             self.conn.execute("UPDATE worker_jobs SET state='COMPLETED',lease_owner=NULL,lease_until=NULL,updated_at=? WHERE job_id=?",
                               (utc_now(), job_id))
             self.conn.execute("INSERT INTO worker_results VALUES(?,?,?,?,?,?,?)",
-                              (job_id, fence, output_digest, actual_amount, receipt_digest, _canonical(response), utc_now()))
+                              (job_id, fence, output_digest, primary_amount, receipt_digest, _canonical(response), utc_now()))
             self._event(job_id, "JOB_COMPLETED", fence, response)
             if fail_before_commit:
                 raise RuntimeError("injected failure before atomic result commit")
@@ -465,8 +537,7 @@ class DurableWorkerQueue:
                 return "UNKNOWN"
             if job["state"] == "LEASED":
                 try:
-                    self.ledger.release_action(job["reservation_id"], fence=int(job["fence"]),
-                                               dispatch_proven_absent=True)
+                    self._release_reservations(job, fence=int(job["fence"]))
                 except BudgetLedgerError as exc:
                     raise WorkerBudgetError(str(exc)) from exc
                 state = "CANCELLED"
@@ -501,8 +572,7 @@ class DurableWorkerQueue:
             for job in rows:
                 if job["state"] == "LEASED":
                     try:
-                        self.ledger.release_action(job["reservation_id"], fence=int(job["fence"]),
-                                                   dispatch_proven_absent=True)
+                        self._release_reservations(job, fence=int(job["fence"]))
                     except BudgetLedgerError as exc:
                         raise WorkerBudgetError(str(exc)) from exc
                     self.conn.execute("UPDATE worker_jobs SET state='READY',lease_owner=NULL,lease_until=NULL,updated_at=? WHERE job_id=? AND fence=?",
@@ -518,44 +588,69 @@ class DurableWorkerQueue:
         return {"released": released, "unknown": unknown}
 
     def reconcile_unknown(
-        self, job_id: str, *, actual_amount: int | None,
+        self, job_id: str, *, actual_amount: int | None = None,
+        actual_usage: dict[str, int] | None = None,
         receipt_digest: str, output_digest: str,
     ) -> dict[str, Any]:
         """Resolve UNKNOWN only after a trusted provider adapter verifies a receipt."""
         self._validate_job_id(job_id)
         self._validate_digest(receipt_digest, "receipt_digest")
         self._validate_digest(output_digest, "output_digest")
-        if actual_amount is not None and (isinstance(actual_amount, bool) or not isinstance(actual_amount, int) or actual_amount < 0):
+        if actual_amount is not None and (isinstance(actual_amount, bool)
+                                          or not isinstance(actual_amount, int) or actual_amount < 0):
             raise WorkerQueueError("actual_amount must be a nonnegative integer or None")
         with self._transaction():
             job = self.conn.execute("SELECT * FROM worker_jobs WHERE job_id=?", (job_id,)).fetchone()
+            if job is None:
+                raise WorkerQueueError("unknown job")
+            bounds = self._resource_bounds(job_id)
+            upper_bound_only = actual_usage is None and actual_amount is None
+            charged_usage = (dict(bounds) if upper_bound_only else self._normalize_actual_usage(
+                job, actual_amount=actual_amount, actual_usage=actual_usage,
+            ))
             prior = self.conn.execute("SELECT * FROM worker_results WHERE job_id=?", (job_id,)).fetchone()
-            charged = int(job["upper_bound"]) if actual_amount is None and job is not None else actual_amount
-            expected = (int(job["fence"]), output_digest, charged, receipt_digest) if job is not None else None
+            primary_amount = charged_usage[job["resource"]]
+            expected = (int(job["fence"]), output_digest, primary_amount, receipt_digest, charged_usage)
             if prior is not None:
+                prior_response = json.loads(prior["response_json"])
                 actual = (int(prior["fence"]), prior["output_digest"], int(prior["actual_amount"]), prior["receipt_digest"])
+                actual = (*actual, prior_response.get(
+                    "actual_usage", {job["resource"]: int(prior["actual_amount"])}))
                 if expected == actual:
                     return json.loads(prior["response_json"])
                 raise WorkerQueueError("unknown job was already reconciled with different evidence")
-            if job is None or job["state"] != "UNKNOWN":
+            if job["state"] != "UNKNOWN":
                 raise WorkerQueueError("job is not UNKNOWN")
-            quality = "actual" if actual_amount is not None else "upper_bound"
             try:
-                self.ledger.settle_action(job["reservation_id"], actual=actual_amount,
-                                          quality=quality, receipt_digest=receipt_digest,
-                                          fence=int(job["fence"]), authoritative=True)
+                for item in self._reservation_rows(job):
+                    resource_name = item["resource"]
+                    self.ledger.settle_action(
+                        item["reservation_id"],
+                        actual=None if upper_bound_only else charged_usage[resource_name],
+                        quality="upper_bound" if upper_bound_only else "actual",
+                        receipt_digest=receipt_digest,
+                        fence=int(job["fence"]), authoritative=True,
+                    )
             except BudgetLedgerError as exc:
                 raise WorkerBudgetError(str(exc)) from exc
-            charged = int(job["upper_bound"]) if actual_amount is None else actual_amount
-            budget = self.ledger.snapshot(job["campaign_id"])[job["resource"]]
-            budget_breached = budget["spent"] + budget["reserved"] + budget["unknown"] > budget["cap"]
-            response = {"job_id": job_id, "fence": int(job["fence"]), "output_digest": output_digest,
-                        "actual_amount": charged, "receipt_digest": receipt_digest,
-                        "budget_breached": budget_breached}
+            snapshot = self.ledger.snapshot(job["campaign_id"])
+            budget_breached_by_resource = {
+                name: snapshot[name]["spent"] + snapshot[name]["reserved"] + snapshot[name]["unknown"]
+                > snapshot[name]["cap"] for name in charged_usage
+            }
+            response = {
+                "job_id": job_id, "fence": int(job["fence"]), "output_digest": output_digest,
+                "actual_amount": primary_amount, "actual_usage": charged_usage,
+                "usage_quality": "upper_bound" if upper_bound_only else "actual",
+                "receipt_digest": receipt_digest,
+                "budget_breached": any(budget_breached_by_resource.values()),
+                "budget_breached_by_resource": budget_breached_by_resource,
+            }
             self.conn.execute("UPDATE worker_jobs SET state='COMPLETED',updated_at=? WHERE job_id=?",
                               (utc_now(), job_id))
             self.conn.execute("INSERT INTO worker_results VALUES(?,?,?,?,?,?,?)",
-                              (job_id, int(job["fence"]), output_digest, charged, receipt_digest, _canonical(response), utc_now()))
+                              (job_id, int(job["fence"]), output_digest, primary_amount,
+                               receipt_digest, _canonical(response), utc_now()))
             self._event(job_id, "UNKNOWN_RECONCILED", int(job["fence"]), response)
             return response
 
@@ -612,10 +707,89 @@ class DurableWorkerQueue:
 
     def _mark_unknown(self, job: sqlite3.Row) -> None:
         try:
-            self.ledger.settle_action(job["reservation_id"], actual=None, quality="unknown",
-                                      receipt_digest=None, fence=int(job["fence"]))
+            for item in self._reservation_rows(job):
+                self.ledger.settle_action(item["reservation_id"], actual=None, quality="unknown",
+                                          receipt_digest=None, fence=int(job["fence"]))
         except BudgetLedgerError as exc:
             raise WorkerBudgetError(str(exc)) from exc
+
+    def _release_reservations(self, job: sqlite3.Row, *, fence: int) -> None:
+        for item in self._reservation_rows(job):
+            self.ledger.release_action(item["reservation_id"], fence=fence,
+                                       dispatch_proven_absent=True)
+
+    def _reservation_rows(self, job: sqlite3.Row) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT resource,upper_bound,reservation_id FROM worker_job_reservations "
+            "WHERE job_id=? AND fence=? ORDER BY resource",
+            (job["job_id"], int(job["fence"])),
+        ).fetchall()
+        if rows:
+            return [dict(row) for row in rows]
+        # Jobs claimed by an older queue version have only the primary hold.
+        if job["reservation_id"] is None:
+            return []
+        return [{"resource": job["resource"], "upper_bound": int(job["upper_bound"]),
+                 "reservation_id": job["reservation_id"]}]
+
+    def _resource_bounds(self, job_id: str) -> dict[str, int]:
+        rows = self.conn.execute(
+            "SELECT resource,upper_bound FROM worker_job_resource_bounds WHERE job_id=? ORDER BY resource",
+            (job_id,),
+        ).fetchall()
+        if rows:
+            return {row["resource"]: int(row["upper_bound"]) for row in rows}
+        # Backward-compatible view for jobs persisted before vector support.
+        row = self.conn.execute(
+            "SELECT resource,upper_bound FROM worker_jobs WHERE job_id=?", (job_id,),
+        ).fetchone()
+        if row is None:
+            raise WorkerQueueError("unknown job")
+        return {row["resource"]: int(row["upper_bound"])}
+
+    @staticmethod
+    def _validate_resource_bounds(value: dict[str, int]) -> dict[str, int]:
+        if not isinstance(value, dict) or not value:
+            raise WorkerQueueError("resource_bounds must be a nonempty resource-to-positive-integer mapping")
+        if any(not isinstance(resource, str) for resource in value):
+            raise WorkerQueueError("resource_bounds keys must be resource names")
+        normalized: dict[str, int] = {}
+        for resource, amount in sorted(value.items()):
+            if resource not in _RESOURCES:
+                raise WorkerQueueError(f"unsupported resource: {resource}")
+            if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
+                raise WorkerQueueError("resource_bounds amounts must be positive integers")
+            normalized[resource] = amount
+        return normalized
+
+    def _normalize_actual_usage(
+        self, job: sqlite3.Row, *, actual_amount: int | None,
+        actual_usage: dict[str, int] | None,
+    ) -> dict[str, int]:
+        bounds = self._resource_bounds(job["job_id"])
+        if actual_usage is None:
+            if set(bounds) != {job["resource"]}:
+                raise WorkerQueueError("multi-resource jobs require actual_usage for every reserved resource")
+            if actual_amount is None:
+                raise WorkerQueueError("completed jobs require known actual usage")
+            usage = {job["resource"]: actual_amount}
+        else:
+            if not isinstance(actual_usage, dict) or not actual_usage:
+                raise WorkerQueueError("actual_usage must be a nonempty resource-to-nonnegative-integer mapping")
+            if any(not isinstance(resource, str) for resource in actual_usage):
+                raise WorkerQueueError("actual_usage keys must be resource names")
+            usage: dict[str, int] = {}
+            for resource, amount in sorted(actual_usage.items()):
+                if resource not in _RESOURCES:
+                    raise WorkerQueueError(f"unsupported resource: {resource}")
+                if isinstance(amount, bool) or not isinstance(amount, int) or amount < 0:
+                    raise WorkerQueueError("actual_usage amounts must be nonnegative integers")
+                usage[resource] = amount
+            if set(usage) != set(bounds):
+                raise WorkerQueueError("actual_usage must include every reserved resource exactly once")
+            if actual_amount is not None and usage[job["resource"]] != actual_amount:
+                raise WorkerQueueError("actual_amount conflicts with the primary resource usage")
+        return usage
 
     def _event(self, job_id: str, event_type: str, fence: int, payload: dict[str, Any]) -> None:
         self.conn.execute(
@@ -623,11 +797,11 @@ class DurableWorkerQueue:
             (job_id, event_type, fence, _canonical(payload), utc_now()),
         )
 
-    @staticmethod
-    def _job_view(row: sqlite3.Row) -> dict[str, Any]:
+    def _job_view(self, row: sqlite3.Row) -> dict[str, Any]:
         return {"job_id": row["job_id"], "campaign_id": row["campaign_id"],
                 "action_id": row["action_id"], "resource": row["resource"],
                 "upper_bound": int(row["upper_bound"]), "request_hash": row["request_hash"],
+                "resource_bounds": self._resource_bounds(row["job_id"]),
                 "request": json.loads(row["request_json"]), "state": row["state"],
                 "fence": int(row["fence"]), "lease_owner": row["lease_owner"],
                 "lease_until": row["lease_until"], "reservation_id": row["reservation_id"]}
