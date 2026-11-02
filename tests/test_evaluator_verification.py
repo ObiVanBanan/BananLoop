@@ -13,7 +13,9 @@ from pydantic import ValidationError
 
 from bananloop.evaluator_verification import (
     EvaluatorProtocolAuthority,
+    EvaluatorProtocolDraftV1,
     EvaluatorProtocolV1,
+    EvaluatorVerificationAdapter,
     EvaluatorTierManifestV1,
     EvaluatorVerificationError,
     IntegrationCoreEvidenceV1,
@@ -25,14 +27,20 @@ from bananloop.evaluator_verification import (
     make_verifier_receipt,
 )
 from bananloop.contracts import (
-    CapabilityPolicyV2, ProtocolCase, ProtocolManifest, parse_campaign_spec_document,
+    CapabilityPolicyV2, ExplorationCampaignSpecV2, ProtocolCase, ProtocolManifest,
+    parse_campaign_spec_document,
 )
+from bananloop.exploration import EvidenceOnlyOutputV2
 from bananloop.budget_ledger import BudgetLedger
-from bananloop.graph_store import AddNode, GraphRepository, MutateGraph, TransitionNodeStatus
+from bananloop.graph_store import (
+    AddNode, ExplorationCompletionV2, GraphRepository, MutateGraph,
+    TransitionNodeStatus,
+)
 from bananloop.migrations import create_v5_graph_schema
 from bananloop.roles import (
-    PinnedRoleExecutorV1, RoleDefinitionV1, RoleRegistryV1, TeamFactoryV1,
-    TeamManifestAuthority, TeamRequestV1,
+    PinnedRoleExecutorV1, RoleContextSourceV1, RoleContextValueV1,
+    RoleDefinitionV1, RoleRegistryV1, TeamFactoryV1, TeamManifestAuthority,
+    TeamRequestV1, build_role_context,
 )
 from bananloop.worker_queue import DurableWorkerQueue
 from bananloop.optimization_lifecycle import OptimizationAttemptCoordinator
@@ -963,3 +971,278 @@ def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
     finally:
         queue.close()
         graph.close()
+
+
+
+def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path):
+    campaign_id = "research-campaign"
+    source_snapshot_id = "a" * 40
+    bundle_sha = "b" * 64
+    protocol = EvaluatorProtocolV1(
+        protocol_id="independently-reviewed", version=1,
+        source_snapshot_id=source_snapshot_id,
+        evaluator_bundle_sha256=bundle_sha,
+        entrypoint=("python", "evaluate.py"),
+        metric_id="quality", metric_field="quality",
+        direction="MAXIMIZE", aggregation="MEAN",
+        tiers=(EvaluatorTierManifestV1(
+            tier="dev", manifest_sha256="c" * 64, case_count=1,
+        ),),
+    )
+    reviewer_policy = CapabilityPolicyV2(
+        tools=(), read_paths=(), write_paths=(), backend="ISOLATED",
+        network_access=False,
+    )
+    researcher_role = RoleDefinitionV1(
+        role_id="researcher", adapter="codex", provider="openai",
+        model="gpt-6-luna", model_version="pin-test",
+        prompt_digest="1" * 64, capability_policy=reviewer_policy,
+        context_fields=("campaign_goal", "node_id", "public_task"),
+        priority=1, min_instances=1, max_instances=1,
+        calls_per_instance=2, tokens_per_instance=200,
+    )
+    verifier_role = RoleDefinitionV1(
+        role_id="independent_verifier", adapter="codex", provider="openai",
+        model="gpt-6-luna", model_version="pin-test",
+        prompt_digest="2" * 64, capability_policy=reviewer_policy,
+        context_fields=("campaign_goal", "public_task"),
+        priority=2, min_instances=1, max_instances=1,
+        calls_per_instance=2, tokens_per_instance=200,
+    )
+    registry = RoleRegistryV1(
+        registry_id="protocol-workflow-registry", version=1,
+        roles=(researcher_role, verifier_role),
+    )
+    spec = parse_campaign_spec_document({
+        "schema_version": 2, "mode": "EXPLORATION",
+        "goal": "Draft and independently verify a metric protocol",
+        "source_repo": "https://example.invalid/source",
+        "base_commit": source_snapshot_id,
+        "autonomy": {
+            "mode": "SUPERVISED", "scope_digest": "3" * 64,
+            "scope_version": 1,
+            "capability_policy": {
+                "tools": [], "read_paths": [], "write_paths": [],
+                "backend": "ISOLATED", "network_access": False,
+            },
+        },
+        "budget": {}, "role_registry_digest": registry.digest(),
+        "evaluation": None,
+    })
+    spec_hash = spec.approved_hash()
+    db_path = tmp_path / "protocol-workflow.sqlite3"
+    ledger = BudgetLedger(db_path)
+    ledger.create_root(campaign_id, {"agent_calls": 20})
+    ledger.close()
+
+    conn = sqlite3.connect(db_path, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute(
+        "CREATE TABLE events(seq INTEGER PRIMARY KEY AUTOINCREMENT,event_type TEXT NOT NULL,"
+        "payload_json TEXT NOT NULL,created_at TEXT NOT NULL)"
+    )
+    conn.execute("BEGIN IMMEDIATE")
+    create_v5_graph_schema(conn)
+    conn.execute("PRAGMA user_version=5")
+    conn.commit()
+    conn.execute("CREATE TABLE campaigns(id INTEGER PRIMARY KEY,spec_json TEXT NOT NULL)")
+    conn.execute(
+        "INSERT INTO campaigns(id,spec_json) VALUES(1,?)",
+        (json.dumps(spec.model_dump(mode="json")),),
+    )
+    graph = GraphRepository(conn, campaign_id=campaign_id)
+    queue = DurableWorkerQueue(db_path)
+
+    manifest = TeamFactoryV1.build(
+        registry,
+        TeamRequestV1(
+            campaign_id=campaign_id, spec_hash=spec_hash,
+            requested_instances={"researcher": 1, "independent_verifier": 1},
+            specializations=(), available_agent_calls=10,
+            available_model_tokens=1000,
+        ),
+        expected_registry_digest=registry.digest(),
+    )
+    TeamManifestAuthority(db_path).pin(manifest)
+    researcher = next(member for member in manifest.members
+                      if member.role.role_id == "researcher")
+    verifier = next(member for member in manifest.members
+                    if member.role.role_id == "independent_verifier")
+    assert researcher.instance_id != verifier.instance_id
+
+    graph.mutate(MutateGraph(
+        command_id="add-metric-node", idempotency_key="add-metric-node",
+        expected_graph_revision=0,
+        changes=(AddNode(
+            type="AddNode", node_id="metric-node", phase="EXPLORATION",
+            payload={"source_snapshot_id": source_snapshot_id},
+        ),),
+    ))
+    graph.mutate(MutateGraph(
+        command_id="ready-metric-node", idempotency_key="ready-metric-node",
+        expected_graph_revision=1,
+        changes=(TransitionNodeStatus(
+            type="TransitionNodeStatus", node_id="metric-node",
+            expected_node_revision=0, expected_status="PENDING", to_status="READY",
+            guard="SCHEDULER_READY", actor="CORE",
+        ),),
+    ))
+
+    researcher_action = "research:metric-node"
+    researcher_context = build_role_context(
+        researcher,
+        RoleContextSourceV1(
+            campaign_goal=RoleContextValueV1(
+                value=spec.goal, classification="PUBLIC_SPEC",
+                source_ref="campaign://spec/goal",
+            ),
+            fields={
+                "node_id": RoleContextValueV1(
+                    value="metric-node", classification="PUBLIC_NODE",
+                    source_ref="graph://nodes/metric-node",
+                ),
+                "public_task": RoleContextValueV1(
+                    value="Draft a bounded evaluator protocol",
+                    classification="PUBLIC_NODE", source_ref="graph://nodes/metric-node",
+                ),
+            },
+        ),
+    )
+    researcher_binding = manifest.job_binding(
+        researcher.instance_id, action_id=researcher_action,
+        context_digest=researcher_context.digest(),
+    )
+    role_allocation = {
+        "manifest_digest": manifest.manifest_digest,
+        "role_instance_id": researcher.instance_id, "role_id": researcher.role.role_id,
+        "calls_limit": researcher.role.calls_per_instance,
+        "tokens_limit": researcher.role.tokens_per_instance,
+        "token_upper_bound": researcher.role.tokens_per_instance // researcher.role.calls_per_instance,
+    }
+    researcher_request = {
+        "schema": "evidence-only-research-v2", "campaign_id": campaign_id,
+        "spec_hash": spec_hash, "node_id": "metric-node",
+        "base_commit": source_snapshot_id,
+        "capability_manifest": {"base_commit": source_snapshot_id},
+        "role_binding": researcher_binding,
+        "role_context": researcher_context.model_dump(mode="json", exclude_unset=True),
+        "team_manifest_digest": manifest.manifest_digest,
+        "role_registry_digest": registry.digest(),
+    }
+    queue.enqueue(
+        job_id="researcher-job-1", enqueue_key="researcher-job-1",
+        campaign_id=campaign_id, action_id=researcher_action,
+        resource="agent_calls", upper_bound=1, request=researcher_request,
+        role_allocation=role_allocation,
+    )
+
+    bundle_ref = f"artifact://sha256/{bundle_sha}"
+    draft = EvaluatorProtocolDraftV1(
+        protocol=protocol, evidence_refs=(bundle_ref,),
+    )
+    output = EvidenceOnlyOutputV2(
+        node_id="metric-node", evidence_refs=(bundle_ref,),
+        artifacts=({"path": "evaluator_bundle.zip", "sha256": bundle_sha},),
+        limitations=("test protocol bytes are deterministic",),
+        next_experiment="run independent protocol review",
+        protocol_draft=draft,
+    )
+    result_payload = output.model_dump(mode="json")
+    output_digest = hashlib.sha256(json.dumps(
+        result_payload, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False,
+    ).encode()).hexdigest()
+    lease = queue.claim("researcher-job-1", "research-worker", lease_seconds=30)
+    queue.mark_dispatched("researcher-job-1", "research-worker", lease["fence"])
+    queue.complete(
+        "researcher-job-1", "research-worker", lease["fence"],
+        output_digest=output_digest, actual_amount=1,
+        receipt_digest="4" * 64, result_payload=result_payload,
+    )
+    job = queue.get_job("researcher-job-1")
+    graph.complete_exploration(ExplorationCompletionV2(
+        command_id="complete-metric-node", idempotency_key="complete-metric-node",
+        expected_graph_revision=2, node_id="metric-node", node_revision=1,
+        job_id="researcher-job-1", worker_fence=lease["fence"],
+        source_request_hash=job["request_hash"], output_digest=output_digest,
+        spec_hash=spec_hash, evidence_refs=(bundle_ref,),
+        artifact_digests=(bundle_sha,), limitations=output.limitations,
+        next_experiment=output.next_experiment,
+    ))
+
+    protocol_authority = EvaluatorProtocolAuthority(graph.conn)
+    proposal = protocol_authority.record_completed_proposal(
+        graph, queue, "researcher-job-1",
+    )
+    assert proposal.source_job_id == "researcher-job-1"
+    assert proposal.source_fence == lease["fence"]
+    assert proposal.proposer_role_instance_id == researcher.instance_id
+
+    verification = EvaluatorVerificationAdapter(
+        graph=graph, queue=queue, campaign_id=campaign_id,
+    )
+    verifier_job = verification.enqueue_verifier(proposal.proposal_digest)
+    assert verifier_job["state"] == "READY"
+    assert verifier_job["request"]["role_binding"]["role_instance_id"] == verifier.instance_id
+    assert verifier.instance_id != proposal.proposer_role_instance_id
+    checks = (
+        "protocol_identity", "evaluator_bundle_review", "metric_contract",
+        "tier_manifests", "frozen_case_scope", "no_hidden_data_dependency",
+        "fair_comparison", "error_semantics",
+    )
+
+    def invoke_verifier(request, _gateway, **_pinned):
+        return ProtocolVerifierOutputV1(
+            proposal_digest=request["proposal_digest"], decision="APPROVE",
+            checks=checks, rationale="Independent deterministic protocol review.",
+        ).model_dump(mode="json")
+
+    wrong_executor = PinnedRoleExecutorV1.from_manifest(
+        manifest, researcher.instance_id, invoke_verifier,
+    )
+    with pytest.raises(EvaluatorVerificationError, match="pinned independent verifier"):
+        verification.run_verifier_one(
+            verifier_job_id=verifier_job["job_id"], worker_id="verify-worker",
+            executor=wrong_executor,
+        )
+    assert queue.get_job(verifier_job["job_id"])["state"] == "READY"
+
+    verifier_executor = PinnedRoleExecutorV1.from_manifest(
+        manifest, verifier.instance_id, invoke_verifier,
+    )
+    receipt = verification.run_verifier_one(
+        verifier_job_id=verifier_job["job_id"], worker_id="verify-worker",
+        executor=verifier_executor,
+    )
+    assert receipt.decision == "APPROVE"
+    assert receipt.verifier_role_instance_id == verifier.instance_id
+    assert receipt.verifier_role_instance_id != proposal.proposer_role_instance_id
+    assert receipt.approval_digest
+
+    approved_proposal, stored_receipt = protocol_authority.approved_protocol(
+        receipt.approval_digest,
+    )
+    assert approved_proposal == proposal
+    assert stored_receipt == receipt
+    assert protocol_authority.require_frozen_reference(
+        protocol.protocol_id, protocol.version, protocol.content_digest(),
+        receipt.approval_digest, campaign_id=campaign_id,
+    ) == receipt
+
+    queue.conn.execute(
+        "UPDATE worker_jobs SET fence=fence+1 WHERE job_id='researcher-job-1'"
+    )
+    with pytest.raises(EvaluatorVerificationError, match="fence or request"):
+        protocol_authority.record_completed_proposal(graph, queue, "researcher-job-1")
+
+    queue.close()
+    graph.close()
+    reopened = sqlite3.connect(db_path, isolation_level=None)
+    reloaded_authority = EvaluatorProtocolAuthority(reopened)
+    reloaded_proposal, reloaded_receipt = reloaded_authority.approved_protocol(
+        receipt.approval_digest,
+    )
+    assert reloaded_proposal.proposal_digest == proposal.proposal_digest
+    assert reloaded_receipt.receipt_digest == receipt.receipt_digest
+    reopened.close()
