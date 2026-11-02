@@ -4,14 +4,17 @@ import hashlib
 import io
 import json
 import stat
+import sqlite3
 import subprocess
 import zipfile
 from types import SimpleNamespace
 
 import pytest
 
-from bananloop.contracts import ProtocolCase, ProtocolManifest
-from bananloop.evaluator_verification import EvaluatorProtocolV1, EvaluatorTierManifestV1
+from bananloop.contracts import ProtocolCase, ProtocolManifest, parse_campaign_spec_document
+from bananloop.evaluator_verification import (
+    EvaluatorProtocolAuthority, EvaluatorProtocolV1, EvaluatorTierManifestV1,
+)
 from bananloop.trusted_evaluator import (
     EvaluatorBudgetProofV1,
     EvaluatorRunReceiptV1,
@@ -295,3 +298,99 @@ def test_core_snapshot_resolver_rejects_candidate_not_descended_from_protocol_so
     with pytest.raises(TrustedEvaluatorError, match="not descended"):
         adapter._snapshot_files(spec, source, candidate)
 
+
+
+def test_create_integration_evidence_binds_runtime_optimization_hash_after_source_approval(
+    monkeypatch, tmp_path,
+):
+    protocol, manifest, manifest_bytes, bundle, inputs = _protocol_and_manifest()
+    validation_tier = EvaluatorTierManifestV1(
+        tier="validation", manifest_sha256=_sha(manifest_bytes),
+        case_count=len(manifest.cases),
+    )
+    protocol = protocol.model_copy(update={
+        "tiers": tuple(sorted((*protocol.tiers, validation_tier), key=lambda item: item.tier)),
+    })
+    source_spec_hash = "e" * 64
+    approval_digest = "3" * 64
+    campaign_id = "campaign-1"
+    optimization_spec = parse_campaign_spec_document({
+        "schema_version": 2, "mode": "OPTIMIZATION",
+        "goal": "Run the approved evaluator against candidate snapshots",
+        "source_repo": "https://example.invalid/repo", "base_commit": "a" * 40,
+        "autonomy": {"mode": "SUPERVISED", "scope_digest": "b" * 64, "scope_version": 1},
+        "budget": {"max_experiments": 5, "max_attempts": 8, "max_agent_calls": 20,
+                   "max_evaluator_calls": 10, "deadline_seconds": 3600,
+                   "plateau_experiments": 3},
+        "role_registry_digest": "c" * 64,
+        "evaluation": {
+            "protocol_id": protocol.protocol_id, "version": protocol.version,
+            "content_sha256": protocol.content_digest(), "approval_digest": approval_digest,
+        },
+        "parent": None,
+    })
+    runtime_spec_hash = optimization_spec.approved_hash()
+    assert optimization_spec.evaluation.approval_digest == approval_digest
+    assert runtime_spec_hash != source_spec_hash
+
+    proposal = SimpleNamespace(campaign_id=campaign_id, spec_hash=source_spec_hash, protocol=protocol)
+    verifier_receipt = SimpleNamespace(campaign_id=campaign_id, protocol_digest=protocol.content_digest())
+    monkeypatch.setattr(
+        EvaluatorProtocolAuthority, "approved_protocol",
+        lambda _authority, _approval_digest: (proposal, verifier_receipt),
+    )
+    conn = sqlite3.connect(":memory:", isolation_level=None)
+    authority = EvaluatorProtocolAuthority(conn)
+    graph = SimpleNamespace(
+        bind_campaign_id=lambda _campaign_id: None,
+        conn=conn,
+        campaign_spec=lambda: optimization_spec,
+    )
+    adapter = TrustedEvaluatorAdapter(
+        graph=graph, queue=None, campaign_id=campaign_id, state_root=tmp_path,
+    )
+    runner = _StubRunner()
+    runner._protocol_hash = manifest.protocol_sha256
+
+    def make_receipt(candidate_snapshot_id: str, prefix: str):
+        execution = runner.run(
+            protocol=protocol, approval_digest=approval_digest, campaign_id=campaign_id,
+            spec_hash=runtime_spec_hash, candidate_snapshot_id=candidate_snapshot_id,
+            candidate_files={"src/main.py": b"candidate code"}, evaluator_bundle=bundle,
+            tier="validation", tier_manifest=manifest_bytes, case_inputs=inputs,
+        )
+        proofs = tuple(EvaluatorBudgetProofV1(
+            campaign_id=campaign_id, spec_hash=runtime_spec_hash,
+            job_id=f"{prefix}-{index}", fence=1, receipt_digest=f"{index:x}" * 64,
+            actual_amount=1, actual_usage={"evaluator_calls": 1},
+        ) for index in range(1, protocol.repeatability_runs + 1))
+        receipt = EvaluatorRunReceiptV1.from_completed_runs(
+            tuple(execution for _ in range(protocol.repeatability_runs)), proofs,
+        )
+        authority.append_run_receipt(receipt)
+        return receipt
+
+    baseline = make_receipt(protocol.source_snapshot_id, "baseline")
+    candidate = make_receipt("b" * 40, "candidate")
+    expected_cases = {
+        (item.case_id, item.repetition): item.input_sha256 for item in manifest.cases
+    }
+    result = SimpleNamespace(
+        metrics={"quality": SimpleNamespace(value=0.5)},
+        cases=tuple(SimpleNamespace(
+            case_id=case_id, repetition=repetition, input_sha256=input_sha256,
+        ) for (case_id, repetition), input_sha256 in expected_cases.items()),
+    )
+    monkeypatch.setattr(adapter, "_snapshot_files", lambda *_args: None)
+    monkeypatch.setattr(adapter, "_manifest_for_receipt", lambda _receipt: manifest)
+    monkeypatch.setattr(adapter, "_load_evaluation_result", lambda _digest: result)
+    monkeypatch.setattr(adapter, "_verify_budget_proofs", lambda *_args, **_kwargs: True)
+
+    evidence = adapter.create_integration_evidence(
+        baseline_run_receipt_digest=baseline.receipt_digest,
+        candidate_run_receipt_digest=candidate.receipt_digest,
+    )
+    assert evidence.spec_hash == runtime_spec_hash
+    assert evidence.approval_digest == approval_digest
+    assert evidence.decision == "PASS"
+    conn.close()
