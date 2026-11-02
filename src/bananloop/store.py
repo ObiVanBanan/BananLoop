@@ -220,6 +220,18 @@ class CampaignStore:
                 backup.unlink(missing_ok=True)
                 raise
         self.conn.executescript(SCHEMA)
+        # Serialize schema validation with all migration writers. A v5
+        # migrator may have committed after the initial version read above;
+        # without this second guarded read, the legacy path could overwrite
+        # user_version back to 4.
+        self.conn.execute("BEGIN IMMEDIATE")
+        locked_version = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
+        if locked_version > 4:
+            self.conn.rollback()
+            self.conn.close()
+            raise StoreError(
+                f"campaign database schema {locked_version} is newer than this BananLoop version"
+            )
         self._migrate_schema()
 
     def _migrate_schema(self) -> None:
