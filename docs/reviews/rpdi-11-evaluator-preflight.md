@@ -100,6 +100,13 @@ does not waive RPDI-11 technical evidence, tests, CI, per-PR review, or DoD.
   researcher role or lacking a manifest pin are rejected before dispatch, and
   a stale researcher fence is rejected. Self-approval contract rejection
   remains covered by its dedicated negative test.
+- The pinned independent verifier receives the exact bounded UTF-8 evaluator
+  source (8,000 source characters maximum), Core-validated tier summaries,
+  and the documented sandbox contract. Core validates the published bundle,
+  manifests, and every input blob against event-pinned digests; case IDs,
+  input digests, and input bytes are omitted from the verifier context.
+  Oversized/non-text source and tampered or unpinned published artifacts fail
+  closed. The receipt binds the digest of the exact review context.
 
 ## Remaining blockers before RPDI-11 is complete
 
