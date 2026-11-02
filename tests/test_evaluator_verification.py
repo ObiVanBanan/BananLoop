@@ -421,7 +421,7 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(tmp_
     spec_hash = spec.approved_hash()
     db_path = tmp_path / "campaign.sqlite3"
     ledger = BudgetLedger(db_path)
-    ledger.create_root(campaign_id, {"agent_calls": 20, "evaluator_calls": 20})
+    ledger.create_root(campaign_id, {"agent_calls": 20})
     ledger.close()
 
     conn = sqlite3.connect(db_path, isolation_level=None)
