@@ -467,6 +467,13 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(
     )
     graph = GraphRepository(conn, campaign_id=campaign_id)
     queue = DurableWorkerQueue(db_path)
+    published_root = tmp_path / "rpdi05" / "published"
+    published_root.mkdir(parents=True)
+    for digest, content in (
+        (bundle_sha, bundle_bytes), (manifest_sha, manifest_bytes),
+        (input_sha, input_bytes),
+    ):
+        (published_root / digest).write_bytes(content)
     protocol_authority = EvaluatorProtocolAuthority(graph.conn)
     protocol_authority._append_proposal(proposal)
     protocol_authority._append_verified_receipt(approval)
@@ -977,8 +984,14 @@ def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
 def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path):
     campaign_id = "research-campaign"
     source_snapshot_id = "a" * 40
-    bundle_sha = "b" * 64
-    protocol = EvaluatorProtocolV1(
+    input_bytes = b'{"private":"CASE_BYTES_SENTINEL"}'
+    input_sha = hashlib.sha256(input_bytes).hexdigest()
+    bundle_io = __import__("io").BytesIO()
+    with zipfile.ZipFile(bundle_io, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("evaluate.py", "SOURCE_REVIEW_SENTINEL = True\\n")
+    bundle_bytes = bundle_io.getvalue()
+    bundle_sha = hashlib.sha256(bundle_bytes).hexdigest()
+    preliminary = EvaluatorProtocolV1(
         protocol_id="independently-reviewed", version=1,
         source_snapshot_id=source_snapshot_id,
         evaluator_bundle_sha256=bundle_sha,
@@ -986,9 +999,21 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
         metric_id="quality", metric_field="quality",
         direction="MAXIMIZE", aggregation="MEAN",
         tiers=(EvaluatorTierManifestV1(
-            tier="dev", manifest_sha256="c" * 64, case_count=1,
+            tier="dev", manifest_sha256="0" * 64, case_count=1,
         ),),
     )
+    manifest = ProtocolManifest(
+        protocol_sha256=_case_protocol_digest(preliminary),
+        cases=(ProtocolCase(case_id="PRIVATE_CASE_ID_SENTINEL", repetition=0,
+                            input_sha256=input_sha),),
+    )
+    manifest_bytes = json.dumps(
+        manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
+    ).encode()
+    manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
+    protocol = preliminary.model_copy(update={"tiers": (EvaluatorTierManifestV1(
+        tier="dev", manifest_sha256=manifest_sha, case_count=1,
+    ),)})
     reviewer_policy = CapabilityPolicyV2(
         tools=(), read_paths=(), write_paths=(), backend="ISOLATED",
         network_access=False,
@@ -1140,12 +1165,18 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
     )
 
     bundle_ref = f"artifact://sha256/{bundle_sha}"
+    manifest_ref = f"artifact://sha256/{manifest_sha}"
+    input_ref = f"artifact://sha256/{input_sha}"
     draft = EvaluatorProtocolDraftV1(
-        protocol=protocol, evidence_refs=(bundle_ref,),
+        protocol=protocol, evidence_refs=(bundle_ref, manifest_ref, input_ref),
     )
     output = EvidenceOnlyOutputV2(
-        node_id="metric-node", evidence_refs=(bundle_ref,),
-        artifacts=({"path": "evaluator_bundle.zip", "sha256": bundle_sha},),
+        node_id="metric-node", evidence_refs=(bundle_ref, manifest_ref, input_ref),
+        artifacts=(
+            {"path": "evaluator_bundle.zip", "sha256": bundle_sha},
+            {"path": "protocol_manifest.json", "sha256": manifest_sha},
+            {"path": "case_input.json", "sha256": input_sha},
+        ),
         limitations=("test protocol bytes are deterministic",),
         next_experiment="run independent protocol review",
         protocol_draft=draft,
@@ -1169,7 +1200,7 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
         job_id="researcher-job-1", worker_fence=lease["fence"],
         source_request_hash=job["request_hash"], output_digest=output_digest,
         spec_hash=spec_hash, evidence_refs=(bundle_ref,),
-        artifact_digests=(bundle_sha,), limitations=output.limitations,
+        artifact_digests=(bundle_sha, manifest_sha, input_sha), limitations=output.limitations,
         next_experiment=output.next_experiment,
     ))
 
@@ -1183,9 +1214,22 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
 
     verification = EvaluatorVerificationAdapter(
         graph=graph, queue=queue, campaign_id=campaign_id,
+        published_artifact_root=published_root,
     )
     verifier_job = verification.enqueue_verifier(proposal.proposal_digest)
     assert verifier_job["state"] == "READY"
+    public_task = verifier_job["request"]["role_context"]["fields"]["public_task"]["value"]
+    assert "SOURCE_REVIEW_SENTINEL" in public_task
+    assert "evaluate.py" in public_task
+    assert manifest_sha in public_task
+    assert "PRIVATE_CASE_ID_SENTINEL" not in public_task
+    assert input_sha not in public_task
+    assert "CASE_BYTES_SENTINEL" not in public_task
+    assert input_ref not in public_task
+    (published_root / input_sha).write_bytes(b"tampered private input")
+    with pytest.raises(EvaluatorVerificationError, match="do not match their digest"):
+        verification.enqueue_verifier(proposal.proposal_digest)
+    (published_root / input_sha).write_bytes(input_bytes)
     assert verifier_job["request"]["role_binding"]["role_instance_id"] == verifier.instance_id
     assert verifier.instance_id != proposal.proposer_role_instance_id
     checks = (
