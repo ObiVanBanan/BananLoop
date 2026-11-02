@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import tempfile
+import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -496,6 +497,40 @@ class RPDI00ContractSpike(unittest.TestCase):
         self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='graph_meta'"), 0)
         self.assertEqual(self.scalar(dbpath, "SELECT spec_hash FROM campaigns WHERE id=1"), original["spec_hash"])
         self.assertEqual(self.scalar(backup, "PRAGMA user_version"), 4)
+
+    def test_v4_migration_backup_snapshot_precedes_blocked_concurrent_writer(self):
+        dbpath, backup = self.root / "legacy-v4.db", self.root / "legacy-v4.backup.db"
+        original = self.make_v4_fixture(dbpath)
+        lock_acquired, continue_migration = threading.Event(), threading.Event()
+        writer_started, writer_finished = threading.Event(), threading.Event()
+
+        def hold_after_writer_lock():
+            lock_acquired.set()
+            if not continue_migration.wait(timeout=10):
+                raise TimeoutError("test did not release migration writer lock")
+
+        def competing_writer():
+            writer = sqlite3.connect(dbpath, timeout=10, isolation_level=None)
+            try:
+                writer_started.set()
+                writer.execute("UPDATE campaigns SET spec_hash='committed-after-backup' WHERE id=1")
+                writer_finished.set()
+            finally:
+                writer.close()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            migration = pool.submit(migrate_v4_to_v5, dbpath, backup, after_writer_lock=hold_after_writer_lock)
+            self.assertTrue(lock_acquired.wait(timeout=5))
+            writer = pool.submit(competing_writer)
+            self.assertTrue(writer_started.wait(timeout=5))
+            self.assertFalse(writer_finished.wait(timeout=0.1), "writer committed while migration held BEGIN IMMEDIATE")
+            continue_migration.set()
+            migration.result(timeout=10)
+            writer.result(timeout=10)
+
+        self.assertEqual(self.scalar(backup, "SELECT spec_hash FROM campaigns WHERE id=1"), original["spec_hash"])
+        self.assertEqual(self.scalar(dbpath, "SELECT spec_hash FROM campaigns WHERE id=1"), "committed-after-backup")
+        self.assertEqual(self.scalar(dbpath, "PRAGMA user_version"), 5)
 
     def test_v4_migration_never_overwrites_existing_backup(self):
         dbpath, backup = self.root / "legacy-v4.db", self.root / "legacy-v4.backup.db"

@@ -34,7 +34,9 @@ If a reviewer does not accept an item as a later-RPDI deferral, that proof must 
 
 At the reviewed base SHA, `spikes/rpdi00/migration.py:17-30` checked integrity and took the backup before `BEGIN IMMEDIATE`, allowing a concurrent writer to commit after the backup. The follow-up patch obtains the SQLite writer reservation before backup and copies from a second read connection. The fixture now creates a campaign through the real v4 `CampaignStore`, compares legacy values, and checks integrity and foreign keys. Tested implementation head `a4dbd9ac0bf4d400a9f093ab3e63937f9a59b232` passes platform CI; opening through the future v2 adapter remains for RPDI-02.
 
-**Still required:** add a deterministic concurrent-writer regression test and open the migrated v5 database through the eventual v2 adapter. The v1 `CampaignStore` correctly rejects schema v5, so v2 reopen is an RPDI-02 integration proof and remains unverified here. The full local suite cannot run in this environment because `pydantic`/`pytest` are unavailable; CI provides the full-suite evidence instead.
+The follow-up now includes `test_v4_migration_backup_snapshot_precedes_blocked_concurrent_writer`, using a deterministic post-lock hook to prove a competing writer cannot commit before the backup snapshot. A standard-library concurrency probe passed locally. The full regression is awaiting CI because the local environment lacks `pydantic`/`pytest`.
+
+**Still required:** open the migrated v5 database through the eventual v2 adapter. The v1 `CampaignStore` correctly rejects schema v5, so v2 reopen is an RPDI-02 integration proof and remains unverified here.
 
 ### P1 — Migration test does not yet establish post-migration adapter compatibility
 
@@ -76,6 +78,7 @@ The follow-up now accepts evidence references, validates/canonicalizes them, bin
 
 - Graph mutation and event insertion are in one transaction; tests cover evidence refs in idempotency/result/event, replay, stale revision rejection, and rollback on invalid/cyclic mutations.
 - Claim-time reservation and lease creation are transactional; tests cover rollback before commit and concurrent budget-cap enforcement.
+- Migration holds the SQLite writer reservation through backup; deterministic concurrent-writer probe confirms backup reflects pre-writer state and the live database receives the later write.
 - Unknown spend remains charged against the cap in the exercised transition.
 - Exploration output contains no synthetic reward field.
 - The injected crash after child DB initialization can be reconciled without creating a second allocation in that specific scenario.

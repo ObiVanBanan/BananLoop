@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Callable
 
 from core import ContractError
 
 
 def migrate_v4_to_v5(database_path: str | Path, backup_path: str | Path, *,
-                     fail_after_schema: bool = False) -> None:
+                     fail_after_schema: bool = False,
+                     after_writer_lock: Callable[[], None] | None = None) -> None:
     """Back up a v4 fixture, add v0.2 tables transactionally, keep legacy rows intact."""
     source = Path(database_path)
     backup = Path(backup_path)
@@ -21,6 +23,8 @@ def migrate_v4_to_v5(database_path: str | Path, backup_path: str | Path, *,
         # backup API can block when its source connection owns a write txn.
         db.execute("PRAGMA foreign_keys=ON")
         db.execute("BEGIN IMMEDIATE")
+        if after_writer_lock is not None:
+            after_writer_lock()
         version = db.execute("PRAGMA user_version").fetchone()[0]
         if version != 4:
             raise ContractError("MIGRATION_VERSION", f"expected schema v4, found v{version}")
