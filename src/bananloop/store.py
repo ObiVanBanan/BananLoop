@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .contracts import CampaignSpec, PivotDecisionCommand, PivotProposal, utc_now
+from .contracts import CampaignSpec, PivotDecisionCommand, PivotProposal, parse_legacy_campaign_spec, utc_now
 
 
 SCHEMA = """
@@ -596,6 +596,8 @@ class CampaignStore:
         self.conn.close()
 
     def initialize(self, spec: CampaignSpec) -> None:
+        if not isinstance(spec, CampaignSpec):
+            raise StoreError("legacy campaign store only accepts schema_version=1 specs")
         if self.conn.execute("SELECT 1 FROM campaigns WHERE id=1").fetchone():
             raise StoreError("campaign already exists for this state directory")
         now = utc_now()
@@ -613,7 +615,10 @@ class CampaignStore:
         return dict(row)
 
     def spec(self) -> CampaignSpec:
-        return CampaignSpec.model_validate_json(self.campaign()["spec_json"])
+        try:
+            return parse_legacy_campaign_spec(self.campaign()["spec_json"])
+        except (ValueError, TypeError) as exc:
+            raise StoreError(f"legacy campaign store cannot load this spec: {exc}") from exc
 
 
     def research_state(self) -> dict[str, Any] | None:
