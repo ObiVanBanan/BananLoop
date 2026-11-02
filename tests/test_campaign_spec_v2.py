@@ -75,7 +75,15 @@ def test_v2_parser_rejects_unknown_versions_fields_and_mixed_modes(payload):
         parse_campaign_spec_document(payload)
 
 
-def test_missing_schema_version_rejects_v2_fields_in_otherwise_valid_v1_document():
+@pytest.mark.parametrize("field,value", [
+    ("mode", "EXPLORATION"),
+    ("autonomy", {}),
+    ("feature_flags", {}),
+    ("evaluation", None),
+    ("parent", None),
+    ("role_registry_digest", SHA),
+])
+def test_missing_schema_version_rejects_v2_fields_in_otherwise_valid_v1_document(field, value):
     legacy = {
         "goal": "test",
         "source_repo": "repo",
@@ -84,7 +92,7 @@ def test_missing_schema_version_rejects_v2_fields_in_otherwise_valid_v1_document
         "primary_metric": {"name": "quality", "direction": "maximize",
                            "target": 1.0, "min_improvement": 0.1},
     }
-    ambiguous = {**legacy, "mode": "EXPLORATION", "autonomy": {}, "evaluation": None}
+    ambiguous = {**legacy, field: value}
 
     with pytest.raises(ValueError, match="require an explicit schema_version=2"):
         parse_campaign_spec_document(ambiguous)

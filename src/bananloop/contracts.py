@@ -718,7 +718,7 @@ def parse_campaign_spec_document(
     if not isinstance(payload, dict):
         raise ValueError("campaign spec must be a JSON object")
     if "schema_version" not in payload and {
-        "mode", "autonomy", "feature_flags", "evaluation", "parent"
+        "mode", "autonomy", "feature_flags", "evaluation", "parent", "role_registry_digest"
     }.intersection(payload):
         raise ValueError("v2 campaign fields require an explicit schema_version=2")
     version = payload.get("schema_version", 1)
