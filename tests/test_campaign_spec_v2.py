@@ -81,6 +81,9 @@ def test_v2_specs_are_frozen_and_approved_hash_is_canonical():
     assert spec.approved_hash() == parse_campaign_spec_document(exploration_spec()).approved_hash()
     assert spec.feature_flags.profile == "FULL"
     assert spec.feature_flags.enabled_features == V2_FULL_FEATURES
+    assert {"budget_accounting", "durable_worker_fencing", "node_phase_scheduler"} <= set(
+        spec.feature_flags.enabled_features
+    )
     assert len(spec.feature_flags.flag_hash()) == 64
     with pytest.raises(ValidationError):
         spec.goal = "mutated"

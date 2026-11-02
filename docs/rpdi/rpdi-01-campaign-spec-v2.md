@@ -18,6 +18,27 @@
 - V2 models are immutable Pydantic models with unknown fields forbidden. Their canonical hash includes the complete normalized v2 document.
 - `feature_flags.flag_hash()` exposes a stable digest for frozen run manifests and paired benchmark evidence. Full vs diagnostic configuration changes the campaign approved hash.
 
+## Feature flag ownership map
+
+The version 1 Full set pins each mechanism family to its backlog owner. The names are stable identifiers for the campaign's approved run configuration; they do not claim that later RPDI implementations already exist.
+
+| Flag | RPDI owner |
+|---|---|
+| `and_or_dag` | RPDI-02 |
+| `budget_accounting` | RPDI-03, including root/child escrow, caps, and UNKNOWN accounting |
+| `durable_worker_fencing` | RPDI-04 |
+| `exploration`, `optimization` | RPDI-01/05/11 |
+| `capability_gateway` | RPDI-06 |
+| `node_phase_scheduler` | RPDI-07 |
+| `api_sse_cli` | RPDI-08 |
+| `dynamic_roles` | RPDI-09 |
+| `research_intelligence`, `causal_memory` | RPDI-10 |
+| `metric_discovery`, `evaluator_verification`, `integration_verifier` | RPDI-11 |
+| `child_campaigns`, `human_steering` | RPDI-12 |
+| `dashboard`, `observability` | RPDI-13 |
+
+Independent benchmark and release eligibility are gates, not toggleable feature flags. Diagnostic configs cannot claim the Full profile; the R14 runner must require the complete Full flag hash.
+
 ## Owner-directed gate exception
 
 The owner reviewed PR #117, accepted the three fixes and downstream deferrals in comment #6577579990, then instructed this workstream to proceed without another independent RPDI-00 reviewer. This is recorded as an explicit exception to the earlier independent-sign-off gate; it must not be described as independent approval. It does not waive CI, per-RPDI reviews, Full E2E, independent paired benchmarks, or release criteria. Benchmark and release gates remain unchanged.
