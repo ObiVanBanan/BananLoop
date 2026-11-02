@@ -43,6 +43,9 @@ does not waive RPDI-11 technical evidence, tests, CI, per-PR review, or DoD.
   `evaluator://receipt/<digest>` reference. Core checks the durable receipt
   against the campaign, frozen protocol, source snapshot, and candidate snapshot;
   the transition fails without it and leaves graph revision unchanged.
+- Candidate readiness accepts DEV receipts only. Integration regression
+  evidence accepts VALIDATION receipts only; both the adapter and storage
+  authority reject HOLDOUT evidence from graph decisions.
 
 ## Remaining blockers before RPDI-11 is complete
 
@@ -54,10 +57,11 @@ does not waive RPDI-11 technical evidence, tests, CI, per-PR review, or DoD.
    authorized handoff into a separate Optimization campaign is owned by
    RPDI-12. The graph must not silently switch an Exploration campaign into
    Optimization.
-3. Exact-head CI must pass on the current revision. On the current code head,
-   Ubuntu Python 3.11, 3.12, and 3.13 passed; Windows Python 3.12 is still
-   running. Local Python lacks Pydantic and pytest, so behavior tests rely on
-   repository CI.
+3. Exact-head CI must pass after the latest code and tests. Earlier
+   candidate-gate code passed Ubuntu Python 3.11, 3.12, and 3.13; Windows was
+   still running. The current holdout-boundary changes are being checked on the
+   latest branch head. Local Python lacks Pydantic and pytest, so behavior tests
+   rely on repository CI.
 
 These blockers keep this branch in draft. The owner waiver allows work to
 continue; it does not waive RPDI-11 technical evidence or convert role claims
