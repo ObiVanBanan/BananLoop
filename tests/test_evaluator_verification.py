@@ -106,7 +106,8 @@ def _receipt(proposal, *, decision="APPROVE", verifier_instance="agent-" + "5" *
         proposal, verifier_job_id="verify-job-1", verifier_fence=3,
         verifier_role_id="independent_verifier", verifier_role_instance_id=verifier_instance,
         verifier_binding_digest="6" * 64, verifier_request_hash="7" * 64,
-        verifier_output_digest="8" * 64, output=output,
+        verifier_output_digest="8" * 64, review_material_digest="9" * 64,
+        output=output,
     )
 
 
@@ -467,13 +468,6 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(
     )
     graph = GraphRepository(conn, campaign_id=campaign_id)
     queue = DurableWorkerQueue(db_path)
-    published_root = tmp_path / "rpdi05" / "published"
-    published_root.mkdir(parents=True)
-    for digest, content in (
-        (bundle_sha, bundle_bytes), (manifest_sha, manifest_bytes),
-        (input_sha, input_bytes),
-    ):
-        (published_root / digest).write_bytes(content)
     protocol_authority = EvaluatorProtocolAuthority(graph.conn)
     protocol_authority._append_proposal(proposal)
     protocol_authority._append_verified_receipt(approval)
@@ -1078,6 +1072,13 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
     )
     graph = GraphRepository(conn, campaign_id=campaign_id)
     queue = DurableWorkerQueue(db_path)
+    published_root = tmp_path / "rpdi05" / "published"
+    published_root.mkdir(parents=True)
+    for digest, content in (
+        (bundle_sha, bundle_bytes), (manifest_sha, manifest_bytes),
+        (input_sha, input_bytes),
+    ):
+        (published_root / digest).write_bytes(content)
 
     manifest = TeamFactoryV1.build(
         registry,
