@@ -7,6 +7,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from pydantic import ValidationError
 
 from bananloop.graph_store import (
     ExplorationCompletionV2,
@@ -135,7 +136,7 @@ def test_evidence_completion_is_strict_atomic_and_replayable():
         assert (node_row["phase"], node_row["status"]) == ("CONSOLIDATION", "COMPLETED")
         assert json.loads(node_row["payload_json"])["completion_evidence"]["worker_fence"] == 1
         assert conn.execute("SELECT COUNT(*) FROM events WHERE event_type='EXPLORATION_COMPLETED'").fetchone()[0] == 1
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ExplorationCompletionV2.model_validate({**payload, "score": 1})
     finally:
         graph.close()

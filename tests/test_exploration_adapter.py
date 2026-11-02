@@ -74,7 +74,7 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
                     "limitations": ["single observation"], "next_experiment": "repeat with control"}
 
         adapter.run_one(job_id=job["job_id"], worker_id="worker-test", execute=execute)
-        artifact = tmp_path / "rpdi" / "artifacts" / f"{job['job_id']}-f1" / "observation.txt"
+        artifact = tmp_path / "rpdi05" / "artifacts" / f"{job['job_id']}-f1" / "observation.txt"
         artifact.write_bytes(b"changed after completion")
         with pytest.raises(EvidenceAdapterError, match="changed after"):
             adapter.publish_completed(job["job_id"])
