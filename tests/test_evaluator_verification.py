@@ -1210,6 +1210,19 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
         )
     assert queue.get_job(verifier_job["job_id"])["state"] == "READY"
 
+    unpinned_executor = SimpleNamespace(
+        manifest_digest=None, member=verifier,
+        dispatch=lambda *_args, **_kwargs: invoke_verifier(
+            verifier_job["request"], None,
+        ),
+    )
+    with pytest.raises(EvaluatorVerificationError, match="pinned independent verifier"):
+        verification.run_verifier_one(
+            verifier_job_id=verifier_job["job_id"], worker_id="verify-worker",
+            executor=unpinned_executor,
+        )
+    assert queue.get_job(verifier_job["job_id"])["state"] == "READY"
+
     verifier_executor = PinnedRoleExecutorV1.from_manifest(
         manifest, verifier.instance_id, invoke_verifier,
     )
