@@ -373,7 +373,17 @@ def test_core_integration_evidence_digest_binds_every_deterministic_check():
 
 
 
-def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(tmp_path):
+@pytest.mark.parametrize(
+    ("candidate_quality", "reviewer_decision", "decision", "phase", "status", "guard"),
+    [
+        (0.8, "PASS", "PASS", "CONSOLIDATION", "COMPLETED", "VERIFIED_RESULT"),
+        (0.5, "PASS", "FAIL", "OPTIMIZATION", "PENDING", "REGRESSION_FAILED"),
+        (0.8, "FAIL", "FAIL", "OPTIMIZATION", "PENDING", "REGRESSION_FAILED"),
+    ],
+)
+def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(
+    tmp_path, candidate_quality, reviewer_decision, decision, phase, status, guard,
+):
     proposal = _proposal()
     approval = _receipt(proposal)
     protocol = proposal.protocol
@@ -454,9 +464,11 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(tmp_
                         input_sha256=f"{index:064x}")
         for index in range(validation_tier.case_count)
     )
-    evaluation_result = SimpleNamespace(
-        metrics={"quality": SimpleNamespace(value=0.75)},
-        cases=cases,
+    baseline_result = SimpleNamespace(
+        metrics={"quality": SimpleNamespace(value=0.75)}, cases=cases,
+    )
+    candidate_result = SimpleNamespace(
+        metrics={"quality": SimpleNamespace(value=candidate_quality)}, cases=cases,
     )
 
     def make_run(candidate_snapshot_id, prefix):
@@ -492,7 +504,9 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(tmp_
     )
     trusted._snapshot_files = lambda *_args: None
     trusted._manifest_for_receipt = lambda _receipt: SimpleNamespace(cases=cases)
-    trusted._load_evaluation_result = lambda _digest: evaluation_result
+    trusted._load_evaluation_result = lambda digest: (
+        baseline_result if digest == baseline.result_digest else candidate_result
+    )
     trusted._verify_budget_proofs = lambda *_args, **_kwargs: True
 
     team = TeamFactoryV1.build(
@@ -512,7 +526,7 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(tmp_
     def invoke(request, _gateway, **_pinned):
         return IntegrationVerifierOutputV1(
             candidate_snapshot_id=request["candidate_snapshot_id"],
-            protocol_digest=request["protocol_digest"], decision="PASS",
+            protocol_digest=request["protocol_digest"], decision=reviewer_decision,
             checks=(
                 "candidate_identity", "protocol_identity", "evaluation_receipt",
                 "budget_receipt", "artifact_integrity", "regression_policy",
@@ -564,14 +578,14 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(tmp_
             baseline_run_receipt_digest=baseline.receipt_digest,
             executor=executor, worker_id="integration-worker",
         )
-        assert receipt.decision == "PASS"
+        assert receipt.decision == decision
         assert replay == receipt
         node = next(
             node for node in graph.scheduling_snapshot()["nodes"]
             if node["node_id"] == "candidate-node"
         )
-        assert (node["phase"], node["status"]) == ("CONSOLIDATION", "COMPLETED")
-        assert node["payload"]["last_phase_transition"]["guard"] == "VERIFIED_RESULT"
+        assert (node["phase"], node["status"]) == (phase, status)
+        assert node["payload"]["last_phase_transition"]["guard"] == guard
         assert node["payload"]["last_phase_transition"]["evidence_refs"] == [
             f"integration://receipt/{receipt.receipt_digest}"
         ]
@@ -587,6 +601,22 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(tmp_
         assert graph.conn.execute(
             "SELECT COUNT(*) FROM evaluator_integration_receipts"
         ).fetchone()[0] == 1
+        assert graph.conn.execute(
+            "SELECT COUNT(*) FROM evaluator_integration_evidence"
+        ).fetchone()[0] == 1
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            graph.conn.execute(
+                "UPDATE evaluator_integration_receipts SET decision='FAIL' "
+                "WHERE receipt_digest=?",
+                (receipt.receipt_digest,),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            graph.conn.execute(
+                "UPDATE evaluator_integration_evidence SET decision='FAIL' "
+                "WHERE evidence_digest=(SELECT core_evidence_digest "
+                "FROM evaluator_integration_receipts WHERE receipt_digest=?)",
+                (receipt.receipt_digest,),
+            )
     finally:
         queue.close()
         graph.close()
