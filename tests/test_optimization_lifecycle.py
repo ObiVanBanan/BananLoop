@@ -44,6 +44,13 @@ class _Graph:
             source_snapshot_id="a" * 40, candidate_snapshot_id="b" * 40,
             tier="dev",
         )
+        self._validation_receipt = SimpleNamespace(
+            receipt_digest="8" * 64, campaign_id="campaign-1",
+            spec_hash="d" * 64, approval_digest="e" * 64,
+            protocol_id="quality", protocol_version=1, protocol_digest="f" * 64,
+            source_snapshot_id="a" * 40, candidate_snapshot_id="b" * 40,
+            tier="validation",
+        )
         self.evaluator_protocols = SimpleNamespace(
             require_run_receipt=self._require_run_receipt,
             require_integration_decision=self._require_integration_decision,
@@ -51,9 +58,14 @@ class _Graph:
         self._integration_receipt = None
 
     def _require_run_receipt(self, digest, **kwargs):
-        assert digest == self._receipt.receipt_digest
-        assert kwargs["candidate_snapshot_id"] == self.node["payload"]["candidate_snapshot_id"]
-        return self._receipt
+        assert kwargs["candidate_snapshot_id"] in {
+            self.node["payload"]["candidate_snapshot_id"],
+            self.node["payload"]["source_snapshot_id"],
+        }
+        if digest == self._receipt.receipt_digest:
+            return self._receipt
+        assert digest == self._validation_receipt.receipt_digest
+        return self._validation_receipt
 
     def _require_integration_decision(self, digest, *, decision, **kwargs):
         assert self._integration_receipt is not None
@@ -101,16 +113,19 @@ class _Graph:
 
 
 class _TrustedEvaluator:
-    def __init__(self, queue, receipt):
+    def __init__(self, queue, receipt, validation_receipt=None):
         self.queue = queue
         self.receipt = receipt
+        self.validation_receipt = validation_receipt or receipt
         self.enqueued = []
         self.runs = []
         self.finalized = []
+        self.current_tier = "dev"
 
     def enqueue_repeatability(self, *, candidate_snapshot_id, tier):
         self.enqueued.append((candidate_snapshot_id, tier))
-        return ("eval-1", "eval-2")
+        self.current_tier = tier
+        return ("eval-1", "eval-2") if tier == "dev" else ("val-1", "val-2")
 
     def run_one(self, job_id, *, worker_id):
         self.runs.append((job_id, worker_id))
@@ -118,7 +133,7 @@ class _TrustedEvaluator:
 
     def finalize_repeatability(self, job_ids):
         self.finalized.append(job_ids)
-        return self.receipt
+        return self.receipt if self.current_tier == "dev" else self.validation_receipt
 
 
 def _setup(states=("READY", "READY")):
@@ -231,7 +246,9 @@ def _verification_coordinator(*, state="READY", decision="PASS", integration_typ
         source_snapshot_id="a" * 40, candidate_snapshot_id="b" * 40,
     )
     graph._integration_receipt = receipt
-    trusted = _TrustedEvaluator(queue, graph._receipt)
+    queue.states.update({"eval-1": "COMPLETED", "eval-2": "COMPLETED",
+                         "val-1": "READY", "val-2": "READY"})
+    trusted = _TrustedEvaluator(queue, graph._receipt, graph._validation_receipt)
     integration = integration_type(queue, receipt)
     coordinator = OptimizationAttemptCoordinator(
         graph=graph, trusted_evaluator=trusted, integration_verifier=integration,
@@ -258,7 +275,7 @@ def test_integration_decision_projects_guarded_phase_and_replays(
     )
 
     assert receipt is graph._integration_receipt
-    assert integration.enqueued == [("1" * 64, graph._receipt.receipt_digest)]
+    assert integration.enqueued == [("1" * 64, graph._validation_receipt.receipt_digest)]
     assert integration.runs == [("integration-1", "reviewer-worker", executor)]
     assert graph.node["phase"] == phase
     assert graph.node["status"] == status
@@ -277,7 +294,7 @@ def test_integration_decision_projects_guarded_phase_and_replays(
     assert len(graph.mutations) == 1
     assert len(integration.enqueued) == 1
     assert len(integration.runs) == 1
-    assert queue.calls == ["integration-1"]
+    assert queue.calls == ["val-1", "val-2", "integration-1"]
 
 
 def test_integration_completed_job_is_recovered_without_redrive():
@@ -359,7 +376,8 @@ def test_integration_leg_settles_real_sqlite_queue_and_projects_graph(tmp_path):
         source_snapshot_id="a" * 40, candidate_snapshot_id="b" * 40,
     )
     graph._integration_receipt = receipt
-    trusted = _TrustedEvaluator(queue, graph._receipt)
+    eval_queue = _Queue({"val-1": "COMPLETED", "val-2": "COMPLETED"})
+    trusted = _TrustedEvaluator(eval_queue, graph._receipt, graph._validation_receipt)
     integration = _SQLiteIntegration(queue, receipt)
     coordinator = OptimizationAttemptCoordinator(
         graph=graph, trusted_evaluator=trusted, integration_verifier=integration,
