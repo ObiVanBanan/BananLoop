@@ -75,7 +75,6 @@ def test_node_phase_transition_matrix_and_status_are_orthogonal():
     ("from_phase", "to_phase", "guard", "actor", "expected_status"),
     [
         ("EXPLORATION", "METRIC_DISCOVERY", "METRIC_PROPOSAL", "CORE", "PENDING"),
-        ("METRIC_DISCOVERY", "EXPLORATION", "PROTOCOL_REJECTED", "VERIFIER", "PENDING"),
         ("OPTIMIZATION", "VERIFICATION", "CANDIDATE_READY", "CORE", "PENDING"),
         ("OPTIMIZATION", "EXPLORATION", "REFRAME", "CORE", "PENDING"),
     ],

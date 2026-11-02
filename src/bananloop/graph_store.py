@@ -633,6 +633,8 @@ class GraphRepository:
         if has_campaign is None:
             if change.guard == "PROTOCOL_FROZEN":
                 raise GraphStoreError("protocol freeze requires an Optimization spec pinned to verifier approval")
+            if change.guard in {"VERIFIED_RESULT", "REGRESSION_FAILED"}:
+                raise GraphStoreError("integration verification requires a pinned Optimization evaluator")
             raise GraphStoreError("verifier transition requires an initialized campaign spec")
         spec = self.campaign_spec()
         approval_refs = [ref.removeprefix("verifier://approval/") for ref in change.evidence_refs
