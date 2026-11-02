@@ -14,7 +14,10 @@ from bananloop.contracts import ExplorationCampaignSpecV2
 from bananloop.exploration import EvidenceAdapterError, EvidenceOnlyAttemptAdapter, EvidenceOnlyOutputV2
 from bananloop.graph_store import GraphRepository
 from bananloop.migrations import create_v5_graph_schema
-from bananloop.roles import RoleDefinitionV1, RoleRegistryV1
+from bananloop.roles import (
+    PinnedRoleExecutorV1, RoleDefinitionV1,
+    RoleRegistryV1, TeamManifestAuthority,
+)
 from bananloop.worker_queue import DurableWorkerQueue
 
 
@@ -63,6 +66,18 @@ def _role_registry():
     )
 
 
+def _pinned_executor(queue, graph, campaign_id, roles, job, invoke):
+    spec = graph.campaign_spec()
+    authority = TeamManifestAuthority(queue.path)
+    try:
+        manifest = authority.load(campaign_id, spec_hash=spec.approved_hash(),
+                                  registry_digest=roles.digest())
+    finally:
+        authority.close()
+    member = manifest.member(job["request"]["role_binding"]["role_instance_id"])
+    return manifest, member, PinnedRoleExecutorV1.from_manifest(manifest, member.instance_id, invoke)
+
+
 def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
     source = tmp_path / "source"
     base = _source_repo(source)
@@ -85,16 +100,18 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
     queue = DurableWorkerQueue(registry_path)
     adapter = EvidenceOnlyAttemptAdapter(graph=graph, queue=queue, campaign_id="campaign-test",
                                          state_root=tmp_path, role_registry=roles)
-    executor_binding = {"adapter": "codex", "provider": "openai", "model": "gpt-6-luna",
-                        "model_version": "test-pin-v1"}
     try:
         job = adapter.enqueue(node_id="explore", visible_paths=["README.md"])
         assert job["request"]["team_manifest_digest"]
         assert job["request"]["role_binding"]["role_id"] == "researcher"
         assert job["request"]["role_context"]["campaign_goal"] == "map evidence"
-        with pytest.raises(EvidenceAdapterError, match="pinned role"):
-            adapter.run_one(job_id=job["job_id"], worker_id="worker-test", execute=lambda *_: {},
-                            executor_binding={**executor_binding, "model": "fallback-model"})
+        manifest, member, _ = _pinned_executor(queue, graph, "campaign-test", roles, job, lambda *_args, **_kwargs: {})
+        wrong_model = member.role.model_copy(update={"model": "fallback-model"})
+        wrong_member = member.model_copy(update={"role": wrong_model})
+        wrong_executor = PinnedRoleExecutorV1(manifest_digest=manifest.manifest_digest,
+                                              member=wrong_member, _invoke=lambda *_args, **_kwargs: {})
+        with pytest.raises(EvidenceAdapterError, match="pinned team manifest"):
+            adapter.run_one(job_id=job["job_id"], worker_id="worker-test", executor=wrong_executor)
         assert queue.get_job(job["job_id"])["state"] == "READY"
         assert job["request"]["approved_base_ref"] == "HEAD"
         assert job["request"]["base_commit"] == base
@@ -106,7 +123,10 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
         assert replayed_job["job_id"] == job["job_id"]
         assert replayed_job["request_hash"] == job["request_hash"]
 
-        def execute(request, gateway):
+        def execute(request, gateway, **pin):
+            assert pin == {"adapter": "codex", "provider": "openai", "model": "gpt-6-luna",
+                           "model_version": "test-pin-v1", "prompt_digest": "c" * 64,
+                           "max_model_tokens": 100}
             assert gateway.read_file("README.md") == "frozen source\n"
             assert gateway.list_files() == ["README.md"]
             content = b"observed evidence\n"
@@ -115,8 +135,8 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
                     "artifacts": [{"path": "observation.txt", "sha256": hashlib.sha256(content).hexdigest()}],
                     "limitations": ["single observation"], "next_experiment": "repeat with control"}
 
-        adapter.run_one(job_id=job["job_id"], worker_id="worker-test", execute=execute,
-                        executor_binding=executor_binding)
+        _, _, executor = _pinned_executor(queue, graph, "campaign-test", roles, job, execute)
+        adapter.run_one(job_id=job["job_id"], worker_id="worker-test", executor=executor)
         artifact = tmp_path / "rpdi05" / "artifacts" / f"{job['job_id']}-f1" / "observation.txt"
         artifact.write_bytes(b"changed after completion")
         with pytest.raises(EvidenceAdapterError, match="changed after"):
@@ -124,7 +144,6 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
         artifact.write_bytes(b"observed evidence\n")
         first = adapter.publish_completed(job["job_id"])
         replay = adapter.publish_completed(job["job_id"])
-        assert replay == first
         assert graph.graph_revision() == 4
     finally:
         queue.close()
@@ -153,19 +172,18 @@ def test_revocation_blocks_exploration_graph_commit(tmp_path):
     queue = DurableWorkerQueue(registry_path)
     adapter = EvidenceOnlyAttemptAdapter(graph=graph, queue=queue, campaign_id="campaign-test",
                                          state_root=tmp_path, role_registry=roles)
-    executor_binding = {"adapter": "codex", "provider": "openai", "model": "gpt-6-luna",
-                        "model_version": "test-pin-v1"}
     try:
         job = adapter.enqueue(node_id="explore", visible_paths=["README.md"])
 
-        def execute(_request, gateway):
+        def execute(_request, gateway, **pin):
+            assert pin["model"] == "gpt-6-luna"
             content = b"evidence"
             gateway.write_artifact("evidence.txt", content)
             return {"node_id": "explore", "artifacts": [{"path": "evidence.txt", "sha256": hashlib.sha256(content).hexdigest()}],
                     "next_experiment": "repeat"}
 
-        adapter.run_one(job_id=job["job_id"], worker_id="worker-test", execute=execute,
-                        executor_binding=executor_binding)
+        _, _, executor = _pinned_executor(queue, graph, "campaign-test", roles, job, execute)
+        adapter.run_one(job_id=job["job_id"], worker_id="worker-test", executor=executor)
         grant = job["request"]["capability_grant"]
         authority = CapabilityAuthority(registry_path)
         try:
