@@ -47,21 +47,31 @@ does not waive RPDI-11 technical evidence, tests, CI, per-PR review, or DoD.
   evidence accepts VALIDATION receipts only; both the adapter and storage
   authority reject HOLDOUT evidence from graph decisions.
 
+## Implemented lifecycle slice
+
+- Added `OptimizationAttemptCoordinator.evaluate_candidate` as a Core-owned
+  entry point. It accepts a graph node ID, dispatches deterministic DEV
+  repeatability jobs only while READY, finalizes their durable receipt, and
+  atomically commits READY → COMPLETED plus OPTIMIZATION → VERIFICATION with
+  the exact evaluator receipt reference.
+- A replay after the graph transition revalidates and returns the durable
+  receipt without rerunning jobs or adding graph events. DISPATCHED/UNKNOWN
+  jobs fail as indeterminate and are not redriven.
+- Focused coordinator tests cover READY dispatch, already-COMPLETED job
+  recovery, graph transition shape, replay, and UNKNOWN fail-closed behavior.
+
 ## Remaining blockers before RPDI-11 is complete
 
-1. A Core-owned optimization coordinator is not yet connected to the
-   scheduler/application lifecycle. End-to-end tests must cover evaluator
-   enqueue/dispatch/settlement/final receipt and integration enqueue/dispatch/
-   receipt/guarded transition, including tampering and replay.
+1. Integration verifier dispatch and its VERIFIED_RESULT/REGRESSION_FAILED
+   graph transition are not yet connected to the lifecycle coordinator.
+   End-to-end tests still need to cover real queue settlement, receipt
+   persistence, tampering, and replay across evaluator and integration paths.
 2. `CampaignSpecV2.mode` is immutable. Protocol approval is campaign-local;
    authorized handoff into a separate Optimization campaign is owned by
    RPDI-12. The graph must not silently switch an Exploration campaign into
    Optimization.
-3. Exact-head CI must pass after the latest code and tests. Earlier
-   candidate-gate code passed Ubuntu Python 3.11, 3.12, and 3.13; Windows was
-   still running. The current holdout-boundary changes are being checked on the
-   latest branch head. Local Python lacks Pydantic and pytest, so behavior tests
-   rely on repository CI.
+3. Exact-head CI must pass after these commits, including Windows. Local Python
+   lacks Pydantic and pytest, so behavior tests rely on repository CI.
 
 These blockers keep this branch in draft. The owner waiver allows work to
 continue; it does not waive RPDI-11 technical evidence or convert role claims
