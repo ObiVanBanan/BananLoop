@@ -54,6 +54,7 @@ class _Graph:
             approved_hash=lambda: "d" * 64,
             evaluation=SimpleNamespace(
                 approval_digest="e" * 64, content_sha256="f" * 64,
+                protocol_id="quality", version=1,
             ),
         )
 
@@ -149,7 +150,8 @@ def test_candidate_evaluation_does_not_redrive_indeterminate_job():
 
 @pytest.mark.parametrize(
     ("field", "invalid_value"),
-    [("source_snapshot_id", "f" * 40), ("tier", "validation")],
+    [("source_snapshot_id", "f" * 40), ("tier", "validation"),
+     ("protocol_id", "other"), ("protocol_version", 2)],
 )
 def test_candidate_ready_replay_rejects_stale_source_or_non_dev_receipt(
     field, invalid_value,
