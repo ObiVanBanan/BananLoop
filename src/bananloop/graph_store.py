@@ -625,7 +625,7 @@ class GraphRepository:
         from .contracts import OptimizationCampaignSpecV2
         from .evaluator_verification import EvaluatorVerificationError
 
-        if change.guard not in {"PROTOCOL_FROZEN", "PROTOCOL_REJECTED", "VERIFIED_RESULT", "REGRESSION_FAILED"}:
+        if change.guard not in {"PROTOCOL_FROZEN", "PROTOCOL_REJECTED", "CANDIDATE_READY", "VERIFIED_RESULT", "REGRESSION_FAILED"}:
             return
         has_campaign = self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='campaigns'"
@@ -633,8 +633,8 @@ class GraphRepository:
         if has_campaign is None:
             if change.guard == "PROTOCOL_FROZEN":
                 raise GraphStoreError("protocol freeze requires an Optimization spec pinned to verifier approval")
-            if change.guard in {"VERIFIED_RESULT", "REGRESSION_FAILED"}:
-                raise GraphStoreError("integration verification requires a pinned Optimization evaluator")
+            if change.guard in {"CANDIDATE_READY", "VERIFIED_RESULT", "REGRESSION_FAILED"}:
+                raise GraphStoreError("Optimization transition requires a pinned evaluator campaign")
             raise GraphStoreError("verifier transition requires an initialized campaign spec")
         spec = self.campaign_spec()
         approval_refs = [ref.removeprefix("verifier://approval/") for ref in change.evidence_refs
@@ -643,6 +643,8 @@ class GraphRepository:
                         if isinstance(ref, str) and ref.startswith("verifier://receipt/")]
         integration_refs = [ref.removeprefix("integration://receipt/") for ref in change.evidence_refs
                             if isinstance(ref, str) and ref.startswith("integration://receipt/")]
+        evaluator_refs = [ref.removeprefix("evaluator://receipt/") for ref in change.evidence_refs
+                          if isinstance(ref, str) and ref.startswith("evaluator://receipt/")]
         try:
             if change.guard == "PROTOCOL_FROZEN":
                 if not isinstance(spec, OptimizationCampaignSpecV2) or spec.evaluation.approval_digest is None:
@@ -670,6 +672,28 @@ class GraphRepository:
                 )
                 if node_payload.get("source_snapshot_id") != rejected.source_snapshot_id:
                     raise GraphStoreError("protocol rejection source snapshot does not match the scheduled node")
+            elif change.guard == "CANDIDATE_READY":
+                if not isinstance(spec, OptimizationCampaignSpecV2) or spec.evaluation.approval_digest is None:
+                    raise GraphStoreError("candidate readiness requires a pinned Optimization evaluator")
+                if len(evaluator_refs) != 1 or len(change.evidence_refs) != 1:
+                    raise GraphStoreError("candidate readiness requires one evaluator run receipt reference")
+                candidate_snapshot_id = node_payload.get("candidate_snapshot_id")
+                source_snapshot_id = node_payload.get("source_snapshot_id")
+                if not isinstance(candidate_snapshot_id, str) or not isinstance(source_snapshot_id, str):
+                    raise GraphStoreError("candidate readiness requires pinned source and candidate snapshots")
+                campaign_id = self.campaign_id
+                if campaign_id is None:
+                    raise GraphStoreError("candidate readiness requires an immutable graph campaign identity")
+                run = self.evaluator_protocols.require_run_receipt(
+                    evaluator_refs[0], campaign_id=campaign_id, spec_hash=spec.approved_hash(),
+                    approval_digest=spec.evaluation.approval_digest,
+                    protocol_digest=spec.evaluation.content_sha256,
+                    candidate_snapshot_id=candidate_snapshot_id,
+                )
+                if (run.source_snapshot_id != source_snapshot_id
+                        or run.protocol_id != spec.evaluation.protocol_id
+                        or run.protocol_version != spec.evaluation.version):
+                    raise GraphStoreError("evaluator receipt is stale against the scheduled candidate or protocol")
             elif change.guard in {"VERIFIED_RESULT", "REGRESSION_FAILED"}:
                 if not isinstance(spec, OptimizationCampaignSpecV2) or spec.evaluation.approval_digest is None:
                     raise GraphStoreError("integration verification requires a pinned Optimization evaluator")
