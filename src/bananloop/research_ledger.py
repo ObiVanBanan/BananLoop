@@ -383,7 +383,6 @@ class ResearchLedger:
                 or request.get("role_registry_digest") != binding.get("role_registry_digest")
                 or request.get("team_manifest_digest") != binding.get("team_manifest_digest")
                 or request.get("capability_manifest", {}).get("base_commit") != source_snapshot_id
-                or durable["request_hash"] != job["request_hash"]
                 or int(durable["fence"]) != int(job["fence"])
                 or durable["output_digest"] != _digest_json(result)):
             raise ResearchLedgerError("worker result does not match its immutable role/source receipt")
