@@ -233,11 +233,13 @@ class EvidenceOnlyAttemptAdapter:
             )
             if projection.evidence:
                 source_ref = f"research://ledger/{projection.projection_digest}"
+                context_updated = False
                 if "evidence_refs" in researcher.role.context_fields:
                     context_fields["evidence_refs"] = {
                         "value": tuple(item.evidence_id for item in projection.evidence),
                         "classification": "DEV_AGGREGATE", "source_ref": source_ref,
                     }
+                    context_updated = True
                 if "dev_summary" in researcher.role.context_fields:
                     summary_lines = [
                         f"{item.claim_key} [{item.status}]: " + " | ".join(item.statements)
@@ -251,10 +253,8 @@ class EvidenceOnlyAttemptAdapter:
                         "value": "\n".join(summary_lines)[:12000],
                         "classification": "DEV_AGGREGATE", "source_ref": source_ref,
                     }
-                    context_fields["evidence_refs"] = {
-                        "value": tuple(item.evidence_id for item in projection.evidence),
-                        "classification": "DEV_AGGREGATE", "source_ref": source_ref,
-                    }
+                    context_updated = True
+                if context_updated:
                     role_context = build_role_context(
                         researcher, RoleContextSourceV1(campaign_goal=role_context_source.campaign_goal,
                                                         fields=context_fields),
