@@ -40,7 +40,6 @@ from bananloop.trusted_evaluator import (
     EvaluatorBudgetProofV1,
     EvaluatorExecutionV1,
     EvaluatorRunReceiptV1,
-    EvaluatorExecutionV1,
     TrustedEvaluatorRunner,
     _case_protocol_digest,
     TrustedEvaluatorAdapter,
