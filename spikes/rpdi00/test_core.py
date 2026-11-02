@@ -501,6 +501,7 @@ class RPDI00ContractSpike(unittest.TestCase):
     def test_v4_migration_backup_snapshot_precedes_blocked_concurrent_writer(self):
         dbpath, backup = self.root / "legacy-v4.db", self.root / "legacy-v4.backup.db"
         original = self.make_v4_fixture(dbpath)
+        self.assertEqual(self.scalar(dbpath, "PRAGMA journal_mode"), "wal")
         lock_acquired, continue_migration = threading.Event(), threading.Event()
         writer_started, writer_finished = threading.Event(), threading.Event()
 

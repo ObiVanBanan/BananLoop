@@ -18,7 +18,7 @@ These items are explicitly assigned to later rows of the approved RPDI backlog. 
 
 | Open proof | Backlog owner | Required exit evidence |
 |---|---|---|
-| v2 adapter reopen and historical migration integration | RPDI-02 | v4→v5 golden DB opens through the v2 adapter; legacy hashes/receipts preserved; indexes/FKs verified. |
+| v2 adapter reopen and historical migration integration | RPDI-02 | v4→v5 golden DB opens through the v2 adapter; legacy hashes/receipts preserved; indexes/FKs verified; upgrade acquires the app-level `CampaignLock` and validates WAL-mode behavior. |
 | Root/child budget settlement and safe return of unused escrow | RPDI-03 | Concurrent root+child accounting and crash reconciliation tests; UNKNOWN is never refunded without authoritative proof. |
 | Provider-authoritative UNKNOWN reconciliation, dispatch ordering, renewal and worker restart supervision | RPDI-04 | Provider adapter reconciliation and worker-kill/restart tests; stale fences cannot commit. |
 | Typed evaluator protocol, independent verifier approval and worker capability isolation | RPDI-06 and RPDI-11 | Self-scored protocols rejected; immutable verifier record and isolation tests pass; no hidden evaluator access. |
