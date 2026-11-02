@@ -110,7 +110,6 @@ class OptimizationAttemptCoordinator:
 
     def verify_candidate(
         self, *, node_id: str, baseline_run_receipt_digest: str,
-        candidate_validation_run_receipt_digest: str,
         executor: Any, worker_id: str,
     ) -> IntegrationVerifierReceiptV1:
         node = self._node(node_id)
@@ -156,10 +155,22 @@ class OptimizationAttemptCoordinator:
                 "integration verification requires pinned source and candidate snapshots"
             )
 
+        baseline_receipt = self._require_receipt(
+            baseline_run_receipt_digest, payload, tier="validation",
+            candidate_snapshot_id=source_snapshot_id,
+        )
+        candidate_validation = self._run_repeatability(
+            candidate_snapshot_id=candidate_snapshot_id, tier="validation",
+            worker_id=worker_id,
+        )
+        candidate_validation = self._require_receipt(
+            candidate_validation.receipt_digest, payload, tier="validation",
+            candidate_snapshot_id=candidate_snapshot_id,
+        )
         try:
             job, _evidence = self.integration_verifier.enqueue_integration(
-                baseline_run_receipt_digest=baseline_run_receipt_digest,
-                candidate_run_receipt_digest=candidate_validation_run_receipt_digest,
+                baseline_run_receipt_digest=baseline_receipt.receipt_digest,
+                candidate_run_receipt_digest=candidate_validation.receipt_digest,
             )
             verifier_job_id = job["job_id"]
             queue = self.integration_verifier.queue
@@ -246,6 +257,22 @@ class OptimizationAttemptCoordinator:
                 "integration graph transition has no valid durable verifier receipt"
             ) from exc
 
+    def _run_repeatability(
+        self, *, candidate_snapshot_id: str, tier: str, worker_id: str,
+    ) -> EvaluatorRunReceiptV1:
+        job_ids = self.trusted_evaluator.enqueue_repeatability(
+            candidate_snapshot_id=candidate_snapshot_id, tier=tier,
+        )
+        for job_id in job_ids:
+            job = self.queue.get_job(job_id)
+            if job.get("state") == "READY":
+                self.trusted_evaluator.run_one(job_id, worker_id=worker_id)
+            elif job.get("state") != "COMPLETED":
+                raise OptimizationLifecycleError(
+                    f"evaluator job {job_id!r} is {job.get('state')!r}; outcome is indeterminate"
+                )
+        return self.trusted_evaluator.finalize_repeatability(job_ids)
+
     def _node(self, node_id: str) -> dict[str, Any]:
         snapshot = self.graph.scheduling_snapshot()
         for node in snapshot["nodes"]:
@@ -254,7 +281,8 @@ class OptimizationAttemptCoordinator:
         raise OptimizationLifecycleError(f"Optimization node {node_id!r} does not exist")
 
     def _require_receipt(
-        self, receipt_digest: str, payload: dict[str, Any],
+        self, receipt_digest: str, payload: dict[str, Any], *,
+        tier: str = "dev", candidate_snapshot_id: str | None = None,
     ) -> EvaluatorRunReceiptV1:
         spec = self.graph.campaign_spec()
         campaign_id = self.graph.campaign_id
@@ -267,12 +295,13 @@ class OptimizationAttemptCoordinator:
                 spec_hash=spec.approved_hash(),
                 approval_digest=spec.evaluation.approval_digest,
                 protocol_digest=spec.evaluation.content_sha256,
-                candidate_snapshot_id=payload["candidate_snapshot_id"],
+                candidate_snapshot_id=candidate_snapshot_id or payload["candidate_snapshot_id"],
             )
             if (receipt.protocol_id != spec.evaluation.protocol_id
                     or receipt.protocol_version != spec.evaluation.version
                     or receipt.source_snapshot_id != payload["source_snapshot_id"]
-                    or receipt.tier != "dev"):
+                    or receipt.candidate_snapshot_id != (candidate_snapshot_id or payload["candidate_snapshot_id"])
+                    or receipt.tier != tier):
                 raise OptimizationLifecycleError(
                     "candidate-ready receipt must match the pinned protocol, source snapshot, and DEV tier"
                 )
