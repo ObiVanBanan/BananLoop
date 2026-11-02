@@ -22,6 +22,10 @@ The v1 `CampaignStore` counters and settlement behavior remain unchanged.
   the upper bound from `reserved` to `unknown`; timeouts and expired leases do
   not refund it. `UNKNOWN` can be reconciled only with authoritative receipt
   evidence and the current fence.
+- Verified actual usage is always recorded, even if a provider exceeds its
+  reserved estimate and breaches a cap. The resulting `spent > cap` state
+  blocks every later reservation; the ledger must not hide an incurred charge
+  by rolling settlement back to the smaller estimate.
 - A reservation is released only when durable evidence proves dispatch did not
   occur. Child closure fails while any action remains `RESERVED` or `UNKNOWN`.
 - Child closure requires a terminal status supplied by the lifecycle caller;

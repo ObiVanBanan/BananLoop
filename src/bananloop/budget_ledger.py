@@ -58,6 +58,7 @@ class BudgetLedger:
 
         assert_safe_local_path(self.path, "campaign budget ledger")
         self.conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        self._owns_connection = True
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript("""
@@ -101,15 +102,49 @@ class BudgetLedger:
           ON budget_reservations(campaign_id,action_id,resource);
         CREATE INDEX IF NOT EXISTS budget_reservations_allocation_idx ON budget_reservations(allocation_id,state);
         """)
+        # Registry-local schema changes are additive because this database is
+        # shared with CampaignRegistry and may already contain RPDI-03 tables.
+        self._ensure_dispatch_column()
+
+    def _ensure_dispatch_column(self) -> None:
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(budget_reservations)")}
+        if "dispatch_state" in columns:
+            return
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            columns = {row[1] for row in self.conn.execute("PRAGMA table_info(budget_reservations)")}
+            if "dispatch_state" not in columns:
+                self.conn.execute(
+                    "ALTER TABLE budget_reservations ADD COLUMN dispatch_state TEXT NOT NULL DEFAULT 'PRE_DISPATCH' "
+                    "CHECK(dispatch_state IN ('PRE_DISPATCH','DISPATCHED'))"
+                )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    @classmethod
+    def attach(cls, connection: sqlite3.Connection) -> "BudgetLedger":
+        """Attach ledger operations to an existing transaction-owning connection."""
+        ledger = cls.__new__(cls)
+        ledger.path = None
+        ledger.conn = connection
+        ledger._owns_connection = False
+        ledger.conn.row_factory = sqlite3.Row
+        ledger.conn.execute("PRAGMA foreign_keys=ON")
+        return ledger
 
     def close(self) -> None:
-        self.conn.close()
+        if self._owns_connection:
+            self.conn.close()
 
     def create_root(self, campaign_id: str, caps: Mapping[str, int]) -> None:
         """Create a root envelope once; replay is allowed only for the same vector."""
         self._validate_id(campaign_id, "campaign_id")
         vector = _vector(caps)
-        self.conn.execute("BEGIN IMMEDIATE")
+        owns_transaction = not self.conn.in_transaction
+        if owns_transaction:
+            self.conn.execute("BEGIN IMMEDIATE")
         try:
             is_root = self.conn.execute(
                 "SELECT 1 FROM budget_roots WHERE campaign_id=?", (campaign_id,)
@@ -118,7 +153,8 @@ class BudgetLedger:
             if is_root:
                 if {k: int(v["cap"]) for k, v in existing.items()} != vector:
                     raise BudgetLedgerError("root budget already exists with a different immutable cap")
-                self.conn.commit()
+                if owns_transaction:
+                    self.conn.commit()
                 return
             if existing or self.conn.execute(
                 "SELECT 1 FROM child_allocations WHERE child_id=?", (campaign_id,)
@@ -129,9 +165,11 @@ class BudgetLedger:
                 "INSERT INTO budget_accounts(campaign_id,resource,cap) VALUES(?,?,?)",
                 [(campaign_id, resource, amount) for resource, amount in vector.items()],
             )
-            self.conn.commit()
+            if owns_transaction:
+                self.conn.commit()
         except Exception:
-            self.conn.rollback()
+            if owns_transaction:
+                self.conn.rollback()
             raise
 
     def reserve_child(
@@ -145,7 +183,9 @@ class BudgetLedger:
         if not re.fullmatch(r"[0-9a-f]{64}", spec_hash):
             raise BudgetLedgerError("spec_hash must be a lowercase SHA-256 digest")
         vector = _vector(caps)
-        self.conn.execute("BEGIN IMMEDIATE")
+        owns_transaction = not self.conn.in_transaction
+        if owns_transaction:
+            self.conn.execute("BEGIN IMMEDIATE")
         try:
             replay = self.conn.execute(
                 "SELECT * FROM child_allocations WHERE idempotency_key=?", (idempotency_key,)
@@ -159,7 +199,8 @@ class BudgetLedger:
                 if (replay["allocation_id"] != allocation_id or replay["parent_id"] != parent_id
                         or replay["spec_hash"] != spec_hash or old != vector):
                     raise BudgetLedgerError("child allocation idempotency key was reused with different content")
-                self.conn.commit()
+                if owns_transaction:
+                    self.conn.commit()
                 return dict(replay)
             if self.conn.execute("SELECT 1 FROM child_allocations WHERE allocation_id=?", (allocation_id,)).fetchone():
                 raise BudgetLedgerError("allocation_id is already in use")
@@ -210,12 +251,14 @@ class BudgetLedger:
                         "UPDATE child_allocation_resources SET reserved=reserved+?,revision=revision+1 WHERE allocation_id=? AND resource=?",
                         (amount, parent_allocation["allocation_id"], resource),
                     )
-            self.conn.commit()
+            if owns_transaction:
+                self.conn.commit()
             return {"allocation_id": allocation_id, "idempotency_key": idempotency_key,
                     "parent_id": parent_id, "child_id": None, "spec_hash": spec_hash,
                     "state": "RESERVED", "created_at": now}
         except Exception:
-            self.conn.rollback()
+            if owns_transaction:
+                self.conn.rollback()
             raise
 
     def bind_child(self, allocation_id: str, child_id: str, spec_hash: str) -> None:
@@ -271,7 +314,9 @@ class BudgetLedger:
         if (isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0
                 or isinstance(fence, bool) or not isinstance(fence, int) or fence < 0):
             raise BudgetLedgerError("amount must be positive and fence nonnegative")
-        self.conn.execute("BEGIN IMMEDIATE")
+        owns_transaction = not self.conn.in_transaction
+        if owns_transaction:
+            self.conn.execute("BEGIN IMMEDIATE")
         try:
             replay = self.conn.execute("SELECT * FROM budget_reservations WHERE idempotency_key=?", (idempotency_key,)).fetchone()
             if replay:
@@ -280,7 +325,8 @@ class BudgetLedger:
                     campaign_id, action_id, resource, amount, allocation_id
                 ):
                     raise BudgetLedgerError("reservation idempotency key was reused with different content")
-                self.conn.commit()
+                if owns_transaction:
+                    self.conn.commit()
                 return dict(replay)
             account = self.conn.execute(
                 "SELECT * FROM budget_accounts WHERE campaign_id=? AND resource=?", (campaign_id, resource)
@@ -321,17 +367,20 @@ class BudgetLedger:
                 )
             now = utc_now()
             self.conn.execute(
-                "INSERT INTO budget_reservations VALUES(?,?,?,?,?,?,NULL,'RESERVED','upper_bound',?,?,NULL,?,NULL)",
+                "INSERT INTO budget_reservations(reservation_id,campaign_id,allocation_id,action_id,resource,upper_bound,actual,state,quality,idempotency_key,fence,receipt_digest,created_at,settled_at) "
+                "VALUES(?,?,?,?,?,?,NULL,'RESERVED','upper_bound',?,?,NULL,?,NULL)",
                 (reservation_id, campaign_id, allocation_id, action_id, resource, amount, idempotency_key, fence, now),
             )
             self.conn.execute(
                 "UPDATE budget_accounts SET reserved=reserved+?,revision=revision+1 WHERE campaign_id=? AND resource=?",
                 (amount, campaign_id, resource),
             )
-            self.conn.commit()
+            if owns_transaction:
+                self.conn.commit()
             return dict(self.conn.execute("SELECT * FROM budget_reservations WHERE reservation_id=?", (reservation_id,)).fetchone())
         except Exception:
-            self.conn.rollback()
+            if owns_transaction:
+                self.conn.rollback()
             raise
 
     def settle_action(
@@ -355,7 +404,9 @@ class BudgetLedger:
             raise BudgetLedgerError("authoritative reconciliation requires a receipt digest")
         if isinstance(fence, bool) or not isinstance(fence, int) or fence < 0:
             raise BudgetLedgerError("fence must be a nonnegative integer")
-        self.conn.execute("BEGIN IMMEDIATE")
+        owns_transaction = not self.conn.in_transaction
+        if owns_transaction:
+            self.conn.execute("BEGIN IMMEDIATE")
         try:
             row = self.conn.execute("SELECT * FROM budget_reservations WHERE reservation_id=?", (reservation_id,)).fetchone()
             if row is None:
@@ -368,51 +419,33 @@ class BudgetLedger:
                     and int(row["actual"]) == int(row["upper_bound"])
                 )
                 if same_usage and row["receipt_digest"] == receipt_digest:
-                    self.conn.commit()
+                    if owns_transaction:
+                        self.conn.commit()
                     return
                 raise BudgetLedgerError("settled reservation cannot be changed")
             if row["state"] == "RELEASED":
                 raise BudgetLedgerError("released reservation cannot be settled")
             if row["state"] == "UNKNOWN" and not authoritative:
                 raise BudgetLedgerError("UNKNOWN usage requires provider-authoritative receipt reconciliation")
-            if row["state"] == "RESERVED" and actual is None and not authoritative:
+            if row["state"] in {"RESERVED", "DISPATCHED"} and actual is None and not authoritative:
                 self.conn.execute("UPDATE budget_reservations SET state='UNKNOWN',quality='unknown' WHERE reservation_id=?", (reservation_id,))
                 self.conn.execute("UPDATE budget_accounts SET reserved=reserved-?,unknown=unknown+?,revision=revision+1 WHERE campaign_id=? AND resource=?",
                                   (row["upper_bound"], row["upper_bound"], row["campaign_id"], row["resource"]))
                 if row["allocation_id"]:
                     self.conn.execute("UPDATE child_allocation_resources SET reserved=reserved-?,unknown=unknown+?,revision=revision+1 WHERE allocation_id=? AND resource=?",
                                       (row["upper_bound"], row["upper_bound"], row["allocation_id"], row["resource"]))
-                self.conn.commit()
+                if owns_transaction:
+                    self.conn.commit()
                 return
             usage = int(row["upper_bound"]) if actual is None else actual
             if row["state"] == "UNKNOWN":
                 old = int(row["upper_bound"])
-                acct = self.conn.execute("SELECT * FROM budget_accounts WHERE campaign_id=? AND resource=?", (row["campaign_id"], row["resource"])).fetchone()
-                if int(acct["spent"]) + int(acct["reserved"]) + int(acct["unknown"]) - old + usage > int(acct["cap"]):
-                    raise BudgetExceeded("authoritative usage exceeds the remaining resource cap")
-                if row["allocation_id"]:
-                    child = self.conn.execute(
-                        "SELECT * FROM child_allocation_resources WHERE allocation_id=? AND resource=?",
-                        (row["allocation_id"], row["resource"]),
-                    ).fetchone()
-                    if int(child["spent"]) + int(child["reserved"]) + int(child["unknown"]) - old + usage > int(child["cap"]):
-                        raise BudgetExceeded("authoritative usage exceeds the child allocation")
                 self.conn.execute("UPDATE budget_accounts SET unknown=unknown-?,spent=spent+?,revision=revision+1 WHERE campaign_id=? AND resource=?",
                                   (old, usage, row["campaign_id"], row["resource"]))
                 if row["allocation_id"]:
                     self.conn.execute("UPDATE child_allocation_resources SET unknown=unknown-?,spent=spent+?,revision=revision+1 WHERE allocation_id=? AND resource=?",
                                       (old, usage, row["allocation_id"], row["resource"]))
             else:
-                acct = self.conn.execute("SELECT * FROM budget_accounts WHERE campaign_id=? AND resource=?", (row["campaign_id"], row["resource"])).fetchone()
-                if int(acct["spent"]) + int(acct["reserved"]) + int(acct["unknown"]) - int(row["upper_bound"]) + usage > int(acct["cap"]):
-                    raise BudgetExceeded("actual usage exceeds the remaining resource cap")
-                if row["allocation_id"]:
-                    child = self.conn.execute(
-                        "SELECT * FROM child_allocation_resources WHERE allocation_id=? AND resource=?",
-                        (row["allocation_id"], row["resource"]),
-                    ).fetchone()
-                    if int(child["spent"]) + int(child["reserved"]) + int(child["unknown"]) - int(row["upper_bound"]) + usage > int(child["cap"]):
-                        raise BudgetExceeded("actual usage exceeds the child allocation")
                 self.conn.execute("UPDATE budget_accounts SET reserved=reserved-?,spent=spent+?,revision=revision+1 WHERE campaign_id=? AND resource=?",
                                   (row["upper_bound"], usage, row["campaign_id"], row["resource"]))
                 if row["allocation_id"]:
@@ -421,9 +454,11 @@ class BudgetLedger:
             now = utc_now()
             self.conn.execute("UPDATE budget_reservations SET actual=?,state='SETTLED',quality=?,receipt_digest=?,settled_at=? WHERE reservation_id=?",
                               (usage, quality, receipt_digest, now, reservation_id))
-            self.conn.commit()
+            if owns_transaction:
+                self.conn.commit()
         except Exception:
-            self.conn.rollback()
+            if owns_transaction:
+                self.conn.rollback()
             raise
 
     def advance_fence(self, reservation_id: str, *, expected_fence: int, new_fence: int) -> None:
@@ -432,17 +467,22 @@ class BudgetLedger:
                 or isinstance(new_fence, bool) or not isinstance(new_fence, int)
                 or new_fence <= expected_fence):
             raise BudgetLedgerError("new worker fence must be an integer greater than the current fence")
-        self.conn.execute("BEGIN IMMEDIATE")
+        owns_transaction = not self.conn.in_transaction
+        if owns_transaction:
+            self.conn.execute("BEGIN IMMEDIATE")
         try:
             changed = self.conn.execute(
-                "UPDATE budget_reservations SET fence=? WHERE reservation_id=? AND fence=? AND state IN ('RESERVED','UNKNOWN')",
+                "UPDATE budget_reservations SET fence=? WHERE reservation_id=? AND fence=? AND "
+                "(state='UNKNOWN' OR (state='RESERVED' AND dispatch_state='PRE_DISPATCH'))",
                 (new_fence, reservation_id, expected_fence),
             ).rowcount
             if changed != 1:
                 raise BudgetLedgerError("reservation is missing, settled, or already has a newer fence")
-            self.conn.commit()
+            if owns_transaction:
+                self.conn.commit()
         except Exception:
-            self.conn.rollback()
+            if owns_transaction:
+                self.conn.rollback()
             raise
 
     def release_action(self, reservation_id: str, *, fence: int, dispatch_proven_absent: bool) -> None:
@@ -451,7 +491,9 @@ class BudgetLedger:
             raise BudgetLedgerError("a reservation cannot be released after possible dispatch")
         if isinstance(fence, bool) or not isinstance(fence, int) or fence < 0:
             raise BudgetLedgerError("fence must be a nonnegative integer")
-        self.conn.execute("BEGIN IMMEDIATE")
+        owns_transaction = not self.conn.in_transaction
+        if owns_transaction:
+            self.conn.execute("BEGIN IMMEDIATE")
         try:
             row = self.conn.execute("SELECT * FROM budget_reservations WHERE reservation_id=?", (reservation_id,)).fetchone()
             if row is None:
@@ -459,9 +501,10 @@ class BudgetLedger:
             if int(row["fence"]) != fence:
                 raise BudgetLedgerError("stale worker fence cannot release reservation")
             if row["state"] == "RELEASED":
-                self.conn.commit()
+                if owns_transaction:
+                    self.conn.commit()
                 return
-            if row["state"] != "RESERVED":
+            if row["state"] != "RESERVED" or row["dispatch_state"] != "PRE_DISPATCH":
                 raise BudgetLedgerError("only undispatched RESERVED work can be released")
             amount = int(row["upper_bound"])
             self.conn.execute("UPDATE budget_accounts SET reserved=reserved-?,revision=revision+1 WHERE campaign_id=? AND resource=?",
@@ -471,9 +514,38 @@ class BudgetLedger:
                                   (amount, row["allocation_id"], row["resource"]))
             self.conn.execute("UPDATE budget_reservations SET state='RELEASED',settled_at=? WHERE reservation_id=?",
                               (utc_now(), reservation_id))
-            self.conn.commit()
+            if owns_transaction:
+                self.conn.commit()
         except Exception:
-            self.conn.rollback()
+            if owns_transaction:
+                self.conn.rollback()
+            raise
+
+    def mark_dispatched(self, reservation_id: str, *, fence: int) -> None:
+        """Persist the irreversible external dispatch boundary before invocation."""
+        if isinstance(fence, bool) or not isinstance(fence, int) or fence < 0:
+            raise BudgetLedgerError("fence must be a nonnegative integer")
+        owns_transaction = not self.conn.in_transaction
+        if owns_transaction:
+            self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            changed = self.conn.execute(
+                "UPDATE budget_reservations SET dispatch_state='DISPATCHED' "
+                "WHERE reservation_id=? AND fence=? AND state='RESERVED' AND dispatch_state='PRE_DISPATCH'",
+                (reservation_id, fence),
+            ).rowcount
+            if changed != 1:
+                row = self.conn.execute(
+                    "SELECT state,dispatch_state,fence FROM budget_reservations WHERE reservation_id=?",
+                    (reservation_id,),
+                ).fetchone()
+                if row is None or int(row["fence"]) != fence or row["state"] != "RESERVED" or row["dispatch_state"] != "DISPATCHED":
+                    raise BudgetLedgerError("reservation is missing, stale, or not dispatchable")
+            if owns_transaction:
+                self.conn.commit()
+        except Exception:
+            if owns_transaction:
+                self.conn.rollback()
             raise
 
     def close_child(self, allocation_id: str, *, terminal_status: str) -> None:
@@ -491,7 +563,7 @@ class BudgetLedger:
             if allocation["child_id"] is None:
                 raise BudgetLedgerError("unbound allocation cannot be closed; reconcile the creation saga first")
             open_work = self.conn.execute(
-                "SELECT 1 FROM budget_reservations WHERE allocation_id=? AND state IN ('RESERVED','UNKNOWN') LIMIT 1",
+                "SELECT 1 FROM budget_reservations WHERE allocation_id=? AND state IN ('RESERVED','DISPATCHED','UNKNOWN') LIMIT 1",
                 (allocation_id,),
             ).fetchone()
             if open_work:
@@ -508,16 +580,12 @@ class BudgetLedger:
                 cap = int(item["cap"])
                 if int(item["reserved"]) or int(item["unknown"]):
                     raise BudgetLedgerError("child allocation still holds reserved or UNKNOWN resources")
-                if used > cap:
-                    raise BudgetExceeded("child spent exceeds its immutable allocation")
                 parent = self.conn.execute(
                     "SELECT * FROM budget_accounts WHERE campaign_id=? AND resource=?",
                     (allocation["parent_id"], item["resource"]),
                 ).fetchone()
                 if parent is None or int(parent["reserved"]) < cap:
                     raise BudgetLedgerError("root escrow is inconsistent; refusing child closure")
-                if int(parent["spent"]) + used + int(parent["reserved"]) - cap + int(parent["unknown"]) > int(parent["cap"]):
-                    raise BudgetExceeded("settled child usage exceeds the root resource cap")
                 ancestor = self.conn.execute(
                     "SELECT allocation_id FROM child_allocations WHERE child_id=? AND state='ACTIVE'",
                     (allocation["parent_id"],),
@@ -529,8 +597,6 @@ class BudgetLedger:
                     ).fetchone()
                     if upstream is None or int(upstream["reserved"]) < cap:
                         raise BudgetLedgerError("ancestor escrow is inconsistent; refusing nested child closure")
-                    if int(upstream["spent"]) + int(upstream["reserved"]) - cap + int(upstream["unknown"]) + used > int(upstream["cap"]):
-                        raise BudgetExceeded("settled nested usage exceeds the ancestor resource cap")
                     self.conn.execute(
                         "UPDATE child_allocation_resources SET reserved=reserved-?,spent=spent+?,revision=revision+1 WHERE allocation_id=? AND resource=?",
                         (cap, used, ancestor["allocation_id"], item["resource"]),
