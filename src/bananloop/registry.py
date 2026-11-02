@@ -151,6 +151,12 @@ class CampaignRegistry:
 
         return BudgetLedger(self.path)
 
+    def worker_queue(self) -> "DurableWorkerQueue":
+        """Open the project-wide durable v2 job queue sharing the budget ledger DB."""
+        from .worker_queue import DurableWorkerQueue
+
+        return DurableWorkerQueue(self.path)
+
     def _connect(self) -> sqlite3.Connection:
         self.root.mkdir(parents=True, exist_ok=True)
         # Never silently replace a corrupt registry; sqlite errors are surfaced with path.
