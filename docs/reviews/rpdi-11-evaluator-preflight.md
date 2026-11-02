@@ -63,10 +63,13 @@ does not waive RPDI-11 technical evidence, tests, CI, per-PR review, or DoD.
 - Negative replay tests reject a receipt with mismatched protocol ID/version,
   source snapshot, or a non-DEV tier.
 - Added `OptimizationAttemptCoordinator.verify_candidate`: it accepts a
-  READY VERIFICATION node and baseline VALIDATION receipt digest, reuses the
-  candidate DEV receipt, dispatches through the pinned Integration
-  Verification Adapter, and projects the durable PASS/FAIL decision through
-  VERIFIED_RESULT or REGRESSION_FAILED in one graph mutation.
+  READY VERIFICATION node and baseline VALIDATION receipt digest, validates
+  that baseline against the pinned campaign, then runs candidate VALIDATION
+  repeatability through the TrustedEvaluatorAdapter. It dispatches the
+  resulting durable VALIDATION receipt through the pinned Integration
+  Verification Adapter and projects PASS/FAIL through VERIFIED_RESULT or
+  REGRESSION_FAILED in one graph mutation. The candidate DEV receipt remains
+  the evidence for CANDIDATE_READY.
 - If a verifier job is already COMPLETED after a process interruption, the
   coordinator recovers the immutable receipt from the durable queue result
   instead of dispatching again. DISPATCHED/UNKNOWN states fail closed.
@@ -81,24 +84,24 @@ does not waive RPDI-11 technical evidence, tests, CI, per-PR review, or DoD.
 - The real fixture covers reviewer PASS, reviewer FAIL, and Core regression
   FAIL despite reviewer PASS. It also verifies stored evidence and receipts
   reject mutation through SQLite immutability triggers.
-- The fixture seeds durable baseline/candidate VALIDATION receipts and stubs
-  Git snapshot materialization, private result loading, and evaluator budget
-  proof checks. It does not execute the trusted evaluator jobs themselves.
+- A full Optimization lifecycle fixture creates real Git source/candidate
+  commits and content-addressed evaluator assets, runs candidate DEV and
+  VALIDATION jobs plus baseline VALIDATION jobs through the real
+  TrustedEvaluatorAdapter and DurableWorkerQueue with a deterministic runner
+  stub, then runs integration verification and graph projection. The real
+  adapter performs snapshot materialization, private result storage/loading,
+  and evaluator budget proof checks; only the sandbox runner and integration
+  role's external executor callback are deterministic test stubs.
 
 ## Remaining blockers before RPDI-11 is complete
 
-1. Add a full trusted evaluator enqueue/dispatch/settlement fixture before
-   integration verification instead of seeded evaluator run receipts. Current
-   real integration fixture stubs snapshot/result materialization and evaluator
-   budget proof verification, while covering the pinned integration role,
-   durable Core evidence/receipt, PASS/FAIL graph routing, immutable storage,
-   and replay.
+1. Exact-head CI must pass after the full lifecycle changes, including Windows.
+   Local Python lacks Pydantic and pytest, so behavior tests rely on repository
+   CI.
 2. `CampaignSpecV2.mode` is immutable. Protocol approval is campaign-local;
    authorized handoff into a separate Optimization campaign is owned by
    RPDI-12. The graph must not silently switch an Exploration campaign into
    Optimization.
-3. Exact-head CI must pass after these commits, including Windows. Local Python
-   lacks Pydantic and pytest, so behavior tests rely on repository CI.
 
 These blockers keep this branch in draft. The owner waiver allows work to
 continue; it does not waive RPDI-11 technical evidence or convert role claims
