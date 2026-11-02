@@ -167,6 +167,21 @@ class RPDI00ContractSpike(unittest.TestCase):
         self.assertEqual(self.scalar(dbpath, "SELECT status FROM jobs WHERE job_id='j2'"), "READY")
         self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM reservations"), 1)
 
+    def test_reinitializing_campaign_never_changes_existing_budget_cap(self):
+        dbpath = self.root / "campaign.db"
+        init_campaign(dbpath, budget_cap=10)
+        enqueue_job(dbpath, "j1", "n1", {"prompt": "frozen"})
+        lease = claim_job(dbpath, "j1", reserve=8)
+        mark_dispatched(dbpath, "j1", lease["fence"])
+        record_unknown(dbpath, "j1", lease["fence"])
+
+        init_campaign(dbpath, budget_cap=1)
+        self.assertEqual(self.scalar(dbpath, "SELECT cap FROM budget"), 10)
+        self.assertEqual(self.scalar(dbpath, "SELECT unknown FROM budget"), 8)
+        init_campaign(dbpath, budget_cap=1000)
+        self.assertEqual(self.scalar(dbpath, "SELECT cap FROM budget"), 10)
+        self.assertEqual(self.scalar(dbpath, "SELECT unknown FROM budget"), 8)
+
     def test_parallel_job_claims_never_over_reserve(self):
         dbpath = self.root / "campaign.db"
         init_campaign(dbpath, budget_cap=10)
@@ -492,6 +507,45 @@ class RPDI00ContractSpike(unittest.TestCase):
                                  parent_campaign_id="parent-1", approved_scope_digest=digest,
                                  approved_scope=scope, child_spec=spec)
         self.assertEqual(self.scalar(parent, "SELECT escrowed FROM root_budget"), 12)
+
+    def test_child_registry_path_conflict_quarantines_reserved_allocation(self):
+        parent, registry, child = (self.root / "parent.db", self.root / "registry.db", self.root / "child.db")
+        init_parent(parent, cap=20)
+        init_registry(registry)
+        scope, digest, spec = self.make_child_spec("registry path conflict")
+        self.approve_child(parent, "alloc1", child, "child1", 12, "parent-1", scope, spec)
+        db = connect(registry)
+        try:
+            db.execute("INSERT INTO children VALUES('other-child','other-allocation','other-parent',?,5,'scope:other','spec:other','INITIALIZING')",
+                       (str(child.resolve()),))
+        finally:
+            db.close()
+        with self.assertRaisesRegex(ContractError, "different immutable identity") as raised:
+            create_child_saga(parent, registry, child, "alloc1", "child1", 12,
+                              parent_campaign_id="parent-1", approved_scope_digest=digest,
+                              approved_scope=scope, child_spec=spec)
+        self.assertEqual(raised.exception.code, "REGISTRY_CONFLICT")
+        self.assertEqual(self.scalar(parent, "SELECT state FROM child_allocations"), "RECONCILIATION_REQUIRED")
+        self.assertEqual(self.scalar(parent, "SELECT escrowed FROM root_budget"), 12)
+
+    def test_child_admission_rejects_parent_path_mismatch(self):
+        parent, registry, child = (self.root / "parent.db", self.root / "registry.db", self.root / "child.db")
+        init_parent(parent, cap=20)
+        init_registry(registry)
+        scope, digest, spec = self.make_child_spec("parent path corruption")
+        args = {"parent_campaign_id": "parent-1", "approved_scope_digest": digest,
+                "approved_scope": scope, "child_spec": spec}
+        self.approve_child(parent, "alloc1", child, "child1", 12, "parent-1", scope, spec)
+        create_child_saga(parent, registry, child, "alloc1", "child1", 12, **args)
+        self.assertTrue(child_admission_ready(parent, registry, child, "alloc1"))
+
+        db = connect(parent)
+        try:
+            db.execute("UPDATE child_allocations SET child_db_path=? WHERE allocation_id='alloc1'",
+                       (str((self.root / "other-child.db").resolve()),))
+        finally:
+            db.close()
+        self.assertFalse(child_admission_ready(parent, registry, child, "alloc1"))
 
     def test_unreadable_child_database_is_quarantined_without_refund(self):
         parent, registry, child = (self.root / "parent.db", self.root / "registry.db", self.root / "child.db")

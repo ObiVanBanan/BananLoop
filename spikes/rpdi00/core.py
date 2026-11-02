@@ -117,7 +117,6 @@ def init_campaign(path: str | Path, budget_cap: int = 100, *,
             "CREATE TABLE IF NOT EXISTS commands(command_id TEXT PRIMARY KEY, idem_key TEXT UNIQUE NOT NULL, payload_hash TEXT NOT NULL, response TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, payload TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS budget(id INTEGER PRIMARY KEY CHECK(id=1), cap INTEGER NOT NULL CHECK(cap>=0), reserved INTEGER NOT NULL DEFAULT 0 CHECK(reserved>=0), spent INTEGER NOT NULL DEFAULT 0 CHECK(spent>=0), unknown INTEGER NOT NULL DEFAULT 0 CHECK(unknown>=0))",
-            "INSERT OR IGNORE INTO budget(id,cap) VALUES(1, 100)",
             "CREATE TABLE IF NOT EXISTS jobs(job_id TEXT PRIMARY KEY, node_id TEXT NOT NULL, status TEXT NOT NULL, fence INTEGER NOT NULL DEFAULT 0, lease_until REAL, request_hash TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS reservations(action_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(job_id), fence INTEGER NOT NULL, amount INTEGER NOT NULL, state TEXT NOT NULL, UNIQUE(job_id,fence))",
             "CREATE TABLE IF NOT EXISTS job_results(job_id TEXT PRIMARY KEY REFERENCES jobs(job_id), fence INTEGER NOT NULL, output_digest TEXT NOT NULL, actual_amount INTEGER NOT NULL)",
@@ -126,6 +125,9 @@ def init_campaign(path: str | Path, budget_cap: int = 100, *,
         )
         for statement in statements:
             db.execute(statement)
+        # The initial cap is immutable through initialization. Reopening a
+        # campaign must never silently raise or lower its spending ceiling.
+        db.execute("INSERT OR IGNORE INTO budget(id,cap) VALUES(1,?)", (budget_cap,))
         node_columns = {row["name"] for row in db.execute("PRAGMA table_info(nodes)")}
         for column, declaration in (("phase", "TEXT NOT NULL DEFAULT 'EXPLORATION'"),
                                     ("status", "TEXT NOT NULL DEFAULT 'READY'"),
@@ -134,7 +136,6 @@ def init_campaign(path: str | Path, budget_cap: int = 100, *,
                 db.execute(f"ALTER TABLE nodes ADD COLUMN {column} {declaration}")
         _ensure_immutable_triggers(db, "exploration_completions", "exploration_completion", "COMPLETION_CONFLICT")
         _ensure_immutable_triggers(db, "completion_evidence", "completion_evidence", "COMPLETION_CONFLICT")
-        db.execute("UPDATE budget SET cap=? WHERE id=1", (budget_cap,))
         if campaign_lineage:
             db.execute("""CREATE TABLE IF NOT EXISTS campaign_lineage(
               allocation_id TEXT PRIMARY KEY, child_id TEXT NOT NULL, parent_campaign_id TEXT NOT NULL,
@@ -739,7 +740,8 @@ def create_child_saga(parent_path: str | Path, registry_path: str | Path, child_
     r = connect(registry_path)
     try:
         r.execute("BEGIN IMMEDIATE")
-        prior = r.execute("SELECT * FROM children WHERE child_id=? OR allocation_id=?", (child_id, allocation_id)).fetchone()
+        prior = r.execute("SELECT * FROM children WHERE child_id=? OR allocation_id=? OR db_path=?",
+                          (child_id, allocation_id, stable_child_path)).fetchone()
         if prior:
             if (prior["child_id"], prior["allocation_id"], prior["parent_campaign_id"], prior["db_path"],
                 prior["amount"], prior["approved_scope_digest"], prior["child_spec_digest"]) != (
@@ -831,7 +833,8 @@ def child_admission_ready(parent_path: str | Path, registry_path: str | Path, ch
             return False
         registry = r.execute("SELECT * FROM children WHERE allocation_id=?", (allocation_id,)).fetchone()
         if (not registry or registry["state"] != "ACTIVE" or registry["child_id"] != parent["child_id"] or
-            registry["parent_campaign_id"] != parent["parent_campaign_id"] or registry["db_path"] != child_path or
+            registry["parent_campaign_id"] != parent["parent_campaign_id"] or
+            parent["child_db_path"] != child_path or registry["db_path"] != child_path or
             registry["amount"] != parent["amount"] or registry["approved_scope_digest"] != parent["approved_scope_digest"] or
             registry["child_spec_digest"] != parent["child_spec_digest"]):
             return False
