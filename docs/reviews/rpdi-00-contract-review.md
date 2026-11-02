@@ -16,21 +16,21 @@ The implementation still does not establish production evaluator trust/capabilit
 
 ### P1 — Migration backup ordering needs validation and v2-adapter reopen proof
 
-At the reviewed base SHA, `spikes/rpdi00/migration.py:17-30` checked integrity and took the backup before `BEGIN IMMEDIATE`, allowing a concurrent writer to commit after the backup. The follow-up patch obtains the SQLite writer reservation before backup and copies from a second read connection. The fixture now creates a campaign through the real v4 `CampaignStore`, compares legacy values, and checks integrity and foreign keys. The newest child-saga changes have not yet been published or run in CI.
+At the reviewed base SHA, `spikes/rpdi00/migration.py:17-30` checked integrity and took the backup before `BEGIN IMMEDIATE`, allowing a concurrent writer to commit after the backup. The follow-up patch obtains the SQLite writer reservation before backup and copies from a second read connection. The fixture now creates a campaign through the real v4 `CampaignStore`, compares legacy values, and checks integrity and foreign keys. Current PR head `746e6f5de7e557abc5943b8426172fba5685d3a1` passes platform CI; opening through the future v2 adapter remains for RPDI-02.
 
-**Still required:** confirm the migration regression in current-head CI (the local environment lacks `pydantic`/`pytest`), add a deterministic concurrent-writer regression test, and open the migrated v5 database through the eventual v2 adapter. The v1 `CampaignStore` correctly rejects schema v5, so v2 reopen is an RPDI-02 integration proof and remains unverified here.
+**Still required:** add a deterministic concurrent-writer regression test and open the migrated v5 database through the eventual v2 adapter. The v1 `CampaignStore` correctly rejects schema v5, so v2 reopen is an RPDI-02 integration proof and remains unverified here. The full local suite cannot run in this environment because `pydantic`/`pytest` are unavailable; CI provides the full-suite evidence instead.
 
 ### P1 — Migration test does not yet establish post-migration adapter compatibility
 
 At the reviewed base SHA, the fixture was synthetic and did not establish preservation against the actual v4 schema. The follow-up worktree patch now creates a v4 campaign through `CampaignStore`, exercises evaluator binding/action/receipt writes, and compares the spec hash, binding hash, receipt bytes, action/reservation/event counts, and foreign-key check after migration. This patch has not yet passed the test suite in the current environment because `pydantic` is unavailable.
 
-**Still required:** confirm the patched regression in current-head CI, verify required indexes, and reopen through the supported v2 adapter once that adapter exists. Do not claim complete migration compatibility from the current spike alone.
+**Still required:** verify required indexes and reopen through the supported v2 adapter once that adapter exists. Do not claim complete migration compatibility from the current spike alone.
 
 ### P1 — Child escrow settlement and trusted approval integration remain incomplete
 
 The follow-up worktree now persists parent campaign identity, child path, allocation, approved scope and immutable spec/digests; requires a durable parent approval record before escrow; bootstraps child schema and lineage in one transaction; validates immutable lineage triggers; and rejects populated DBs without matching lineage or with extra lineage records. Identity conflicts quarantine the allocation with escrow held. Recovery is exercised at committed saga boundaries, including registry activation, and child admission checks parent, registry, and child DB agreement.
 
-**Still required:** settlement/refund and authoritative child-spend reconciliation are not implemented. The approval record is a trusted-Core prototype and is not wired into a production operator/API authorization path. Current local child tests pass, but current-head CI is pending.
+**Still required:** settlement/refund and authoritative child-spend reconciliation are not implemented. The approval record is a trusted-Core prototype and is not wired into a production operator/API authorization path. Child-saga tests pass locally and are covered by current-head CI.
 
 ### P1 — Lease fencing needs provider reconciliation and production boundary proof
 
@@ -63,7 +63,7 @@ The declared signature includes `evidence_refs` (`CONTRACTS.md:16, 59`), but `mu
 - Unknown spend remains charged against the cap in the exercised transition.
 - Exploration output contains no synthetic reward field.
 - The injected crash after child DB initialization can be reconciled without creating a second allocation in that specific scenario.
-- The reviewed base head was a draft and kept spike code outside `src/bananloop`. The follow-up head `daded753037b45c93d14cab6f9f8a37a311f3185` passed Linux and Windows CI: 461 passed, 1 skipped on all four platform/Python jobs. The current worktree adds child-saga hardening after that CI run and is not yet verified by CI.
+- The reviewed base head was a draft and kept spike code outside `src/bananloop`. Current head `746e6f5de7e557abc5943b8426172fba5685d3a1` passed all four Linux/Windows and Python CI jobs: 469 passed, 1 skipped, 7 subtests passed per job; critical mutation smoke passed. No production Engine files were changed.
 
 These are bounded prototype results. They do not resolve the P1 findings above or constitute production compatibility proof.
 
@@ -82,4 +82,4 @@ Until those conditions are met and an independent reviewer accepts the package, 
 
 ## Follow-up worktree status
 
-After the reviewed base SHA, the worktree moved backup creation under the SQLite writer reservation, avoids backup path overwrite races, checks integrity and foreign keys before commit, adds migration-table foreign keys, replaces the synthetic fixture with one built through the real v4 store, and adds lease expiry/recovery/fenced-completion behavior. CI on `daded753037b45c93d14cab6f9f8a37a311f3185` passed with 461 passed, 1 skipped on four jobs. Subsequent child-saga hardening currently passes all 18 non-migration tests locally; `py_compile` and `git diff --check` also pass. The full local suite cannot run because `pydantic` and `pytest` are unavailable and DNS access to PyPI failed. The real-store fixture starts from the repository's current v4 `CampaignStore` rather than a checked-in historical v3→v4 fixture, and the v2 adapter reopen proof remains for RPDI-02. The disposition remains `CHANGES_REQUIRED` until current-head CI and the remaining gate evidence are obtained.
+After the reviewed base SHA, the worktree moved backup creation under the SQLite writer reservation, avoids backup path overwrite races, checks integrity and foreign keys before commit, adds migration-table foreign keys, replaces the synthetic fixture with one built through the real v4 store, adds lease expiry/recovery/fenced-completion behavior, and hardens child approval/lineage recovery. Current head `746e6f5de7e557abc5943b8426172fba5685d3a1` passed all four CI jobs with 469 passed, 1 skipped, and 7 subtests passed per job; critical mutation smoke passed. Eighteen non-migration tests pass locally; `py_compile` and `git diff --check` also pass. The full local suite cannot run because `pydantic` and `pytest` are unavailable and DNS access to PyPI failed. The real-store fixture starts from the repository's current v4 `CampaignStore` rather than a checked-in historical v3→v4 fixture, and the v2 adapter reopen proof remains for RPDI-02. The disposition remains `CHANGES_REQUIRED` because evaluator trust/capabilities, evidence provenance, provider reconciliation, child settlement/refund, production authorization, and independent reviewer acceptance remain unresolved.
