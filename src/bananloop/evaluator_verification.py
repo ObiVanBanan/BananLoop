@@ -703,7 +703,7 @@ class EvaluatorProtocolAuthority:
         if isinstance(protocol_version, bool) or not isinstance(protocol_version, int):
             raise EvaluatorVerificationError("integration verifier job has no protocol version")
         self.require_frozen_reference(protocol_id, protocol_version, protocol_digest,
-                                      approval_digest, campaign_id=job["campaign_id"], spec_hash=spec_hash)
+                                      approval_digest, campaign_id=job["campaign_id"])
         if (output.protocol_digest != protocol_digest
                 or output.candidate_snapshot_id != request.get("candidate_snapshot_id")
                 or request.get("campaign_id") != job.get("campaign_id")
@@ -795,7 +795,7 @@ class EvaluatorProtocolAuthority:
             protocol_id=proposal.protocol.protocol_id,
             version=proposal.protocol.version,
             protocol_digest=evidence.protocol_digest, approval_digest=evidence.approval_digest,
-            campaign_id=evidence.campaign_id, spec_hash=evidence.spec_hash,
+            campaign_id=evidence.campaign_id,
         )
         baseline = self.require_run_receipt(
             evidence.baseline_run_receipt_digest, campaign_id=evidence.campaign_id,
@@ -844,7 +844,6 @@ class EvaluatorProtocolAuthority:
         self.require_frozen_reference(
             receipt.protocol_id, receipt.protocol_version, receipt.protocol_digest,
             receipt.approval_digest, campaign_id=receipt.campaign_id,
-            spec_hash=receipt.spec_hash,
         )
         encoded = _canonical(receipt.model_dump(mode="json"))
         self.conn.execute("INSERT OR IGNORE INTO evaluator_run_receipts VALUES(?,?,?,?,?,?,?,?)", (
