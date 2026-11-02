@@ -78,17 +78,21 @@ does not waive RPDI-11 technical evidence, tests, CI, per-PR review, or DoD.
   executor callback supplies the role output. It exercises enqueue → claim →
   dispatch → settlement → receipt persistence → guarded graph transition and
   replay without adding another job, receipt, or graph event.
+- The real fixture covers reviewer PASS, reviewer FAIL, and Core regression
+  FAIL despite reviewer PASS. It also verifies stored evidence and receipts
+  reject mutation through SQLite immutability triggers.
 - The fixture seeds durable baseline/candidate VALIDATION receipts and stubs
   Git snapshot materialization, private result loading, and evaluator budget
   proof checks. It does not execute the trusted evaluator jobs themselves.
 
 ## Remaining blockers before RPDI-11 is complete
 
-1. Extend the real integration fixture with tampered evidence/receipt and
-   verifier FAIL / Core FAIL cases, and exercise trusted evaluator job
-   enqueue/dispatch/settlement rather than seeded run receipts. Current real
-   adapter fixture covers the pinned role binding, Core evidence, durable
-   integration receipt, PASS graph transition, and replay.
+1. Add a full trusted evaluator enqueue/dispatch/settlement fixture before
+   integration verification instead of seeded evaluator run receipts. Current
+   real integration fixture stubs snapshot/result materialization and evaluator
+   budget proof verification, while covering the pinned integration role,
+   durable Core evidence/receipt, PASS/FAIL graph routing, immutable storage,
+   and replay.
 2. `CampaignSpecV2.mode` is immutable. Protocol approval is campaign-local;
    authorized handoff into a separate Optimization campaign is owned by
    RPDI-12. The graph must not silently switch an Exploration campaign into
