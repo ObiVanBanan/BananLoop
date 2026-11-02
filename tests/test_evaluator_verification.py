@@ -16,6 +16,11 @@ from bananloop.evaluator_verification import (
     VerifierReceiptV1,
     make_verifier_receipt,
 )
+from bananloop.trusted_evaluator import (
+    EvaluatorBudgetProofV1,
+    EvaluatorExecutionV1,
+    EvaluatorRunReceiptV1,
+)
 
 
 def _protocol() -> EvaluatorProtocolV1:
@@ -182,5 +187,50 @@ def test_rejection_is_durable_but_never_yields_an_approval_digest():
         authority._append_verified_receipt(receipt)
         with pytest.raises(EvaluatorVerificationError, match="no independent verifier approval"):
             authority.approved_protocol("a" * 64)
+    finally:
+        conn.close()
+
+
+def test_durable_evaluator_run_receipt_requires_and_binds_frozen_approval():
+    proposal = _proposal()
+    approval = _receipt(proposal)
+    conn, authority = _authority()
+    try:
+        authority._append_proposal(proposal)
+        authority._append_verified_receipt(approval)
+        protocol = proposal.protocol
+        executions = tuple(EvaluatorExecutionV1(
+            campaign_id=proposal.campaign_id, spec_hash=proposal.spec_hash,
+            approval_digest=approval.approval_digest, protocol_id=protocol.protocol_id,
+            protocol_version=protocol.version, protocol_digest=protocol.content_digest(),
+            source_snapshot_id=protocol.source_snapshot_id,
+            candidate_snapshot_id="b" * 40, tier="dev",
+            evaluator_bundle_sha256=protocol.evaluator_bundle_sha256,
+            tier_manifest_sha256=protocol.tiers[0].manifest_sha256,
+            case_count=protocol.tiers[0].case_count, result_digest="9" * 64,
+            repeatability_runs=protocol.repeatability_runs,
+            output_artifact_digests=(),
+        ) for _ in range(protocol.repeatability_runs))
+        proofs = tuple(EvaluatorBudgetProofV1(
+            campaign_id=proposal.campaign_id, spec_hash=proposal.spec_hash,
+            job_id=f"evaluator-job-{index}", fence=1,
+            receipt_digest=str(index) * 64, actual_amount=1,
+            actual_usage={"evaluator_calls": 1},
+        ) for index in range(1, protocol.repeatability_runs + 1))
+        run_receipt = EvaluatorRunReceiptV1.from_completed_runs(executions, proofs)
+        assert authority.append_run_receipt(run_receipt) == run_receipt
+        assert authority.require_run_receipt(
+            run_receipt.receipt_digest, campaign_id=proposal.campaign_id,
+            spec_hash=proposal.spec_hash, approval_digest=approval.approval_digest,
+            protocol_digest=protocol.content_digest(), candidate_snapshot_id="b" * 40,
+        ) == run_receipt
+        with pytest.raises(EvaluatorVerificationError, match="cross-bound"):
+            authority.require_run_receipt(
+                run_receipt.receipt_digest, campaign_id=proposal.campaign_id,
+                spec_hash=proposal.spec_hash, approval_digest=approval.approval_digest,
+                protocol_digest=protocol.content_digest(), candidate_snapshot_id="c" * 40,
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute("DELETE FROM evaluator_run_receipts")
     finally:
         conn.close()

@@ -415,8 +415,18 @@ class EvaluatorProtocolAuthority:
             decision TEXT NOT NULL CHECK(decision IN ('PASS','FAIL')),
             receipt_json TEXT NOT NULL
         )""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS evaluator_run_receipts (
+            receipt_digest TEXT PRIMARY KEY CHECK(length(receipt_digest)=64),
+            campaign_id TEXT NOT NULL,
+            spec_hash TEXT NOT NULL CHECK(length(spec_hash)=64),
+            approval_digest TEXT NOT NULL REFERENCES evaluator_verifier_receipts(approval_digest),
+            protocol_digest TEXT NOT NULL CHECK(length(protocol_digest)=64),
+            candidate_snapshot_id TEXT NOT NULL,
+            result_digest TEXT NOT NULL CHECK(length(result_digest)=64),
+            receipt_json TEXT NOT NULL
+        )""")
         for table in ("evaluator_protocol_proposals", "evaluator_verifier_receipts",
-                      "evaluator_integration_receipts"):
+                      "evaluator_integration_receipts", "evaluator_run_receipts"):
             self.conn.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_no_update BEFORE UPDATE ON {table} "
                               "BEGIN SELECT RAISE(ABORT,'evaluator verification records are immutable'); END")
             self.conn.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_no_delete BEFORE DELETE ON {table} "
@@ -670,6 +680,50 @@ class EvaluatorProtocolAuthority:
                 or receipt.protocol_digest != protocol_digest
                 or receipt.candidate_snapshot_id != candidate_snapshot_id):
             raise EvaluatorVerificationError("integration receipt is stale or belongs to another candidate/protocol")
+        return receipt
+
+    def append_run_receipt(self, receipt: Any) -> Any:
+        """Persist a Core-verified evaluator receipt as an immutable record."""
+        from .trusted_evaluator import EvaluatorRunReceiptV1
+
+        if not isinstance(receipt, EvaluatorRunReceiptV1):
+            raise EvaluatorVerificationError("only a validated evaluator run receipt can be persisted")
+        self.require_frozen_reference(
+            receipt.protocol_id, receipt.protocol_version, receipt.protocol_digest,
+            receipt.approval_digest, campaign_id=receipt.campaign_id,
+            spec_hash=receipt.spec_hash,
+        )
+        encoded = _canonical(receipt.model_dump(mode="json"))
+        self.conn.execute("INSERT OR IGNORE INTO evaluator_run_receipts VALUES(?,?,?,?,?,?,?,?)", (
+            receipt.receipt_digest, receipt.campaign_id, receipt.spec_hash,
+            receipt.approval_digest, receipt.protocol_digest, receipt.candidate_snapshot_id,
+            receipt.result_digest, encoded,
+        ))
+        row = self.conn.execute(
+            "SELECT receipt_json FROM evaluator_run_receipts WHERE receipt_digest=?",
+            (receipt.receipt_digest,),
+        ).fetchone()
+        if row is None or row[0] != encoded:
+            raise EvaluatorVerificationError("evaluator run receipt digest already names different bytes")
+        return receipt
+
+    def require_run_receipt(self, receipt_digest: str, *, campaign_id: str,
+                            spec_hash: str, approval_digest: str,
+                            protocol_digest: str, candidate_snapshot_id: str):
+        from .trusted_evaluator import EvaluatorRunReceiptV1
+
+        row = self.conn.execute(
+            "SELECT receipt_json FROM evaluator_run_receipts WHERE receipt_digest=?",
+            (receipt_digest,),
+        ).fetchone()
+        if row is None:
+            raise EvaluatorVerificationError("integration verification requires a durable evaluator run receipt")
+        receipt = EvaluatorRunReceiptV1.model_validate_json(row[0])
+        if (receipt.campaign_id != campaign_id or receipt.spec_hash != spec_hash
+                or receipt.approval_digest != approval_digest
+                or receipt.protocol_digest != protocol_digest
+                or receipt.candidate_snapshot_id != candidate_snapshot_id):
+            raise EvaluatorVerificationError("evaluator run receipt is stale or cross-bound")
         return receipt
 
 

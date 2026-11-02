@@ -7,6 +7,7 @@ raw evaluator output and process logs never enter the public receipt.
 from __future__ import annotations
 
 import hashlib
+import fnmatch
 import json
 import math
 import os
@@ -242,7 +243,8 @@ def _extract_bundle(data: bytes, destination: Path, *, expected_sha256: str) -> 
             if info.flag_bits & 0x1:
                 raise TrustedEvaluatorError("encrypted evaluator bundle entries are unsupported")
             mode = info.external_attr >> 16
-            if stat.S_ISLNK(mode) or (mode and not (stat.S_ISREG(mode) or stat.S_ISDIR(mode))):
+            file_type = stat.S_IFMT(mode)
+            if file_type not in (0, stat.S_IFREG, stat.S_IFDIR):
                 raise TrustedEvaluatorError("evaluator bundle contains a symlink or special file")
             if info.file_size > _MAX_BUNDLE_FILE_BYTES:
                 raise TrustedEvaluatorError("evaluator bundle entry exceeds the per-file limit")
@@ -694,4 +696,383 @@ class TrustedEvaluatorRunner:
             observed[key] = item.input_sha256
         if observed != expected:
             raise TrustedEvaluatorError("evaluator omitted or changed frozen tier cases")
+
+
+class TrustedEvaluatorAdapter:
+    """Core-owned resolver, queue adapter, and receipt projector for v2 evals.
+
+    Evaluator bytes, case inputs, and candidate files are resolved from the
+    campaign's immutable Git snapshot and the content-addressed publication
+    store. Workers receive only opaque job IDs; execution always runs in Core.
+    """
+
+    _JOB_SCHEMA = "trusted-evaluator-run-v1"
+    _RESULT_SCHEMA = "trusted-evaluator-execution-v1"
+
+    def __init__(self, *, graph: Any, queue: Any, campaign_id: str,
+                 state_root: str | Path, runner: TrustedEvaluatorRunner | None = None):
+        self.graph = graph
+        self.queue = queue
+        self.campaign_id = campaign_id
+        self.graph.bind_campaign_id(campaign_id)
+        self.state_root = Path(state_root).resolve()
+        self.runner = runner or TrustedEvaluatorRunner()
+
+    def enqueue_repeatability(self, *, candidate_snapshot_id: str,
+                              tier: Literal["dev", "validation", "holdout"] = "dev") -> tuple[str, ...]:
+        """Enqueue one immutable fenced job per required repeatability run."""
+        from .contracts import OptimizationCampaignSpecV2
+        from .evaluator_verification import EvaluatorProtocolAuthority
+
+        spec = self.graph.campaign_spec()
+        if not isinstance(spec, OptimizationCampaignSpecV2):
+            raise TrustedEvaluatorError("trusted evaluator jobs require a frozen Optimization campaign")
+        reference = spec.evaluation
+        if reference.approval_digest is None:
+            raise TrustedEvaluatorError("Optimization evaluator reference is not pinned to an approval receipt")
+        spec_hash = spec.approved_hash()
+        authority = EvaluatorProtocolAuthority(self.graph.conn)
+        authority.require_frozen_reference(
+            reference.protocol_id, reference.version, reference.content_sha256,
+            reference.approval_digest, campaign_id=self.campaign_id, spec_hash=spec_hash,
+        )
+        proposal, verifier_receipt = authority.approved_protocol(reference.approval_digest)
+        protocol = proposal.protocol
+        if (verifier_receipt.campaign_id != self.campaign_id
+                or protocol.content_digest() != reference.content_sha256
+                or protocol.repeatability_runs < 2):
+            raise TrustedEvaluatorError("Optimization protocol approval is stale or malformed")
+        tier_ref = next((item for item in protocol.tiers if item.tier == tier), None)
+        if tier_ref is None:
+            raise TrustedEvaluatorError("requested evaluator tier is not frozen in the approved protocol")
+        self._resolve_frozen_assets(protocol, tier, tier_ref.manifest_sha256)
+        self._snapshot_files(spec, protocol.source_snapshot_id, candidate_snapshot_id)
+
+        evaluation_units = spec.budget.evaluation_units_per_call
+        resource_bounds = {"evaluator_calls": 1}
+        if evaluation_units is not None:
+            resource_bounds["evaluation_units"] = evaluation_units
+        scope = {
+            "campaign_id": self.campaign_id, "spec_hash": spec_hash,
+            "approval_digest": reference.approval_digest,
+            "protocol_id": protocol.protocol_id, "protocol_version": protocol.version,
+            "protocol_digest": protocol.content_digest(),
+            "source_snapshot_id": protocol.source_snapshot_id,
+            "candidate_snapshot_id": candidate_snapshot_id, "tier": tier,
+            "repeatability_runs": protocol.repeatability_runs,
+            "resource_bounds": resource_bounds,
+        }
+        scope_digest = _digest(scope)
+        jobs: list[str] = []
+        for run_index in range(protocol.repeatability_runs):
+            identity = _digest({"scope_digest": scope_digest, "run_index": run_index})[:32]
+            job_id = f"eval-{identity}"
+            action_id = f"evaluator:{identity}"
+            request = {
+                "schema": self._JOB_SCHEMA, **scope, "run_index": run_index,
+                "evaluator_bundle_sha256": protocol.evaluator_bundle_sha256,
+                "tier_manifest_sha256": tier_ref.manifest_sha256,
+            }
+            self.queue.enqueue(
+                job_id=job_id, enqueue_key=job_id, campaign_id=self.campaign_id,
+                action_id=action_id, resource="evaluator_calls", upper_bound=1,
+                resource_bounds=resource_bounds, request=request,
+            )
+            jobs.append(job_id)
+        return tuple(jobs)
+
+    def run_one(self, job_id: str, *, worker_id: str = "core-evaluator",
+                lease_seconds: int = 3600) -> dict[str, Any]:
+        """Execute one queued evaluator run and atomically settle its budget."""
+        from .contracts import OptimizationCampaignSpecV2
+        from .evaluator_verification import EvaluatorProtocolAuthority
+
+        job = self.queue.get_job(job_id)
+        request = job.get("request")
+        if (job["state"] != "READY" or not isinstance(request, dict)
+                or request.get("schema") != self._JOB_SCHEMA
+                or job.get("campaign_id") != self.campaign_id):
+            raise TrustedEvaluatorError("evaluator job is missing, stale, or outside the bound campaign")
+        spec = self.graph.campaign_spec()
+        if not isinstance(spec, OptimizationCampaignSpecV2) or spec.approved_hash() != request.get("spec_hash"):
+            raise TrustedEvaluatorError("evaluator job campaign spec changed after enqueue")
+        reference = spec.evaluation
+        if reference.approval_digest != request.get("approval_digest"):
+            raise TrustedEvaluatorError("evaluator job approval pin changed after enqueue")
+        authority = EvaluatorProtocolAuthority(self.graph.conn)
+        authority.require_frozen_reference(
+            reference.protocol_id, reference.version, reference.content_sha256,
+            reference.approval_digest, campaign_id=self.campaign_id,
+            spec_hash=spec.approved_hash(),
+        )
+        proposal, _ = authority.approved_protocol(reference.approval_digest)
+        protocol = proposal.protocol
+        if protocol.content_digest() != request.get("protocol_digest"):
+            raise TrustedEvaluatorError("evaluator protocol bytes changed after enqueue")
+        tier = request.get("tier")
+        tier_ref = next((item for item in protocol.tiers if item.tier == tier), None)
+        if tier_ref is None or tier_ref.manifest_sha256 != request.get("tier_manifest_sha256"):
+            raise TrustedEvaluatorError("evaluator tier manifest changed after enqueue")
+
+        lease = self.queue.claim(job_id, worker_id, lease_seconds=lease_seconds)
+        fence = int(lease["fence"])
+        try:
+            bundle, manifest_bytes, inputs = self._resolve_frozen_assets(
+                protocol, tier, tier_ref.manifest_sha256,
+            )
+            candidate_files = self._snapshot_files(
+                spec, protocol.source_snapshot_id, request["candidate_snapshot_id"],
+            )
+            # Once marked dispatched, failures conservatively retain the call
+            # as UNKNOWN because Core cannot prove whether evaluator code ran.
+            self.queue.mark_dispatched(job_id, worker_id, fence)
+            execution = self.runner.run(
+                protocol=protocol, approval_digest=reference.approval_digest,
+                campaign_id=self.campaign_id, spec_hash=spec.approved_hash(),
+                candidate_snapshot_id=request["candidate_snapshot_id"],
+                candidate_files=candidate_files, evaluator_bundle=bundle,
+                tier=tier, tier_manifest=manifest_bytes, case_inputs=inputs,
+            )
+            self._retain_private_outputs(execution.artifacts)
+            result_payload = {
+                "schema": self._RESULT_SCHEMA,
+                "scope_digest": _digest({key: request[key] for key in (
+                    "campaign_id", "spec_hash", "approval_digest", "protocol_id",
+                    "protocol_version", "protocol_digest", "source_snapshot_id",
+                    "candidate_snapshot_id", "tier", "repeatability_runs", "resource_bounds",
+                )}),
+                "campaign_id": execution.campaign_id, "spec_hash": execution.spec_hash,
+                "approval_digest": execution.approval_digest, "protocol_id": execution.protocol_id,
+                "protocol_version": execution.protocol_version,
+                "protocol_digest": execution.protocol_digest,
+                "source_snapshot_id": execution.source_snapshot_id,
+                "candidate_snapshot_id": execution.candidate_snapshot_id,
+                "tier": execution.tier,
+                "evaluator_bundle_sha256": execution.evaluator_bundle_sha256,
+                "tier_manifest_sha256": execution.tier_manifest_sha256,
+                "case_count": execution.case_count, "result_digest": execution.result_digest,
+                "repeatability_runs": execution.repeatability_runs,
+                "output_artifact_digests": list(execution.output_artifact_digests),
+                "run_index": int(request["run_index"]),
+            }
+            output_digest = _digest(result_payload)
+            actual_usage = {"evaluator_calls": 1}
+            if "evaluation_units" in request["resource_bounds"]:
+                actual_usage["evaluation_units"] = int(request["resource_bounds"]["evaluation_units"])
+            receipt_digest = _digest({"job_id": job_id, "request_hash": lease["request_hash"],
+                                      "fence": fence, "output_digest": output_digest,
+                                      "actual_usage": actual_usage})
+            return self.queue.complete(
+                job_id, worker_id, fence, output_digest=output_digest,
+                receipt_digest=receipt_digest, actual_amount=1,
+                actual_usage=actual_usage, result_payload=result_payload,
+            )
+        except Exception:
+            # A failure after dispatch is an unknown evaluator spend and must
+            # retain its reservation for authoritative reconciliation.
+            try:
+                self.queue.cancel(job_id, reason="trusted evaluator failed after dispatch")
+            except Exception:
+                pass
+            raise
+
+    def finalize_repeatability(self, job_ids: tuple[str, ...]):
+        """Verify durable queue evidence, then mint and append the final receipt."""
+        from .evaluator_verification import EvaluatorProtocolAuthority
+
+        if not job_ids or len(set(job_ids)) != len(job_ids):
+            raise TrustedEvaluatorError("finalization requires distinct evaluator job IDs")
+        executions: list[EvaluatorExecutionV1] = []
+        proofs: list[EvaluatorBudgetProofV1] = []
+        for job_id in job_ids:
+            job = self.queue.get_job(job_id)
+            durable = self.queue.get_result(job_id)
+            response = durable["response"]
+            result = durable.get("result")
+            if (job["state"] != "COMPLETED" or not isinstance(result, dict)
+                    or result.get("schema") != self._RESULT_SCHEMA
+                    or int(durable["fence"]) != int(job["fence"])
+                    or result["scope_digest"] != _digest({key: job["request"][key] for key in (
+                        "campaign_id", "spec_hash", "approval_digest", "protocol_id",
+                        "protocol_version", "protocol_digest", "source_snapshot_id",
+                        "candidate_snapshot_id", "tier", "repeatability_runs", "resource_bounds",
+                    )})
+                    or _digest(result) != durable["output_digest"]
+                    or response.get("receipt_digest") != durable["receipt_digest"]
+                    or response.get("actual_usage") != job["resource_bounds"]):
+                raise TrustedEvaluatorError("durable evaluator queue result failed Core verification")
+            expected_queue_receipt = _digest({
+                "job_id": job_id, "request_hash": job["request_hash"],
+                "fence": int(durable["fence"]), "output_digest": durable["output_digest"],
+                "actual_usage": response["actual_usage"],
+            })
+            if response["receipt_digest"] != expected_queue_receipt:
+                raise TrustedEvaluatorError("evaluator queue settlement receipt is invalid")
+            executions.append(EvaluatorExecutionV1(
+                campaign_id=result["campaign_id"], spec_hash=result["spec_hash"],
+                approval_digest=result["approval_digest"], protocol_id=result["protocol_id"],
+                protocol_version=int(result["protocol_version"]), protocol_digest=result["protocol_digest"],
+                source_snapshot_id=result["source_snapshot_id"],
+                candidate_snapshot_id=result["candidate_snapshot_id"], tier=result["tier"],
+                evaluator_bundle_sha256=result["evaluator_bundle_sha256"],
+                tier_manifest_sha256=result["tier_manifest_sha256"], case_count=int(result["case_count"]),
+                result_digest=result["result_digest"], repeatability_runs=int(result["repeatability_runs"]),
+                output_artifact_digests=tuple(result["output_artifact_digests"]),
+            ))
+            proofs.append(EvaluatorBudgetProofV1(
+                campaign_id=job["campaign_id"], spec_hash=job["request"]["spec_hash"],
+                job_id=job_id, fence=int(durable["fence"]),
+                receipt_digest=response["receipt_digest"], actual_amount=int(response["actual_amount"]),
+                actual_usage=response["actual_usage"],
+            ))
+        receipt = EvaluatorRunReceiptV1.from_completed_runs(tuple(executions), tuple(proofs))
+        # Verify private artifact bytes before making the public receipt durable.
+        for digest in receipt.output_artifact_digests:
+            self._load_private_output(digest)
+        EvaluatorProtocolAuthority(self.graph.conn).append_run_receipt(receipt)
+        return receipt
+
+    def _published_path(self, digest: str) -> Path:
+        if not _SHA256.fullmatch(digest):
+            raise TrustedEvaluatorError("content-addressed artifact reference is invalid")
+        root = self.state_root / "rpdi05" / "published"
+        if root.is_symlink() or not root.is_dir() or not root.resolve().is_relative_to(self.state_root):
+            raise TrustedEvaluatorError("published artifact store is missing or escaped its state root")
+        target = root / digest
+        if target.is_symlink() or not target.is_file() or not target.resolve().is_relative_to(root.resolve()):
+            raise TrustedEvaluatorError("frozen evaluator asset is missing from the published artifact store")
+        return target
+
+    def _resolve_frozen_assets(self, protocol: EvaluatorProtocolV1, tier: str,
+                               manifest_digest: str) -> tuple[bytes, bytes, dict[tuple[str, int], bytes]]:
+        manifest_ref = next((item for item in protocol.tiers
+                             if item.tier == tier and item.manifest_sha256 == manifest_digest), None)
+        if manifest_ref is None:
+            raise TrustedEvaluatorError("tier manifest does not belong to the approved protocol")
+        bundle = self._published_path(protocol.evaluator_bundle_sha256).read_bytes()
+        manifest = self._published_path(manifest_digest).read_bytes()
+        try:
+            parsed = ProtocolManifest.model_validate_json(manifest)
+        except Exception:
+            raise TrustedEvaluatorError("published tier manifest is invalid") from None
+        inputs: dict[tuple[str, int], bytes] = {}
+        for case in parsed.cases:
+            content = self._published_path(case.input_sha256).read_bytes()
+            if _sha256(content) != case.input_sha256:
+                raise TrustedEvaluatorError("published tier input bytes do not match their content address")
+            inputs[(case.case_id, case.repetition)] = content
+        return bundle, manifest, inputs
+
+    def _snapshot_files(self, spec: Any, source_snapshot_id: str,
+                        candidate_snapshot_id: str) -> dict[str, bytes]:
+        repo = Path(spec.source_repo).resolve()
+        if not repo.is_dir() or repo.is_symlink():
+            raise TrustedEvaluatorError("frozen campaign source repository is unavailable")
+        for commit in (source_snapshot_id, candidate_snapshot_id):
+            try:
+                resolved = subprocess.check_output(
+                    ["git", "-C", str(repo), "rev-parse", "--verify", "--end-of-options",
+                     f"{commit}^{{commit}}"], stderr=subprocess.PIPE, timeout=15,
+                ).decode("ascii").strip().lower()
+            except (OSError, subprocess.SubprocessError, UnicodeError):
+                raise TrustedEvaluatorError("protocol source or candidate snapshot is not available in the pinned repository") from None
+            if resolved != commit:
+                raise TrustedEvaluatorError("source and candidate snapshots must be full canonical Git object IDs")
+        ancestor = subprocess.run(
+            ["git", "-C", str(repo), "merge-base", "--is-ancestor", source_snapshot_id,
+             candidate_snapshot_id], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=15, check=False,
+        )
+        if ancestor.returncode != 0:
+            raise TrustedEvaluatorError("candidate snapshot is not descended from the approved evaluator source")
+        policy = getattr(spec.autonomy, "capability_policy", None)
+        allowlist = tuple(getattr(policy, "read_paths", ())) if policy is not None else ()
+        if not allowlist:
+            raise TrustedEvaluatorError("candidate evaluator materialization requires explicit approved read paths")
+        try:
+            listing = subprocess.check_output(
+                ["git", "-C", str(repo), "ls-tree", "-rz", "--full-tree", candidate_snapshot_id],
+                stderr=subprocess.PIPE, timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            raise TrustedEvaluatorError("candidate Git tree cannot be resolved") from None
+        files: dict[str, bytes] = {}
+        total = 0
+        for record in listing.split(b"\x00"):
+            if not record:
+                continue
+            try:
+                meta, raw_path = record.split(b"\t", 1)
+                mode, kind, oid = meta.decode("ascii").split(" ")
+                path = raw_path.decode("utf-8")
+            except (ValueError, UnicodeError):
+                raise TrustedEvaluatorError("candidate Git tree contains a malformed path") from None
+            if not any(fnmatch.fnmatchcase(path, pattern) for pattern in allowlist):
+                continue
+            if kind != "blob" or mode == "120000":
+                raise TrustedEvaluatorError("candidate visible scope contains a symlink or non-file object")
+            path = _safe_relative(path)
+            if any(part.lower() in _PROTECTED_SEGMENTS for part in PurePosixPath(path).parts):
+                raise TrustedEvaluatorError("candidate snapshot scope includes protected evaluator material")
+            try:
+                size = int(subprocess.check_output(
+                    ["git", "-C", str(repo), "cat-file", "-s", oid],
+                    stderr=subprocess.PIPE, timeout=10,
+                ).strip())
+                total += size
+                if total > _MAX_CANDIDATE_BYTES:
+                    raise TrustedEvaluatorError("candidate snapshot exceeds the materialization limit")
+                contents = subprocess.check_output(
+                    ["git", "-C", str(repo), "cat-file", "blob", oid],
+                    stderr=subprocess.PIPE, timeout=15,
+                )
+            except TrustedEvaluatorError:
+                raise
+            except (OSError, subprocess.SubprocessError, ValueError):
+                raise TrustedEvaluatorError("candidate Git blob cannot be verified") from None
+            if len(contents) != size:
+                raise TrustedEvaluatorError("candidate Git blob size changed during materialization")
+            files[path] = contents
+        if not files:
+            raise TrustedEvaluatorError("approved candidate read scope resolved to no files")
+        return files
+
+    def _retain_private_outputs(self, artifacts: tuple[EvaluatorArtifactBytesV1, ...]) -> None:
+        root = self.state_root / "rpdi11" / "private-artifacts"
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if root.is_symlink() or not root.resolve().is_relative_to(self.state_root):
+            raise TrustedEvaluatorError("private evaluator artifact store escaped its state root")
+        for artifact in artifacts:
+            if _sha256(artifact.data) != artifact.sha256:
+                raise TrustedEvaluatorError("evaluator artifact bytes changed before private retention")
+            target = root / artifact.sha256
+            if target.is_symlink():
+                raise TrustedEvaluatorError("private evaluator artifact target is a symlink")
+            if target.exists():
+                if not target.is_file() or _sha256(target.read_bytes()) != artifact.sha256:
+                    raise TrustedEvaluatorError("private evaluator artifact store contains conflicting bytes")
+                continue
+            temporary = root / f".{artifact.sha256}.{os.getpid()}.tmp"
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+            try:
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(artifact.data)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, target)
+                target.chmod(0o400)
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
+
+    def _load_private_output(self, digest: str) -> bytes:
+        root = self.state_root / "rpdi11" / "private-artifacts"
+        target = root / digest
+        if (root.is_symlink() or not root.is_dir() or target.is_symlink() or not target.is_file()
+                or not target.resolve().is_relative_to(root.resolve())):
+            raise TrustedEvaluatorError("verified private evaluator artifact is missing or escaped its store")
+        content = target.read_bytes()
+        if _sha256(content) != digest:
+            raise TrustedEvaluatorError("private evaluator artifact digest mismatch")
+        return content
 
