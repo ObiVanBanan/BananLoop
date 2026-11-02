@@ -103,9 +103,16 @@ class RPDI00ContractSpike(unittest.TestCase):
         dbpath = self.root / "campaign.db"
         init_campaign(dbpath)
         changes = [{"type": "AddNode", "node_id": "n1"}]
-        first = mutate_graph(dbpath, command_id="c1", idempotency_key="same", expected_revision=0, changes=changes)
-        self.assertEqual(mutate_graph(dbpath, command_id="c1-retry", idempotency_key="same", expected_revision=0, changes=changes), first)
+        first = mutate_graph(dbpath, command_id="c1", idempotency_key="same", expected_revision=0,
+                             changes=changes, evidence_refs=["evidence:b", "evidence:a", "evidence:a"])
+        self.assertEqual(first["evidence_refs"], ["evidence:a", "evidence:b"])
+        self.assertEqual(mutate_graph(dbpath, command_id="c1-retry", idempotency_key="same", expected_revision=0,
+                                      changes=changes, evidence_refs=["evidence:a", "evidence:b"]), first)
         self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM events"), 1)
+        self.assertEqual(json.loads(self.scalar(dbpath, "SELECT payload FROM events"))["evidence_refs"], first["evidence_refs"])
+        with self.assertRaisesRegex(ContractError, "different canonical payload"):
+            mutate_graph(dbpath, command_id="c2-evidence", idempotency_key="same", expected_revision=0,
+                         changes=changes, evidence_refs=["evidence:c"])
         with self.assertRaisesRegex(ContractError, "different canonical payload"):
             mutate_graph(dbpath, command_id="c2", idempotency_key="same", expected_revision=0,
                          changes=[{"type": "AddNode", "node_id": "n2"}])

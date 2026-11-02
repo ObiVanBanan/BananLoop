@@ -13,7 +13,7 @@
 
 ## Frozen command and graph contract
 
-`MutateGraph(command_id, idempotency_key, expected_graph_revision, changes, evidence_refs)` is synchronous in this spike. Canonical payload hash is computed before opening the transaction. A repeated key with the same payload returns the original response; the same key with a different payload is `IDEMPOTENCY_CONFLICT`. A stale expected revision is `REVISION_CONFLICT`.
+`MutateGraph(command_id, idempotency_key, expected_graph_revision, changes, evidence_refs)` is synchronous in this spike. Evidence references are validated as non-empty strings, sorted/deduplicated, included in the canonical payload hash, and persisted in both the response and event. A repeated key with the same canonical payload returns the original response; the same key with a different payload is `IDEMPOTENCY_CONFLICT`. A stale expected revision or failed one-row revision CAS is `REVISION_CONFLICT`.
 
 The graph has typed nodes and `REQUIRES`, `DERIVED_FROM`, and `RELATED_TO` edges. Only `REQUIRES` blocks scheduling and must be acyclic. AND groups require every required member; OR groups require one acceptable member. Group readiness must be based on verified status/evidence, never worker prose. Graph revision, command result, and event commit atomically. This spike exercises node/edge mutation and cycle rollback; AND/OR readiness and full typed API schemas remain design outputs for RPDI-01/02.
 

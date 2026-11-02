@@ -177,8 +177,13 @@ def _execution_cycle(db: sqlite3.Connection) -> bool:
 
 
 def mutate_graph(path: str | Path, *, command_id: str, idempotency_key: str,
-                 expected_revision: int, changes: list[dict[str, Any]]) -> dict[str, Any]:
-    payload = {"expected_revision": expected_revision, "changes": changes}
+                 expected_revision: int, changes: list[dict[str, Any]],
+                 evidence_refs: list[str] | None = None) -> dict[str, Any]:
+    refs = [] if evidence_refs is None else evidence_refs
+    if not isinstance(refs, list) or any(not isinstance(ref, str) or not ref.strip() for ref in refs):
+        raise ContractError("INVALID_EVIDENCE", "evidence refs must be non-empty strings")
+    refs = sorted(set(refs))
+    payload = {"expected_revision": expected_revision, "changes": changes, "evidence_refs": refs}
     digest = canonical_hash(payload)
     db = connect(path)
     try:
@@ -210,8 +215,10 @@ def mutate_graph(path: str | Path, *, command_id: str, idempotency_key: str,
         if _execution_cycle(db):
             raise ContractError("INVALID_GRAPH", "REQUIRES edges must be acyclic")
         new_revision = expected_revision + 1
-        db.execute("UPDATE graph_meta SET revision=? WHERE id=1 AND revision=?", (new_revision, expected_revision))
-        response = {"command_id": command_id, "graph_revision": new_revision}
+        cursor = db.execute("UPDATE graph_meta SET revision=? WHERE id=1 AND revision=?", (new_revision, expected_revision))
+        if cursor.rowcount != 1:
+            raise ContractError("REVISION_CONFLICT", "graph revision compare-and-swap failed")
+        response = {"command_id": command_id, "graph_revision": new_revision, "evidence_refs": refs}
         db.execute("INSERT INTO commands VALUES(?,?,?,?)", (command_id, idempotency_key, digest, json.dumps(response, sort_keys=True)))
         db.execute("INSERT INTO events(kind,payload) VALUES('GRAPH_MUTATED',?)", (json.dumps(response, sort_keys=True),))
         db.execute("COMMIT")

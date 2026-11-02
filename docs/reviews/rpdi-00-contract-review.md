@@ -44,11 +44,11 @@ At the reviewed base SHA, the spike had no lease reclaim or fenced result-commit
 
 **Required:** define the frozen evaluator reference and verifier-owned approval record, validate it in the spec path, and document/test the capability boundary. If this is explicitly deferred, mark the contract as unresolved and keep the contract gate closed until an owner accepts the deferred proof.
 
-### P2 — Graph command omits evidence references and only tests a subset of the declared API
+### P2 — Graph spike covers transaction basics, not full DAG semantics or typed API validation
 
-The declared signature includes `evidence_refs` (`CONTRACTS.md:16, 59`), but `mutate_graph()` accepts and hashes only `expected_revision` and `changes` (`core.py:109-112`). The prototype supports AddNode/AddEdge only; it does not implement evidence binding, typed node validation, AND/OR readiness, authorization/scope checks, or typed API request/response validation. The revision update at `core.py:143` does not verify the affected row count. These limitations are partly acknowledged in the document, but the implementation should not be described as exercising the complete declared command contract.
+The follow-up now accepts evidence references, validates/canonicalizes them, binds them into the idempotency payload, persists them in the result/event, and checks the revision CAS row count. The prototype still supports AddNode/AddEdge only; typed node validation, AND/OR readiness, authorization/scope checks, and typed API request/response validation remain unimplemented. The contract labels those capabilities as deferred design outputs; this spike must not be described as exercising the full graph/API contract.
 
-**Required:** align the frozen signature and implementation; bind evidence refs into the canonical command hash and persisted result, assert the CAS update, and label deferred graph semantics as design-only until tested.
+**Required:** keep the deferred semantics explicit and require their executable tests in RPDI-01/02 before production claims.
 
 ### P2 — Evidence-only completion returns an unchecked, non-persisted package
 
@@ -58,7 +58,7 @@ The declared signature includes `evidence_refs` (`CONTRACTS.md:16, 59`), but `mu
 
 ## Positive evidence
 
-- Graph mutation and event insertion are in one transaction; the tests cover idempotent replay, stale revision rejection, and rollback on invalid/cyclic mutations.
+- Graph mutation and event insertion are in one transaction; tests cover evidence refs in idempotency/result/event, replay, stale revision rejection, and rollback on invalid/cyclic mutations.
 - Claim-time reservation and lease creation are transactional; tests cover rollback before commit and concurrent budget-cap enforcement.
 - Unknown spend remains charged against the cap in the exercised transition.
 - Exploration output contains no synthetic reward field.
