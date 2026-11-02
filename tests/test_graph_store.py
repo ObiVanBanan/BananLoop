@@ -7,8 +7,10 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from pydantic import ValidationError
 
 from bananloop.graph_store import (
+    ExplorationCompletionV2,
     GraphIdempotencyConflict,
     GraphRepository,
     GraphRevisionConflict,
@@ -100,6 +102,42 @@ def test_graph_command_commits_nodes_edges_group_revision_and_event_once():
         assert conn.execute("SELECT COUNT(*) FROM commands").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM events WHERE event_type='GRAPH_MUTATED'").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM research_edges").fetchone()[0] == 2
+    finally:
+        graph.close()
+
+
+def test_evidence_completion_is_strict_atomic_and_replayable():
+    from bananloop.contracts import ExplorationCampaignSpecV2
+
+    conn, graph = make_repository()
+    spec = ExplorationCampaignSpecV2.model_validate({
+        "schema_version": 2, "mode": "EXPLORATION", "goal": "map evidence",
+        "source_repo": "/tmp/source", "base_commit": "0123456789abcdef",
+        "autonomy": {"mode": "SUPERVISED", "scope_digest": "a" * 64, "scope_version": 1},
+        "budget": {}, "role_registry_digest": "b" * 64, "evaluation": None,
+    })
+    conn.execute("CREATE TABLE campaigns(id INTEGER PRIMARY KEY,spec_json TEXT NOT NULL)")
+    conn.execute("INSERT INTO campaigns VALUES(1,?)", (json.dumps(spec.model_dump(mode="json")),))
+    try:
+        graph.mutate(command("add", "add-node", 0, node("explore-1")))
+        payload = {
+            "command_id": "completion-1", "idempotency_key": "job-1:f1", "expected_graph_revision": 1,
+            "node_id": "explore-1", "job_id": "job-1", "worker_fence": 1,
+            "source_request_hash": "c" * 64, "output_digest": "d" * 64,
+            "spec_hash": spec.approved_hash(), "evidence_refs": ["artifact://report"],
+            "artifact_digests": ["e" * 64], "limitations": ["small sample"],
+            "next_experiment": "vary one factor",
+        }
+        first = graph.complete_exploration(payload)
+        assert first["graph_revision"] == 2
+        replay = graph.complete_exploration({**payload, "expected_graph_revision": 2})
+        assert replay == first
+        node_row = conn.execute("SELECT phase,status,payload_json FROM research_nodes WHERE node_id='explore-1'").fetchone()
+        assert (node_row["phase"], node_row["status"]) == ("CONSOLIDATION", "COMPLETED")
+        assert json.loads(node_row["payload_json"])["completion_evidence"]["worker_fence"] == 1
+        assert conn.execute("SELECT COUNT(*) FROM events WHERE event_type='EXPLORATION_COMPLETED'").fetchone()[0] == 1
+        with pytest.raises(ValidationError):
+            ExplorationCompletionV2.model_validate({**payload, "score": 1})
     finally:
         graph.close()
 
