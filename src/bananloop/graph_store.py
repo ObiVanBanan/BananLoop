@@ -692,6 +692,8 @@ class GraphRepository:
                     protocol_digest=spec.evaluation.content_sha256,
                     candidate_snapshot_id=candidate_snapshot_id,
                 )
+                if (run.tier != "dev"):
+                    raise GraphStoreError("candidate readiness requires DEV evaluator evidence")
                 if (run.source_snapshot_id != source_snapshot_id
                         or run.protocol_id != spec.evaluation.protocol_id
                         or run.protocol_version != spec.evaluation.version):

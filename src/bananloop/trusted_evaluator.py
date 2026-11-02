@@ -989,6 +989,10 @@ class TrustedEvaluatorAdapter:
             protocol_digest=protocol.content_digest(),
             candidate_snapshot_id=candidate_snapshot_id,
         )
+        if baseline.tier != "validation":
+            raise TrustedEvaluatorError(
+                "integration regression evidence requires VALIDATION; HOLDOUT cannot feed graph decisions"
+            )
         if (baseline.tier != candidate.tier
                 or baseline.tier_manifest_sha256 != candidate.tier_manifest_sha256
                 or baseline.case_count != candidate.case_count
