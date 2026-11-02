@@ -92,12 +92,20 @@ does not waive RPDI-11 technical evidence, tests, CI, per-PR review, or DoD.
   adapter performs snapshot materialization, private result storage/loading,
   and evaluator budget proof checks; only the sandbox runner and integration
   role's external executor callback are deterministic test stubs.
+- A separate real-queue protocol workflow test completes a fenced researcher
+  job, commits its evidence to the graph, creates the metric proposal through
+  `record_completed_proposal`, then queues/runs the independent verifier via
+  `EvaluatorVerificationAdapter` and a distinct pinned role instance. It
+  persists and reloads the approval receipt. An executor pinned to the
+  researcher role is rejected before dispatch, and a stale researcher fence is
+  rejected. Self-approval contract rejection remains covered by its dedicated
+  negative test.
 
 ## Remaining blockers before RPDI-11 is complete
 
-1. Exact-head CI must pass after the full lifecycle changes, including Windows.
-   Local Python lacks Pydantic and pytest, so behavior tests rely on repository
-   CI.
+1. Exact-head CI must pass after the real protocol workflow test, including
+   Windows. Local Python lacks Pydantic and pytest, so behavior tests rely on
+   repository CI.
 2. `CampaignSpecV2.mode` is immutable. Protocol approval is campaign-local;
    authorized handoff into a separate Optimization campaign is owned by
    RPDI-12. The graph must not silently switch an Exploration campaign into
