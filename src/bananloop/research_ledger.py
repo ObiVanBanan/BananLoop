@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import posixpath
 import re
 import sqlite3
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Literal, TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -42,13 +42,18 @@ def _normalize_intervention_paths(values: tuple[str, ...]) -> tuple[str, ...]:
         head, sep, locator = value.rpartition(":")
         if sep and head and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.<>-]*|[0-9]+", locator):
             value = head
-        normalized = posixpath.normpath(value).strip("/")
-        parts = normalized.split("/")
-        if (value.startswith("/") or normalized in {"", "."} or ".." in parts
-                or any(part.lower() in {"validation", "holdout", "secret", "secrets", "evaluator"}
-                       for part in parts)):
+        path = PurePosixPath(value)
+        parts = value.split("/")
+        lower = [part.lower() for part in parts]
+        protected = {".git", ".bananloop_eval", "validation", "holdout", "evaluator",
+                     "evaluation", "secret", "secrets", "credential", "credentials"}
+        if (path.is_absolute() or PureWindowsPath(value).drive or path.as_posix() != value
+                or not parts or any(part in {"", ".", ".."} for part in parts)
+                or any(part in protected or part.startswith(".env")
+                       or re.search(r"(evaluator|evaluation|validation|holdout|secret|credential)", part)
+                       for part in lower)):
             raise ValueError("intervention path is unsafe or belongs to protected evaluation material")
-        paths.add(normalized)
+        paths.add(value)
     if not paths:
         raise ValueError("structural intervention requires at least one affected path")
     return tuple(sorted(paths))
