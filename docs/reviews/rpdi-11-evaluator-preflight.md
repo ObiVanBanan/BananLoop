@@ -96,10 +96,10 @@ does not waive RPDI-11 technical evidence, tests, CI, per-PR review, or DoD.
   job, commits its evidence to the graph, creates the metric proposal through
   `record_completed_proposal`, then queues/runs the independent verifier via
   `EvaluatorVerificationAdapter` and a distinct pinned role instance. It
-  persists and reloads the approval receipt. An executor pinned to the
-  researcher role is rejected before dispatch, and a stale researcher fence is
-  rejected. Self-approval contract rejection remains covered by its dedicated
-  negative test.
+  persists and reloads the approval receipt. Executors pinned to the
+  researcher role or lacking a manifest pin are rejected before dispatch, and
+  a stale researcher fence is rejected. Self-approval contract rejection
+  remains covered by its dedicated negative test.
 
 ## Remaining blockers before RPDI-11 is complete
 
