@@ -39,18 +39,23 @@ does not waive RPDI-11 technical evidence, tests, CI, per-PR review, or DoD.
   paired baseline/candidate evaluator receipts, enqueue a pinned tool-free
   verifier, validate the stored evidence and role binding before dispatch, and
   persist an immutable decision receipt. A role PASS cannot override Core FAIL.
+- Guarded `OPTIMIZATION → VERIFICATION` candidate readiness with exactly one
+  `evaluator://receipt/<digest>` reference. Core checks the durable receipt
+  against the campaign, frozen protocol, source snapshot, and candidate snapshot;
+  the transition fails without it and leaves graph revision unchanged.
 
 ## Remaining blockers before RPDI-11 is complete
 
-1. End-to-end adapter coverage and lifecycle wiring remain incomplete. The
-   integration enqueue/run path is implemented, but it still needs tests that
-   exercise dispatch through durable receipt creation and the graph transition.
+1. A Core-owned optimization coordinator is not yet connected to the
+   scheduler/application lifecycle. End-to-end tests must cover evaluator
+   enqueue/dispatch/settlement/final receipt and integration enqueue/dispatch/
+   receipt/guarded transition, including tampering and replay.
 2. `CampaignSpecV2.mode` is immutable. Protocol approval is campaign-local;
    authorized handoff into a separate Optimization campaign is owned by
    RPDI-12. The graph must not silently switch an Exploration campaign into
    Optimization.
-3. Exact-head CI must pass on the current revision. Ubuntu Python 3.11, 3.12,
-   and 3.13 passed on the previous code head; Windows Python 3.12 is still
+3. Exact-head CI must pass on the current revision. On the current code head,
+   Ubuntu Python 3.11, 3.12, and 3.13 passed; Windows Python 3.12 is still
    running. Local Python lacks Pydantic and pytest, so behavior tests rely on
    repository CI.
 
