@@ -51,6 +51,13 @@ class _Graph:
             source_snapshot_id="a" * 40, candidate_snapshot_id="b" * 40,
             tier="validation",
         )
+        self._baseline_receipt = SimpleNamespace(
+            receipt_digest="7" * 64, campaign_id="campaign-1",
+            spec_hash="d" * 64, approval_digest="e" * 64,
+            protocol_id="quality", protocol_version=1, protocol_digest="f" * 64,
+            source_snapshot_id="a" * 40, candidate_snapshot_id="a" * 40,
+            tier="validation",
+        )
         self.evaluator_protocols = SimpleNamespace(
             require_run_receipt=self._require_run_receipt,
             require_integration_decision=self._require_integration_decision,
@@ -64,6 +71,8 @@ class _Graph:
         }
         if digest == self._receipt.receipt_digest:
             return self._receipt
+        if digest == self._baseline_receipt.receipt_digest:
+            return self._baseline_receipt
         assert digest == self._validation_receipt.receipt_digest
         return self._validation_receipt
 
@@ -270,12 +279,12 @@ def test_integration_decision_projects_guarded_phase_and_replays(
     executor = object()
 
     receipt = coordinator.verify_candidate(
-        node_id="candidate-1", baseline_run_receipt_digest="1" * 64,
+        node_id="candidate-1", baseline_run_receipt_digest=graph._baseline_receipt.receipt_digest,
         executor=executor, worker_id="reviewer-worker",
     )
 
     assert receipt is graph._integration_receipt
-    assert integration.enqueued == [("1" * 64, graph._validation_receipt.receipt_digest)]
+    assert integration.enqueued == [(graph._baseline_receipt.receipt_digest, graph._validation_receipt.receipt_digest)]
     assert integration.runs == [("integration-1", "reviewer-worker", executor)]
     assert graph.node["phase"] == phase
     assert graph.node["status"] == status
@@ -286,7 +295,7 @@ def test_integration_decision_projects_guarded_phase_and_replays(
     )
 
     replay = coordinator.verify_candidate(
-        node_id="candidate-1", baseline_run_receipt_digest="1" * 64,
+        node_id="candidate-1", baseline_run_receipt_digest=graph._baseline_receipt.receipt_digest,
         executor=executor, worker_id="reviewer-worker",
     )
 
@@ -301,7 +310,7 @@ def test_integration_completed_job_is_recovered_without_redrive():
     graph, _, integration, coordinator = _verification_coordinator(state="COMPLETED")
 
     receipt = coordinator.verify_candidate(
-        node_id="candidate-1", baseline_run_receipt_digest="1" * 64,
+        node_id="candidate-1", baseline_run_receipt_digest=graph._baseline_receipt.receipt_digest,
         executor=object(), worker_id="reviewer-worker",
     )
 
@@ -316,7 +325,7 @@ def test_integration_unknown_job_is_not_redriven():
 
     with pytest.raises(OptimizationLifecycleError, match="indeterminate"):
         coordinator.verify_candidate(
-            node_id="candidate-1", baseline_run_receipt_digest="1" * 64,
+            node_id="candidate-1", baseline_run_receipt_digest=graph._baseline_receipt.receipt_digest,
             executor=object(), worker_id="reviewer-worker",
         )
 
@@ -384,7 +393,7 @@ def test_integration_leg_settles_real_sqlite_queue_and_projects_graph(tmp_path):
     )
     try:
         coordinator.verify_candidate(
-            node_id="candidate-1", baseline_run_receipt_digest="1" * 64,
+            node_id="candidate-1", baseline_run_receipt_digest=graph._baseline_receipt.receipt_digest,
             executor=object(), worker_id="reviewer-worker",
         )
         events = [event["event_type"] for event in queue.events("integration-1")]
