@@ -35,22 +35,24 @@ does not waive RPDI-11 technical evidence, tests, CI, per-PR review, or DoD.
 - Evaluator output artifacts are retained in a private, content-addressed
   store. Public receipts and queue payloads contain digests, not artifact
   values, case IDs, scores, or evaluator logs.
+- Added `IntegrationVerificationAdapter` to create Core-derived evidence from
+  paired baseline/candidate evaluator receipts, enqueue a pinned tool-free
+  verifier, validate the stored evidence and role binding before dispatch, and
+  persist an immutable decision receipt. A role PASS cannot override Core FAIL.
 
 ## Remaining blockers before RPDI-11 is complete
 
-1. The integration receipt projection still has no supported integration-
-   verifier enqueue/run adapter. Core must derive deterministic candidate,
-   evaluator run, budget, artifact-byte, and regression-policy evidence before
-   an integration role's PASS can authorize a graph transition.
+1. End-to-end adapter coverage and lifecycle wiring remain incomplete. The
+   integration enqueue/run path is implemented, but it still needs tests that
+   exercise dispatch through durable receipt creation and the graph transition.
 2. `CampaignSpecV2.mode` is immutable. Protocol approval is campaign-local;
    authorized handoff into a separate Optimization campaign is owned by
    RPDI-12. The graph must not silently switch an Exploration campaign into
    Optimization.
-3. Exact-head CI must pass on the current revision. Earlier runs exposed two
-   test-fixture/archive-mode failures; fixes are committed on the current head
-   and CI is running. Local Python in this environment lacks Pydantic and pytest. Syntax
-   compilation and AST parsing pass; behavior tests require the repository CI
-   environment.
+3. Exact-head CI must pass on the current revision. Ubuntu Python 3.11, 3.12,
+   and 3.13 passed on the previous code head; Windows Python 3.12 is still
+   running. Local Python lacks Pydantic and pytest, so behavior tests rely on
+   repository CI.
 
 These blockers keep this branch in draft. The owner waiver allows work to
 continue; it does not waive RPDI-11 technical evidence or convert role claims

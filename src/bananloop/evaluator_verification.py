@@ -1131,7 +1131,7 @@ class IntegrationVerificationAdapter:
         binding = job["request"].get("role_binding")
         if not isinstance(binding, dict):
             raise EvaluatorVerificationError("integration verifier job has no role binding")
-        from .roles import TeamManifestAuthority
+        from .roles import RoleContextV1, TeamManifestAuthority
 
         manifest_authority = TeamManifestAuthority(self.queue.path)
         try:
@@ -1141,9 +1141,49 @@ class IntegrationVerificationAdapter:
             )
         finally:
             manifest_authority.close()
+        request = job["request"]
         member = manifest.member(binding["role_instance_id"])
-        if executor.manifest_digest != manifest.manifest_digest or executor.member != member:
-            raise EvaluatorVerificationError("executor is not the pinned integration verifier")
+        context = RoleContextV1.model_validate(request.get("role_context"))
+        expected_binding = manifest.job_binding(
+            member.instance_id, action_id=binding.get("action_id"),
+            context_digest=context.digest(),
+        )
+        policy = member.role.capability_policy
+        if (member.role.role_id != "integration_verifier"
+                or policy.tools or policy.read_paths or policy.write_paths or policy.network_access
+                or not set(context.model_fields_set) <= set(member.role.context_fields) | {"role_id"}
+                or manifest.manifest_digest != request.get("team_manifest_digest")
+                or manifest.registry_digest != request.get("role_registry_digest")
+                or expected_binding != binding
+                or executor.manifest_digest != manifest.manifest_digest
+                or executor.member != member):
+            raise EvaluatorVerificationError("executor is not the pinned, tool-free integration verifier")
+
+        from .contracts import OptimizationCampaignSpecV2
+
+        spec = self.graph.campaign_spec()
+        if (not isinstance(spec, OptimizationCampaignSpecV2)
+                or spec.approved_hash() != request.get("spec_hash")
+                or spec.approved_hash() != binding.get("spec_hash")
+                or spec.evaluation.approval_digest != request.get("approval_digest")):
+            raise EvaluatorVerificationError("integration verifier job is stale against the pinned campaign spec")
+        proposal, _ = self.authority.approved_protocol(request.get("approval_digest"))
+        protocol = proposal.protocol
+        evidence_row = self.authority.conn.execute(
+            "SELECT evidence_json FROM evaluator_integration_evidence WHERE evidence_digest=?",
+            (request.get("core_evidence_digest"),),
+        ).fetchone()
+        if evidence_row is None:
+            raise EvaluatorVerificationError("integration verifier job cites no stored Core evidence")
+        evidence = IntegrationCoreEvidenceV1.model_validate_json(evidence_row[0])
+        if (evidence.campaign_id != self.campaign_id
+                or evidence.spec_hash != spec.approved_hash()
+                or evidence.approval_digest != request.get("approval_digest")
+                or evidence.protocol_digest != protocol.content_digest()
+                or evidence.source_snapshot_id != request.get("source_snapshot_id")
+                or evidence.candidate_snapshot_id != request.get("candidate_snapshot_id")
+                or evidence.protocol_digest != request.get("protocol_digest")):
+            raise EvaluatorVerificationError("integration verifier evidence is stale or cross-bound")
         lease = self.queue.claim(verifier_job_id, worker_id, lease_seconds=lease_seconds)
         fence = int(lease["fence"])
         try:
