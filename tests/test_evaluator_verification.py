@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import subprocess
+import zipfile
 from types import SimpleNamespace
 from dataclasses import replace
 
@@ -22,7 +24,9 @@ from bananloop.evaluator_verification import (
     VerifierReceiptV1,
     make_verifier_receipt,
 )
-from bananloop.contracts import CapabilityPolicyV2, parse_campaign_spec_document
+from bananloop.contracts import (
+    CapabilityPolicyV2, ProtocolCase, ProtocolManifest, parse_campaign_spec_document,
+)
 from bananloop.budget_ledger import BudgetLedger
 from bananloop.graph_store import AddNode, GraphRepository, MutateGraph, TransitionNodeStatus
 from bananloop.migrations import create_v5_graph_schema
@@ -37,6 +41,8 @@ from bananloop.trusted_evaluator import (
     EvaluatorExecutionV1,
     EvaluatorRunReceiptV1,
     EvaluatorExecutionV1,
+    TrustedEvaluatorRunner,
+    _case_protocol_digest,
     TrustedEvaluatorAdapter,
 )
 
@@ -622,6 +628,339 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(
                 "FROM evaluator_integration_receipts WHERE receipt_digest=?)",
                 (receipt.receipt_digest,),
             )
+    finally:
+        queue.close()
+        graph.close()
+
+
+
+def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
+    tmp_path, monkeypatch,
+):
+    repo = tmp_path / "source-repo"
+    repo.mkdir()
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-C", str(repo), *args], stderr=subprocess.PIPE,
+        ).decode().strip()
+
+    git("init", "-q")
+    git("config", "user.email", "rpdi11@example.invalid")
+    git("config", "user.name", "RPDI-11 test")
+    (repo / "src").mkdir()
+    (repo / "src" / "app.py").write_text("base\n", encoding="utf-8")
+    git("add", "src/app.py")
+    git("commit", "-qm", "source snapshot")
+    source_snapshot_id = git("rev-parse", "HEAD")
+    (repo / "src" / "app.py").write_text("candidate\n", encoding="utf-8")
+    git("add", "src/app.py")
+    git("commit", "-qm", "candidate snapshot")
+    candidate_snapshot_id = git("rev-parse", "HEAD")
+
+    input_bytes = b'{"prompt":"controlled case","label":"ok"}'
+    input_sha = hashlib.sha256(input_bytes).hexdigest()
+    bundle_io = __import__("io").BytesIO()
+    with zipfile.ZipFile(bundle_io, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("evaluate.py", "# deterministic test asset\n")
+    bundle_bytes = bundle_io.getvalue()
+    bundle_sha = hashlib.sha256(bundle_bytes).hexdigest()
+    preliminary = EvaluatorProtocolV1(
+        protocol_id="lifecycle-quality", version=1,
+        source_snapshot_id=source_snapshot_id,
+        evaluator_bundle_sha256=bundle_sha,
+        entrypoint=("python", "{evaluator}/evaluate.py"),
+        metric_id="quality", metric_field="quality",
+        direction="MAXIMIZE", aggregation="MEAN",
+        tiers=(
+            EvaluatorTierManifestV1(
+                tier="dev", manifest_sha256="0" * 64, case_count=1,
+            ),
+            EvaluatorTierManifestV1(
+                tier="validation", manifest_sha256="0" * 64, case_count=1,
+            ),
+        ),
+        repeatability_runs=2,
+    )
+    manifest = ProtocolManifest(
+        protocol_sha256=_case_protocol_digest(preliminary),
+        cases=(ProtocolCase(
+            case_id="controlled-case", repetition=0, input_sha256=input_sha,
+        ),),
+    )
+    manifest_bytes = json.dumps(
+        manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
+    ).encode()
+    manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
+    protocol = preliminary.model_copy(update={
+        "tiers": (
+            EvaluatorTierManifestV1(
+                tier="dev", manifest_sha256=manifest_sha, case_count=1,
+            ),
+            EvaluatorTierManifestV1(
+                tier="validation", manifest_sha256=manifest_sha, case_count=1,
+            ),
+        ),
+    })
+
+    campaign_id = "campaign-1"
+    proposal_payload = {
+        "schema_version": 1, "campaign_id": campaign_id, "spec_hash": "e" * 64,
+        "source_snapshot_id": source_snapshot_id, "source_node_id": "metric-node",
+        "source_job_id": "research-job", "source_fence": 2,
+        "source_request_hash": "f" * 64, "source_output_digest": "1" * 64,
+        "source_event_cursor": 9, "proposer_role_id": "researcher",
+        "proposer_role_instance_id": "agent-" + "2" * 24,
+        "proposer_binding_digest": "3" * 64,
+        "protocol": protocol.model_dump(mode="json"),
+        "evidence_refs": ("artifact://sha256/" + "4" * 64,),
+    }
+    proposal_digest = hashlib.sha256(json.dumps(
+        proposal_payload, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode()).hexdigest()
+    proposal = MetricDiscoveryProposalV1(
+        proposal_digest=proposal_digest, **proposal_payload,
+    )
+    approval = _receipt(proposal)
+
+    role_definition = RoleDefinitionV1(
+        role_id="integration_verifier", adapter="codex", provider="openai",
+        model="gpt-6-luna", model_version="pin-test",
+        prompt_digest="a" * 64,
+        capability_policy=CapabilityPolicyV2(
+            tools=(), read_paths=(), write_paths=(), backend="ISOLATED",
+            network_access=False,
+        ),
+        context_fields=("campaign_goal", "public_task"),
+        priority=1, min_instances=1, max_instances=1,
+        calls_per_instance=1, tokens_per_instance=100,
+    )
+    registry = RoleRegistryV1(
+        registry_id="full-lifecycle-registry", version=1,
+        roles=(role_definition,),
+    )
+    spec = parse_campaign_spec_document({
+        "schema_version": 2, "mode": "OPTIMIZATION",
+        "goal": "Run trusted evaluator lifecycle end to end",
+        "source_repo": str(repo), "base_commit": source_snapshot_id,
+        "autonomy": {
+            "mode": "SUPERVISED", "scope_digest": "b" * 64, "scope_version": 1,
+            "capability_policy": {
+                "tools": [], "read_paths": ["src/**"], "write_paths": [],
+                "backend": "ISOLATED", "network_access": False,
+            },
+        },
+        "budget": {
+            "max_experiments": 5, "max_attempts": 8, "max_agent_calls": 20,
+            "max_evaluator_calls": 20, "deadline_seconds": 3600,
+            "plateau_experiments": 3,
+        },
+        "role_registry_digest": registry.digest(),
+        "evaluation": {
+            "protocol_id": protocol.protocol_id, "version": protocol.version,
+            "content_sha256": protocol.content_digest(),
+            "approval_digest": approval.approval_digest,
+        },
+        "parent": None,
+    })
+    spec_hash = spec.approved_hash()
+
+    state_root = tmp_path / "state"
+    published = state_root / "rpdi05" / "published"
+    published.mkdir(parents=True)
+    for data, digest in (
+        (bundle_bytes, bundle_sha), (manifest_bytes, manifest_sha),
+        (input_bytes, input_sha),
+    ):
+        (published / digest).write_bytes(data)
+
+    db_path = state_root / "campaign.sqlite3"
+    ledger = BudgetLedger(db_path)
+    ledger.create_root(
+        campaign_id, {"agent_calls": 20, "evaluator_calls": 20},
+    )
+    ledger.close()
+    conn = sqlite3.connect(db_path, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute(
+        "CREATE TABLE events(seq INTEGER PRIMARY KEY AUTOINCREMENT,event_type TEXT NOT NULL,"
+        "payload_json TEXT NOT NULL,created_at TEXT NOT NULL)"
+    )
+    conn.execute("BEGIN IMMEDIATE")
+    create_v5_graph_schema(conn)
+    conn.execute("PRAGMA user_version=5")
+    conn.commit()
+    conn.execute(
+        "CREATE TABLE campaigns(id INTEGER PRIMARY KEY,spec_json TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO campaigns(id,spec_json) VALUES(1,?)",
+        (json.dumps(spec.model_dump(mode="json")),),
+    )
+    graph = GraphRepository(conn, campaign_id=campaign_id)
+    queue = DurableWorkerQueue(db_path)
+    protocol_authority = EvaluatorProtocolAuthority(graph.conn)
+    protocol_authority._append_proposal(proposal)
+    protocol_authority._append_verified_receipt(approval)
+
+    class DeterministicRunner(TrustedEvaluatorRunner):
+        def __init__(self):
+            super().__init__(bwrap_binary="not-used-in-test")
+            self.protocol_hash = manifest.protocol_sha256
+
+        def _sandbox_available(self):
+            return True
+
+        def _execute_isolated(
+            self, argv, *, readonly, output, candidate_snapshot_id, tier, timeout,
+        ):
+            private_map = json.loads(
+                (readonly / "tier" / "input-map.json").read_text(encoding="utf-8")
+            )
+            measured_cases = [{
+                "case_id": item["case_id"], "repetition": item["repetition"],
+                "input_sha256": item["input_sha256"], "metrics": {},
+            } for item in private_map]
+            score = 0.6 if candidate_snapshot_id == source_snapshot_id else 0.8
+            return json.dumps({
+                "status": "ok", "metrics": {"quality": score},
+                "protocol_sha256": self.protocol_hash, "cases": measured_cases,
+                "diagnostics": {},
+            })
+
+    runner = DeterministicRunner()
+    trusted = TrustedEvaluatorAdapter(
+        graph=graph, queue=queue, campaign_id=campaign_id,
+        state_root=state_root, runner=runner,
+    )
+    team = TeamFactoryV1.build(
+        registry,
+        TeamRequestV1(
+            campaign_id=campaign_id, spec_hash=spec_hash,
+            requested_instances={"integration_verifier": 1}, specializations=(),
+            available_agent_calls=10, available_model_tokens=1000,
+        ),
+        expected_registry_digest=registry.digest(),
+    )
+    manifest_authority = TeamManifestAuthority(db_path)
+    manifest_authority.pin(team)
+    manifest_authority.close()
+    member = team.members[0]
+
+    def invoke(request, _gateway, **_pinned):
+        return IntegrationVerifierOutputV1(
+            candidate_snapshot_id=request["candidate_snapshot_id"],
+            protocol_digest=request["protocol_digest"], decision="PASS",
+            checks=(
+                "candidate_identity", "protocol_identity", "evaluation_receipt",
+                "budget_receipt", "artifact_integrity", "regression_policy",
+            ),
+        ).model_dump(mode="json")
+
+    executor = PinnedRoleExecutorV1.from_manifest(team, member.instance_id, invoke)
+    integration = IntegrationVerificationAdapter(
+        graph=graph, queue=queue, campaign_id=campaign_id,
+        trusted_evaluator=trusted,
+    )
+    coordinator = OptimizationAttemptCoordinator(
+        graph=graph, trusted_evaluator=trusted, integration_verifier=integration,
+    )
+    try:
+        graph.mutate(MutateGraph(
+            command_id="add-lifecycle-candidate", idempotency_key="add-lifecycle-candidate",
+            expected_graph_revision=0,
+            changes=(AddNode(
+                type="AddNode", node_id="lifecycle-candidate", phase="OPTIMIZATION",
+                payload={
+                    "source_snapshot_id": source_snapshot_id,
+                    "candidate_snapshot_id": candidate_snapshot_id,
+                },
+            ),),
+        ))
+        graph.mutate(MutateGraph(
+            command_id="ready-lifecycle-candidate", idempotency_key="ready-lifecycle-candidate",
+            expected_graph_revision=1,
+            changes=(TransitionNodeStatus(
+                type="TransitionNodeStatus", node_id="lifecycle-candidate",
+                expected_node_revision=0, expected_status="PENDING", to_status="READY",
+                guard="SCHEDULER_READY", actor="CORE",
+            ),),
+        ))
+
+        dev_receipt = coordinator.evaluate_candidate(
+            node_id="lifecycle-candidate", worker_id="core-evaluator",
+        )
+        assert dev_receipt.tier == "dev"
+        assert dev_receipt.candidate_snapshot_id == candidate_snapshot_id
+
+        baseline_jobs = trusted.enqueue_repeatability(
+            candidate_snapshot_id=source_snapshot_id, tier="validation",
+        )
+        for job_id in baseline_jobs:
+            trusted.run_one(job_id, worker_id="baseline-evaluator")
+        baseline = trusted.finalize_repeatability(baseline_jobs)
+        assert baseline.tier == "validation"
+        assert baseline.candidate_snapshot_id == source_snapshot_id
+
+        node = next(
+            node for node in graph.scheduling_snapshot()["nodes"]
+            if node["node_id"] == "lifecycle-candidate"
+        )
+        graph.mutate(MutateGraph(
+            command_id="ready-lifecycle-verification",
+            idempotency_key="ready-lifecycle-verification",
+            expected_graph_revision=graph.graph_revision(),
+            changes=(TransitionNodeStatus(
+                type="TransitionNodeStatus", node_id="lifecycle-candidate",
+                expected_node_revision=int(node["revision"]),
+                expected_status="PENDING", to_status="READY",
+                guard="SCHEDULER_READY", actor="CORE",
+            ),),
+        ))
+
+        integration_receipt = coordinator.verify_candidate(
+            node_id="lifecycle-candidate",
+            baseline_run_receipt_digest=baseline.receipt_digest,
+            executor=executor, worker_id="integration-worker",
+        )
+        graph_revision = graph.graph_revision()
+        run_count = graph.conn.execute(
+            "SELECT COUNT(*) FROM evaluator_run_receipts"
+        ).fetchone()[0]
+        queue_event_count = len(queue.events_after(0))
+
+        replay = coordinator.verify_candidate(
+            node_id="lifecycle-candidate",
+            baseline_run_receipt_digest=baseline.receipt_digest,
+            executor=executor, worker_id="integration-worker",
+        )
+        assert replay == integration_receipt
+        assert integration_receipt.decision == "PASS"
+        assert graph.graph_revision() == graph_revision
+        assert graph.conn.execute(
+            "SELECT COUNT(*) FROM evaluator_run_receipts"
+        ).fetchone()[0] == run_count
+        assert len(queue.events_after(0)) == queue_event_count
+
+        node = next(
+            node for node in graph.scheduling_snapshot()["nodes"]
+            if node["node_id"] == "lifecycle-candidate"
+        )
+        assert (node["phase"], node["status"]) == ("CONSOLIDATION", "COMPLETED")
+        assert node["payload"]["last_phase_transition"]["guard"] == "VERIFIED_RESULT"
+        assert node["payload"]["last_phase_transition"]["evidence_refs"] == [
+            f"integration://receipt/{integration_receipt.receipt_digest}"
+        ]
+        assert queue.conn.execute(
+            "SELECT COUNT(*) FROM worker_jobs WHERE resource='evaluator_calls'"
+        ).fetchone()[0] == 6
+        assert graph.conn.execute(
+            "SELECT COUNT(*) FROM evaluator_run_receipts"
+        ).fetchone()[0] == 3
+        assert graph.conn.execute(
+            "SELECT COUNT(*) FROM evaluator_integration_receipts"
+        ).fetchone()[0] == 1
     finally:
         queue.close()
         graph.close()
