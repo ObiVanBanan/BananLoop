@@ -62,7 +62,7 @@ def _role_registry():
                 "read_paths": ["README.md"], "write_paths": ["**"], "backend": "LOCAL",
             },
             context_fields=("campaign_goal", "node_id", "node_phase", "public_task", "evidence_refs", "dev_summary"),
-            min_instances=1, max_instances=1, calls_per_instance=1, tokens_per_instance=100,
+            min_instances=1, max_instances=1, calls_per_instance=2, tokens_per_instance=200,
         ),),
     )
 
