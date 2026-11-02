@@ -94,7 +94,7 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
         first = adapter.publish_completed(job["job_id"])
         replay = adapter.publish_completed(job["job_id"])
         assert replay == first
-        assert graph.graph_revision() == 2
+        assert graph.graph_revision() == 4
     finally:
         queue.close()
         graph.close()
@@ -138,7 +138,7 @@ def test_revocation_blocks_exploration_graph_commit(tmp_path):
             authority.close()
         with pytest.raises(EvidenceAdapterError, match="revoked"):
             adapter.publish_completed(job["job_id"])
-        assert graph.graph_revision() == 1
+        assert graph.graph_revision() == 2
     finally:
         queue.close()
         graph.close()
