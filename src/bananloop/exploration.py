@@ -18,6 +18,10 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .capabilities import (
+    BubblewrapBackend, CapabilityAuthority, CapabilityDenied, CapabilityGrantV1,
+    LocalBackend, PermissionEngine, SandboxUnavailable, ToolGateway,
+)
 from .contracts import ExplorationCampaignSpecV2
 from .graph_store import ExplorationCompletionV2, GraphRepository, GraphStoreError
 from .worker_queue import DurableWorkerQueue, WorkerQueueError
@@ -121,6 +125,9 @@ class EvidenceOnlyAttemptAdapter:
         spec = self.graph.campaign_spec()
         if not isinstance(spec, ExplorationCampaignSpecV2):
             raise EvidenceAdapterError("v2 Optimization remains unsupported until its evaluator adapter is approved")
+        policy = spec.autonomy.capability_policy
+        if policy is None:
+            raise EvidenceAdapterError("v2 campaign has no approved capability policy; failing closed")
         paths = tuple(sorted({_safe_relative(p) for p in visible_paths}))
         if not paths:
             raise EvidenceAdapterError("an explicit nonempty source visibility allowlist is required")
@@ -136,18 +143,33 @@ class EvidenceOnlyAttemptAdapter:
             raise EvidenceAdapterError("approved base does not resolve to a Git commit") from exc
         if not _GIT_OID.fullmatch(resolved_commit):
             raise EvidenceAdapterError("Git returned an invalid full commit object ID")
-        manifest = {"policy": "rpdi05-evidence-only-v1", "scope_digest": spec.autonomy.scope_digest,
-                    "visible_paths": list(paths), "base_commit": resolved_commit}
+        policy_digest = _sha(_canonical(policy.model_dump(mode="json")).encode())
+        manifest = {"policy": "rpdi06-capability-gateway-v1", "scope_digest": spec.autonomy.scope_digest,
+                    "policy_digest": policy_digest, "visible_paths": list(paths), "base_commit": resolved_commit}
         capability_hash = _sha(_canonical(manifest).encode())
         identity = _sha(_canonical({"campaign_id": self.campaign_id, "node_id": node_id,
                                     "spec_hash": spec.approved_hash(), "graph_revision": self.graph.graph_revision(),
                                     "capability_hash": capability_hash}).encode())
         job_id = "explore-" + identity[:40]
+        grant = PermissionEngine.derive(
+            campaign_id=self.campaign_id, job_id=job_id, spec_hash=spec.approved_hash(),
+            scope_digest=spec.autonomy.scope_digest, campaign=policy, role=policy, task=policy,
+        )
+        if any(not grant.allows_path("read", path) for path in paths):
+            raise EvidenceAdapterError("source allowlist exceeds the approved campaign capability policy")
+        authority = CapabilityAuthority(self.queue.path)
+        try:
+            authority.issue(grant)
+        finally:
+            authority.close()
+        manifest["grant_digest"] = grant.grant_digest
         request = {"schema": "evidence-only-attempt-v1", "campaign_id": self.campaign_id,
                    "node_id": node_id, "spec_hash": spec.approved_hash(), "base_commit": resolved_commit,
                    "approved_base_ref": spec.base_commit,
                    "source_repo": str(repo), "capability_manifest": manifest,
-                   "capability_hash": capability_hash, "graph_revision": self.graph.graph_revision()}
+                   "capability_manifest_digest": capability_hash, "capability_digest": grant.grant_digest,
+                   "capability_grant": grant.model_dump(mode="json"),
+                   "graph_revision": self.graph.graph_revision()}
         return self.queue.enqueue(job_id=job_id, enqueue_key=job_id, campaign_id=self.campaign_id,
                                   action_id=f"exploration:{node_id}", resource="agent_calls",
                                   upper_bound=1, request=request)
@@ -199,14 +221,22 @@ class EvidenceOnlyAttemptAdapter:
         return workspace, artifacts
 
     def run_one(self, *, job_id: str, worker_id: str,
-                execute: Callable[[dict[str, Any], Path, Path], dict[str, Any]],
+                execute: Callable[[dict[str, Any], ToolGateway], dict[str, Any]],
                 lease_seconds: int = 300) -> dict[str, Any]:
         lease = self.queue.claim(job_id, worker_id, lease_seconds=lease_seconds)
         fence = int(lease["fence"])
         try:
             workspace, artifacts = self._workspace(lease, fence)
             self.queue.mark_dispatched(job_id, worker_id, fence)
-            raw = execute(dict(lease["request"]), workspace, artifacts)
+            grant = CapabilityGrantV1.model_validate(lease["request"]["capability_grant"])
+            authority = CapabilityAuthority(self.queue.path)
+            try:
+                backend = LocalBackend() if grant.backend == "LOCAL" else BubblewrapBackend()
+                gateway = ToolGateway(queue=self.queue, authority=authority, grant=grant, fence=fence,
+                                      workspace=workspace, artifacts=artifacts, backend=backend)
+                raw = execute(dict(lease["request"]), gateway)
+            finally:
+                authority.close()
             output = EvidenceOnlyOutputV2.model_validate(raw)
             if output.node_id != lease["request"]["node_id"]:
                 raise EvidenceAdapterError("worker output targets a different graph node")
@@ -313,7 +343,20 @@ class EvidenceOnlyAttemptAdapter:
             "next_experiment": result.next_experiment,
         }
         try:
-            return self.graph.complete_exploration(ExplorationCompletionV2.model_validate(payload))
-        except GraphStoreError as exc:
+            completion = ExplorationCompletionV2.model_validate(payload)
+            if self.graph.command_response(payload["idempotency_key"]) is not None:
+                return self.graph.complete_exploration(completion)
+            grant = CapabilityGrantV1.model_validate(request["capability_grant"])
+            authority = CapabilityAuthority(self.queue.path)
+            try:
+                backend = LocalBackend() if grant.backend == "LOCAL" else BubblewrapBackend()
+                workspace = self.state_root / "rpdi05" / "workspaces" / f"{job_id}-f{durable['fence']}"
+                gateway = ToolGateway(queue=self.queue, authority=authority, grant=grant,
+                                      fence=int(durable["fence"]), workspace=workspace,
+                                      artifacts=artifact_directory, backend=backend)
+                return gateway.commit_evidence(lambda: self.graph.complete_exploration(completion))
+            finally:
+                authority.close()
+        except (GraphStoreError, CapabilityDenied, SandboxUnavailable) as exc:
             raise EvidenceAdapterError(str(exc)) from exc
 

@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from bananloop.agents.base import AgentError
 from bananloop.agents.codex import BOOTSTRAP_SCHEMA, HYPOTHESIS_SCHEMA, CodexAdapter, SELECTION_SCHEMA, selection_schema_for_task
 
 
@@ -188,6 +191,20 @@ def test_codex_uses_role_scoped_sandbox(tmp_path: Path, monkeypatch):
     assert seen[0][seen[0].index("--sandbox") + 1] == "workspace-write"
     assert seen[1][seen[1].index("--sandbox") + 1] == "read-only"
     assert all("--ephemeral" in argv for argv in seen)
+
+
+@pytest.mark.parametrize("extra_args", [
+    ["--sandbox", "danger-full-access"],
+    ["--sandbox=read-only"],
+    ["--dangerously-bypass-approvals-and-sandbox"],
+    ["--add-dir", "/"],
+    ["--add-dir=/"],
+    ["-c", "sandbox_mode='danger-full-access'"],
+    ["--profile", "unsafe"],
+])
+def test_codex_rejects_extra_args_that_override_supervisor_sandbox(extra_args):
+    with pytest.raises(AgentError, match="override"):
+        CodexAdapter(extra_args=extra_args)
 
 
 def test_semantic_selection_schema_restricts_model_to_eligible_ids_and_exact_refs():

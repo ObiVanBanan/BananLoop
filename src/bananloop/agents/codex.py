@@ -328,6 +328,16 @@ class CodexAdapter(AgentAdapter):
                  reasoning_effort: str | None = None):
         self.model = model
         self.extra_args = extra_args or []
+        protected_overrides = {
+            "--sandbox", "-s", "--dangerously-bypass-approvals-and-sandbox",
+            "--full-auto", "--yolo", "--ask-for-approval", "-a", "--config", "-c", "--profile",
+            "--add-dir", "--writable-root", "--cd", "-C",
+        }
+        if any(arg.split("=", 1)[0] in protected_overrides for arg in self.extra_args):
+            raise AgentError("extra_args cannot override the supervisor-selected Codex sandbox or profile")
+        if any("sandbox_mode" in arg or "approval_policy" in arg or "writable_roots" in arg
+               for arg in self.extra_args):
+            raise AgentError("extra_args cannot override Codex sandbox policy settings")
         self.reasoning_effort = reasoning_effort
         self.meter_tokens = False
         self.last_token_usage: dict[str, int] | None = None

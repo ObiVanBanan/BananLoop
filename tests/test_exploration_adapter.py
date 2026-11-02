@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from bananloop.budget_ledger import BudgetLedger
+from bananloop.capabilities import CapabilityAuthority
 from bananloop.contracts import ExplorationCampaignSpecV2
 from bananloop.exploration import EvidenceAdapterError, EvidenceOnlyAttemptAdapter, EvidenceOnlyOutputV2
 from bananloop.graph_store import GraphRepository
@@ -49,7 +50,11 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
     spec = ExplorationCampaignSpecV2.model_validate({
         "schema_version": 2, "mode": "EXPLORATION", "goal": "map evidence",
         "source_repo": str(source), "base_commit": "HEAD",
-        "autonomy": {"mode": "SUPERVISED", "scope_digest": "a" * 64, "scope_version": 1},
+        "autonomy": {"mode": "SUPERVISED", "scope_digest": "a" * 64, "scope_version": 1,
+                      "capability_policy": {"policy_version": 1,
+                                            "tools": ["read_file", "list_files", "write_artifact", "commit_candidate"],
+                                            "read_paths": ["README.md"], "write_paths": ["**"],
+                                            "backend": "LOCAL"}},
         "budget": {}, "role_registry_digest": "b" * 64, "evaluation": None,
     })
     graph = _graph(tmp_path / "campaign.sqlite3", spec)
@@ -64,11 +69,11 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
         assert job["request"]["approved_base_ref"] == "HEAD"
         assert job["request"]["base_commit"] == base
 
-        def execute(request, workspace, artifacts):
-            assert (workspace / "README.md").read_text() == "frozen source\n"
-            assert not (workspace / ".git").exists()
+        def execute(request, gateway):
+            assert gateway.read_file("README.md") == "frozen source\n"
+            assert gateway.list_files() == ["README.md"]
             content = b"observed evidence\n"
-            (artifacts / "observation.txt").write_bytes(content)
+            gateway.write_artifact("observation.txt", content)
             return {"node_id": "explore", "evidence_refs": ["observation:1"],
                     "artifacts": [{"path": "observation.txt", "sha256": hashlib.sha256(content).hexdigest()}],
                     "limitations": ["single observation"], "next_experiment": "repeat with control"}
@@ -83,6 +88,50 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
         replay = adapter.publish_completed(job["job_id"])
         assert replay == first
         assert graph.graph_revision() == 2
+    finally:
+        queue.close()
+        graph.close()
+
+
+def test_revocation_blocks_exploration_graph_commit(tmp_path):
+    source = tmp_path / "source"
+    _source_repo(source)
+    spec = ExplorationCampaignSpecV2.model_validate({
+        "schema_version": 2, "mode": "EXPLORATION", "goal": "map evidence",
+        "source_repo": str(source), "base_commit": "HEAD",
+        "autonomy": {"mode": "SUPERVISED", "scope_digest": "a" * 64, "scope_version": 1,
+                      "capability_policy": {"policy_version": 1,
+                                            "tools": ["read_file", "write_artifact", "commit_candidate"],
+                                            "read_paths": ["README.md"], "write_paths": ["**"],
+                                            "backend": "LOCAL"}},
+        "budget": {}, "role_registry_digest": "b" * 64, "evaluation": None,
+    })
+    graph = _graph(tmp_path / "campaign.sqlite3", spec)
+    registry_path = tmp_path / "registry.sqlite3"
+    ledger = BudgetLedger(registry_path)
+    ledger.create_root("campaign-test", {"agent_calls": 2})
+    ledger.close()
+    queue = DurableWorkerQueue(registry_path)
+    adapter = EvidenceOnlyAttemptAdapter(graph=graph, queue=queue, campaign_id="campaign-test", state_root=tmp_path)
+    try:
+        job = adapter.enqueue(node_id="explore", visible_paths=["README.md"])
+
+        def execute(_request, gateway):
+            content = b"evidence"
+            gateway.write_artifact("evidence.txt", content)
+            return {"node_id": "explore", "artifacts": [{"path": "evidence.txt", "sha256": hashlib.sha256(content).hexdigest()}],
+                    "next_experiment": "repeat"}
+
+        adapter.run_one(job_id=job["job_id"], worker_id="worker-test", execute=execute)
+        grant = job["request"]["capability_grant"]
+        authority = CapabilityAuthority(registry_path)
+        try:
+            authority.revoke(grant["grant_id"])
+        finally:
+            authority.close()
+        with pytest.raises(EvidenceAdapterError, match="revoked"):
+            adapter.publish_completed(job["job_id"])
+        assert graph.graph_revision() == 1
     finally:
         queue.close()
         graph.close()
