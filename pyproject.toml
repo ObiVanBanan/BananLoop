@@ -19,7 +19,7 @@ bananloop = "bananloop.cli:main"
 
 [tool.pytest.ini_options]
 addopts = "-q"
-testpaths = ["tests"]
+testpaths = ["tests", "spikes/rpdi00"]
 pythonpath = ["src", "."]
 
 [tool.pytest-gremlins]
