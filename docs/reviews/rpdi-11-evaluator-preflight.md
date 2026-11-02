@@ -71,18 +71,24 @@ does not waive RPDI-11 technical evidence, tests, CI, per-PR review, or DoD.
   coordinator recovers the immutable receipt from the durable queue result
   instead of dispatching again. DISPATCHED/UNKNOWN states fail closed.
 - Tests cover PASS and FAIL phase routing, graph replay without duplicate
-  dispatch, completed-job recovery, and UNKNOWN behavior. A focused test uses
-  the real SQLite DurableWorkerQueue for enqueue/claim/dispatch/settlement and
-  graph projection; its verifier adapter boundary is stubbed, so pinned role
-  execution and receipt minting are still exercised only by adapter-level
-  validation/tests.
+  dispatch, completed-job recovery, and UNKNOWN behavior.
+- A separate end-to-end fixture uses the real IntegrationVerificationAdapter,
+  EvaluatorProtocolAuthority, DurableWorkerQueue, GraphRepository, durable
+  integration receipt and pinned PinnedRoleExecutorV1 binding. A deterministic
+  executor callback supplies the role output. It exercises enqueue → claim →
+  dispatch → settlement → receipt persistence → guarded graph transition and
+  replay without adding another job, receipt, or graph event.
+- The fixture seeds durable baseline/candidate VALIDATION receipts and stubs
+  Git snapshot materialization, private result loading, and evaluator budget
+  proof checks. It does not execute the trusted evaluator jobs themselves.
 
 ## Remaining blockers before RPDI-11 is complete
 
-1. Add a full integration adapter end-to-end fixture with a pinned tool-free
-   role manifest/executor, Core evidence and receipt minting, plus tampering,
-   replay, and failure cases. Current coordinator coverage uses a stubbed
-   verifier adapter boundary and a real SQLite queue settlement test.
+1. Extend the real integration fixture with tampered evidence/receipt and
+   verifier FAIL / Core FAIL cases, and exercise trusted evaluator job
+   enqueue/dispatch/settlement rather than seeded run receipts. Current real
+   adapter fixture covers the pinned role binding, Core evidence, durable
+   integration receipt, PASS graph transition, and replay.
 2. `CampaignSpecV2.mode` is immutable. Protocol approval is campaign-local;
    authorized handoff into a separate Optimization campaign is owned by
    RPDI-12. The graph must not silently switch an Exploration campaign into
