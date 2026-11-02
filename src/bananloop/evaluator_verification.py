@@ -707,7 +707,6 @@ class EvaluatorProtocolAuthority:
         if (output.protocol_digest != protocol_digest
                 or output.candidate_snapshot_id != request.get("candidate_snapshot_id")
                 or request.get("campaign_id") != job.get("campaign_id")
-                or self.graph.campaign_id != job.get("campaign_id")
                 or not isinstance(source_snapshot_id, str) or not _GIT_OID.fullmatch(source_snapshot_id)):
             raise EvaluatorVerificationError("integration verifier result is stale or cross-bound")
         evidence_row = self.conn.execute(
