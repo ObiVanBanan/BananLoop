@@ -22,6 +22,7 @@ DISPLAY_STAGE = {
     "RECORD": "LEARN",
 }
 SAFE_EVENT_FIELDS = {
+    "GRAPH_MUTATED": {"command_id", "graph_revision"},
     "STAGE_ENTERED": {"stage", "attempt_id"},
     "ATTEMPT_STARTED": {"experiment_id", "attempt_id"},
     "ATTEMPT_COMPLETED": {"experiment_id", "attempt_id", "status"},
@@ -225,6 +226,8 @@ def read_events_after(store: CampaignStore, after_seq: int, *, limit: int = 100)
     store.conn.execute("SAVEPOINT operator_events")
     try:
         latest = int(store.conn.execute("SELECT COALESCE(MAX(seq),0) FROM events").fetchone()[0])
+        if after_seq > latest:
+            raise ValueError("event cursor is beyond the latest committed event")
         rows = [dict(row) for row in store.conn.execute(
             "SELECT seq,event_type,payload_json,created_at FROM events WHERE seq>? AND seq<=? ORDER BY seq LIMIT ?",
             (after_seq, latest, limit),
