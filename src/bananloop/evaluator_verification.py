@@ -1083,7 +1083,7 @@ class IntegrationVerificationAdapter:
                                              source_ref="campaign://spec/goal"),
             fields={"public_task": RoleContextValueV1(
                 value=public_summary, classification="PUBLIC_NODE",
-                source_ref=f"integration://evidence/{evidence.evidence_digest}",
+                source_ref=f"evidence://integration/{evidence.evidence_digest}",
             )},
         )
         context = build_role_context(member, source)
