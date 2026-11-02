@@ -1219,7 +1219,7 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
     )
     verifier_job = verification.enqueue_verifier(proposal.proposal_digest)
     assert verifier_job["state"] == "READY"
-    public_task = verifier_job["request"]["role_context"]["fields"]["public_task"]["value"]
+    public_task = verifier_job["request"]["role_context"]["public_task"]
     assert "SOURCE_REVIEW_SENTINEL" in public_task
     assert "evaluate.py" in public_task
     assert manifest_sha in public_task
