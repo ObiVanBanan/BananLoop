@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -277,5 +278,58 @@ def test_candidate_ready_transition_requires_exact_durable_evaluator_receipt():
         ).fetchone()
         assert tuple(row) == ("OPTIMIZATION", "COMPLETED", 2)
         assert graph.graph_revision() == revision
+    finally:
+        graph.close()
+
+@pytest.mark.parametrize(("tier", "accepted"), [("dev", True), ("validation", False), ("holdout", False)])
+def test_candidate_ready_accepts_dev_only_receipt(monkeypatch, tier, accepted):
+    from bananloop.contracts import OptimizationCampaignSpecV2
+
+    conn, graph = _repo()
+    graph.bind_campaign_id("campaign-tier")
+    spec = OptimizationCampaignSpecV2.model_validate({
+        "schema_version": 2, "mode": "OPTIMIZATION", "goal": "optimize",
+        "source_repo": "/tmp/source", "base_commit": "0123456789abcdef",
+        "autonomy": {"mode": "SUPERVISED", "scope_digest": "a" * 64, "scope_version": 1},
+        "budget": {}, "role_registry_digest": "b" * 64,
+        "evaluation": {"protocol_id": "quality", "version": 1, "content_sha256": "c" * 64,
+                       "approval_digest": "d" * 64},
+    })
+    conn.execute("CREATE TABLE campaigns(id INTEGER PRIMARY KEY,spec_json TEXT NOT NULL)")
+    conn.execute("INSERT INTO campaigns VALUES(1,?)", (json.dumps(spec.model_dump(mode="json")),))
+    run = SimpleNamespace(tier=tier, source_snapshot_id="e" * 40,
+                          protocol_id="quality", protocol_version=1)
+
+    class _ReceiptAuthority:
+        def require_run_receipt(self, *_args, **_kwargs):
+            return run
+
+    monkeypatch.setattr(GraphRepository, "evaluator_protocols", property(lambda _self: _ReceiptAuthority()))
+    try:
+        _command(graph, "add-optimization", _node("candidate", "OPTIMIZATION", {
+            "source_snapshot_id": "e" * 40, "candidate_snapshot_id": "f" * 40,
+        }))
+        _command(graph, "candidate-ready", _status(
+            graph, "candidate", "PENDING", "READY", "SCHEDULER_READY", "CORE",
+        ))
+        _command(graph, "candidate-complete", _status(
+            graph, "candidate", "READY", "COMPLETED", "VERIFIED_COMPLETION", "CORE",
+            ["candidate:build"],
+        ))
+        transition = {
+            "type": "TransitionNodePhase", "node_id": "candidate",
+            "expected_node_revision": 2, "from_phase": "OPTIMIZATION",
+            "to_phase": "VERIFICATION", "guard": "CANDIDATE_READY", "actor": "CORE",
+            "evidence_refs": ["evaluator://receipt/" + "1" * 64],
+        }
+        if accepted:
+            _command(graph, "candidate-transition", transition)
+            row = conn.execute("SELECT phase,status FROM research_nodes WHERE node_id='candidate'").fetchone()
+            assert tuple(row) == ("VERIFICATION", "PENDING")
+        else:
+            revision = graph.graph_revision()
+            with pytest.raises(GraphStoreError, match="DEV evaluator evidence"):
+                _command(graph, "candidate-transition", transition)
+            assert graph.graph_revision() == revision
     finally:
         graph.close()
