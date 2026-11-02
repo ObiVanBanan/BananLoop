@@ -111,6 +111,8 @@ def test_v2_specs_are_frozen_and_approved_hash_is_canonical():
     assert len(spec.feature_flags.flag_hash()) == 64
     with pytest.raises(ValidationError):
         spec.goal = "mutated"
+    with pytest.raises(ValidationError):
+        spec.budget.max_attempts = 100
 
 
 def test_optional_capability_policy_preserves_legacy_v2_hash_and_binds_explicit_policy():
@@ -132,10 +134,6 @@ def test_optional_capability_policy_preserves_legacy_v2_hash_and_binds_explicit_
             "mode": "SUPERVISED", "scope_digest": SHA, "scope_version": 1,
             "capability_policy": {"read_paths": ["../private/**"]},
         }))
-    with pytest.raises(ValidationError):
-        spec.budget.max_attempts = 100
-
-
 def test_feature_flag_profile_is_frozen_into_campaign_approved_hash():
     full = parse_campaign_spec_document(exploration_spec())
     diagnostic_payload = exploration_spec(

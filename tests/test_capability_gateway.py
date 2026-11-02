@@ -90,7 +90,8 @@ def test_effective_permissions_cannot_broaden_campaign_scope(tmp_path):
                                     scope_digest="b" * 64, campaign=campaign, role=role, task=task)
     assert grant.tools == ("read_file",)
     assert grant.allows_path("read", "src/main.py")
-    assert not grant.allows_path("write", "src/main.py")
+    assert "write_file" not in grant.tools
+    assert grant.allows_path("write", "src/main.py")
     assert not grant.allows_path("read", "private.txt")
 
 

@@ -286,7 +286,10 @@ class BubblewrapBackend:
                 continue
             if not source.is_file():
                 continue
-            relative = _safe_relative(source.relative_to(source_root).as_posix())
+            try:
+                relative = _safe_relative(source.relative_to(source_root).as_posix())
+            except CapabilityDenied:
+                continue
             if not all(patterns and any(_matches(relative, pattern) for pattern in patterns)
                        for patterns in path_layers):
                 continue
@@ -499,14 +502,14 @@ class ToolGateway:
                                     read_path_layers=self.grant.read_path_layers)
 
     def commit_candidate(self, changed_paths: Iterable[str], commit: Callable[[tuple[str, ...]], Any]) -> Any:
-        paths = tuple(sorted(set(_safe_relative(path) for path in changed_paths)))
-        if not paths:
-            raise CapabilityDenied("candidate commit must include changed paths")
-        for path in paths:
-            if not self.grant.allows_path("write", path):
-                raise CapabilityDenied("write path is outside the intersected capability scope")
-            self._resolve(self.workspace, path)
         with self._authorized("commit_candidate", allow_completed=True):
+            paths = tuple(sorted(set(_safe_relative(path) for path in changed_paths)))
+            if not paths:
+                raise CapabilityDenied("candidate commit must include changed paths")
+            for path in paths:
+                if not self.grant.allows_path("write", path):
+                    raise CapabilityDenied("write path is outside the intersected capability scope")
+                self._resolve(self.workspace, path)
             return commit(paths)
 
     def commit_evidence(self, commit: Callable[[], Any]) -> Any:
