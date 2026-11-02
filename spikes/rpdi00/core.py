@@ -65,7 +65,8 @@ def _ensure_child_lineage_triggers(db: sqlite3.Connection) -> None:
     _ensure_immutable_triggers(db, "campaign_lineage", "campaign_lineage")
 
 
-def _ensure_immutable_triggers(db: sqlite3.Connection, table: str, prefix: str) -> None:
+def _ensure_immutable_triggers(db: sqlite3.Connection, table: str, prefix: str,
+                              error_code: str = "CHILD_CONFLICT") -> None:
     label = table.replace("_", " ")
     expected = {
         f"{prefix}_no_update": f"CREATE TRIGGER {prefix}_no_update BEFORE UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'{label} is immutable'); END",
@@ -75,7 +76,7 @@ def _ensure_immutable_triggers(db: sqlite3.Connection, table: str, prefix: str) 
         row = db.execute("SELECT tbl_name,sql FROM sqlite_master WHERE type='trigger' AND name=?", (name,)).fetchone()
         if row:
             if row["tbl_name"] != table or " ".join(row["sql"].lower().split()) != " ".join(sql.lower().split()):
-                raise ContractError("CHILD_CONFLICT", f"database has an incompatible {name} trigger")
+                raise ContractError(error_code, f"database has an incompatible {name} trigger")
         else:
             db.execute(sql)
 
@@ -120,9 +121,13 @@ def init_campaign(path: str | Path, budget_cap: int = 100, *,
             "CREATE TABLE IF NOT EXISTS jobs(job_id TEXT PRIMARY KEY, node_id TEXT NOT NULL, status TEXT NOT NULL, fence INTEGER NOT NULL DEFAULT 0, lease_until REAL, request_hash TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS reservations(action_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(job_id), fence INTEGER NOT NULL, amount INTEGER NOT NULL, state TEXT NOT NULL, UNIQUE(job_id,fence))",
             "CREATE TABLE IF NOT EXISTS job_results(job_id TEXT PRIMARY KEY REFERENCES jobs(job_id), fence INTEGER NOT NULL, output_digest TEXT NOT NULL, actual_amount INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS exploration_completions(completion_id TEXT PRIMARY KEY, idempotency_key TEXT UNIQUE NOT NULL, payload_hash TEXT NOT NULL, node_id TEXT NOT NULL UNIQUE REFERENCES nodes(node_id), source_graph_revision INTEGER NOT NULL, graph_revision INTEGER NOT NULL, package_json TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS completion_evidence(completion_id TEXT NOT NULL REFERENCES exploration_completions(completion_id), evidence_ref TEXT NOT NULL REFERENCES job_results(job_id), artifact_digest TEXT NOT NULL, source_request_hash TEXT NOT NULL, fence INTEGER NOT NULL, PRIMARY KEY(completion_id,evidence_ref))",
         )
         for statement in statements:
             db.execute(statement)
+        _ensure_immutable_triggers(db, "exploration_completions", "exploration_completion", "COMPLETION_CONFLICT")
+        _ensure_immutable_triggers(db, "completion_evidence", "completion_evidence", "COMPLETION_CONFLICT")
         db.execute("UPDATE budget SET cap=? WHERE id=1", (budget_cap,))
         if campaign_lineage:
             db.execute("""CREATE TABLE IF NOT EXISTS campaign_lineage(
@@ -411,6 +416,104 @@ def complete_job(path: str | Path, job_id: str, fence: int, *, output_digest: st
         db.execute("INSERT INTO job_results VALUES(?,?,?,?)", (job_id, fence, output_digest, actual_amount))
         response = {"job_id": job_id, "fence": fence, "output_digest": output_digest, "actual_amount": actual_amount}
         db.execute("INSERT INTO events(kind,payload) VALUES('JOB_COMPLETED',?)", (json.dumps(response, sort_keys=True),))
+        db.execute("COMMIT")
+        return response
+    except Exception:
+        if db.in_transaction:
+            db.execute("ROLLBACK")
+        raise
+    finally:
+        db.close()
+
+
+def persist_exploration_completion(path: str | Path, spec: dict[str, Any], *,
+                                   completion_id: str, idempotency_key: str,
+                                   expected_graph_revision: int, node_id: str,
+                                   evidence_refs: list[str], artifact_digests: list[str],
+                                   limitations: list[str], next_experiment: str,
+                                   fail_before_commit: bool = False) -> dict[str, Any]:
+    """Persist an evidence-only completion bound to fenced job results and a graph revision."""
+    if not completion_id or not idempotency_key or not node_id:
+        raise ContractError("INVALID_COMPLETION", "completion ID, idempotency key, and node ID are required")
+    if (not isinstance(expected_graph_revision, int) or isinstance(expected_graph_revision, bool) or
+            expected_graph_revision < 0):
+        raise ContractError("INVALID_COMPLETION", "expected graph revision must be a non-negative integer")
+    if not isinstance(evidence_refs, list) or any(not isinstance(ref, str) or not ref.strip() for ref in evidence_refs):
+        raise ContractError("INVALID_EVIDENCE", "evidence refs must be non-empty strings")
+    if not isinstance(artifact_digests, list) or any(not isinstance(digest, str) or not digest.strip() for digest in artifact_digests):
+        raise ContractError("INVALID_EVIDENCE", "artifact digests must be non-empty strings")
+    if not isinstance(limitations, list) or any(not isinstance(item, str) for item in limitations):
+        raise ContractError("INVALID_COMPLETION", "limitations must be a list of strings")
+    refs = sorted(set(evidence_refs))
+    digests = sorted(set(artifact_digests))
+    if not refs or len(refs) != len(evidence_refs):
+        raise ContractError("INVALID_EVIDENCE", "evidence refs must be unique, non-empty strings")
+    if not digests or len(digests) != len(artifact_digests):
+        raise ContractError("INVALID_EVIDENCE", "artifact digests must be unique, non-empty strings")
+    payload = {"type": "CompleteExploration", "node_id": node_id,
+               "expected_graph_revision": expected_graph_revision, "evidence_refs": refs,
+               "artifact_digests": digests, "limitations": limitations,
+               "next_experiment": next_experiment, "spec_hash": canonical_hash(spec)}
+    payload_hash = canonical_hash(payload)
+    db = connect(path)
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        prior = db.execute("SELECT payload_hash,response FROM commands WHERE idem_key=?", (idempotency_key,)).fetchone()
+        if prior:
+            if prior["payload_hash"] != payload_hash:
+                raise ContractError("IDEMPOTENCY_CONFLICT", "completion key reused with different payload")
+            db.execute("COMMIT")
+            return json.loads(prior["response"])
+        prior_id = db.execute("SELECT payload_hash,response FROM commands WHERE command_id=?", (completion_id,)).fetchone()
+        if prior_id:
+            if prior_id["payload_hash"] != payload_hash:
+                raise ContractError("IDEMPOTENCY_CONFLICT", "completion ID reused with different payload")
+            db.execute("COMMIT")
+            return json.loads(prior_id["response"])
+        meta = db.execute("SELECT revision FROM graph_meta WHERE id=1").fetchone()
+        if not meta or meta["revision"] != expected_graph_revision:
+            raise ContractError("REVISION_CONFLICT", "completion graph revision is stale")
+        if not db.execute("SELECT 1 FROM nodes WHERE node_id=?", (node_id,)).fetchone():
+            raise ContractError("INVALID_COMPLETION", "completion node does not exist")
+        evidence = []
+        for ref in refs:
+            result = db.execute("""SELECT j.node_id,j.status,j.fence,j.request_hash,
+                                      r.fence AS result_fence,r.output_digest
+                               FROM jobs AS j JOIN job_results AS r ON r.job_id=j.job_id
+                               WHERE j.job_id=?""", (ref,)).fetchone()
+            if (not result or result["node_id"] != node_id or result["status"] != "COMPLETED" or
+                    result["fence"] != result["result_fence"]):
+                raise ContractError("INVALID_EVIDENCE", f"evidence ref {ref} is not a current completed job for this node")
+            evidence.append({"evidence_ref": ref, "artifact_digest": result["output_digest"],
+                             "source_request_hash": result["request_hash"], "fence": result["result_fence"]})
+        if sorted(item["artifact_digest"] for item in evidence) != digests:
+            raise ContractError("INVALID_EVIDENCE", "artifact digests must match the referenced job results")
+        package = complete_exploration(spec, node_id=node_id, evidence_refs=refs,
+                                       artifact_digests=digests, limitations=limitations,
+                                       next_experiment=next_experiment)
+        new_revision = expected_graph_revision + 1
+        changed = db.execute("UPDATE graph_meta SET revision=? WHERE id=1 AND revision=?",
+                             (new_revision, expected_graph_revision)).rowcount
+        if changed != 1:
+            raise ContractError("REVISION_CONFLICT", "completion revision compare-and-swap failed")
+        package.update({"completion_id": completion_id,
+                        "source_graph_revision": expected_graph_revision,
+                        "graph_revision": new_revision})
+        package_json = json.dumps(package, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        db.execute("INSERT INTO exploration_completions VALUES(?,?,?,?,?,?,?)",
+                   (completion_id, idempotency_key, payload_hash, node_id, expected_graph_revision,
+                    new_revision, package_json))
+        for item in evidence:
+            db.execute("INSERT INTO completion_evidence VALUES(?,?,?,?,?)",
+                       (completion_id, item["evidence_ref"], item["artifact_digest"],
+                        item["source_request_hash"], item["fence"]))
+        response = package
+        db.execute("INSERT INTO commands VALUES(?,?,?,?)",
+                   (completion_id, idempotency_key, payload_hash, json.dumps(response, sort_keys=True)))
+        db.execute("INSERT INTO events(kind,payload) VALUES('EXPLORATION_COMPLETED',?)",
+                   (json.dumps(response, sort_keys=True),))
+        if fail_before_commit:
+            raise RuntimeError("injected completion crash before commit")
         db.execute("COMMIT")
         return response
     except Exception:

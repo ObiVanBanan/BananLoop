@@ -8,7 +8,7 @@ from pathlib import Path
 
 from core import (
     ContractError, approve_child_creation, canonical_hash, claim_job, child_admission_ready,
-    complete_exploration, complete_job, connect,
+    complete_exploration, complete_job, connect, persist_exploration_completion,
     create_child_saga, enqueue_job, init_campaign,
     init_parent, init_registry, mark_dispatched, mutate_graph, reconcile_child_saga,
     recover_expired_jobs, record_unknown, validate_spec,
@@ -266,6 +266,64 @@ class RPDI00ContractSpike(unittest.TestCase):
             validate_spec({"schema_version": 2, "mode": "OPTIMIZATION", "goal": "improve", "evaluation": None})
         with self.assertRaisesRegex(ContractError, "does not accept an implicit score"):
             validate_spec({"schema_version": 2, "mode": "EXPLORATION", "goal": "study", "evaluation": {"reward": 0}})
+
+    def test_exploration_completion_persists_fenced_provenance_and_is_idempotent(self):
+        dbpath = self.root / "campaign.db"
+        init_campaign(dbpath, budget_cap=10)
+        mutate_graph(dbpath, command_id="node", idempotency_key="node-key", expected_revision=0,
+                     changes=[{"type": "AddNode", "node_id": "n1"}])
+        enqueue_job(dbpath, "job1", "n1", {"prompt": "frozen evidence task"})
+        lease = claim_job(dbpath, "job1", reserve=3, now=100)
+        mark_dispatched(dbpath, "job1", lease["fence"], now=101)
+        complete_job(dbpath, "job1", lease["fence"], output_digest="sha256:artifact-1",
+                     actual_amount=2, now=102)
+        spec = {"schema_version": 2, "mode": "EXPLORATION", "goal": "explain behavior", "evaluation": None}
+        args = {"completion_id": "complete1", "idempotency_key": "complete-key",
+                "expected_graph_revision": 1, "node_id": "n1", "evidence_refs": ["job1"],
+                "artifact_digests": ["sha256:artifact-1"], "limitations": ["single run"],
+                "next_experiment": "repeat with control"}
+        with self.assertRaisesRegex(RuntimeError, "before commit"):
+            persist_exploration_completion(dbpath, spec, **args, fail_before_commit=True)
+        self.assertEqual(self.scalar(dbpath, "SELECT revision FROM graph_meta"), 1)
+        self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM exploration_completions"), 0)
+        self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM completion_evidence"), 0)
+        event_count = self.scalar(dbpath, "SELECT COUNT(*) FROM events")
+
+        package = persist_exploration_completion(dbpath, spec, **args)
+        self.assertEqual(package["phase"], "CONSOLIDATION")
+        self.assertEqual(package["protocol_id"], None)
+        self.assertNotIn("reward", package)
+        self.assertEqual(package["source_graph_revision"], 1)
+        self.assertEqual(package["graph_revision"], 2)
+        self.assertEqual(persist_exploration_completion(dbpath, spec, **args), package)
+        self.assertEqual(self.scalar(dbpath, "SELECT revision FROM graph_meta"), 2)
+        self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM exploration_completions"), 1)
+        self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM completion_evidence"), 1)
+        self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM events"), event_count + 1)
+        self.assertEqual(self.scalar(dbpath, "SELECT source_request_hash FROM completion_evidence"), lease["request_hash"])
+        db = connect(dbpath)
+        try:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "immutable"):
+                db.execute("UPDATE exploration_completions SET package_json='{}'")
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "immutable"):
+                db.execute("DELETE FROM completion_evidence")
+        finally:
+            db.close()
+
+    def test_exploration_completion_rejects_unverified_evidence_without_mutation(self):
+        dbpath = self.root / "campaign.db"
+        init_campaign(dbpath)
+        mutate_graph(dbpath, command_id="node", idempotency_key="node-key", expected_revision=0,
+                     changes=[{"type": "AddNode", "node_id": "n1"}])
+        spec = {"schema_version": 2, "mode": "EXPLORATION", "goal": "explain behavior", "evaluation": None}
+        with self.assertRaisesRegex(ContractError, "not a current completed job"):
+            persist_exploration_completion(
+                dbpath, spec, completion_id="complete1", idempotency_key="complete-key",
+                expected_graph_revision=1, node_id="n1", evidence_refs=["fabricated-job"],
+                artifact_digests=["sha256:fabricated"], limitations=[], next_experiment="repeat")
+        self.assertEqual(self.scalar(dbpath, "SELECT revision FROM graph_meta"), 1)
+        self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM exploration_completions"), 0)
+        self.assertEqual(self.scalar(dbpath, "SELECT COUNT(*) FROM events"), 1)
 
     def test_child_escrow_saga_recovers_after_intermediate_crash(self):
         parent, registry, child = (self.root / "parent.db", self.root / "registry.db", self.root / "child.db")

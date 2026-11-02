@@ -21,7 +21,7 @@ The graph has typed nodes and `REQUIRES`, `DERIVED_FROM`, and `RELATED_TO` edges
 
 `CampaignSpecV2` is discriminated by `schema_version=2` and `mode=EXPLORATION|OPTIMIZATION`. Exploration permits `evaluation=null` and produces evidence-only packages without a synthetic reward. Optimization requires an immutable frozen evaluator reference. Existing v1 serialization and approved hashes remain byte-for-byte untouched by future adapters.
 
-`NodeResearchPhase` is independent of node execution status and legacy Engine attempt stage. The evidence-only terminal path represented here is `EXPLORATION -> CONSOLIDATION`, with evidence references, artifact digests, limitations, and a next experiment; its package carries `protocol_id=null` and no `reward`.
+`NodeResearchPhase` is independent of node execution status and legacy Engine attempt stage. The evidence-only terminal path represented here is `EXPLORATION -> CONSOLIDATION`, with evidence references, artifact digests, limitations, and a next experiment; its package carries `protocol_id=null` and no `reward`. `persist_exploration_completion()` requires each evidence ref to identify a completed current-fence job for the same node, binds each declared artifact digest to that job's output digest and immutable request hash, and atomically advances graph revision, stores an immutable completion/evidence record, and appends an event. Repeated idempotency keys replay the stored completion. The spike does not read or re-hash artifact bytes; the future artifact store/adapter must verify content-addressed bytes and worker provenance before accepting production evidence.
 
 ## Job, lease, and budget status contract
 
@@ -51,7 +51,7 @@ Run from repository root:
 python3 -m unittest discover -s spikes/rpdi00 -v
 ```
 
-The tests cover graph state/event rollback and idempotency, stale revision, reservation/lease rollback and recovery, parallel budget caps, unknown usage, fenced result settlement, evidence-only spec/package behavior, child escrow recovery, and v4 migration preservation/rollback. A successful local run is necessary but not sufficient to authorize RPDI-01/02: a reviewer must accept this contract package, then platform CI must repeat the suite on Linux and Windows. Production API transport, provider reconciliation, AND/OR readiness, and production worker supervision remain gated work.
+The tests cover graph state/event rollback and idempotency, stale revision, reservation/lease rollback and recovery, parallel budget caps, unknown usage, fenced result settlement, immutable evidence-only completion provenance, child escrow recovery, and v4 migration preservation/rollback. A successful local run is necessary but not sufficient to authorize RPDI-01/02: a reviewer must accept this contract package, then platform CI must repeat the suite on Linux and Windows. Production API transport, artifact-byte verification, provider reconciliation, AND/OR readiness, and production worker supervision remain gated work.
 
 ## Proposed typed API boundary
 
