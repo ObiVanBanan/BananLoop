@@ -99,10 +99,34 @@ class DurableWorkerQueue:
         );
         CREATE INDEX IF NOT EXISTS team_role_call_jobs_scope_idx
           ON team_role_call_jobs(campaign_id,manifest_digest,role_instance_id);
+        CREATE TABLE IF NOT EXISTS team_role_token_jobs (
+          job_id TEXT PRIMARY KEY REFERENCES worker_jobs(job_id),
+          campaign_id TEXT NOT NULL,
+          manifest_digest TEXT NOT NULL,
+          role_instance_id TEXT NOT NULL,
+          role_id TEXT NOT NULL,
+          upper_bound INTEGER NOT NULL CHECK(upper_bound>0),
+          request_hash TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS team_role_token_jobs_scope_idx
+          ON team_role_token_jobs(campaign_id,manifest_digest,role_instance_id);
+        CREATE TABLE IF NOT EXISTS team_role_allocation_releases (
+          job_id TEXT PRIMARY KEY REFERENCES worker_jobs(job_id),
+          reason TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
         CREATE TRIGGER IF NOT EXISTS team_role_call_jobs_no_update
           BEFORE UPDATE ON team_role_call_jobs BEGIN SELECT RAISE(ABORT,'team role call jobs are immutable'); END;
         CREATE TRIGGER IF NOT EXISTS team_role_call_jobs_no_delete
           BEFORE DELETE ON team_role_call_jobs BEGIN SELECT RAISE(ABORT,'team role call jobs are immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS team_role_token_jobs_no_update
+          BEFORE UPDATE ON team_role_token_jobs BEGIN SELECT RAISE(ABORT,'team role token jobs are immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS team_role_token_jobs_no_delete
+          BEFORE DELETE ON team_role_token_jobs BEGIN SELECT RAISE(ABORT,'team role token jobs are immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS team_role_allocation_releases_no_update
+          BEFORE UPDATE ON team_role_allocation_releases BEGIN SELECT RAISE(ABORT,'team allocation releases are immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS team_role_allocation_releases_no_delete
+          BEFORE DELETE ON team_role_allocation_releases BEGIN SELECT RAISE(ABORT,'team allocation releases are immutable'); END;
         """)
         self.ledger = BudgetLedger.attach(self.conn)
 
@@ -142,8 +166,9 @@ class DurableWorkerQueue:
             if resource != "agent_calls":
                 raise WorkerQueueError("role allocations can only bind agent-call jobs")
             if not isinstance(role_allocation, dict) or set(role_allocation) != {
-                    "manifest_digest", "role_instance_id", "role_id", "calls_limit"}:
-                raise WorkerQueueError("role_allocation must provide manifest, instance, role, and call limit")
+                    "manifest_digest", "role_instance_id", "role_id", "calls_limit",
+                    "tokens_limit", "token_upper_bound"}:
+                raise WorkerQueueError("role_allocation must provide immutable call and token ceilings")
             if (not _SHA256.fullmatch(str(role_allocation["manifest_digest"]))
                     or not isinstance(role_allocation["role_instance_id"], str)
                     or not _JOB_ID.fullmatch(role_allocation["role_instance_id"])
@@ -151,14 +176,23 @@ class DurableWorkerQueue:
                     or not re.fullmatch(r"^[a-z][a-z0-9_]{0,63}$", role_allocation["role_id"])
                     or isinstance(role_allocation["calls_limit"], bool)
                     or not isinstance(role_allocation["calls_limit"], int)
-                    or role_allocation["calls_limit"] < 1):
+                    or role_allocation["calls_limit"] < 1
+                    or isinstance(role_allocation["tokens_limit"], bool)
+                    or not isinstance(role_allocation["tokens_limit"], int)
+                    or role_allocation["tokens_limit"] < 1
+                    or isinstance(role_allocation["token_upper_bound"], bool)
+                    or not isinstance(role_allocation["token_upper_bound"], int)
+                    or role_allocation["token_upper_bound"] < 1
+                    or role_allocation["token_upper_bound"] > role_allocation["tokens_limit"]):
                 raise WorkerQueueError("role_allocation contains invalid values")
             binding = request.get("role_binding")
             if not isinstance(binding, dict) or (
                     binding.get("team_manifest_digest") != role_allocation["manifest_digest"]
                     or binding.get("role_instance_id") != role_allocation["role_instance_id"]
                     or binding.get("role_id") != role_allocation["role_id"]
-                    or binding.get("allocated_agent_calls") != role_allocation["calls_limit"]):
+                    or binding.get("allocated_agent_calls") != role_allocation["calls_limit"]
+                    or binding.get("allocated_model_tokens") != role_allocation["tokens_limit"]
+                    or binding.get("per_call_model_token_limit") != role_allocation["token_upper_bound"]):
                 raise WorkerQueueError("immutable job request is not bound to its role allocation")
         if resource not in {"agent_calls", "evaluator_calls", "model_tokens", "evaluation_units", "experiments", "attempts"}:
             raise WorkerQueueError(f"unsupported resource: {resource}")
@@ -176,8 +210,13 @@ class DurableWorkerQueue:
                 allocation = self.conn.execute(
                     "SELECT * FROM team_role_call_jobs WHERE job_id=?", (job_id,),
                 ).fetchone()
+                token_allocation = self.conn.execute(
+                    "SELECT * FROM team_role_token_jobs WHERE job_id=?", (job_id,),
+                ).fetchone()
                 if role_allocation is None and allocation is not None:
                     raise WorkerQueueError("replayed role-bound job omitted its allocation")
+                if role_allocation is None and token_allocation is not None:
+                    raise WorkerQueueError("replayed role-bound job omitted its token allocation")
                 if role_allocation is not None:
                     wanted = (campaign_id, role_allocation["manifest_digest"],
                               role_allocation["role_instance_id"], role_allocation["role_id"],
@@ -189,6 +228,16 @@ class DurableWorkerQueue:
                     )
                     if actual_allocation != wanted:
                         raise WorkerQueueError("replayed role-bound job has a different allocation")
+                    wanted_token = (campaign_id, role_allocation["manifest_digest"],
+                                    role_allocation["role_instance_id"], role_allocation["role_id"],
+                                    role_allocation["token_upper_bound"] * upper_bound, request_hash)
+                    actual_token = None if token_allocation is None else (
+                        token_allocation["campaign_id"], token_allocation["manifest_digest"],
+                        token_allocation["role_instance_id"], token_allocation["role_id"],
+                        int(token_allocation["upper_bound"]), token_allocation["request_hash"],
+                    )
+                    if actual_token != wanted_token:
+                        raise WorkerQueueError("replayed role-bound job has a different token allocation")
                 return self._job_view(replay)
             if role_allocation is not None:
                 pinned = self.conn.execute(
@@ -199,11 +248,25 @@ class DurableWorkerQueue:
                 if pinned is None or int(pinned["calls_limit"]) != role_allocation["calls_limit"]:
                     raise WorkerQueueError("role call allocation is not present in the pinned team manifest")
                 used = int(self.conn.execute(
-                    "SELECT COALESCE(SUM(upper_bound),0) FROM team_role_call_jobs WHERE campaign_id=? AND manifest_digest=? AND role_instance_id=?",
+                    "SELECT COALESCE(SUM(upper_bound),0) FROM team_role_call_jobs WHERE campaign_id=? AND manifest_digest=? AND role_instance_id=? AND job_id NOT IN (SELECT job_id FROM team_role_allocation_releases)",
                     (campaign_id, role_allocation["manifest_digest"], role_allocation["role_instance_id"]),
                 ).fetchone()[0])
                 if used + upper_bound > int(pinned["calls_limit"]):
                     raise WorkerBudgetError("role instance agent-call allocation exhausted")
+                pinned_tokens = self.conn.execute(
+                    "SELECT tokens_limit FROM team_role_token_allocations WHERE campaign_id=? AND manifest_digest=? AND role_instance_id=? AND role_id=?",
+                    (campaign_id, role_allocation["manifest_digest"],
+                     role_allocation["role_instance_id"], role_allocation["role_id"]),
+                ).fetchone()
+                if pinned_tokens is None or int(pinned_tokens["tokens_limit"]) != role_allocation["tokens_limit"]:
+                    raise WorkerQueueError("role token allocation is not present in the pinned team manifest")
+                token_used = int(self.conn.execute(
+                    "SELECT COALESCE(SUM(upper_bound),0) FROM team_role_token_jobs WHERE campaign_id=? AND manifest_digest=? AND role_instance_id=? AND job_id NOT IN (SELECT job_id FROM team_role_allocation_releases)",
+                    (campaign_id, role_allocation["manifest_digest"], role_allocation["role_instance_id"]),
+                ).fetchone()[0])
+                token_cost = role_allocation["token_upper_bound"] * upper_bound
+                if token_used + token_cost > int(pinned_tokens["tokens_limit"]):
+                    raise WorkerBudgetError("role instance model-token allocation exhausted")
             self.conn.execute(
                 "INSERT INTO worker_jobs(job_id,enqueue_key,campaign_id,action_id,resource,upper_bound,request_hash,request_json,state,created_at,updated_at) "
                 "VALUES(?,?,?,?,?,?,?,?,'READY',?,?)",
@@ -214,6 +277,12 @@ class DurableWorkerQueue:
                     "INSERT INTO team_role_call_jobs(job_id,campaign_id,manifest_digest,role_instance_id,role_id,upper_bound,request_hash) VALUES(?,?,?,?,?,?,?)",
                     (job_id, campaign_id, role_allocation["manifest_digest"],
                      role_allocation["role_instance_id"], role_allocation["role_id"], upper_bound, request_hash),
+                )
+                self.conn.execute(
+                    "INSERT INTO team_role_token_jobs(job_id,campaign_id,manifest_digest,role_instance_id,role_id,upper_bound,request_hash) VALUES(?,?,?,?,?,?,?)",
+                    (job_id, campaign_id, role_allocation["manifest_digest"],
+                     role_allocation["role_instance_id"], role_allocation["role_id"],
+                     role_allocation["token_upper_bound"] * upper_bound, request_hash),
                 )
             self._event(job_id, "JOB_ENQUEUED", 0, {"request_hash": request_hash})
             return self._job_view(self.conn.execute("SELECT * FROM worker_jobs WHERE job_id=?", (job_id,)).fetchone())
@@ -408,6 +477,12 @@ class DurableWorkerQueue:
                 state = "CANCELLED"
             self.conn.execute("UPDATE worker_jobs SET state=?,lease_owner=NULL,lease_until=NULL,updated_at=? WHERE job_id=?",
                               (state, utc_now(), job_id))
+            if state == "CANCELLED" and self.conn.execute(
+                    "SELECT 1 FROM team_role_call_jobs WHERE job_id=?", (job_id,)).fetchone():
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO team_role_allocation_releases(job_id,reason,created_at) VALUES(?,?,?)",
+                    (job_id, "dispatch_proven_absent", utc_now()),
+                )
             self._event(job_id, "JOB_CANCELLED" if state == "CANCELLED" else "JOB_UNKNOWN",
                         int(job["fence"]), {"reason": reason})
             return state
