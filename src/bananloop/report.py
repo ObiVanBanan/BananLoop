@@ -4,7 +4,7 @@ import json
 import hashlib
 from typing import Any
 
-from .contracts import CampaignSpec, EvaluationResult
+from .contracts import EvaluationResult
 from .evaluator_binding import EvaluationReceipt, canonical_hash, validate_receipt_linkage
 from .policy import metric_value, target_met
 from .research import attempt_bucket
@@ -13,7 +13,7 @@ from .store import CampaignStore
 
 def build_report(store: CampaignStore) -> dict[str, Any]:
     campaign = store.campaign()
-    spec = CampaignSpec.model_validate_json(campaign["spec_json"])
+    spec = store.spec()
     baseline = EvaluationResult.model_validate_json(campaign["baseline_json"]) if campaign["baseline_json"] else None
     champion = EvaluationResult.model_validate_json(campaign["champion_json"]) if campaign["champion_json"] else None
     experiments: list[dict[str, Any]] = []

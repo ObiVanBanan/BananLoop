@@ -6,9 +6,9 @@ import re
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator, model_validator
 
 
 class Direction(StrEnum):
@@ -541,6 +541,128 @@ class CampaignSpec(BaseModel):
             data.pop("forbidden_diff_patterns", None)
         payload = json.dumps(data, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode()).hexdigest()
+
+
+class AutonomySpecV2(BaseModel):
+    """Immutable scope envelope for a v2 campaign; enforcement lands in RPDI-06/12."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    mode: Literal["FULL_AUTO", "SUPERVISED"]
+    scope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    scope_version: int = Field(ge=1)
+
+
+class FrozenEvaluatorRefV2(BaseModel):
+    """Shape-only reference to a future verifier-approved frozen evaluator."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    protocol_id: str = Field(min_length=1, max_length=200)
+    version: int = Field(ge=1)
+    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ParentCampaignRefV2(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    parent_campaign_id: str = Field(min_length=1, max_length=200)
+    allocation_id: str = Field(min_length=1, max_length=200)
+
+
+class TokenStageReserveV2(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    stage: Literal["PROPOSE", "SELECT", "EXECUTE", "ANALYZE", "BOOTSTRAP"]
+    tokens: int = Field(ge=1)
+
+
+class BudgetSpecV2(BaseModel):
+    """Strict v2 budget snapshot; ledger ownership and settlement are RPDI-03."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_experiments: int = Field(default=5, ge=1)
+    max_attempts: int = Field(default=8, ge=1)
+    max_agent_calls: int = Field(default=20, ge=1)
+    max_evaluator_calls: int = Field(default=10, ge=1)
+    deadline_seconds: int = Field(default=3600, ge=1)
+    plateau_experiments: int = Field(default=3, ge=1)
+    max_evaluation_units: int | None = Field(default=None, ge=1)
+    evaluation_units_per_call: int | None = Field(default=None, ge=1)
+    max_model_tokens: int | None = Field(default=None, ge=1)
+    model_token_reserve: int = Field(default=300000, ge=1)
+    model_token_stage_reserves: tuple[TokenStageReserveV2, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_reserves(self) -> "BudgetSpecV2":
+        if (self.max_evaluation_units is None) != (self.evaluation_units_per_call is None):
+            raise ValueError("max_evaluation_units and evaluation_units_per_call must be set together")
+        stages = [reserve.stage for reserve in self.model_token_stage_reserves]
+        if len(stages) != len(set(stages)):
+            raise ValueError("model_token_stage_reserves stages must be unique")
+        return self
+
+
+class _CampaignSpecV2Base(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[2] = 2
+    goal: str = Field(min_length=1, max_length=4000)
+    source_repo: str = Field(min_length=1, max_length=2000)
+    base_commit: str = Field(min_length=1, max_length=200)
+    autonomy: AutonomySpecV2
+    budget: BudgetSpecV2
+    role_registry_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    parent: ParentCampaignRefV2 | None = None
+
+    def approved_hash(self) -> str:
+        """Return the v2 canonical digest without modifying v1 hash semantics."""
+        payload = json.dumps(self.model_dump(mode="json"), sort_keys=True,
+                             separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+class ExplorationCampaignSpecV2(_CampaignSpecV2Base):
+    mode: Literal["EXPLORATION"]
+    evaluation: None = None
+
+
+class OptimizationCampaignSpecV2(_CampaignSpecV2Base):
+    mode: Literal["OPTIMIZATION"]
+    evaluation: FrozenEvaluatorRefV2
+
+
+CampaignSpecV2 = Annotated[
+    Union[ExplorationCampaignSpecV2, OptimizationCampaignSpecV2],
+    Field(discriminator="mode"),
+]
+_campaign_spec_v2_adapter = TypeAdapter(CampaignSpecV2)
+
+
+def parse_campaign_spec_document(
+    document: dict[str, Any] | str,
+) -> CampaignSpec | ExplorationCampaignSpecV2 | OptimizationCampaignSpecV2:
+    """Dispatch by schema version before parsing; never let v1 ignore v2 fields."""
+    payload = json.loads(document) if isinstance(document, str) else document
+    if not isinstance(payload, dict):
+        raise ValueError("campaign spec must be a JSON object")
+    version = payload.get("schema_version", 1)
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise ValueError("campaign spec schema_version must be an integer")
+    if version == 1:
+        return CampaignSpec.model_validate(payload)
+    if version == 2:
+        return _campaign_spec_v2_adapter.validate_python(payload)
+    raise ValueError(f"unsupported campaign spec schema_version={version}")
+
+
+def parse_legacy_campaign_spec(document: dict[str, Any] | str) -> CampaignSpec:
+    """Parse a spec for v1 Engine/store consumers and fail closed on v2."""
+    parsed = parse_campaign_spec_document(document)
+    if not isinstance(parsed, CampaignSpec):
+        raise ValueError("schema_version=2 requires the v2 campaign adapter")
+    return parsed
 
 
 class Hypothesis(BaseModel):
