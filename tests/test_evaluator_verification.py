@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from dataclasses import replace
 
 import pytest
 from pydantic import ValidationError
@@ -11,6 +12,7 @@ from bananloop.evaluator_verification import (
     EvaluatorProtocolV1,
     EvaluatorTierManifestV1,
     EvaluatorVerificationError,
+    IntegrationCoreEvidenceV1,
     MetricDiscoveryProposalV1,
     ProtocolVerifierOutputV1,
     VerifierReceiptV1,
@@ -232,5 +234,68 @@ def test_durable_evaluator_run_receipt_requires_and_binds_frozen_approval():
             )
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
             conn.execute("DELETE FROM evaluator_run_receipts")
+
+        baseline_executions = tuple(replace(
+            item, candidate_snapshot_id=protocol.source_snapshot_id,
+        ) for item in executions)
+        baseline_proofs = tuple(EvaluatorBudgetProofV1(
+            campaign_id=proposal.campaign_id, spec_hash=proposal.spec_hash,
+            job_id=f"baseline-job-{index}", fence=1,
+            receipt_digest=f"{index + 3:x}" * 64, actual_amount=1,
+            actual_usage={"evaluator_calls": 1},
+        ) for index in range(1, protocol.repeatability_runs + 1))
+        baseline_receipt = EvaluatorRunReceiptV1.from_completed_runs(
+            baseline_executions, baseline_proofs,
+        )
+        authority.append_run_receipt(baseline_receipt)
+        from bananloop.evaluator_verification import _digest
+        evidence_fields = {
+            "campaign_id": proposal.campaign_id, "spec_hash": proposal.spec_hash,
+            "source_snapshot_id": protocol.source_snapshot_id,
+            "approval_digest": approval.approval_digest,
+            "protocol_digest": protocol.content_digest(),
+            "candidate_snapshot_id": "b" * 40,
+            "baseline_run_receipt_digest": baseline_receipt.receipt_digest,
+            "candidate_run_receipt_digest": run_receipt.receipt_digest,
+            "budget_settlement_digest": "1" * 64,
+            "artifact_integrity_digest": "2" * 64,
+            "regression_policy_digest": "3" * 64,
+            "check_results": {
+                "candidate_identity": True, "protocol_identity": True,
+                "evaluation_receipt": True, "budget_receipt": True,
+                "artifact_integrity": True, "regression_policy": True,
+            },
+            "decision": "PASS",
+        }
+        evidence = IntegrationCoreEvidenceV1(
+            evidence_digest=_digest(evidence_fields), **evidence_fields,
+        )
+        assert authority.append_integration_evidence(evidence) == evidence
     finally:
         conn.close()
+
+
+def test_core_integration_evidence_digest_binds_every_deterministic_check():
+    from bananloop.evaluator_verification import _digest
+
+    payload = {
+        "campaign_id": "campaign-1", "spec_hash": "1" * 64,
+        "source_snapshot_id": "a" * 40, "approval_digest": "2" * 64,
+        "protocol_digest": "3" * 64, "candidate_snapshot_id": "b" * 40,
+        "baseline_run_receipt_digest": "4" * 64,
+        "candidate_run_receipt_digest": "5" * 64,
+        "budget_settlement_digest": "6" * 64,
+        "artifact_integrity_digest": "7" * 64,
+        "regression_policy_digest": "8" * 64,
+        "check_results": {
+            "candidate_identity": True, "protocol_identity": True,
+            "evaluation_receipt": True, "budget_receipt": True,
+            "artifact_integrity": True, "regression_policy": True,
+        },
+        "decision": "PASS",
+    }
+    evidence = IntegrationCoreEvidenceV1(evidence_digest=_digest(payload), **payload)
+    assert evidence.decision == "PASS"
+    tampered = {**payload, "check_results": {**payload["check_results"], "budget_receipt": False}}
+    with pytest.raises(ValidationError, match="decision"):
+        IntegrationCoreEvidenceV1(evidence_digest=_digest(payload), **tampered)

@@ -109,6 +109,7 @@ class EvaluatorRunReceiptV1(BaseModel):
             raise ValueError("output artifact digests must be SHA-256 values")
         if (len(self.budget_proofs) != self.repeatability_runs
                 or len({item.job_id for item in self.budget_proofs}) != self.repeatability_runs
+                or len({item.receipt_digest for item in self.budget_proofs}) != self.repeatability_runs
                 or any(item.actual_amount != 1 or item.campaign_id != self.campaign_id
                        or item.spec_hash != self.spec_hash for item in self.budget_proofs)):
             raise ValueError("receipt requires one distinct settled evaluator-call proof per repeatability run")
@@ -330,6 +331,7 @@ class EvaluatorExecutionV1:
     repeatability_runs: int
     output_artifact_digests: tuple[str, ...]
     artifacts: tuple[EvaluatorArtifactBytesV1, ...] = field(default=(), repr=False)
+    private_result_bytes: bytes = field(default=b"", repr=False)
 
     def scope_identity(self) -> tuple[Any, ...]:
         return (
@@ -535,7 +537,8 @@ class TrustedEvaluatorRunner:
             artifact_digests, verified_artifacts = _artifact_outputs(
                 result, output_root, candidate_snapshot_id,
             )
-            result_digest = _sha256(_canonical(result.model_dump(mode="json")).encode("utf-8"))
+            private_result_bytes = _canonical(result.model_dump(mode="json")).encode("utf-8")
+            result_digest = _sha256(private_result_bytes)
 
         return EvaluatorExecutionV1(
             campaign_id=campaign_id,
@@ -554,6 +557,7 @@ class TrustedEvaluatorRunner:
             repeatability_runs=protocol.repeatability_runs,
             output_artifact_digests=artifact_digests,
             artifacts=verified_artifacts,
+            private_result_bytes=private_result_bytes,
         )
 
     @staticmethod
@@ -833,7 +837,8 @@ class TrustedEvaluatorAdapter:
                 candidate_files=candidate_files, evaluator_bundle=bundle,
                 tier=tier, tier_manifest=manifest_bytes, case_inputs=inputs,
             )
-            self._retain_private_outputs(execution.artifacts)
+            self._retain_private_outputs(execution.artifacts, execution.private_result_bytes,
+                                         execution.result_digest)
             result_payload = {
                 "schema": self._RESULT_SCHEMA,
                 "scope_digest": _digest({key: request[key] for key in (
@@ -918,6 +923,7 @@ class TrustedEvaluatorAdapter:
                 tier_manifest_sha256=result["tier_manifest_sha256"], case_count=int(result["case_count"]),
                 result_digest=result["result_digest"], repeatability_runs=int(result["repeatability_runs"]),
                 output_artifact_digests=tuple(result["output_artifact_digests"]),
+                private_result_bytes=self._load_private_output(result["result_digest"]),
             ))
             proofs.append(EvaluatorBudgetProofV1(
                 campaign_id=job["campaign_id"], spec_hash=job["request"]["spec_hash"],
@@ -931,6 +937,221 @@ class TrustedEvaluatorAdapter:
             self._load_private_output(digest)
         EvaluatorProtocolAuthority(self.graph.conn).append_run_receipt(receipt)
         return receipt
+
+    def create_integration_evidence(self, *, baseline_run_receipt_digest: str,
+                                    candidate_run_receipt_digest: str):
+        """Derive candidate-vs-baseline integration checks inside trusted Core.
+
+        The integration role receives only this proof record's digest and
+        bounded summary. Metric values, case identities, evaluator outputs,
+        and private artifacts stay in Core's private store.
+        """
+        from .contracts import EvaluationResult, OptimizationCampaignSpecV2
+        from .evaluator_verification import (
+            EvaluatorProtocolAuthority, IntegrationCoreEvidenceV1,
+        )
+
+        spec = self.graph.campaign_spec()
+        if not isinstance(spec, OptimizationCampaignSpecV2):
+            raise TrustedEvaluatorError("integration evidence requires a frozen Optimization campaign")
+        reference = spec.evaluation
+        if reference.approval_digest is None:
+            raise TrustedEvaluatorError("integration evidence requires a pinned evaluator approval")
+        authority = EvaluatorProtocolAuthority(self.graph.conn)
+        proposal, _ = authority.approved_protocol(reference.approval_digest)
+        protocol = proposal.protocol
+        authority.require_frozen_reference(
+            reference.protocol_id, reference.version, reference.content_sha256,
+            reference.approval_digest, campaign_id=self.campaign_id,
+            spec_hash=spec.approved_hash(),
+        )
+        baseline = authority.require_run_receipt(
+            baseline_run_receipt_digest, campaign_id=self.campaign_id,
+            spec_hash=spec.approved_hash(), approval_digest=reference.approval_digest,
+            protocol_digest=protocol.content_digest(),
+            candidate_snapshot_id=protocol.source_snapshot_id,
+        )
+        candidate_row = self.graph.conn.execute(
+            "SELECT receipt_json FROM evaluator_run_receipts WHERE receipt_digest=?",
+            (candidate_run_receipt_digest,),
+        ).fetchone()
+        if candidate_row is None:
+            raise TrustedEvaluatorError("candidate evaluator run receipt is not durably stored")
+        try:
+            candidate_snapshot_id = EvaluatorRunReceiptV1.model_validate_json(
+                candidate_row[0],
+            ).candidate_snapshot_id
+        except Exception:
+            raise TrustedEvaluatorError("candidate evaluator run receipt is corrupt") from None
+        candidate = authority.require_run_receipt(
+            candidate_run_receipt_digest, campaign_id=self.campaign_id,
+            spec_hash=spec.approved_hash(), approval_digest=reference.approval_digest,
+            protocol_digest=protocol.content_digest(),
+            candidate_snapshot_id=candidate_snapshot_id,
+        )
+        if (baseline.tier != candidate.tier
+                or baseline.tier_manifest_sha256 != candidate.tier_manifest_sha256
+                or baseline.case_count != candidate.case_count
+                or baseline.evaluator_bundle_sha256 != candidate.evaluator_bundle_sha256):
+            raise TrustedEvaluatorError("baseline and candidate evaluator receipts have different frozen scopes")
+        candidate_snapshot_id = candidate.candidate_snapshot_id
+        self._snapshot_files(spec, protocol.source_snapshot_id, candidate_snapshot_id)
+
+        baseline_result = self._load_evaluation_result(baseline.result_digest)
+        candidate_result = self._load_evaluation_result(candidate.result_digest)
+        expected_cases = {(item.case_id, item.repetition): item.input_sha256
+                          for item in self._manifest_for_receipt(baseline).cases}
+        baseline_cases = {(item.case_id, item.repetition): item.input_sha256
+                          for item in baseline_result.cases}
+        candidate_cases = {(item.case_id, item.repetition): item.input_sha256
+                           for item in candidate_result.cases}
+        candidate_identity_ok = True  # candidate tree was re-resolved under the frozen allowlist above
+        protocol_identity_ok = (
+            baseline.protocol_digest == candidate.protocol_digest == protocol.content_digest()
+            and baseline.approval_digest == candidate.approval_digest == reference.approval_digest
+            and baseline.source_snapshot_id == candidate.source_snapshot_id == protocol.source_snapshot_id
+            and baseline.tier_manifest_sha256 == candidate.tier_manifest_sha256
+        )
+        evaluation_receipt_ok = (
+            baseline.repeatability_runs >= 2 and candidate.repeatability_runs >= 2
+            and len(baseline.budget_proofs) == baseline.repeatability_runs
+            and len(candidate.budget_proofs) == candidate.repeatability_runs
+            and baseline.case_count == candidate.case_count == len(expected_cases)
+            and baseline_cases == candidate_cases == expected_cases
+            and baseline.result_digest != "" and candidate.result_digest != ""
+        )
+        budget_proofs = tuple((*baseline.budget_proofs, *candidate.budget_proofs))
+        budget_receipt_ok = (
+            self._verify_budget_proofs(baseline.budget_proofs, protocol=protocol, receipt=baseline)
+            and self._verify_budget_proofs(candidate.budget_proofs, protocol=protocol, receipt=candidate)
+        )
+        artifact_records = []
+        artifact_integrity_ok = True
+        for kind, run in (("baseline", baseline), ("candidate", candidate)):
+            for digest in run.output_artifact_digests:
+                try:
+                    content = self._load_private_output(digest)
+                    artifact_records.append({"run": kind, "digest": digest,
+                                             "verified_sha256": _sha256(content)})
+                except TrustedEvaluatorError:
+                    artifact_integrity_ok = False
+                    artifact_records.append({"run": kind, "digest": digest,
+                                             "verified_sha256": None})
+        metric_ok = (
+            protocol.metric_field in baseline_result.metrics
+            and protocol.metric_field in candidate_result.metrics
+            and math.isfinite(baseline_result.metrics[protocol.metric_field].value)
+            and math.isfinite(candidate_result.metrics[protocol.metric_field].value)
+        )
+        regression_ok = False
+        if metric_ok:
+            base_value = baseline_result.metrics[protocol.metric_field].value
+            candidate_value = candidate_result.metrics[protocol.metric_field].value
+            regression_ok = (candidate_value >= base_value if protocol.direction == "MAXIMIZE"
+                             else candidate_value <= base_value)
+        budget_digest = _digest([item.model_dump(mode="json") for item in budget_proofs])
+        artifact_digest = _digest(artifact_records)
+        regression_digest = _digest({
+            "protocol_digest": protocol.content_digest(), "metric_field": protocol.metric_field,
+            "direction": protocol.direction, "baseline_result_digest": baseline.result_digest,
+            "candidate_result_digest": candidate.result_digest,
+            "no_regression": regression_ok,
+        })
+        check_results = {
+            "candidate_identity": candidate_identity_ok,
+            "protocol_identity": protocol_identity_ok,
+            "evaluation_receipt": evaluation_receipt_ok,
+            "budget_receipt": budget_receipt_ok,
+            "artifact_integrity": artifact_integrity_ok,
+            "regression_policy": regression_ok,
+        }
+        fields = {
+            "campaign_id": self.campaign_id, "spec_hash": spec.approved_hash(),
+            "source_snapshot_id": protocol.source_snapshot_id,
+            "approval_digest": reference.approval_digest,
+            "protocol_digest": protocol.content_digest(),
+            "candidate_snapshot_id": candidate_snapshot_id,
+            "baseline_run_receipt_digest": baseline.receipt_digest,
+            "candidate_run_receipt_digest": candidate.receipt_digest,
+            "budget_settlement_digest": budget_digest,
+            "artifact_integrity_digest": artifact_digest,
+            "regression_policy_digest": regression_digest,
+            "check_results": check_results,
+            "decision": "PASS" if all(check_results.values()) else "FAIL",
+        }
+        evidence = IntegrationCoreEvidenceV1(
+            evidence_digest=_digest(fields), **fields,
+        )
+        authority.append_integration_evidence(evidence)
+        return evidence
+
+    def _manifest_for_receipt(self, receipt: EvaluatorRunReceiptV1) -> ProtocolManifest:
+        data = self._published_path(receipt.tier_manifest_sha256).read_bytes()
+        return _manifest_from_bytes(data, expected_sha256=receipt.tier_manifest_sha256,
+                                    expected_cases=receipt.case_count)
+
+    def _load_evaluation_result(self, digest: str) -> EvaluationResult:
+        try:
+            data = self._load_private_output(digest)
+            result = EvaluationResult.model_validate_json(data)
+        except Exception:
+            raise TrustedEvaluatorError("private evaluator result is missing or invalid") from None
+        if _sha256(_canonical(result.model_dump(mode="json")).encode("utf-8")) != digest:
+            raise TrustedEvaluatorError("private evaluator result digest mismatch")
+        return result
+
+    def _verify_budget_proofs(self, proofs: tuple[EvaluatorBudgetProofV1, ...], *,
+                              protocol: EvaluatorProtocolV1,
+                              receipt: EvaluatorRunReceiptV1) -> bool:
+        if len(proofs) != protocol.repeatability_runs:
+            return False
+        seen: set[str] = set()
+        for proof in proofs:
+            try:
+                job = self.queue.get_job(proof.job_id)
+                durable = self.queue.get_result(proof.job_id)
+            except Exception:
+                return False
+            response = durable.get("response", {})
+            actual_usage = response.get("actual_usage")
+            request = job.get("request", {})
+            result = durable.get("result")
+            if (proof.job_id in seen or job.get("state") != "COMPLETED"
+                    or int(job.get("fence", -1)) != proof.fence
+                    or int(durable.get("fence", -1)) != proof.fence
+                    or response.get("receipt_digest") != proof.receipt_digest
+                    or response.get("actual_amount") != 1
+                    or actual_usage != proof.actual_usage
+                    or request.get("campaign_id") != proof.campaign_id
+                    or request.get("spec_hash") != proof.spec_hash
+                    or request.get("approval_digest") != receipt.approval_digest
+                    or request.get("protocol_digest") != protocol.content_digest()
+                    or request.get("source_snapshot_id") != receipt.source_snapshot_id
+                    or request.get("candidate_snapshot_id") != receipt.candidate_snapshot_id
+                    or request.get("tier") != receipt.tier
+                    or request.get("evaluator_bundle_sha256") != receipt.evaluator_bundle_sha256
+                    or request.get("tier_manifest_sha256") != receipt.tier_manifest_sha256
+                    or request.get("schema") != self._JOB_SCHEMA
+                    or not isinstance(result, dict)
+                    or result.get("schema") != self._RESULT_SCHEMA
+                    or result.get("result_digest") != receipt.result_digest
+                    or result.get("candidate_snapshot_id") != receipt.candidate_snapshot_id
+                    or result.get("tier") != receipt.tier
+                    or _digest(result) != durable.get("output_digest")
+                    or actual_usage != job.get("resource_bounds")
+                    or actual_usage.get("evaluator_calls") != 1
+                    or ("evaluation_units" in job.get("resource_bounds", {})
+                        and actual_usage.get("evaluation_units") != job["resource_bounds"]["evaluation_units"])):
+                return False
+            expected = _digest({
+                "job_id": proof.job_id, "request_hash": job["request_hash"],
+                "fence": proof.fence, "output_digest": durable["output_digest"],
+                "actual_usage": actual_usage,
+            })
+            if expected != proof.receipt_digest:
+                return False
+            seen.add(proof.job_id)
+        return True
 
     def _published_path(self, digest: str) -> Path:
         if not _SHA256.fullmatch(digest):
@@ -1037,12 +1258,16 @@ class TrustedEvaluatorAdapter:
             raise TrustedEvaluatorError("approved candidate read scope resolved to no files")
         return files
 
-    def _retain_private_outputs(self, artifacts: tuple[EvaluatorArtifactBytesV1, ...]) -> None:
+    def _retain_private_outputs(self, artifacts: tuple[EvaluatorArtifactBytesV1, ...],
+                                private_result_bytes: bytes, result_digest: str) -> None:
         root = self.state_root / "rpdi11" / "private-artifacts"
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         if root.is_symlink() or not root.resolve().is_relative_to(self.state_root):
             raise TrustedEvaluatorError("private evaluator artifact store escaped its state root")
-        for artifact in artifacts:
+        if _sha256(private_result_bytes) != result_digest:
+            raise TrustedEvaluatorError("private evaluator result changed before retention")
+        values = (*artifacts, EvaluatorArtifactBytesV1(result_digest, private_result_bytes))
+        for artifact in values:
             if _sha256(artifact.data) != artifact.sha256:
                 raise TrustedEvaluatorError("evaluator artifact bytes changed before private retention")
             target = root / artifact.sha256

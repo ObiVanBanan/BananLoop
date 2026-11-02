@@ -4,7 +4,9 @@ import hashlib
 import io
 import json
 import stat
+import subprocess
 import zipfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +21,7 @@ from bananloop.trusted_evaluator import (
     _canonical,
     _extract_bundle,
     _check_live_output_limits,
+    TrustedEvaluatorAdapter,
 )
 
 
@@ -228,7 +231,67 @@ def test_live_output_guard_enforces_combined_size_and_rejects_symlinks(tmp_path)
         _check_live_output_limits(output)
 
     (output / "large.bin").unlink()
-    (output / "linked").symlink_to(tmp_path / "outside")
+    try:
+        (output / "linked").symlink_to(tmp_path / "outside")
+    except OSError:
+        pytest.skip("filesystem does not permit symlink creation")
     with pytest.raises(TrustedEvaluatorError, match="symlink"):
         _check_live_output_limits(output)
+
+
+def _git(repo, *args):
+    return subprocess.check_output(["git", "-C", str(repo), *args], stderr=subprocess.PIPE).decode().strip()
+
+
+def test_core_snapshot_resolver_materializes_only_approved_git_paths(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "codex@example.invalid")
+    _git(repo, "config", "user.name", "Codex Test")
+    (repo / "src").mkdir()
+    (repo / "private").mkdir()
+    (repo / "src" / "app.py").write_bytes(b"approved source")
+    (repo / "private" / "notes.txt").write_bytes(b"must not be materialized")
+    _git(repo, "add", "src/app.py", "private/notes.txt")
+    _git(repo, "commit", "-qm", "snapshot")
+    snapshot = _git(repo, "rev-parse", "HEAD")
+    adapter = TrustedEvaluatorAdapter(
+        graph=SimpleNamespace(bind_campaign_id=lambda _: None), queue=None,
+        campaign_id="campaign-1", state_root=tmp_path,
+    )
+    spec = SimpleNamespace(
+        source_repo=str(repo),
+        autonomy=SimpleNamespace(capability_policy=SimpleNamespace(read_paths=("src/**",))),
+    )
+    files = adapter._snapshot_files(spec, snapshot, snapshot)
+    assert files == {"src/app.py": b"approved source"}
+
+
+def test_core_snapshot_resolver_rejects_candidate_not_descended_from_protocol_source(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "codex@example.invalid")
+    _git(repo, "config", "user.name", "Codex Test")
+    (repo / "main.py").write_bytes(b"first")
+    _git(repo, "add", "main.py")
+    _git(repo, "commit", "-qm", "first")
+    source = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "--orphan", "unrelated")
+    _git(repo, "rm", "-rf", ".")
+    (repo / "main.py").write_bytes(b"unrelated")
+    _git(repo, "add", "main.py")
+    _git(repo, "commit", "-qm", "unrelated")
+    candidate = _git(repo, "rev-parse", "HEAD")
+    adapter = TrustedEvaluatorAdapter(
+        graph=SimpleNamespace(bind_campaign_id=lambda _: None), queue=None,
+        campaign_id="campaign-1", state_root=tmp_path,
+    )
+    spec = SimpleNamespace(
+        source_repo=str(repo),
+        autonomy=SimpleNamespace(capability_policy=SimpleNamespace(read_paths=("**",))),
+    )
+    with pytest.raises(TrustedEvaluatorError, match="not descended"):
+        adapter._snapshot_files(spec, source, candidate)
 

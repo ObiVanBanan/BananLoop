@@ -12,7 +12,7 @@ import re
 import sqlite3
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -21,6 +21,10 @@ _ARTIFACT_REF = re.compile(r"^artifact://sha256/([0-9a-f]{64})$")
 _REQUIRED_VERIFIER_CHECKS = frozenset({
     "protocol_identity", "evaluator_bundle_review", "metric_contract", "tier_manifests",
     "frozen_case_scope", "no_hidden_data_dependency", "fair_comparison", "error_semantics",
+})
+_INTEGRATION_CHECK_NAMES = frozenset({
+    "candidate_identity", "protocol_identity", "evaluation_receipt",
+    "budget_receipt", "artifact_integrity", "regression_policy",
 })
 
 
@@ -336,6 +340,47 @@ class IntegrationVerifierOutputV1(BaseModel):
         return self
 
 
+class IntegrationCoreEvidenceV1(BaseModel):
+    """Deterministic Core proof required before an integration role can PASS."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    campaign_id: str = Field(min_length=1, max_length=200)
+    spec_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_snapshot_id: str = Field(min_length=40, max_length=64)
+    approval_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    protocol_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate_snapshot_id: str = Field(min_length=40, max_length=64)
+    baseline_run_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    candidate_run_receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    budget_settlement_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    artifact_integrity_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    regression_policy_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    check_results: dict[str, StrictBool]
+    decision: Literal["PASS", "FAIL"]
+
+    @field_validator("source_snapshot_id", "candidate_snapshot_id")
+    @classmethod
+    def complete_git_ids(cls, value: str) -> str:
+        if not _GIT_OID.fullmatch(value):
+            raise ValueError("integration evidence requires full Git object IDs")
+        return value
+
+    @model_validator(mode="after")
+    def digest_and_decision_match(self) -> "IntegrationCoreEvidenceV1":
+        if set(self.check_results) != _INTEGRATION_CHECK_NAMES:
+            raise ValueError("Core integration evidence must record every deterministic check")
+        expected_decision = "PASS" if all(self.check_results.values()) else "FAIL"
+        if self.decision != expected_decision:
+            raise ValueError("Core integration decision does not match its deterministic checks")
+        payload = self.model_dump(mode="json")
+        payload.pop("evidence_digest")
+        if self.evidence_digest != _digest(payload):
+            raise ValueError("Core integration evidence digest does not match its content")
+        return self
+
+
 class IntegrationVerifierReceiptV1(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -346,6 +391,7 @@ class IntegrationVerifierReceiptV1(BaseModel):
     approval_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     protocol_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     candidate_snapshot_id: str = Field(min_length=40, max_length=64)
+    core_evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     verifier_job_id: str = Field(min_length=1, max_length=120)
     verifier_fence: int = Field(ge=1)
     verifier_role_instance_id: str = Field(min_length=1, max_length=200)
@@ -410,6 +456,7 @@ class EvaluatorProtocolAuthority:
             approval_digest TEXT NOT NULL REFERENCES evaluator_verifier_receipts(approval_digest),
             protocol_digest TEXT NOT NULL CHECK(length(protocol_digest)=64),
             candidate_snapshot_id TEXT NOT NULL,
+            core_evidence_digest TEXT REFERENCES evaluator_integration_evidence(evidence_digest),
             verifier_job_id TEXT NOT NULL UNIQUE,
             verifier_role_instance_id TEXT NOT NULL,
             decision TEXT NOT NULL CHECK(decision IN ('PASS','FAIL')),
@@ -425,8 +472,27 @@ class EvaluatorProtocolAuthority:
             result_digest TEXT NOT NULL CHECK(length(result_digest)=64),
             receipt_json TEXT NOT NULL
         )""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS evaluator_integration_evidence (
+            evidence_digest TEXT PRIMARY KEY CHECK(length(evidence_digest)=64),
+            campaign_id TEXT NOT NULL,
+            spec_hash TEXT NOT NULL CHECK(length(spec_hash)=64),
+            approval_digest TEXT NOT NULL REFERENCES evaluator_verifier_receipts(approval_digest),
+            protocol_digest TEXT NOT NULL CHECK(length(protocol_digest)=64),
+            candidate_snapshot_id TEXT NOT NULL,
+            baseline_run_receipt_digest TEXT NOT NULL REFERENCES evaluator_run_receipts(receipt_digest),
+            candidate_run_receipt_digest TEXT NOT NULL REFERENCES evaluator_run_receipts(receipt_digest),
+            decision TEXT NOT NULL CHECK(decision IN ('PASS','FAIL')),
+            evidence_json TEXT NOT NULL
+        )""")
+        integration_columns = {row[1] for row in self.conn.execute(
+            "PRAGMA table_info(evaluator_integration_receipts)")}
+        if "core_evidence_digest" not in integration_columns:
+            self.conn.execute(
+                "ALTER TABLE evaluator_integration_receipts ADD COLUMN core_evidence_digest TEXT"
+            )
         for table in ("evaluator_protocol_proposals", "evaluator_verifier_receipts",
-                      "evaluator_integration_receipts", "evaluator_run_receipts"):
+                      "evaluator_integration_receipts", "evaluator_run_receipts",
+                      "evaluator_integration_evidence"):
             self.conn.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_no_update BEFORE UPDATE ON {table} "
                               "BEGIN SELECT RAISE(ABORT,'evaluator verification records are immutable'); END")
             self.conn.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_no_delete BEFORE DELETE ON {table} "
@@ -629,8 +695,11 @@ class EvaluatorProtocolAuthority:
         protocol_digest = request.get("protocol_digest")
         spec_hash = request.get("spec_hash")
         source_snapshot_id = request.get("source_snapshot_id")
+        evidence_digest = request.get("core_evidence_digest")
         if not isinstance(approval_digest, str) or not isinstance(protocol_id, str):
             raise EvaluatorVerificationError("integration verifier job has no frozen evaluator reference")
+        if not isinstance(evidence_digest, str) or not _SHA256.fullmatch(evidence_digest):
+            raise EvaluatorVerificationError("integration verifier job has no Core-derived evidence digest")
         if isinstance(protocol_version, bool) or not isinstance(protocol_version, int):
             raise EvaluatorVerificationError("integration verifier job has no protocol version")
         self.require_frozen_reference(protocol_id, protocol_version, protocol_digest,
@@ -641,6 +710,23 @@ class EvaluatorProtocolAuthority:
                 or self.graph.campaign_id != job.get("campaign_id")
                 or not isinstance(source_snapshot_id, str) or not _GIT_OID.fullmatch(source_snapshot_id)):
             raise EvaluatorVerificationError("integration verifier result is stale or cross-bound")
+        evidence_row = self.conn.execute(
+            "SELECT evidence_json FROM evaluator_integration_evidence WHERE evidence_digest=?",
+            (evidence_digest,),
+        ).fetchone()
+        if evidence_row is None:
+            raise EvaluatorVerificationError("integration verifier job cites no stored Core evidence")
+        evidence = IntegrationCoreEvidenceV1.model_validate_json(evidence_row[0])
+        if (evidence.campaign_id != job["campaign_id"] or evidence.spec_hash != spec_hash
+                or evidence.source_snapshot_id != source_snapshot_id
+                or evidence.approval_digest != approval_digest
+                or evidence.protocol_digest != protocol_digest
+                or evidence.candidate_snapshot_id != output.candidate_snapshot_id):
+            raise EvaluatorVerificationError("Core integration evidence is stale or cross-bound")
+        # A role decision is necessary but cannot override a deterministic Core
+        # failure. Preserve FAIL on either source of evidence.
+        effective_decision = ("PASS" if output.decision == "PASS"
+                              and evidence.decision == "PASS" else "FAIL")
         payload = {
             "campaign_id": job["campaign_id"], "spec_hash": spec_hash,
             "source_snapshot_id": source_snapshot_id, "approval_digest": approval_digest,
@@ -650,14 +736,19 @@ class EvaluatorProtocolAuthority:
             "verifier_binding_digest": _digest(binding),
             "verifier_request_hash": job["request_hash"],
             "verifier_output_digest": durable["output_digest"],
-            "decision": output.decision, "checks": output.checks,
+            "core_evidence_digest": evidence_digest,
+            "decision": effective_decision, "checks": output.checks,
         }
         receipt = IntegrationVerifierReceiptV1(receipt_digest=_digest(payload), **payload)
         encoded = _canonical(receipt.model_dump(mode="json"))
-        self.conn.execute("INSERT OR IGNORE INTO evaluator_integration_receipts VALUES(?,?,?,?,?,?,?,?,?,?,?)", (
+        self.conn.execute("""INSERT OR IGNORE INTO evaluator_integration_receipts (
+            receipt_digest,campaign_id,spec_hash,source_snapshot_id,approval_digest,
+            protocol_digest,candidate_snapshot_id,core_evidence_digest,verifier_job_id,
+            verifier_role_instance_id,decision,receipt_json
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""", (
             receipt.receipt_digest, receipt.campaign_id, receipt.spec_hash,
             receipt.source_snapshot_id, receipt.approval_digest, receipt.protocol_digest,
-            receipt.candidate_snapshot_id, receipt.verifier_job_id,
+            receipt.candidate_snapshot_id, receipt.core_evidence_digest, receipt.verifier_job_id,
             receipt.verifier_role_instance_id, receipt.decision, encoded,
         ))
         row = self.conn.execute("SELECT receipt_json FROM evaluator_integration_receipts WHERE receipt_digest=?",
@@ -680,7 +771,66 @@ class EvaluatorProtocolAuthority:
                 or receipt.protocol_digest != protocol_digest
                 or receipt.candidate_snapshot_id != candidate_snapshot_id):
             raise EvaluatorVerificationError("integration receipt is stale or belongs to another candidate/protocol")
+        evidence_row = self.conn.execute(
+            "SELECT evidence_json FROM evaluator_integration_evidence WHERE evidence_digest=?",
+            (receipt.core_evidence_digest,),
+        ).fetchone()
+        if evidence_row is None:
+            raise EvaluatorVerificationError("integration receipt has no Core-derived proof record")
+        evidence = IntegrationCoreEvidenceV1.model_validate_json(evidence_row[0])
+        if ((decision == "PASS" and evidence.decision != "PASS")
+                or evidence.campaign_id != campaign_id
+                or evidence.spec_hash != spec_hash
+                or evidence.source_snapshot_id != source_snapshot_id
+                or evidence.approval_digest != approval_digest
+                or evidence.protocol_digest != protocol_digest
+                or evidence.candidate_snapshot_id != candidate_snapshot_id):
+            raise EvaluatorVerificationError("integration decision is not supported by matching Core evidence")
         return receipt
+
+    def append_integration_evidence(self, evidence: IntegrationCoreEvidenceV1) -> IntegrationCoreEvidenceV1:
+        """Append Core-computed checks only when bound evaluator receipts exist."""
+        proposal, _ = self.approved_protocol(evidence.approval_digest)
+        self.require_frozen_reference(
+            protocol_id=proposal.protocol.protocol_id,
+            version=proposal.protocol.version,
+            protocol_digest=evidence.protocol_digest, approval_digest=evidence.approval_digest,
+            campaign_id=evidence.campaign_id, spec_hash=evidence.spec_hash,
+        )
+        baseline = self.require_run_receipt(
+            evidence.baseline_run_receipt_digest, campaign_id=evidence.campaign_id,
+            spec_hash=evidence.spec_hash, approval_digest=evidence.approval_digest,
+            protocol_digest=evidence.protocol_digest,
+            candidate_snapshot_id=evidence.source_snapshot_id,
+        )
+        candidate = self.require_run_receipt(
+            evidence.candidate_run_receipt_digest, campaign_id=evidence.campaign_id,
+            spec_hash=evidence.spec_hash, approval_digest=evidence.approval_digest,
+            protocol_digest=evidence.protocol_digest,
+            candidate_snapshot_id=evidence.candidate_snapshot_id,
+        )
+        if (baseline.tier != candidate.tier
+                or baseline.tier_manifest_sha256 != candidate.tier_manifest_sha256
+                or baseline.case_count != candidate.case_count):
+            raise EvaluatorVerificationError("integration evidence run receipts use different evaluator scopes")
+        encoded = _canonical(evidence.model_dump(mode="json"))
+        self.conn.execute("""INSERT OR IGNORE INTO evaluator_integration_evidence (
+            evidence_digest,campaign_id,spec_hash,approval_digest,protocol_digest,
+            candidate_snapshot_id,baseline_run_receipt_digest,candidate_run_receipt_digest,
+            decision,evidence_json
+        ) VALUES(?,?,?,?,?,?,?,?,?,?)""", (
+            evidence.evidence_digest, evidence.campaign_id, evidence.spec_hash,
+            evidence.approval_digest, evidence.protocol_digest,
+            evidence.candidate_snapshot_id, evidence.baseline_run_receipt_digest,
+            evidence.candidate_run_receipt_digest, evidence.decision, encoded,
+        ))
+        row = self.conn.execute(
+            "SELECT evidence_json FROM evaluator_integration_evidence WHERE evidence_digest=?",
+            (evidence.evidence_digest,),
+        ).fetchone()
+        if row is None or row[0] != encoded:
+            raise EvaluatorVerificationError("integration evidence digest already names different bytes")
+        return evidence
 
     def append_run_receipt(self, receipt: Any) -> Any:
         """Persist a Core-verified evaluator receipt as an immutable record."""
@@ -869,6 +1019,157 @@ class EvaluatorVerificationAdapter:
                 pass
             raise
         return self.authority.record_completed_verifier_job(self.queue, verifier_job_id)
+
+
+class IntegrationVerificationAdapter:
+    """Queue a tool-free integration reviewer over Core-computed evidence."""
+
+    def __init__(self, *, graph: Any, queue: Any, campaign_id: str,
+                 trusted_evaluator: Any):
+        self.graph, self.queue, self.campaign_id = graph, queue, campaign_id
+        self.graph.bind_campaign_id(campaign_id)
+        self.authority = EvaluatorProtocolAuthority(graph.conn)
+        self.trusted_evaluator = trusted_evaluator
+
+    def enqueue_integration(self, *, baseline_run_receipt_digest: str,
+                            candidate_run_receipt_digest: str) -> tuple[dict[str, Any], IntegrationCoreEvidenceV1]:
+        evidence = self.trusted_evaluator.create_integration_evidence(
+            baseline_run_receipt_digest=baseline_run_receipt_digest,
+            candidate_run_receipt_digest=candidate_run_receipt_digest,
+        )
+        spec = self.graph.campaign_spec()
+        from .contracts import OptimizationCampaignSpecV2
+
+        if not isinstance(spec, OptimizationCampaignSpecV2) or spec.evaluation.approval_digest is None:
+            raise EvaluatorVerificationError("integration review requires a pinned Optimization evaluator")
+        from .roles import (
+            RoleContextSourceV1, RoleContextValueV1,
+            TeamManifestAuthority, build_role_context,
+        )
+
+        manifest_authority = TeamManifestAuthority(self.queue.path)
+        try:
+            manifest = manifest_authority.load(
+                self.campaign_id, spec_hash=spec.approved_hash(),
+                registry_digest=spec.role_registry_digest,
+            )
+        finally:
+            manifest_authority.close()
+        members = [item for item in manifest.members if item.role.role_id == "integration_verifier"]
+        if len(members) != 1:
+            raise EvaluatorVerificationError("pinned team must have exactly one integration_verifier")
+        member = members[0]
+        policy = member.role.capability_policy
+        if policy.tools or policy.read_paths or policy.write_paths or policy.network_access:
+            raise EvaluatorVerificationError("integration-verifier role must have no tools, paths, or network")
+        if "public_task" not in member.role.context_fields:
+            raise EvaluatorVerificationError("integration-verifier role must accept bounded public evidence")
+        public_summary = _canonical({
+            "evidence_digest": evidence.evidence_digest,
+            "decision": evidence.decision,
+            "check_results": evidence.check_results,
+            "protocol_digest": evidence.protocol_digest,
+            "candidate_snapshot_id": evidence.candidate_snapshot_id,
+            "baseline_run_receipt_digest": evidence.baseline_run_receipt_digest,
+            "candidate_run_receipt_digest": evidence.candidate_run_receipt_digest,
+            "budget_settlement_digest": evidence.budget_settlement_digest,
+            "artifact_integrity_digest": evidence.artifact_integrity_digest,
+            "regression_policy_digest": evidence.regression_policy_digest,
+        })
+        source = RoleContextSourceV1(
+            campaign_goal=RoleContextValueV1(value=spec.goal, classification="PUBLIC_SPEC",
+                                             source_ref="campaign://spec/goal"),
+            fields={"public_task": RoleContextValueV1(
+                value=public_summary, classification="PUBLIC_NODE",
+                source_ref=f"integration://evidence/{evidence.evidence_digest}",
+            )},
+        )
+        context = build_role_context(member, source)
+        action_id = f"integration-verification:{evidence.evidence_digest[:32]}"
+        role_binding = manifest.job_binding(
+            member.instance_id, action_id=action_id, context_digest=context.digest(),
+        )
+        protocol, _ = self.authority.approved_protocol(spec.evaluation.approval_digest)
+        request = {
+            "schema": "integration-verification-v1", "campaign_id": self.campaign_id,
+            "spec_hash": spec.approved_hash(), "source_snapshot_id": evidence.source_snapshot_id,
+            "approval_digest": evidence.approval_digest,
+            "protocol_id": protocol.protocol.protocol_id,
+            "protocol_version": protocol.protocol.version,
+            "protocol_digest": evidence.protocol_digest,
+            "candidate_snapshot_id": evidence.candidate_snapshot_id,
+            "core_evidence_digest": evidence.evidence_digest,
+            "role_binding": role_binding,
+            "role_context": context.model_dump(mode="json", exclude_unset=True),
+            "team_manifest_digest": manifest.manifest_digest,
+            "role_registry_digest": manifest.registry_digest,
+        }
+        identity = _digest({"campaign_id": self.campaign_id,
+                            "evidence_digest": evidence.evidence_digest,
+                            "role_instance_id": member.instance_id,
+                            "action_id": action_id})[:40]
+        job = self.queue.enqueue(
+            job_id=f"integration-{identity}", enqueue_key=f"integration-{identity}",
+            campaign_id=self.campaign_id, action_id=action_id,
+            resource="agent_calls", upper_bound=1, request=request,
+            role_allocation={
+                "manifest_digest": manifest.manifest_digest,
+                "role_instance_id": member.instance_id, "role_id": member.role.role_id,
+                "calls_limit": member.role.calls_per_instance,
+                "tokens_limit": member.role.tokens_per_instance,
+                "token_upper_bound": member.role.tokens_per_instance // member.role.calls_per_instance,
+            },
+        )
+        return job, evidence
+
+    def run_integration_one(self, *, verifier_job_id: str, worker_id: str,
+                            executor: Any, lease_seconds: int = 300) -> IntegrationVerifierReceiptV1:
+        job = self.queue.get_job(verifier_job_id)
+        if (job["state"] != "READY" or job["campaign_id"] != self.campaign_id
+                or job["request"].get("schema") != "integration-verification-v1"):
+            raise EvaluatorVerificationError("integration verifier job is not READY or is cross-bound")
+        binding = job["request"].get("role_binding")
+        if not isinstance(binding, dict):
+            raise EvaluatorVerificationError("integration verifier job has no role binding")
+        from .roles import TeamManifestAuthority
+
+        manifest_authority = TeamManifestAuthority(self.queue.path)
+        try:
+            manifest = manifest_authority.load(
+                self.campaign_id, spec_hash=binding["spec_hash"],
+                registry_digest=binding["role_registry_digest"],
+            )
+        finally:
+            manifest_authority.close()
+        member = manifest.member(binding["role_instance_id"])
+        if executor.manifest_digest != manifest.manifest_digest or executor.member != member:
+            raise EvaluatorVerificationError("executor is not the pinned integration verifier")
+        lease = self.queue.claim(verifier_job_id, worker_id, lease_seconds=lease_seconds)
+        fence = int(lease["fence"])
+        try:
+            self.queue.mark_dispatched(verifier_job_id, worker_id, fence)
+            output = IntegrationVerifierOutputV1.model_validate(
+                executor.dispatch(dict(lease["request"]), None),
+            )
+            request = lease["request"]
+            if (output.candidate_snapshot_id != request.get("candidate_snapshot_id")
+                    or output.protocol_digest != request.get("protocol_digest")):
+                raise EvaluatorVerificationError("integration verifier returned a decision for another scope")
+            payload = output.model_dump(mode="json")
+            output_digest = _digest(payload)
+            queue_receipt = _digest({"request_hash": lease["request_hash"],
+                                     "fence": fence, "output_digest": output_digest})
+            self.queue.complete(
+                verifier_job_id, worker_id, fence, output_digest=output_digest,
+                actual_amount=1, receipt_digest=queue_receipt, result_payload=payload,
+            )
+        except Exception:
+            try:
+                self.queue.cancel(verifier_job_id, reason="integration verifier failed after dispatch")
+            except Exception:
+                pass
+            raise
+        return self.authority.record_completed_integration_job(self.queue, verifier_job_id)
 
 
 def make_verifier_receipt(proposal: MetricDiscoveryProposalV1, *, verifier_job_id: str,
