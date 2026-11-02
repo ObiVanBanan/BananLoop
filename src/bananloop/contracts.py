@@ -604,6 +604,69 @@ class BudgetSpecV2(BaseModel):
         return self
 
 
+V2FeatureName = Literal[
+    "and_or_dag",
+    "api_sse_cli",
+    "capability_gateway",
+    "causal_memory",
+    "child_campaigns",
+    "dashboard",
+    "dynamic_roles",
+    "evaluator_verification",
+    "exploration",
+    "human_steering",
+    "integration_verifier",
+    "metric_discovery",
+    "observability",
+    "optimization",
+    "parallel_workers",
+    "research_intelligence",
+]
+V2_FULL_FEATURES: tuple[V2FeatureName, ...] = (
+    "and_or_dag",
+    "api_sse_cli",
+    "capability_gateway",
+    "causal_memory",
+    "child_campaigns",
+    "dashboard",
+    "dynamic_roles",
+    "evaluator_verification",
+    "exploration",
+    "human_steering",
+    "integration_verifier",
+    "metric_discovery",
+    "observability",
+    "optimization",
+    "parallel_workers",
+    "research_intelligence",
+)
+
+
+class FeatureFlagsV2(BaseModel):
+    """Versioned mechanism set bound into each frozen v2 campaign spec."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version: Literal[1] = 1
+    profile: Literal["FULL", "DIAGNOSTIC"] = "FULL"
+    enabled_features: tuple[V2FeatureName, ...] = V2_FULL_FEATURES
+
+    @model_validator(mode="after")
+    def validate_feature_profile(self) -> "FeatureFlagsV2":
+        if tuple(sorted(self.enabled_features)) != self.enabled_features:
+            raise ValueError("enabled_features must use canonical sorted order")
+        if len(set(self.enabled_features)) != len(self.enabled_features):
+            raise ValueError("enabled_features must be unique")
+        if self.profile == "FULL" and self.enabled_features != V2_FULL_FEATURES:
+            raise ValueError("FULL profile must enable every v2 mechanism")
+        return self
+
+    def flag_hash(self) -> str:
+        payload = json.dumps(self.model_dump(mode="json"), sort_keys=True,
+                             separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 class _CampaignSpecV2Base(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -614,6 +677,7 @@ class _CampaignSpecV2Base(BaseModel):
     autonomy: AutonomySpecV2
     budget: BudgetSpecV2
     role_registry_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    feature_flags: FeatureFlagsV2 = Field(default_factory=FeatureFlagsV2)
     parent: ParentCampaignRefV2 | None = None
 
     def approved_hash(self) -> str:

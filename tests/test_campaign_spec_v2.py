@@ -9,6 +9,7 @@ from bananloop.contracts import (
     CampaignSpec,
     ExplorationCampaignSpecV2,
     OptimizationCampaignSpecV2,
+    V2_FULL_FEATURES,
     parse_campaign_spec_document,
     parse_legacy_campaign_spec,
 )
@@ -78,10 +79,29 @@ def test_v2_specs_are_frozen_and_approved_hash_is_canonical():
     spec = parse_campaign_spec_document(exploration_spec())
 
     assert spec.approved_hash() == parse_campaign_spec_document(exploration_spec()).approved_hash()
+    assert spec.feature_flags.profile == "FULL"
+    assert spec.feature_flags.enabled_features == V2_FULL_FEATURES
+    assert len(spec.feature_flags.flag_hash()) == 64
     with pytest.raises(ValidationError):
         spec.goal = "mutated"
     with pytest.raises(ValidationError):
         spec.budget.max_attempts = 100
+
+
+def test_feature_flag_profile_is_frozen_into_campaign_approved_hash():
+    full = parse_campaign_spec_document(exploration_spec())
+    diagnostic_payload = exploration_spec(
+        feature_flags={"version": 1, "profile": "DIAGNOSTIC",
+                       "enabled_features": ("exploration", "research_intelligence")}
+    )
+    diagnostic = parse_campaign_spec_document(diagnostic_payload)
+
+    assert diagnostic.feature_flags.flag_hash() != full.feature_flags.flag_hash()
+    assert diagnostic.approved_hash() != full.approved_hash()
+    with pytest.raises(ValidationError, match="FULL profile must enable every v2 mechanism"):
+        parse_campaign_spec_document(exploration_spec(
+            feature_flags={"profile": "FULL", "enabled_features": ("exploration",)}
+        ))
 
 
 def test_v1_dispatch_keeps_legacy_model_and_hash_behavior():
