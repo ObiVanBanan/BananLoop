@@ -340,6 +340,7 @@ def test_create_integration_evidence_binds_runtime_optimization_hash_after_sourc
         lambda _authority, _approval_digest: (proposal, verifier_receipt),
     )
     conn = sqlite3.connect(":memory:", isolation_level=None)
+    conn.execute("PRAGMA user_version=5")
     authority = EvaluatorProtocolAuthority(conn)
     graph = SimpleNamespace(
         bind_campaign_id=lambda _campaign_id: None,
