@@ -8,9 +8,9 @@
 
 ## Summary
 
-The draft provides useful executable evidence for a narrow set of SQLite invariants: graph changes and events share a transaction, idempotent graph commands are replayed, a budget reservation and lease are atomic, unknown spend remains counted, and one injected child-campaign recovery boundary is repeatable. The draft is isolated from `src/bananloop` and does not change current Engine behavior.
+The draft provides executable evidence for graph transaction/idempotency behavior, per-fence budget reservations, lease recovery and fenced result settlement, a representative v4-store migration fixture, and child-saga recovery across injected committed boundaries. The spike is isolated from `src/bananloop` and does not change current Engine behavior.
 
-The current evidence does not yet establish several ownership and recovery contracts needed to freeze the v0.2 design. In particular, the migration test uses a synthetic schema, the child allocation saga can leave escrow stranded on intermediate failures, and the lease contract has no fenced result-commit path. Evaluator trust and evidence integrity are mostly asserted by prose. These gaps make `CHANGES_REQUIRED` the appropriate disposition for the contract gate. Do not treat this review as approval to start RPDI-01/02; independent reviewer acceptance remains outstanding.
+The implementation still does not establish production evaluator trust/capability enforcement, evidence provenance, provider-authoritative UNKNOWN reconciliation, child settlement/refund, or production authorization wiring. Migration compatibility through the future v2 adapter remains unverified. Those gaps make `CHANGES_REQUIRED` the appropriate disposition for the contract gate. Do not treat this review as approval to start RPDI-01/02; independent reviewer acceptance remains outstanding.
 
 ## Findings
 
@@ -26,7 +26,7 @@ At the reviewed base SHA, the fixture was synthetic and did not establish preser
 
 **Still required:** confirm the patched regression in current-head CI, verify required indexes, and reopen through the supported v2 adapter once that adapter exists. Do not claim complete migration compatibility from the current spike alone.
 
-### P1 — Child saga can strand root escrow after an intermediate error
+### P1 — Child escrow settlement and trusted approval integration remain incomplete
 
 The follow-up worktree now persists parent campaign identity, child path, allocation, approved scope and immutable spec/digests; requires a durable parent approval record before escrow; bootstraps child schema and lineage in one transaction; validates immutable lineage triggers; and rejects populated DBs without matching lineage or with extra lineage records. Identity conflicts quarantine the allocation with escrow held. Recovery is exercised at committed saga boundaries, including registry activation, and child admission checks parent, registry, and child DB agreement.
 
