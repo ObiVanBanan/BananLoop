@@ -84,7 +84,7 @@ def _receipt(proposal, *, decision="APPROVE", verifier_instance="agent-" + "5" *
 def test_protocol_digest_is_canonical_and_protected_tiers_have_manifest_identity():
     protocol = _protocol()
     assert protocol.content_digest() == _protocol().content_digest()
-    assert {item.tier for item in protocol.tiers} == {"dev", "holdout"}
+    assert {item.tier for item in protocol.tiers} == {"dev", "validation", "holdout"}
     with pytest.raises(ValidationError, match="DEV tier"):
         EvaluatorProtocolV1(
             protocol_id="no-dev", version=1, source_snapshot_id="a" * 40,
