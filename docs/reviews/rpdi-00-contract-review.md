@@ -65,7 +65,7 @@ The declared signature includes `evidence_refs` (`CONTRACTS.md:16, 59`), but `mu
 - Unknown spend remains charged against the cap in the exercised transition.
 - Exploration output contains no synthetic reward field.
 - The injected crash after child DB initialization can be reconciled without creating a second allocation in that specific scenario.
-- The PR is a draft and keeps spike code outside `src/bananloop`; the reviewed head passed the recorded Linux and Windows CI runs, including the Windows full suite after fixing a backup connection handle leak.
+- The reviewed base head was a draft, kept spike code outside `src/bananloop`, and passed its recorded Linux and Windows CI runs, including the Windows full suite after fixing a backup connection handle leak. The later follow-up head had one failing FK-test insert in CI; that test has been corrected locally and awaits a rerun.
 
 These are bounded prototype results. They do not resolve the P1 findings above or constitute production compatibility proof.
 
@@ -84,4 +84,4 @@ Until those conditions are met and an independent reviewer accepts the package, 
 
 ## Follow-up worktree status
 
-After the reviewed base SHA, the local worktree was updated to move the SQLite backup under the migration writer reservation, add migration-table foreign keys, replace the synthetic migration fixture with one created through the real v4 store, and add lease expiry/recovery/fenced-completion behavior. Nine non-migration spike tests pass. The migration tests remain unverified because the environment lacks the project's `pydantic` dependency; `pytest` is also unavailable. These changes are uncommitted. The disposition remains `CHANGES_REQUIRED` until the full suite passes and the remaining gate evidence is obtained.
+After the reviewed base SHA, the worktree was updated to move backup creation under the SQLite writer reservation, avoid backup path overwrite races, check integrity and foreign keys before commit, add migration-table foreign keys, replace the synthetic fixture with one built through the real v4 store, and add lease expiry/recovery/fenced-completion behavior with budget invariant guards. Ten non-migration tests pass locally, and the standard-library migration smoke passed backup/version/integrity/FK checks. The full local suite cannot run because `pydantic` and `pytest` are unavailable and DNS access to PyPI failed. CI on `dc98a21` ran 460 passed, 1 skipped, and found one incorrect jobs-table insert in the new FK test; the insert was corrected locally and awaits a rerun. The real-store fixture still starts from a current v4 `CampaignStore` database rather than a checked-in historical v3→v4 fixture, and the v2 adapter reopen proof remains for RPDI-02. The disposition remains `CHANGES_REQUIRED` until the corrected full suite passes and the remaining gate evidence is obtained.

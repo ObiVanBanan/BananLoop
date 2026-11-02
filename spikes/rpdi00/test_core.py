@@ -278,7 +278,7 @@ class RPDI00ContractSpike(unittest.TestCase):
             with self.assertRaises(sqlite3.IntegrityError):
                 db.execute("INSERT INTO research_edges VALUES('missing-src','missing-dst','REQUIRES')")
             with self.assertRaises(sqlite3.IntegrityError):
-                db.execute("INSERT INTO jobs VALUES('invalid-job','missing-node','READY',0,NULL,'hash')")
+                db.execute("INSERT INTO jobs VALUES('invalid-job','missing-node','READY',0,'hash')")
         finally:
             db.close()
         from bananloop.store import CampaignStore, StoreError
