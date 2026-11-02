@@ -118,7 +118,7 @@ class OptimizationAttemptCoordinator:
         if campaign_id is None:
             raise OptimizationLifecycleError("graph has no immutable campaign identity")
         try:
-            return self.graph.evaluator_protocols.require_run_receipt(
+            receipt = self.graph.evaluator_protocols.require_run_receipt(
                 receipt_digest,
                 campaign_id=campaign_id,
                 spec_hash=spec.approved_hash(),
@@ -126,6 +126,12 @@ class OptimizationAttemptCoordinator:
                 protocol_digest=spec.evaluation.content_sha256,
                 candidate_snapshot_id=payload["candidate_snapshot_id"],
             )
+            if (receipt.source_snapshot_id != payload["source_snapshot_id"]
+                    or receipt.tier != "dev"):
+                raise OptimizationLifecycleError(
+                    "candidate-ready receipt must match the source snapshot and DEV tier"
+                )
+            return receipt
         except Exception as exc:
             raise OptimizationLifecycleError(
                 "candidate-ready graph transition has no valid durable evaluator receipt"
