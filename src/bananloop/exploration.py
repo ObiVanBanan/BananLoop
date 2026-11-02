@@ -25,6 +25,7 @@ from .capabilities import (
 from .contracts import ExplorationCampaignSpecV2
 from .graph_store import ExplorationCompletionV2, GraphRepository, GraphStoreError
 from .worker_queue import DurableWorkerQueue, WorkerQueueError
+from .scheduler import HybridScheduler
 
 
 class EvidenceAdapterError(RuntimeError):
@@ -125,6 +126,13 @@ class EvidenceOnlyAttemptAdapter:
         spec = self.graph.campaign_spec()
         if not isinstance(spec, ExplorationCampaignSpecV2):
             raise EvidenceAdapterError("v2 Optimization remains unsupported until its evaluator adapter is approved")
+        snapshot = self.graph.scheduling_snapshot()
+        target_node = next((item for item in snapshot["nodes"] if item["node_id"] == node_id), None)
+        if target_node is None or target_node["phase"] != "EXPLORATION":
+            raise EvidenceAdapterError("evidence-only adapter accepts only existing EXPLORATION nodes")
+        if target_node["status"] not in {"PENDING", "READY"} or not target_node["ready"]:
+            raise EvidenceAdapterError("exploration node is blocked or is not schedulable")
+        node_revision = int(target_node["revision"]) + (1 if target_node["status"] == "PENDING" else 0)
         policy = spec.autonomy.capability_policy
         if policy is None:
             raise EvidenceAdapterError("v2 campaign has no approved capability policy; failing closed")
@@ -145,10 +153,11 @@ class EvidenceOnlyAttemptAdapter:
             raise EvidenceAdapterError("Git returned an invalid full commit object ID")
         policy_digest = _sha(_canonical(policy.model_dump(mode="json")).encode())
         manifest = {"policy": "rpdi06-capability-gateway-v1", "scope_digest": spec.autonomy.scope_digest,
-                    "policy_digest": policy_digest, "visible_paths": list(paths), "base_commit": resolved_commit}
+                    "policy_digest": policy_digest, "visible_paths": list(paths), "base_commit": resolved_commit,
+                    "node_revision": node_revision}
         capability_hash = _sha(_canonical(manifest).encode())
         identity = _sha(_canonical({"campaign_id": self.campaign_id, "node_id": node_id,
-                                    "spec_hash": spec.approved_hash(), "graph_revision": self.graph.graph_revision(),
+                                    "spec_hash": spec.approved_hash(), "node_revision": node_revision,
                                     "capability_hash": capability_hash}).encode())
         job_id = "explore-" + identity[:40]
         grant = PermissionEngine.derive(
@@ -157,6 +166,15 @@ class EvidenceOnlyAttemptAdapter:
         )
         if any(not grant.allows_path("read", path) for path in paths):
             raise EvidenceAdapterError("source allowlist exceeds the approved campaign capability policy")
+        if target_node["status"] == "PENDING":
+            try:
+                ready = HybridScheduler(self.graph).mark_ready(
+                    node_id, expected_node_revision=int(target_node["revision"]), expected_phase="EXPLORATION"
+                )
+            except GraphStoreError as exc:
+                raise EvidenceAdapterError(str(exc)) from exc
+            if ready["node_revision"] != node_revision:
+                raise EvidenceAdapterError("node changed while the exploration job was being prepared")
         authority = CapabilityAuthority(self.queue.path)
         try:
             authority.issue(grant)
@@ -169,7 +187,7 @@ class EvidenceOnlyAttemptAdapter:
                    "source_repo": str(repo), "capability_manifest": manifest,
                    "capability_manifest_digest": capability_hash, "capability_digest": grant.grant_digest,
                    "capability_grant": grant.model_dump(mode="json"),
-                   "graph_revision": self.graph.graph_revision()}
+                   "node_revision": node_revision}
         return self.queue.enqueue(job_id=job_id, enqueue_key=job_id, campaign_id=self.campaign_id,
                                   action_id=f"exploration:{node_id}", resource="agent_calls",
                                   upper_bound=1, request=request)
@@ -335,7 +353,8 @@ class EvidenceOnlyAttemptAdapter:
             "command_id": f"complete-{job_id}-f{durable['fence']}",
             "idempotency_key": f"completion:{job_id}:f{durable['fence']}",
             "expected_graph_revision": self.graph.graph_revision(),
-            "node_id": result.node_id, "job_id": job_id, "worker_fence": int(durable["fence"]),
+            "node_id": result.node_id, "node_revision": int(request["node_revision"]),
+            "job_id": job_id, "worker_fence": int(durable["fence"]),
             "source_request_hash": job["request_hash"], "output_digest": durable["output_digest"],
             "spec_hash": request["spec_hash"],
             "evidence_refs": tuple(sorted((*result.evidence_refs, *artifact_refs))),

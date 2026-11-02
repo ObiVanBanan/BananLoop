@@ -120,17 +120,21 @@ def test_evidence_completion_is_strict_atomic_and_replayable():
     conn.execute("INSERT INTO campaigns VALUES(1,?)", (json.dumps(spec.model_dump(mode="json")),))
     try:
         graph.mutate(command("add", "add-node", 0, node("explore-1")))
+        graph.mutate(command("mark-ready", "mark-ready", 1, {
+            "type": "TransitionNodeStatus", "node_id": "explore-1", "expected_node_revision": 0,
+            "expected_status": "PENDING", "to_status": "READY", "guard": "SCHEDULER_READY", "actor": "CORE",
+        }))
         payload = {
-            "command_id": "completion-1", "idempotency_key": "job-1:f1", "expected_graph_revision": 1,
-            "node_id": "explore-1", "job_id": "job-1", "worker_fence": 1,
+            "command_id": "completion-1", "idempotency_key": "job-1:f1", "expected_graph_revision": 2,
+            "node_id": "explore-1", "node_revision": 1, "job_id": "job-1", "worker_fence": 1,
             "source_request_hash": "c" * 64, "output_digest": "d" * 64,
             "spec_hash": spec.approved_hash(), "evidence_refs": ["artifact://report"],
             "artifact_digests": ["e" * 64], "limitations": ["small sample"],
             "next_experiment": "vary one factor",
         }
         first = graph.complete_exploration(payload)
-        assert first["graph_revision"] == 2
-        replay = graph.complete_exploration({**payload, "expected_graph_revision": 2})
+        assert first["graph_revision"] == 3
+        replay = graph.complete_exploration({**payload, "expected_graph_revision": 3})
         assert replay == first
         node_row = conn.execute("SELECT phase,status,payload_json FROM research_nodes WHERE node_id='explore-1'").fetchone()
         assert (node_row["phase"], node_row["status"]) == ("CONSOLIDATION", "COMPLETED")
