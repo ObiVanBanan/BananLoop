@@ -35,9 +35,9 @@ The prototype's atomic claim uses one Core-owned SQLite transaction. A determini
 
 ## Child campaign budget escrow
 
-Parent-side allocation is reserved before touching the registry or child DB. `allocation_id` and `child_id` are stable idempotency keys. The saga stages are `RESERVED -> registry INITIALIZING -> child DB initialized -> ACTIVE`; reconciliation repeats each idempotent step. Parent root budget counts escrow until an authoritative settlement policy permits return. A child cap is no greater than its allocation. Unknown external spend is not refundable.
+Parent-side allocation is reserved before touching the registry or child DB. The parent persists the stable allocation ID, child ID, canonical child DB path, parent identity, amount, approved scope JSON/digest, and immutable child-spec JSON/digest. The scope digest is recomputed from canonical scope JSON, and the child spec's autonomy digest must match. The child DB stores the same lineage tuple; SQLite triggers reject lineage updates/deletes. The registry mirrors it as a locator. A mismatch moves the parent allocation to `RECONCILIATION_REQUIRED` and leaves escrow held. The stages are `RESERVED -> REGISTRY_INITIALIZING -> CHILD_READY -> ACTIVE`; reconciliation repeats committed steps without downgrading parent state. The registry is activated before the parent publishes `ACTIVE`; admission requires all three records to agree. The deterministic spike injects crashes after reserve, registry insertion, child bootstrap, registry activation, and parent activation. Parent root budget counts escrow until an authoritative settlement policy permits return. A child cap is no greater than its allocation. Unknown external spend is not refundable.
 
-The prototype injects a crash after child DB initialization, then reconciles and asserts one allocation, one registry row, and unchanged root escrow. It does not claim crash proof on Windows or across real power loss; the local deterministic test validates restart logic at that boundary.
+The prototype injects crashes at each committed boundary, reconciles twice, and asserts one allocation, one registry row, matching child lineage, and unchanged root escrow. It also checks that an activation gap denies child admission, scope/spec mismatches are rejected before escrow, lineage is immutable, and registry identity conflicts fail closed without refund. It does not implement settlement/refund or claim crash proof on Windows or across real power loss.
 
 ## v4→v5 migration spike
 
@@ -61,7 +61,7 @@ ClaimJob(worker_id, job_id, expected_job_revision, capability_version)
 DispatchJob(job_id, fence)
 CompleteJob(job_id, fence, output_digest, receipt, evidence_refs, protocol_version?)
 ProposeProtocol(proposal) -> independent verifier -> FreezeProtocol(version, digest)
-CreateChild(allocation_id, child_id, approved_scope_digest, amount) -> recoverable saga
+CreateChild(allocation_id, parent_campaign_id, child_id, approved_scope, approved_scope_digest, child_spec, amount) -> recoverable saga
 ```
 
 Stable error codes: `REVISION_CONFLICT`, `IDEMPOTENCY_CONFLICT`, `STALE_LEASE`, `INVALID_GRAPH`, `CAPABILITY_DENIED`, `BLOCKED_UNSAFE`, `BUDGET_EXHAUSTED`. State changes and errors are persisted where a command may have been accepted. SSE is at-least-once notification; durable event IDs are per campaign, and snapshot/replay share an authorized revision-consistent cursor.

@@ -61,26 +61,95 @@ def connect(path: str | Path) -> sqlite3.Connection:
     return db
 
 
-def init_campaign(path: str | Path, budget_cap: int = 100) -> None:
+def _ensure_child_lineage_triggers(db: sqlite3.Connection) -> None:
+    _ensure_immutable_triggers(db, "campaign_lineage", "campaign_lineage")
+
+
+def _ensure_immutable_triggers(db: sqlite3.Connection, table: str, prefix: str) -> None:
+    label = table.replace("_", " ")
+    expected = {
+        f"{prefix}_no_update": f"CREATE TRIGGER {prefix}_no_update BEFORE UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'{label} is immutable'); END",
+        f"{prefix}_no_delete": f"CREATE TRIGGER {prefix}_no_delete BEFORE DELETE ON {table} BEGIN SELECT RAISE(ABORT,'{label} is immutable'); END",
+    }
+    for name, sql in expected.items():
+        row = db.execute("SELECT tbl_name,sql FROM sqlite_master WHERE type='trigger' AND name=?", (name,)).fetchone()
+        if row:
+            if row["tbl_name"] != table or " ".join(row["sql"].lower().split()) != " ".join(sql.lower().split()):
+                raise ContractError("CHILD_CONFLICT", f"database has an incompatible {name} trigger")
+        else:
+            db.execute(sql)
+
+
+def init_campaign(path: str | Path, budget_cap: int = 100, *,
+                  campaign_lineage: dict[str, Any] | None = None,
+                  fail_before_commit: bool = False) -> None:
     if budget_cap < 0:
         raise ContractError("INVALID_BUDGET", "budget cap must be non-negative")
     db = connect(path)
     try:
-        db.executescript("""
-        PRAGMA journal_mode=WAL;
-        CREATE TABLE IF NOT EXISTS graph_meta(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL);
-        INSERT OR IGNORE INTO graph_meta VALUES(1, 0);
-        CREATE TABLE IF NOT EXISTS nodes(node_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS edges(src TEXT NOT NULL REFERENCES nodes(node_id), dst TEXT NOT NULL REFERENCES nodes(node_id), kind TEXT NOT NULL CHECK(kind IN ('REQUIRES','DERIVED_FROM','RELATED_TO')), PRIMARY KEY(src,dst,kind));
-        CREATE TABLE IF NOT EXISTS commands(command_id TEXT PRIMARY KEY, idem_key TEXT UNIQUE NOT NULL, payload_hash TEXT NOT NULL, response TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, payload TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS budget(id INTEGER PRIMARY KEY CHECK(id=1), cap INTEGER NOT NULL CHECK(cap>=0), reserved INTEGER NOT NULL DEFAULT 0 CHECK(reserved>=0), spent INTEGER NOT NULL DEFAULT 0 CHECK(spent>=0), unknown INTEGER NOT NULL DEFAULT 0 CHECK(unknown>=0));
-        INSERT OR IGNORE INTO budget(id,cap) VALUES(1, 100);
-        CREATE TABLE IF NOT EXISTS jobs(job_id TEXT PRIMARY KEY, node_id TEXT NOT NULL, status TEXT NOT NULL, fence INTEGER NOT NULL DEFAULT 0, lease_until REAL, request_hash TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS reservations(action_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(job_id), fence INTEGER NOT NULL, amount INTEGER NOT NULL, state TEXT NOT NULL, UNIQUE(job_id,fence));
-        CREATE TABLE IF NOT EXISTS job_results(job_id TEXT PRIMARY KEY REFERENCES jobs(job_id), fence INTEGER NOT NULL, output_digest TEXT NOT NULL, actual_amount INTEGER NOT NULL);
-        """)
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("BEGIN IMMEDIATE")
+        existing_tables = set()
+        if campaign_lineage:
+            existing_tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+            if existing_tables:
+                if "campaign_lineage" not in existing_tables or "budget" not in existing_tables:
+                    raise ContractError("CHILD_CONFLICT", "refusing to attach lineage to a populated database")
+                lineage_count = db.execute("SELECT COUNT(*) FROM campaign_lineage").fetchone()[0]
+                if lineage_count != 1:
+                    raise ContractError("CHILD_CONFLICT", "existing child database must contain exactly one lineage record")
+                budget = db.execute("SELECT cap FROM budget WHERE id=1").fetchone()
+                if not budget or budget["cap"] != budget_cap:
+                    raise ContractError("CHILD_CONFLICT", "existing child database has a different budget allocation")
+                saved = db.execute("SELECT child_id,parent_campaign_id,amount,approved_scope_digest,approved_scope_json,child_spec_json,child_spec_digest FROM campaign_lineage WHERE allocation_id=?",
+                                   (campaign_lineage["allocation_id"],)).fetchone()
+                expected = (campaign_lineage["child_id"], campaign_lineage["parent_campaign_id"], budget_cap,
+                            campaign_lineage["approved_scope_digest"], campaign_lineage["approved_scope_json"],
+                            campaign_lineage["child_spec_json"], campaign_lineage["child_spec_digest"])
+                if not saved or tuple(saved) != expected:
+                    raise ContractError("CHILD_CONFLICT", "existing child database has no matching immutable lineage")
+        statements = (
+            "CREATE TABLE IF NOT EXISTS graph_meta(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL)",
+            "INSERT OR IGNORE INTO graph_meta VALUES(1, 0)",
+            "CREATE TABLE IF NOT EXISTS nodes(node_id TEXT PRIMARY KEY, payload TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS edges(src TEXT NOT NULL REFERENCES nodes(node_id), dst TEXT NOT NULL REFERENCES nodes(node_id), kind TEXT NOT NULL CHECK(kind IN ('REQUIRES','DERIVED_FROM','RELATED_TO')), PRIMARY KEY(src,dst,kind))",
+            "CREATE TABLE IF NOT EXISTS commands(command_id TEXT PRIMARY KEY, idem_key TEXT UNIQUE NOT NULL, payload_hash TEXT NOT NULL, response TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, payload TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS budget(id INTEGER PRIMARY KEY CHECK(id=1), cap INTEGER NOT NULL CHECK(cap>=0), reserved INTEGER NOT NULL DEFAULT 0 CHECK(reserved>=0), spent INTEGER NOT NULL DEFAULT 0 CHECK(spent>=0), unknown INTEGER NOT NULL DEFAULT 0 CHECK(unknown>=0))",
+            "INSERT OR IGNORE INTO budget(id,cap) VALUES(1, 100)",
+            "CREATE TABLE IF NOT EXISTS jobs(job_id TEXT PRIMARY KEY, node_id TEXT NOT NULL, status TEXT NOT NULL, fence INTEGER NOT NULL DEFAULT 0, lease_until REAL, request_hash TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS reservations(action_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(job_id), fence INTEGER NOT NULL, amount INTEGER NOT NULL, state TEXT NOT NULL, UNIQUE(job_id,fence))",
+            "CREATE TABLE IF NOT EXISTS job_results(job_id TEXT PRIMARY KEY REFERENCES jobs(job_id), fence INTEGER NOT NULL, output_digest TEXT NOT NULL, actual_amount INTEGER NOT NULL)",
+        )
+        for statement in statements:
+            db.execute(statement)
         db.execute("UPDATE budget SET cap=? WHERE id=1", (budget_cap,))
+        if campaign_lineage:
+            db.execute("""CREATE TABLE IF NOT EXISTS campaign_lineage(
+              allocation_id TEXT PRIMARY KEY, child_id TEXT NOT NULL, parent_campaign_id TEXT NOT NULL,
+              amount INTEGER NOT NULL CHECK(amount>0), approved_scope_digest TEXT NOT NULL,
+              approved_scope_json TEXT NOT NULL, child_spec_json TEXT NOT NULL, child_spec_digest TEXT NOT NULL
+            )""")
+            _ensure_child_lineage_triggers(db)
+            expected = (campaign_lineage["child_id"], campaign_lineage["parent_campaign_id"], budget_cap,
+                        campaign_lineage["approved_scope_digest"], campaign_lineage["approved_scope_json"],
+                        campaign_lineage["child_spec_json"], campaign_lineage["child_spec_digest"])
+            row = db.execute("SELECT child_id,parent_campaign_id,amount,approved_scope_digest,approved_scope_json,child_spec_json,child_spec_digest FROM campaign_lineage WHERE allocation_id=?",
+                             (campaign_lineage["allocation_id"],)).fetchone()
+            if row and tuple(row) != expected:
+                raise ContractError("CHILD_CONFLICT", "child lineage or immutable scope/spec does not match the allocation")
+            if not row:
+                if existing_tables:
+                    raise ContractError("CHILD_CONFLICT", "refusing to add lineage to an existing campaign database")
+                db.execute("INSERT INTO campaign_lineage VALUES(?,?,?,?,?,?,?,?)",
+                           (campaign_lineage["allocation_id"], *expected))
+        if fail_before_commit:
+            raise RuntimeError("injected child saga crash during child DB initialization")
+        db.execute("COMMIT")
+    except Exception:
+        if db.in_transaction:
+            db.execute("ROLLBACK")
+        raise
     finally:
         db.close()
 
@@ -353,10 +422,23 @@ def init_parent(path: str | Path, cap: int = 100) -> None:
     db = connect(path)
     try:
         db.executescript("""
-        CREATE TABLE IF NOT EXISTS root_budget(id INTEGER PRIMARY KEY CHECK(id=1), cap INTEGER NOT NULL, spent INTEGER NOT NULL DEFAULT 0, escrowed INTEGER NOT NULL DEFAULT 0);
-        CREATE TABLE IF NOT EXISTS child_allocations(allocation_id TEXT PRIMARY KEY, child_id TEXT UNIQUE NOT NULL, amount INTEGER NOT NULL, state TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS root_budget(id INTEGER PRIMARY KEY CHECK(id=1), cap INTEGER NOT NULL CHECK(cap>=0), spent INTEGER NOT NULL DEFAULT 0 CHECK(spent>=0), escrowed INTEGER NOT NULL DEFAULT 0 CHECK(escrowed>=0));
+        CREATE TABLE IF NOT EXISTS child_allocations(
+          allocation_id TEXT PRIMARY KEY, child_id TEXT UNIQUE NOT NULL, parent_campaign_id TEXT NOT NULL,
+          child_db_path TEXT UNIQUE NOT NULL, amount INTEGER NOT NULL CHECK(amount>0), approved_scope_digest TEXT NOT NULL,
+          approved_scope_json TEXT NOT NULL, child_spec_json TEXT NOT NULL, child_spec_digest TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('RESERVED','REGISTRY_INITIALIZING','CHILD_READY','ACTIVE','RECONCILIATION_REQUIRED'))
+        );
+        CREATE TABLE IF NOT EXISTS child_approvals(
+          allocation_id TEXT PRIMARY KEY, child_id TEXT UNIQUE NOT NULL, parent_campaign_id TEXT NOT NULL,
+          child_db_path TEXT UNIQUE NOT NULL, amount INTEGER NOT NULL CHECK(amount>0), approved_scope_digest TEXT NOT NULL,
+          approved_scope_json TEXT NOT NULL, child_spec_json TEXT NOT NULL, child_spec_digest TEXT NOT NULL,
+          approved_by TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS child_events(seq INTEGER PRIMARY KEY AUTOINCREMENT, allocation_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL);
         """)
         db.execute("INSERT OR IGNORE INTO root_budget(id,cap) VALUES(1,?)", (cap,))
+        _ensure_immutable_triggers(db, "child_approvals", "child_approval")
     finally:
         db.close()
 
@@ -364,68 +446,294 @@ def init_parent(path: str | Path, cap: int = 100) -> None:
 def init_registry(path: str | Path) -> None:
     db = connect(path)
     try:
-        db.execute("CREATE TABLE IF NOT EXISTS children(child_id TEXT PRIMARY KEY, allocation_id TEXT UNIQUE NOT NULL, db_path TEXT NOT NULL, state TEXT NOT NULL)")
+        db.execute("CREATE TABLE IF NOT EXISTS children(child_id TEXT PRIMARY KEY, allocation_id TEXT UNIQUE NOT NULL, parent_campaign_id TEXT NOT NULL, db_path TEXT UNIQUE NOT NULL, amount INTEGER NOT NULL, approved_scope_digest TEXT NOT NULL, child_spec_digest TEXT NOT NULL, state TEXT NOT NULL)")
     finally:
         db.close()
 
 
+def _child_spec_payload(parent_campaign_id: str, child_id: str, child_path: str, amount: int,
+                        approved_scope: dict[str, Any], child_spec: dict[str, Any]) -> dict[str, Any]:
+    if (amount <= 0 or not parent_campaign_id or not child_id or not isinstance(approved_scope, dict) or
+        not approved_scope or not isinstance(child_spec, dict) or not child_spec):
+        raise ContractError("INVALID_CHILD_SPEC", "child identity, positive amount, approved scope and child spec are required")
+    autonomy = child_spec.get("autonomy")
+    scope_digest = canonical_hash(approved_scope)
+    if (not isinstance(autonomy, dict) or autonomy.get("scope_digest") != scope_digest or
+        not isinstance(autonomy.get("scope_version"), int) or isinstance(autonomy.get("scope_version"), bool) or
+        autonomy["scope_version"] < 1 or autonomy.get("mode") not in {"FULL_AUTO", "SUPERVISED"}):
+        raise ContractError("SCOPE_SPEC_MISMATCH", "child spec autonomy scope must match the approved scope digest")
+    scope_json = json.dumps(approved_scope, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    child_spec_json = json.dumps(child_spec, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    child_spec_digest = hashlib.sha256(child_spec_json.encode("utf-8")).hexdigest()
+    return {"parent_campaign_id": parent_campaign_id, "child_id": child_id,
+            "child_db_path": str(Path(child_path).resolve()), "amount": amount,
+            "approved_scope_digest": scope_digest, "approved_scope_json": scope_json,
+            "child_spec_json": child_spec_json, "child_spec_digest": child_spec_digest}
+
+
+def approve_child_creation(parent_path: str | Path, allocation_id: str, *, parent_campaign_id: str,
+                           child_id: str, child_path: str | Path, amount: int,
+                           approved_scope: dict[str, Any], child_spec: dict[str, Any],
+                           approved_by: str) -> str:
+    """Record the trusted parent's approval before the saga may reserve escrow."""
+    if not allocation_id or not approved_by:
+        raise ContractError("INVALID_APPROVAL", "allocation ID and approving authority are required")
+    record = _child_spec_payload(parent_campaign_id, child_id, str(child_path), amount, approved_scope, child_spec)
+    db = connect(parent_path)
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        _ensure_immutable_triggers(db, "child_approvals", "child_approval")
+        existing = db.execute("SELECT * FROM child_approvals WHERE allocation_id=?", (allocation_id,)).fetchone()
+        keys = ("parent_campaign_id", "child_id", "child_db_path", "amount", "approved_scope_digest",
+                "approved_scope_json", "child_spec_json", "child_spec_digest", "approved_by")
+        if existing:
+            if tuple(existing[key] for key in keys) != tuple(record.get(key, approved_by) for key in keys):
+                raise ContractError("APPROVAL_CONFLICT", "allocation ID already has a different parent approval")
+            db.execute("COMMIT")
+            return record["approved_scope_digest"]
+        prior_child = db.execute("SELECT allocation_id FROM child_approvals WHERE child_id=?", (child_id,)).fetchone()
+        if prior_child:
+            raise ContractError("APPROVAL_CONFLICT", "child ID already has a parent approval")
+        prior_path = db.execute("SELECT allocation_id FROM child_approvals WHERE child_db_path=?", (record["child_db_path"],)).fetchone()
+        if prior_path:
+            raise ContractError("APPROVAL_CONFLICT", "child database path already has a parent approval")
+        db.execute("INSERT INTO child_approvals VALUES(?,?,?,?,?,?,?,?,?,?)",
+                   (allocation_id, child_id, parent_campaign_id, record["child_db_path"], amount,
+                    record["approved_scope_digest"], record["approved_scope_json"], record["child_spec_json"],
+                    record["child_spec_digest"], approved_by))
+        db.execute("INSERT INTO child_events(allocation_id,kind,payload) VALUES(?,?,?)",
+                   (allocation_id, "CHILD_SPEC_APPROVED", json.dumps({"approved_by": approved_by,
+                    "scope_digest": record["approved_scope_digest"],
+                    "child_spec_digest": record["child_spec_digest"]}, sort_keys=True)))
+        db.execute("COMMIT")
+        return record["approved_scope_digest"]
+    except Exception:
+        if db.in_transaction:
+            db.execute("ROLLBACK")
+        raise
+    finally:
+        db.close()
+
+
+def _set_child_allocation_state(parent_path: str | Path, allocation_id: str, state: str) -> None:
+    db = connect(parent_path)
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT state FROM child_allocations WHERE allocation_id=?", (allocation_id,)).fetchone()
+        if not row:
+            raise ContractError("ALLOCATION_MISSING", "parent allocation does not exist")
+        current = row["state"]
+        if current == "RECONCILIATION_REQUIRED" and state != current:
+            raise ContractError("RECONCILIATION_REQUIRED", "allocation requires operator reconciliation")
+        rank = {"RESERVED": 0, "REGISTRY_INITIALIZING": 1, "CHILD_READY": 2, "ACTIVE": 3,
+                "RECONCILIATION_REQUIRED": 4}
+        if rank[state] < rank[current]:
+            db.execute("COMMIT")
+            return
+        if current != state:
+            db.execute("UPDATE child_allocations SET state=? WHERE allocation_id=?", (state, allocation_id))
+            db.execute("INSERT INTO child_events(allocation_id,kind,payload) VALUES(?,?,?)",
+                       (allocation_id, "CHILD_STATE_CHANGED", json.dumps({"from": row["state"], "to": state}, sort_keys=True)))
+        db.execute("COMMIT")
+    except Exception:
+        if db.in_transaction:
+            db.execute("ROLLBACK")
+        raise
+    finally:
+        db.close()
+
+
+def _mark_child_reconciliation_required(parent_path: str | Path, allocation_id: str) -> None:
+    _set_child_allocation_state(parent_path, allocation_id, "RECONCILIATION_REQUIRED")
+
+
 def create_child_saga(parent_path: str | Path, registry_path: str | Path, child_path: str | Path,
-                      allocation_id: str, child_id: str, amount: int, *, crash_after_child_init: bool = False) -> None:
+                      allocation_id: str, child_id: str, amount: int, *,
+                      parent_campaign_id: str, approved_scope_digest: str,
+                      approved_scope: dict[str, Any], child_spec: dict[str, Any],
+                      crash_at: str | None = None) -> None:
     if amount <= 0:
         raise ContractError("INVALID_ALLOCATION", "child allocation must be positive")
+    if not allocation_id or not approved_scope_digest:
+        raise ContractError("INVALID_CHILD_SPEC", "allocation ID and approved scope digest are required")
+    record = _child_spec_payload(parent_campaign_id, child_id, str(child_path), amount, approved_scope, child_spec)
+    if record["approved_scope_digest"] != approved_scope_digest:
+        raise ContractError("SCOPE_DIGEST_MISMATCH", "approved scope digest does not match canonical scope")
+    if crash_at not in {None, "after_reserve", "after_registry", "during_child_init", "after_campaign_init", "after_child_init",
+                        "after_registry_active", "after_parent_active"}:
+        raise ContractError("INVALID_CRASH_POINT", "unknown child saga crash point")
+    stable_child_path = record["child_db_path"]
+    scope_json = record["approved_scope_json"]
+    child_spec_json = record["child_spec_json"]
+    child_spec_digest = record["child_spec_digest"]
+    payload_hash = canonical_hash({"parent_campaign_id": parent_campaign_id, "child_id": child_id,
+                                   "child_path": stable_child_path, "amount": amount,
+                                   "approved_scope_digest": approved_scope_digest,
+                                   "child_spec_digest": child_spec_digest})
     p = connect(parent_path)
     try:
         p.execute("BEGIN IMMEDIATE")
+        approval = p.execute("SELECT * FROM child_approvals WHERE allocation_id=?", (allocation_id,)).fetchone()
+        approval_keys = ("parent_campaign_id", "child_id", "child_db_path", "amount", "approved_scope_digest",
+                         "approved_scope_json", "child_spec_json", "child_spec_digest")
+        if not approval:
+            raise ContractError("APPROVAL_REQUIRED", "child creation has no durable parent approval")
+        if tuple(approval[key] for key in approval_keys) != tuple(record[key] for key in approval_keys):
+            raise ContractError("APPROVAL_CONFLICT", "child creation request does not match durable parent approval")
         existing = p.execute("SELECT * FROM child_allocations WHERE allocation_id=?", (allocation_id,)).fetchone()
         if existing:
-            if existing["child_id"] != child_id or existing["amount"] != amount:
+            if existing["state"] == "RECONCILIATION_REQUIRED":
+                raise ContractError("RECONCILIATION_REQUIRED", "allocation requires operator reconciliation")
+            if (existing["child_id"], existing["parent_campaign_id"], existing["child_db_path"], existing["amount"],
+                existing["approved_scope_digest"], existing["approved_scope_json"], existing["child_spec_json"],
+                existing["child_spec_digest"]) != (
+                child_id, parent_campaign_id, stable_child_path, amount, approved_scope_digest, scope_json,
+                child_spec_json, child_spec_digest):
                 raise ContractError("ALLOCATION_CONFLICT", "allocation ID reused with different payload")
         else:
+            prior_child = p.execute("SELECT allocation_id FROM child_allocations WHERE child_id=?", (child_id,)).fetchone()
+            if prior_child:
+                raise ContractError("ALLOCATION_CONFLICT", "child ID already has a parent allocation")
             root = p.execute("SELECT * FROM root_budget WHERE id=1").fetchone()
             if root["spent"] + root["escrowed"] + amount > root["cap"]:
                 raise ContractError("BUDGET_EXHAUSTED", "child escrow exceeds root cap")
-            p.execute("INSERT INTO child_allocations VALUES(?,?,?,'RESERVED')", (allocation_id, child_id, amount))
-            p.execute("UPDATE root_budget SET escrowed=escrowed+? WHERE id=1", (amount,))
+            p.execute("INSERT INTO child_allocations VALUES(?,?,?,?,?,?,?,?,?,'RESERVED')",
+                      (allocation_id, child_id, parent_campaign_id, stable_child_path, amount,
+                       approved_scope_digest, scope_json, child_spec_json, child_spec_digest))
+            changed = p.execute("UPDATE root_budget SET escrowed=escrowed+? WHERE id=1 AND spent+escrowed+?<=cap", (amount, amount)).rowcount
+            if changed != 1:
+                raise ContractError("BUDGET_EXHAUSTED", "child escrow exceeds root cap")
+            p.execute("INSERT INTO child_events(allocation_id,kind,payload) VALUES(?,?,?)",
+                      (allocation_id, "CHILD_ESCROW_RESERVED", json.dumps({"payload_hash": payload_hash, "amount": amount})))
         p.execute("COMMIT")
     except Exception:
         if p.in_transaction: p.execute("ROLLBACK")
         raise
     finally:
         p.close()
+    if crash_at == "after_reserve":
+        raise RuntimeError("injected child saga crash after reserve")
     r = connect(registry_path)
     try:
+        r.execute("BEGIN IMMEDIATE")
         prior = r.execute("SELECT * FROM children WHERE child_id=? OR allocation_id=?", (child_id, allocation_id)).fetchone()
         if prior:
-            if (prior["child_id"], prior["allocation_id"], prior["db_path"]) != (child_id, allocation_id, str(child_path)):
-                raise ContractError("REGISTRY_CONFLICT", "child or allocation already maps to a different identity/path")
+            if (prior["child_id"], prior["allocation_id"], prior["parent_campaign_id"], prior["db_path"],
+                prior["amount"], prior["approved_scope_digest"], prior["child_spec_digest"]) != (
+                child_id, allocation_id, parent_campaign_id, stable_child_path, amount,
+                approved_scope_digest, child_spec_digest):
+                raise ContractError("REGISTRY_CONFLICT", "child or allocation already maps to different immutable identity")
         else:
-            r.execute("INSERT INTO children VALUES(?,?,?,'INITIALIZING')", (child_id, allocation_id, str(child_path)))
+            r.execute("INSERT INTO children VALUES(?,?,?,?,?,?,?,'INITIALIZING')",
+                      (child_id, allocation_id, parent_campaign_id, stable_child_path, amount,
+                       approved_scope_digest, child_spec_digest))
+        r.execute("COMMIT")
+    except ContractError as exc:
+        if r.in_transaction:
+            r.execute("ROLLBACK")
+        if exc.code == "REGISTRY_CONFLICT":
+            _mark_child_reconciliation_required(parent_path, allocation_id)
+        raise
+    except Exception:
+        if r.in_transaction:
+            r.execute("ROLLBACK")
+        raise
     finally:
         r.close()
-    child_exists = Path(child_path).exists()
-    if child_exists:
-        child = connect(child_path)
-        try:
-            row = child.execute("SELECT cap FROM budget WHERE id=1").fetchone()
-            if row is not None and row["cap"] != amount:
-                raise ContractError("CHILD_CONFLICT", "existing child database has a different budget allocation")
-        finally:
-            child.close()
-    init_campaign(child_path, budget_cap=amount)
-    if crash_after_child_init:
-        raise RuntimeError("injected crash after child DB initialization")
-    p = connect(parent_path)
+    _set_child_allocation_state(parent_path, allocation_id, "REGISTRY_INITIALIZING")
+    if crash_at == "after_registry":
+        raise RuntimeError("injected child saga crash after registry insert")
+    lineage = {"allocation_id": allocation_id, "child_id": child_id,
+               "parent_campaign_id": parent_campaign_id, "approved_scope_digest": approved_scope_digest,
+               "approved_scope_json": scope_json, "child_spec_json": child_spec_json,
+               "child_spec_digest": child_spec_digest}
     try:
-        p.execute("UPDATE child_allocations SET state='ACTIVE' WHERE allocation_id=?", (allocation_id,))
-    finally:
-        p.close()
+        init_campaign(stable_child_path, budget_cap=amount, campaign_lineage=lineage,
+                      fail_before_commit=crash_at == "during_child_init")
+    except ContractError as exc:
+        if exc.code == "CHILD_CONFLICT":
+            _mark_child_reconciliation_required(parent_path, allocation_id)
+        raise
+    except sqlite3.DatabaseError as exc:
+        _mark_child_reconciliation_required(parent_path, allocation_id)
+        raise ContractError("CHILD_CONFLICT", "existing child database is unreadable") from exc
+    if crash_at == "during_child_init":
+        raise RuntimeError("injected child saga crash during child DB initialization")
+    if crash_at == "after_campaign_init":
+        raise RuntimeError("injected child saga crash after campaign DB initialization")
+    if crash_at == "after_child_init":
+        raise RuntimeError("injected child saga crash after child DB initialization")
+    _set_child_allocation_state(parent_path, allocation_id, "CHILD_READY")
     r = connect(registry_path)
     try:
-        r.execute("UPDATE children SET state='ACTIVE' WHERE allocation_id=?", (allocation_id,))
+        r.execute("BEGIN IMMEDIATE")
+        changed = r.execute("UPDATE children SET state='ACTIVE' WHERE allocation_id=? AND child_id=? AND db_path=? AND child_spec_digest=? AND state IN ('INITIALIZING','ACTIVE')",
+                            (allocation_id, child_id, stable_child_path, child_spec_digest)).rowcount
+        if changed != 1:
+            raise ContractError("REGISTRY_CONFLICT", "registry identity changed before activation")
+        r.execute("COMMIT")
+    except Exception:
+        if r.in_transaction:
+            r.execute("ROLLBACK")
+        _mark_child_reconciliation_required(parent_path, allocation_id)
+        raise
     finally:
         r.close()
+    if crash_at == "after_registry_active":
+        raise RuntimeError("injected child saga crash after registry activation")
+    _set_child_allocation_state(parent_path, allocation_id, "ACTIVE")
+    if crash_at == "after_parent_active":
+        raise RuntimeError("injected child saga crash after parent activation")
 
 
 def reconcile_child_saga(parent_path: str | Path, registry_path: str | Path, child_path: str | Path,
-                         allocation_id: str, child_id: str, amount: int) -> None:
-    create_child_saga(parent_path, registry_path, child_path, allocation_id, child_id, amount)
+                         allocation_id: str, child_id: str, amount: int, *, parent_campaign_id: str,
+                         approved_scope_digest: str, approved_scope: dict[str, Any],
+                         child_spec: dict[str, Any]) -> None:
+    create_child_saga(parent_path, registry_path, child_path, allocation_id, child_id, amount,
+                      parent_campaign_id=parent_campaign_id, approved_scope_digest=approved_scope_digest,
+                      approved_scope=approved_scope,
+                      child_spec=child_spec)
+
+
+def child_admission_ready(parent_path: str | Path, registry_path: str | Path, child_path: str | Path,
+                          allocation_id: str) -> bool:
+    """Require parent, registry, and child DB to agree before a child can run."""
+    p = connect(parent_path)
+    r = connect(registry_path)
+    child_path = str(Path(child_path).resolve())
+    try:
+        parent = p.execute("SELECT * FROM child_allocations WHERE allocation_id=?", (allocation_id,)).fetchone()
+        if not parent or parent["state"] != "ACTIVE":
+            return False
+        registry = r.execute("SELECT * FROM children WHERE allocation_id=?", (allocation_id,)).fetchone()
+        if (not registry or registry["state"] != "ACTIVE" or registry["child_id"] != parent["child_id"] or
+            registry["parent_campaign_id"] != parent["parent_campaign_id"] or registry["db_path"] != child_path or
+            registry["amount"] != parent["amount"] or registry["approved_scope_digest"] != parent["approved_scope_digest"] or
+            registry["child_spec_digest"] != parent["child_spec_digest"]):
+            return False
+    finally:
+        p.close()
+        r.close()
+    c = connect(child_path)
+    try:
+        if c.execute("SELECT COUNT(*) FROM campaign_lineage").fetchone()[0] != 1:
+            return False
+        lineage = c.execute("SELECT * FROM campaign_lineage WHERE allocation_id=?", (allocation_id,)).fetchone()
+        if not lineage:
+            return False
+        return (
+            lineage["child_id"] == parent["child_id"] and
+            lineage["parent_campaign_id"] == parent["parent_campaign_id"] and
+            lineage["amount"] == parent["amount"] and
+            lineage["approved_scope_digest"] == parent["approved_scope_digest"] and
+            lineage["approved_scope_json"] == parent["approved_scope_json"] and
+            lineage["child_spec_json"] == parent["child_spec_json"] and
+            lineage["child_spec_digest"] == parent["child_spec_digest"] and
+            canonical_hash(json.loads(lineage["approved_scope_json"])) == parent["approved_scope_digest"] and
+            hashlib.sha256(lineage["child_spec_json"].encode("utf-8")).hexdigest() == parent["child_spec_digest"]
+        )
+    except sqlite3.DatabaseError:
+        return False
+    finally:
+        c.close()

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -5,7 +6,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from core import (
-    ContractError, claim_job, complete_exploration, complete_job, connect, create_child_saga, enqueue_job, init_campaign,
+    ContractError, approve_child_creation, canonical_hash, claim_job, child_admission_ready,
+    complete_exploration, complete_job, connect,
+    create_child_saga, enqueue_job, init_campaign,
     init_parent, init_registry, mark_dispatched, mutate_graph, reconcile_child_saga,
     recover_expired_jobs, record_unknown, validate_spec,
 )
@@ -33,6 +36,18 @@ class RPDI00ContractSpike(unittest.TestCase):
             return [tuple(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY rowid")]
         finally:
             db.close()
+
+    def make_child_spec(self, goal):
+        scope = {"allowed_actions": ["research"], "max_parallel": 1}
+        digest = canonical_hash(scope)
+        spec = {"schema_version": 2, "mode": "EXPLORATION", "goal": goal,
+                "autonomy": {"mode": "SUPERVISED", "scope_digest": digest, "scope_version": 1}}
+        return scope, digest, spec
+
+    def approve_child(self, parent, allocation_id, child_path, child_id, amount, parent_id, scope, spec):
+        return approve_child_creation(parent, allocation_id, parent_campaign_id=parent_id,
+                                      child_id=child_id, child_path=child_path, amount=amount,
+                                      approved_scope=scope, child_spec=spec, approved_by="trusted-parent-core")
 
     def make_v4_fixture(self, path):
         """Build a representative v4 database using the real legacy store."""
@@ -248,18 +263,198 @@ class RPDI00ContractSpike(unittest.TestCase):
         parent, registry, child = (self.root / "parent.db", self.root / "registry.db", self.root / "child.db")
         init_parent(parent, cap=20)
         init_registry(registry)
-        with self.assertRaisesRegex(RuntimeError, "injected crash"):
-            create_child_saga(parent, registry, child, "alloc1", "child1", 12, crash_after_child_init=True)
+        scope, digest, spec = self.make_child_spec("child scope")
+        child_args = {"parent_campaign_id": "parent-1", "approved_scope_digest": digest,
+                      "approved_scope": scope, "child_spec": spec}
+        self.approve_child(parent, "alloc1", child, "child1", 12, "parent-1", scope, spec)
+        with self.assertRaisesRegex(RuntimeError, "injected child saga crash"):
+            create_child_saga(parent, registry, child, "alloc1", "child1", 12, **child_args, crash_at="after_child_init")
         self.assertEqual(self.scalar(parent, "SELECT escrowed FROM root_budget"), 12)
-        self.assertEqual(self.scalar(parent, "SELECT state FROM child_allocations"), "RESERVED")
-        reconcile_child_saga(parent, registry, child, "alloc1", "child1", 12)
+        self.assertEqual(self.scalar(parent, "SELECT state FROM child_allocations"), "REGISTRY_INITIALIZING")
+        reconcile_child_saga(parent, registry, child, "alloc1", "child1", 12, **child_args)
+        reconcile_child_saga(parent, registry, child, "alloc1", "child1", 12, **child_args)
         self.assertEqual(self.scalar(parent, "SELECT escrowed FROM root_budget"), 12)
         self.assertEqual(self.scalar(parent, "SELECT COUNT(*) FROM child_allocations"), 1)
         self.assertEqual(self.scalar(parent, "SELECT state FROM child_allocations"), "ACTIVE")
         self.assertEqual(self.scalar(registry, "SELECT COUNT(*) FROM children"), 1)
         self.assertEqual(self.scalar(registry, "SELECT state FROM children"), "ACTIVE")
+        self.assertEqual(self.scalar(child, "SELECT approved_scope_digest FROM campaign_lineage WHERE allocation_id='alloc1'"), digest)
+        self.assertEqual(self.scalar(child, "SELECT child_spec_json FROM campaign_lineage WHERE allocation_id='alloc1'"),
+                         json.dumps(spec, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         with self.assertRaisesRegex(ContractError, "exceeds root cap"):
-            create_child_saga(parent, registry, self.root / "child2.db", "alloc2", "child2", 9)
+            scope2, digest2, spec2 = self.make_child_spec("too much")
+            self.approve_child(parent, "alloc2", self.root / "child2.db", "child2", 9, "parent-1", scope2, spec2)
+            create_child_saga(parent, registry, self.root / "child2.db", "alloc2", "child2", 9,
+                              parent_campaign_id="parent-1", approved_scope_digest=digest2,
+                              approved_scope=scope2, child_spec=spec2)
+
+    def test_child_escrow_saga_recovers_at_each_committed_boundary(self):
+        for crash_at in ("after_reserve", "after_registry", "during_child_init", "after_campaign_init",
+                         "after_child_init", "after_registry_active", "after_parent_active"):
+            with self.subTest(crash_at=crash_at):
+                parent, registry, child = (self.root / f"{crash_at}-parent.db", self.root / f"{crash_at}-registry.db",
+                                           self.root / f"{crash_at}-child.db")
+                init_parent(parent, cap=20)
+                init_registry(registry)
+                scope, digest, spec = self.make_child_spec("recover")
+                args = {"parent_campaign_id": "parent-2", "approved_scope_digest": digest,
+                        "approved_scope": scope, "child_spec": spec}
+                self.approve_child(parent, "allocation", child, "child", 12, "parent-2", scope, spec)
+                with self.assertRaisesRegex(RuntimeError, "injected child saga crash"):
+                    create_child_saga(parent, registry, child, "allocation", "child", 12, **args, crash_at=crash_at)
+                if crash_at == "during_child_init":
+                    self.assertEqual(self.scalar(child, "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"), 0)
+                self.assertEqual(child_admission_ready(parent, registry, child, "allocation"),
+                                 crash_at == "after_parent_active")
+                reconcile_child_saga(parent, registry, child, "allocation", "child", 12, **args)
+                reconcile_child_saga(parent, registry, child, "allocation", "child", 12, **args)
+                self.assertEqual(self.scalar(parent, "SELECT escrowed FROM root_budget"), 12)
+                self.assertEqual(self.scalar(parent, "SELECT COUNT(*) FROM child_allocations"), 1)
+                self.assertEqual(self.scalar(parent, "SELECT state FROM child_allocations"), "ACTIVE")
+                self.assertEqual(self.scalar(registry, "SELECT COUNT(*) FROM children"), 1)
+                self.assertEqual(self.scalar(registry, "SELECT state FROM children"), "ACTIVE")
+                self.assertEqual(self.scalar(child, "SELECT COUNT(*) FROM campaign_lineage"), 1)
+                self.assertTrue(child_admission_ready(parent, registry, child, "allocation"))
+
+    def test_child_scope_conflict_fails_closed_without_refunding_escrow(self):
+        parent, registry, child = (self.root / "parent.db", self.root / "registry.db", self.root / "child.db")
+        init_parent(parent, cap=20)
+        init_registry(registry)
+        scope, digest, spec = self.make_child_spec("immutable")
+        args = {"parent_campaign_id": "parent-3", "approved_scope_digest": digest,
+                "approved_scope": scope, "child_spec": spec}
+        self.approve_child(parent, "alloc1", child, "child1", 12, "parent-3", scope, spec)
+        create_child_saga(parent, registry, child, "alloc1", "child1", 12, **args)
+        changed_scope = {"allowed_actions": ["research", "write"], "max_parallel": 1}
+        changed_digest = canonical_hash(changed_scope)
+        changed_spec = {**spec, "autonomy": {**spec["autonomy"], "scope_digest": changed_digest}}
+        with self.assertRaisesRegex(ContractError, "durable parent approval"):
+            create_child_saga(parent, registry, child, "alloc1", "child1", 12,
+                              **{**args, "approved_scope_digest": changed_digest,
+                                 "approved_scope": changed_scope, "child_spec": changed_spec})
+        self.assertEqual(self.scalar(parent, "SELECT escrowed FROM root_budget"), 12)
+        self.assertEqual(self.scalar(child, "SELECT approved_scope_digest FROM campaign_lineage"), digest)
+        db = connect(child)
+        try:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "immutable"):
+                db.execute("UPDATE campaign_lineage SET approved_scope_digest='changed'")
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "immutable"):
+                db.execute("DELETE FROM campaign_lineage")
+        finally:
+            db.close()
+
+    def test_child_scope_digest_must_match_spec_before_escrow(self):
+        parent, registry, child = (self.root / "parent.db", self.root / "registry.db", self.root / "child.db")
+        init_parent(parent, cap=20)
+        init_registry(registry)
+        scope, digest, spec = self.make_child_spec("scope mismatch")
+        spec["autonomy"]["scope_digest"] = "sha256:unrelated"
+        with self.assertRaisesRegex(ContractError, "must match"):
+            create_child_saga(parent, registry, child, "alloc1", "child1", 12,
+                              parent_campaign_id="parent-1", approved_scope_digest=digest,
+                              approved_scope=scope, child_spec=spec)
+        broad_scope = {"allowed_actions": ["research", "write"], "max_parallel": 10}
+        broad_digest = canonical_hash(broad_scope)
+        broad_spec = {"schema_version": 2, "mode": "EXPLORATION", "goal": "broadened",
+                      "autonomy": {"mode": "FULL_AUTO", "scope_digest": broad_digest, "scope_version": 1}}
+        with self.assertRaisesRegex(ContractError, "no durable parent approval"):
+            create_child_saga(parent, registry, child, "alloc1", "child1", 12,
+                              parent_campaign_id="parent-1", approved_scope_digest=broad_digest,
+                              approved_scope=broad_scope, child_spec=broad_spec)
+        self.assertEqual(self.scalar(parent, "SELECT escrowed FROM root_budget"), 0)
+        self.assertEqual(self.scalar(parent, "SELECT COUNT(*) FROM child_allocations"), 0)
+
+    def test_child_registry_conflict_quarantines_reserved_allocation(self):
+        parent, registry, child = (self.root / "parent.db", self.root / "registry.db", self.root / "child.db")
+        init_parent(parent, cap=20)
+        init_registry(registry)
+        scope, digest, spec = self.make_child_spec("registry conflict")
+        self.approve_child(parent, "alloc1", child, "child1", 12, "parent-1", scope, spec)
+        db = connect(registry)
+        try:
+            db.execute("INSERT INTO children VALUES('child1','other-allocation','other-parent','/elsewhere/child.db',5,'scope:other','spec:other','INITIALIZING')")
+        finally:
+            db.close()
+        with self.assertRaisesRegex(ContractError, "different immutable identity"):
+            create_child_saga(parent, registry, child, "alloc1", "child1", 12,
+                              parent_campaign_id="parent-1", approved_scope_digest=digest,
+                              approved_scope=scope, child_spec=spec)
+        self.assertEqual(self.scalar(parent, "SELECT escrowed FROM root_budget"), 12)
+        self.assertEqual(self.scalar(parent, "SELECT state FROM child_allocations"), "RECONCILIATION_REQUIRED")
+        with self.assertRaisesRegex(ContractError, "operator reconciliation"):
+            reconcile_child_saga(parent, registry, child, "alloc1", "child1", 12,
+                                 parent_campaign_id="parent-1", approved_scope_digest=digest,
+                                 approved_scope=scope, child_spec=spec)
+        self.assertEqual(self.scalar(parent, "SELECT escrowed FROM root_budget"), 12)
+
+    def test_unreadable_child_database_is_quarantined_without_refund(self):
+        parent, registry, child = (self.root / "parent.db", self.root / "registry.db", self.root / "child.db")
+        init_parent(parent, cap=20)
+        init_registry(registry)
+        child.write_bytes(b"not a sqlite database")
+        scope, digest, spec = self.make_child_spec("corrupt child")
+        self.approve_child(parent, "alloc1", child, "child1", 12, "parent-1", scope, spec)
+        with self.assertRaisesRegex(ContractError, "unreadable"):
+            create_child_saga(parent, registry, child, "alloc1", "child1", 12,
+                              parent_campaign_id="parent-1", approved_scope_digest=digest,
+                              approved_scope=scope, child_spec=spec)
+        self.assertEqual(self.scalar(parent, "SELECT state FROM child_allocations"), "RECONCILIATION_REQUIRED")
+        self.assertEqual(self.scalar(parent, "SELECT escrowed FROM root_budget"), 12)
+
+    def test_existing_same_cap_database_without_matching_lineage_is_quarantined(self):
+        parent, registry, child = (self.root / "parent.db", self.root / "registry.db", self.root / "child.db")
+        init_parent(parent, cap=20)
+        init_registry(registry)
+        init_campaign(child, budget_cap=12)
+        scope, digest, spec = self.make_child_spec("do not adopt existing campaign")
+        self.approve_child(parent, "alloc1", child, "child1", 12, "parent-1", scope, spec)
+        with self.assertRaisesRegex(ContractError, "refusing to attach lineage"):
+            create_child_saga(parent, registry, child, "alloc1", "child1", 12,
+                              parent_campaign_id="parent-1", approved_scope_digest=digest,
+                              approved_scope=scope, child_spec=spec)
+        self.assertEqual(self.scalar(parent, "SELECT state FROM child_allocations"), "RECONCILIATION_REQUIRED")
+        self.assertEqual(self.scalar(parent, "SELECT escrowed FROM root_budget"), 12)
+
+    def test_child_database_with_extra_lineage_is_quarantined(self):
+        parent, registry, child = (self.root / "parent.db", self.root / "registry.db", self.root / "child.db")
+        init_parent(parent, cap=20)
+        init_registry(registry)
+        scope, digest, spec = self.make_child_spec("single lineage")
+        self.approve_child(parent, "alloc1", child, "child1", 12, "parent-1", scope, spec)
+        args = {"parent_campaign_id": "parent-1", "approved_scope_digest": digest,
+                "approved_scope": scope, "child_spec": spec}
+        create_child_saga(parent, registry, child, "alloc1", "child1", 12, **args)
+        db = connect(child)
+        try:
+            db.execute("INSERT INTO campaign_lineage VALUES(?,?,?,?,?,?,?,?)",
+                       ("foreign-allocation", "child-x", "parent-x", 1, "d", "{}", "{}", "d"))
+        finally:
+            db.close()
+        self.assertFalse(child_admission_ready(parent, registry, child, "alloc1"))
+        with self.assertRaisesRegex(ContractError, "exactly one lineage"):
+            reconcile_child_saga(parent, registry, child, "alloc1", "child1", 12, **args)
+        self.assertEqual(self.scalar(parent, "SELECT state FROM child_allocations"), "RECONCILIATION_REQUIRED")
+        self.assertEqual(self.scalar(parent, "SELECT escrowed FROM root_budget"), 12)
+
+    def test_preexisting_noop_lineage_trigger_is_rejected(self):
+        parent, registry, child = (self.root / "parent.db", self.root / "registry.db", self.root / "child.db")
+        init_parent(parent, cap=20)
+        init_registry(registry)
+        scope, digest, spec = self.make_child_spec("trigger tamper")
+        self.approve_child(parent, "alloc1", child, "child1", 12, "parent-1", scope, spec)
+        args = {"parent_campaign_id": "parent-1", "approved_scope_digest": digest,
+                "approved_scope": scope, "child_spec": spec}
+        create_child_saga(parent, registry, child, "alloc1", "child1", 12, **args)
+        db = connect(child)
+        try:
+            db.execute("DROP TRIGGER campaign_lineage_no_update")
+            db.execute("CREATE TRIGGER campaign_lineage_no_update BEFORE UPDATE ON campaign_lineage BEGIN SELECT 1; END")
+        finally:
+            db.close()
+        with self.assertRaisesRegex(ContractError, "incompatible campaign_lineage_no_update"):
+            reconcile_child_saga(parent, registry, child, "alloc1", "child1", 12, **args)
+        self.assertEqual(self.scalar(parent, "SELECT state FROM child_allocations"), "RECONCILIATION_REQUIRED")
+        self.assertEqual(self.scalar(parent, "SELECT escrowed FROM root_budget"), 12)
 
     def test_v4_migration_adds_v5_schema_and_preserves_legacy_hashes_and_receipts(self):
         dbpath, backup = self.root / "legacy-v4.db", self.root / "legacy-v4.backup.db"
