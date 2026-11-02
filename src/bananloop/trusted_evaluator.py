@@ -738,7 +738,7 @@ class TrustedEvaluatorAdapter:
         authority = EvaluatorProtocolAuthority(self.graph.conn)
         authority.require_frozen_reference(
             reference.protocol_id, reference.version, reference.content_sha256,
-            reference.approval_digest, campaign_id=self.campaign_id, spec_hash=spec_hash,
+            reference.approval_digest, campaign_id=self.campaign_id,
         )
         proposal, verifier_receipt = authority.approved_protocol(reference.approval_digest)
         protocol = proposal.protocol
@@ -807,7 +807,6 @@ class TrustedEvaluatorAdapter:
         authority.require_frozen_reference(
             reference.protocol_id, reference.version, reference.content_sha256,
             reference.approval_digest, campaign_id=self.campaign_id,
-            spec_hash=spec.approved_hash(),
         )
         proposal, _ = authority.approved_protocol(reference.approval_digest)
         protocol = proposal.protocol
