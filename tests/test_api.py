@@ -78,6 +78,7 @@ def test_openapi_snapshot_and_cli_service_share_safe_projection(api, capsys):
     # The CLI commands and API use the same service; compare the two projections
     # directly through the repo-scoped service.
     local = CampaignApplication(store.spec().source_repo, campaign_id=campaign_id).snapshot()
+    assert remote.pop("as_of") and local.pop("as_of")
     assert remote == local
     assert "private" not in json.dumps(remote).lower()
 
@@ -86,7 +87,9 @@ def test_openapi_snapshot_and_cli_service_share_safe_projection(api, capsys):
 
     cmd_operator_snapshot(argparse.Namespace(repo=store.spec().source_repo, campaign_id=campaign_id,
                                             state_dir=None))
-    assert json.loads(capsys.readouterr().out) == remote
+    cli_snapshot = json.loads(capsys.readouterr().out)
+    assert cli_snapshot.pop("as_of")
+    assert cli_snapshot == remote
 
     from bananloop.cli import cmd_operator_events
 

@@ -543,6 +543,22 @@ def cmd_graph_mutate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _status_evaluation_summary(measurements: list[dict]) -> list[dict]:
+    """Keep status output aggregate-only; full reports have a separate command."""
+    return [{
+        "experiment_id": item.get("experiment_id"),
+        "tier": item.get("tier"),
+        "metrics": {
+            name: metric.get("value")
+            for name, metric in ((item.get("result") or {}).get("metrics") or {}).items()
+        },
+        "checks": {
+            name: check.get("passed")
+            for name, check in ((item.get("result") or {}).get("checks") or {}).items()
+        },
+    } for item in measurements]
+
+
 def cmd_pivot_decision(args: argparse.Namespace) -> int:
     """Record one explicit local pivot decision; this never resumes or runs a campaign."""
     if args.decision == "reject" and not args.on_reject:
