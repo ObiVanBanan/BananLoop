@@ -59,6 +59,27 @@ def test_claim_reservation_event_commit_or_rollback_as_one(tmp_path):
     queue.close()
 
 
+def test_complete_persists_canonical_result_for_projection_replay(tmp_path):
+    import hashlib
+    import json
+
+    _, queue = _queue(tmp_path, cap=3)
+    _enqueue(queue, "job-result", amount=1)
+    claim = queue.claim("job-result", "worker-result", lease_seconds=30, now=100)
+    queue.mark_dispatched("job-result", "worker-result", claim["fence"], now=101)
+    result = {"node_id": "n1", "evidence_refs": [], "artifacts": [],
+              "limitations": [], "next_experiment": "try again"}
+    encoded = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    digest = hashlib.sha256(encoded.encode()).hexdigest()
+    queue.complete("job-result", "worker-result", claim["fence"], output_digest=digest,
+                   actual_amount=1, receipt_digest="f" * 64, now=102, result_payload=result)
+    assert queue.get_result("job-result")["result"] == result
+    with pytest.raises(WorkerQueueError, match="does not match"):
+        queue.complete("job-result", "worker-result", claim["fence"], output_digest="a" * 64,
+                       actual_amount=1, receipt_digest="f" * 64, now=103, result_payload=result)
+    queue.close()
+
+
 def test_concurrent_claim_has_one_worker_and_one_budget_hold(tmp_path):
     path, queue = _queue(tmp_path, cap=5)
     _enqueue(queue, "job-race")

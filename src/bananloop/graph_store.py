@@ -96,6 +96,33 @@ class MutateGraph(BaseModel):
         return cls.model_validate(raw)
 
 
+class ExplorationCompletionV2(BaseModel):
+    """Trusted-Core projection of evidence from one fenced exploration job."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    command_id: str = Field(min_length=1, max_length=200)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    expected_graph_revision: int = Field(ge=0)
+    node_id: str = Field(min_length=1, max_length=200)
+    job_id: str = Field(min_length=1, max_length=120)
+    worker_fence: int = Field(ge=1)
+    source_request_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    output_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    spec_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence_refs: tuple[str, ...] = ()
+    artifact_digests: tuple[str, ...] = ()
+    limitations: tuple[str, ...] = ()
+    next_experiment: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("evidence_refs", "artifact_digests", "limitations")
+    @classmethod
+    def canonical_items(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not item or len(item) > 2000 for item in value):
+            raise ValueError("completion evidence entries must be nonempty and bounded")
+        return tuple(sorted(set(value)))
+
+
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
@@ -217,6 +244,95 @@ class GraphRepository:
                     request.command_id, "MUTATE_GRAPH", request.idempotency_key, payload_hash,
                     "COMMITTED", _canonical_json(response), _now(),
                 ),
+            )
+            self.conn.commit()
+            return response
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def complete_exploration(self, request: ExplorationCompletionV2 | dict[str, Any]) -> dict[str, Any]:
+        """Atomically append evidence and advance one v2 exploration node.
+
+        Queue settlement lives in another database; this method is an
+        idempotent projection from its durable result stream.
+        """
+        if not isinstance(request, ExplorationCompletionV2):
+            request = ExplorationCompletionV2.model_validate(request)
+        spec = self.campaign_spec()
+        if not isinstance(spec, ExplorationCampaignSpecV2):
+            raise GraphStoreError("evidence-only completion requires an EXPLORATION v2 campaign")
+        if request.spec_hash != spec.approved_hash():
+            raise GraphStoreError("completion spec hash does not match the approved campaign")
+        payload = request.model_dump(mode="json")
+        # Revision is a first-commit CAS precondition, not part of replay identity.
+        identity = {k: v for k, v in payload.items() if k != "expected_graph_revision"}
+        encoded = _canonical_json(identity)
+        payload_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            replay = self.conn.execute(
+                "SELECT payload_hash,response_json FROM commands WHERE idempotency_key=?",
+                (request.idempotency_key,),
+            ).fetchone()
+            if replay is not None:
+                if replay["payload_hash"] != payload_hash:
+                    raise GraphIdempotencyConflict("idempotency key was reused with different completion evidence")
+                self.conn.commit()
+                return json.loads(replay["response_json"])
+            reused_id = self.conn.execute(
+                "SELECT 1 FROM commands WHERE command_id=?", (request.command_id,)
+            ).fetchone()
+            if reused_id is not None:
+                raise GraphIdempotencyConflict("command ID was reused")
+            revision = self.graph_revision()
+            if revision != request.expected_graph_revision:
+                raise GraphRevisionConflict(request.expected_graph_revision, revision)
+            node = self.conn.execute(
+                "SELECT phase,status,payload_json,revision FROM research_nodes WHERE node_id=?",
+                (request.node_id,),
+            ).fetchone()
+            if node is None or node["phase"] != "EXPLORATION" or node["status"] != "PENDING":
+                raise GraphStoreError("completion target must be a pending EXPLORATION node")
+            evidence = {
+                "job_id": request.job_id, "worker_fence": request.worker_fence,
+                "source_request_hash": request.source_request_hash,
+                "output_digest": request.output_digest, "spec_hash": request.spec_hash,
+                "evidence_refs": list(request.evidence_refs),
+                "artifact_digests": list(request.artifact_digests),
+                "limitations": list(request.limitations),
+                "next_experiment": request.next_experiment,
+            }
+            node_payload = json.loads(node["payload_json"])
+            node_payload["completion_evidence"] = evidence
+            changed = self.conn.execute(
+                "UPDATE research_nodes SET phase='CONSOLIDATION',status='COMPLETED',payload_json=?,revision=revision+1,updated_at=? "
+                "WHERE node_id=? AND phase='EXPLORATION' AND status='PENDING' AND revision=?",
+                (_canonical_json(node_payload), _now(), request.node_id, node["revision"]),
+            ).rowcount
+            if changed != 1:
+                raise GraphStoreError("completion target changed during commit")
+            changed = self.conn.execute(
+                "UPDATE graph_meta SET revision=revision+1 WHERE id=1 AND revision=?",
+                (request.expected_graph_revision,),
+            ).rowcount
+            if changed != 1:
+                raise GraphRevisionConflict(request.expected_graph_revision, self.graph_revision())
+            new_revision = request.expected_graph_revision + 1
+            event_payload = {"node_id": request.node_id, "graph_revision": new_revision, **evidence}
+            cursor = self.conn.execute(
+                "INSERT INTO events(event_type,payload_json,created_at) VALUES(?,?,?)",
+                ("EXPLORATION_COMPLETED", _canonical_json(event_payload), _now()),
+            ).lastrowid
+            response = {"command_id": request.command_id, "status": "COMMITTED",
+                        "graph_revision": new_revision, "event_cursor": int(cursor),
+                        "node_id": request.node_id, "job_id": request.job_id,
+                        "worker_fence": request.worker_fence}
+            self.conn.execute(
+                "INSERT INTO commands(command_id,command_type,idempotency_key,payload_hash,status,response_json,created_at) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (request.command_id, "COMPLETE_EXPLORATION", request.idempotency_key,
+                 payload_hash, "COMMITTED", _canonical_json(response), _now()),
             )
             self.conn.commit()
             return response

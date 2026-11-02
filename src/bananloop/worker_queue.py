@@ -243,7 +243,7 @@ class DurableWorkerQueue:
     def complete(
         self, job_id: str, worker_id: str, fence: int, *, output_digest: str,
         actual_amount: int, receipt_digest: str, now: float | None = None,
-        fail_before_commit: bool = False,
+        result_payload: dict[str, Any] | None = None, fail_before_commit: bool = False,
     ) -> dict[str, Any]:
         """Commit a result and settle its reservation under the active fence.
 
@@ -258,6 +258,18 @@ class DurableWorkerQueue:
         self._validate_digest(receipt_digest, "receipt_digest")
         if isinstance(actual_amount, bool) or not isinstance(actual_amount, int) or actual_amount < 0:
             raise WorkerQueueError("actual_amount must be a nonnegative integer")
+        result_json = None
+        if result_payload is not None:
+            if not isinstance(result_payload, dict):
+                raise WorkerQueueError("result_payload must be a JSON object")
+            try:
+                result_json = _canonical(result_payload)
+            except (TypeError, ValueError) as exc:
+                raise WorkerQueueError(f"result_payload is not canonical JSON: {exc}") from exc
+            if len(result_json.encode("utf-8")) > 2_000_000:
+                raise WorkerQueueError("result_payload exceeds the 2 MB durable-result limit")
+            if _digest(result_json) != output_digest:
+                raise WorkerQueueError("output_digest does not match the durable result payload")
         effective_now = time.time() if now is None else now
         if isinstance(effective_now, bool) or not isinstance(effective_now, (int, float)) or not math.isfinite(effective_now):
             raise WorkerQueueError("now must be a finite timestamp")
@@ -282,6 +294,8 @@ class DurableWorkerQueue:
             response = {"job_id": job_id, "fence": fence, "output_digest": output_digest,
                         "actual_amount": actual_amount, "receipt_digest": receipt_digest,
                         "budget_breached": budget_breached}
+            if result_payload is not None:
+                response["result"] = result_payload
             self.conn.execute("UPDATE worker_jobs SET state='COMPLETED',lease_owner=NULL,lease_until=NULL,updated_at=? WHERE job_id=?",
                               (utc_now(), job_id))
             self.conn.execute("INSERT INTO worker_results VALUES(?,?,?,?,?,?,?)",
@@ -401,6 +415,16 @@ class DurableWorkerQueue:
         if row is None:
             raise WorkerQueueError("unknown job")
         return self._job_view(row)
+
+    def get_result(self, job_id: str) -> dict[str, Any]:
+        """Return the durable result payload for crash-safe downstream projection."""
+        self._validate_job_id(job_id)
+        row = self.conn.execute("SELECT * FROM worker_results WHERE job_id=?", (job_id,)).fetchone()
+        if row is None:
+            raise WorkerQueueError("job has no committed result")
+        response = json.loads(row["response_json"])
+        return {**dict(row), "response": response,
+                "result": response.get("result")}
 
     def events(self, job_id: str) -> list[dict[str, Any]]:
         return [{**dict(row), "payload": json.loads(row["payload_json"])} for row in self.conn.execute(
