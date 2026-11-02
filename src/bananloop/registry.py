@@ -141,6 +141,16 @@ class CampaignRegistry:
         self.lock_path = self.root / "campaign-registry.lock"
         self.legacy_db = base.db
 
+    def budget_ledger(self) -> "BudgetLedger":
+        """Open the shared per-project budget authority.
+
+        Callers must close the returned ledger. Keeping it on the registry path
+        lets every campaign serialize against the same root and child caps.
+        """
+        from .budget_ledger import BudgetLedger
+
+        return BudgetLedger(self.path)
+
     def _connect(self) -> sqlite3.Connection:
         self.root.mkdir(parents=True, exist_ok=True)
         # Never silently replace a corrupt registry; sqlite errors are surfaced with path.
