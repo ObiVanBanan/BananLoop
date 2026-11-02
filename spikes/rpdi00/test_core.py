@@ -318,7 +318,8 @@ class RPDI00ContractSpike(unittest.TestCase):
         self.assertEqual(package["source_graph_revision"], 1)
         self.assertEqual(package["graph_revision"], 2)
         self.assertEqual(package["evidence_refs"], ["job1", "job2"])
-        self.assertEqual(persist_exploration_completion(dbpath, spec, **args), package)
+        replay_args = {**args, "completion_id": "alternate-id-on-replay"}
+        self.assertEqual(persist_exploration_completion(dbpath, spec, **replay_args), package)
         self.assertEqual(self.scalar(dbpath, "SELECT revision FROM graph_meta"), 2)
         self.assertEqual(self.scalar(dbpath, "SELECT phase FROM nodes WHERE node_id='n1'"), "CONSOLIDATION")
         self.assertEqual(self.scalar(dbpath, "SELECT status FROM nodes WHERE node_id='n1'"), "COMPLETED")
