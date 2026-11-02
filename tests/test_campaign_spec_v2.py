@@ -75,6 +75,21 @@ def test_v2_parser_rejects_unknown_versions_fields_and_mixed_modes(payload):
         parse_campaign_spec_document(payload)
 
 
+def test_missing_schema_version_rejects_v2_fields_in_otherwise_valid_v1_document():
+    legacy = {
+        "goal": "test",
+        "source_repo": "repo",
+        "base_commit": "abc",
+        "evaluation_command": ["python", "evaluator.py"],
+        "primary_metric": {"name": "quality", "direction": "maximize",
+                           "target": 1.0, "min_improvement": 0.1},
+    }
+    ambiguous = {**legacy, "mode": "EXPLORATION", "autonomy": {}, "evaluation": None}
+
+    with pytest.raises(ValueError, match="require an explicit schema_version=2"):
+        parse_campaign_spec_document(ambiguous)
+
+
 def test_v2_specs_are_frozen_and_approved_hash_is_canonical():
     spec = parse_campaign_spec_document(exploration_spec())
 
