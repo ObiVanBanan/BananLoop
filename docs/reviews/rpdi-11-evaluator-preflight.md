@@ -56,11 +56,12 @@ does not waive RPDI-11 technical evidence, tests, CI, per-PR review, or DoD.
   the exact evaluator receipt reference.
 - A replay after the graph transition revalidates and returns the durable
   receipt without rerunning jobs or adding graph events. Replay validation
-  checks the pinned source snapshot and DEV tier as well as campaign/spec/
-  approval/protocol/candidate bindings. DISPATCHED/UNKNOWN jobs fail as
+  checks the pinned protocol ID/version, source snapshot, and DEV tier as well
+  as campaign/spec/approval/protocol-digest/candidate bindings.
+  DISPATCHED/UNKNOWN jobs fail as
   indeterminate and are not redriven.
-- Negative replay tests reject a receipt with a mismatched source snapshot or
-  a non-DEV tier.
+- Negative replay tests reject a receipt with mismatched protocol ID/version,
+  source snapshot, or a non-DEV tier.
 - Focused coordinator tests cover READY dispatch, already-COMPLETED job
   recovery, graph transition shape, replay, and UNKNOWN fail-closed behavior.
 
