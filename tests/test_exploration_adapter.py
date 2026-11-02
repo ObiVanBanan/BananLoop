@@ -68,6 +68,13 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
         job = adapter.enqueue(node_id="explore", visible_paths=["README.md"])
         assert job["request"]["approved_base_ref"] == "HEAD"
         assert job["request"]["base_commit"] == base
+        assert graph.conn.execute("SELECT status FROM research_nodes WHERE node_id='explore'").fetchone()[0] == "READY"
+        graph.mutate({"command_id": "unrelated-node", "idempotency_key": "unrelated-node",
+                      "expected_graph_revision": graph.graph_revision(),
+                      "changes": [{"type": "AddNode", "node_id": "later", "phase": "EXPLORATION"}]})
+        replayed_job = adapter.enqueue(node_id="explore", visible_paths=["README.md"])
+        assert replayed_job["job_id"] == job["job_id"]
+        assert replayed_job["request_hash"] == job["request_hash"]
 
         def execute(request, gateway):
             assert gateway.read_file("README.md") == "frozen source\n"
@@ -87,7 +94,7 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
         first = adapter.publish_completed(job["job_id"])
         replay = adapter.publish_completed(job["job_id"])
         assert replay == first
-        assert graph.graph_revision() == 2
+        assert graph.graph_revision() == 4
     finally:
         queue.close()
         graph.close()
@@ -131,7 +138,7 @@ def test_revocation_blocks_exploration_graph_commit(tmp_path):
             authority.close()
         with pytest.raises(EvidenceAdapterError, match="revoked"):
             adapter.publish_completed(job["job_id"])
-        assert graph.graph_revision() == 1
+        assert graph.graph_revision() == 2
     finally:
         queue.close()
         graph.close()
