@@ -47,8 +47,11 @@ def _protocol_and_manifest():
         protocol_id="quality", version=1, source_snapshot_id="a" * 40,
         evaluator_bundle_sha256=_sha(bundle), entrypoint=("python", "{evaluator}/evaluate.py"),
         metric_id="quality", metric_field="quality", direction="MAXIMIZE", aggregation="MEAN",
-        tiers=(EvaluatorTierManifestV1(tier="holdout", manifest_sha256=protocol_digest_stub,
-                                       case_count=len(cases)),),
+        tiers=(
+            EvaluatorTierManifestV1(tier="dev", manifest_sha256="9" * 64, case_count=1),
+            EvaluatorTierManifestV1(tier="holdout", manifest_sha256=protocol_digest_stub,
+                                    case_count=len(cases)),
+        ),
         repeatability_runs=2,
     )
     manifest = ProtocolManifest(protocol_sha256=_case_protocol_digest(preliminary), cases=cases)
@@ -56,8 +59,11 @@ def _protocol_and_manifest():
                                 separators=(",", ":")).encode()
     manifest_sha = _sha(manifest_bytes)
     protocol = preliminary.model_copy(update={
-        "tiers": (EvaluatorTierManifestV1(tier="holdout", manifest_sha256=manifest_sha,
-                                           case_count=len(cases)),),
+        "tiers": (
+            EvaluatorTierManifestV1(tier="dev", manifest_sha256="9" * 64, case_count=1),
+            EvaluatorTierManifestV1(tier="holdout", manifest_sha256=manifest_sha,
+                                    case_count=len(cases)),
+        ),
     })
     return protocol, manifest, manifest_bytes, bundle, inputs
 
