@@ -24,6 +24,10 @@ from .capabilities import (
 )
 from .contracts import ExplorationCampaignSpecV2
 from .graph_store import ExplorationCompletionV2, GraphRepository, GraphStoreError
+from .roles import (
+    RoleContractError, RoleRegistryV1, TeamFactoryV1, TeamManifestAuthority,
+    TeamRequestV1, build_role_context,
+)
 from .worker_queue import DurableWorkerQueue, WorkerQueueError
 from .scheduler import HybridScheduler
 
@@ -116,16 +120,24 @@ class EvidenceOnlyAttemptAdapter:
     """Build, execute, verify and replay an isolated exploration attempt."""
 
     def __init__(self, *, graph: GraphRepository, queue: DurableWorkerQueue,
-                 campaign_id: str, state_root: str | Path):
+                 campaign_id: str, state_root: str | Path, role_registry: RoleRegistryV1):
         self.graph = graph
         self.queue = queue
         self.campaign_id = campaign_id
         self.state_root = Path(state_root).resolve()
+        self.role_registry = role_registry
 
     def enqueue(self, *, node_id: str, visible_paths: tuple[str, ...] | list[str]) -> dict[str, Any]:
         spec = self.graph.campaign_spec()
         if not isinstance(spec, ExplorationCampaignSpecV2):
             raise EvidenceAdapterError("v2 Optimization remains unsupported until its evaluator adapter is approved")
+        spec_hash = spec.approved_hash()
+        if self.role_registry.digest() != spec.role_registry_digest:
+            raise EvidenceAdapterError("role registry does not match the frozen campaign spec")
+        try:
+            self.role_registry.role("researcher")
+        except RoleContractError as exc:
+            raise EvidenceAdapterError("pinned role registry has no canonical researcher role") from exc
         snapshot = self.graph.scheduling_snapshot()
         target_node = next((item for item in snapshot["nodes"] if item["node_id"] == node_id), None)
         if target_node is None or target_node["phase"] != "EXPLORATION":
@@ -151,18 +163,78 @@ class EvidenceOnlyAttemptAdapter:
             raise EvidenceAdapterError("approved base does not resolve to a Git commit") from exc
         if not _GIT_OID.fullmatch(resolved_commit):
             raise EvidenceAdapterError("Git returned an invalid full commit object ID")
-        policy_digest = _sha(_canonical(policy.model_dump(mode="json")).encode())
+        model_token_cap = spec.budget.max_model_tokens
+        team_request = TeamRequestV1(
+            campaign_id=self.campaign_id,
+            spec_hash=spec_hash,
+            requested_instances={"researcher": 1},
+            available_agent_calls=spec.budget.max_agent_calls,
+            available_model_tokens=model_token_cap,
+        )
+        try:
+            built_manifest = TeamFactoryV1.build(
+                self.role_registry, team_request, expected_registry_digest=spec.role_registry_digest,
+            )
+            manifest_authority = TeamManifestAuthority(self.queue.path)
+            try:
+                try:
+                    team_manifest = manifest_authority.load(
+                        self.campaign_id, spec_hash=spec_hash,
+                        registry_digest=spec.role_registry_digest,
+                    )
+                except RoleContractError as exc:
+                    if "has no pinned" not in str(exc):
+                        raise
+                    team_manifest = manifest_authority.pin(built_manifest)
+                if team_manifest.manifest_digest != built_manifest.manifest_digest:
+                    raise RoleContractError("rebuilt team does not match the durable campaign pin")
+            finally:
+                manifest_authority.close()
+        except RoleContractError as exc:
+            raise EvidenceAdapterError(str(exc)) from exc
+        researcher = next((member for member in team_manifest.members if member.role.role_id == "researcher"), None)
+        if researcher is None:
+            raise EvidenceAdapterError("pinned team manifest has no researcher instance")
+        try:
+            role_context = build_role_context(researcher, {
+                "campaign_goal": spec.goal,
+                "node_id": node_id,
+                "node_phase": target_node["phase"],
+                "public_task": spec.goal,
+                "evidence_refs": (),
+                "budget_remaining": {"agent_calls": spec.budget.max_agent_calls},
+            })
+        except Exception as exc:
+            raise EvidenceAdapterError(f"cannot build isolated researcher context: {type(exc).__name__}") from exc
+        role_binding = team_manifest.job_binding(
+            researcher.instance_id, action_id=f"exploration:{node_id}", context_digest=role_context.digest(),
+        )
+        role_policy = researcher.role.capability_policy
+        task_policy = policy.model_copy(update={"read_paths": paths})
+        scope_digest = _sha(_canonical({
+            "campaign_scope": spec.autonomy.scope_digest,
+            "team_manifest_digest": team_manifest.manifest_digest,
+            "role_id": researcher.role.role_id,
+            "role_policy_digest": _sha(_canonical(role_policy.model_dump(mode="json")).encode()),
+        }).encode())
+        policy_digest = _sha(_canonical({
+            "campaign": policy.model_dump(mode="json"),
+            "role": role_policy.model_dump(mode="json"),
+            "task": task_policy.model_dump(mode="json"),
+        }).encode())
         manifest = {"policy": "rpdi06-capability-gateway-v1", "scope_digest": spec.autonomy.scope_digest,
                     "policy_digest": policy_digest, "visible_paths": list(paths), "base_commit": resolved_commit,
-                    "node_revision": node_revision}
+                    "node_revision": node_revision, "team_manifest_digest": team_manifest.manifest_digest,
+                    "role_binding_digest": _sha(_canonical(role_binding).encode()),
+                    "context_digest": role_context.digest()}
         capability_hash = _sha(_canonical(manifest).encode())
         identity = _sha(_canonical({"campaign_id": self.campaign_id, "node_id": node_id,
                                     "spec_hash": spec.approved_hash(), "node_revision": node_revision,
                                     "capability_hash": capability_hash}).encode())
         job_id = "explore-" + identity[:40]
         grant = PermissionEngine.derive(
-            campaign_id=self.campaign_id, job_id=job_id, spec_hash=spec.approved_hash(),
-            scope_digest=spec.autonomy.scope_digest, campaign=policy, role=policy, task=policy,
+            campaign_id=self.campaign_id, job_id=job_id, spec_hash=spec_hash,
+            scope_digest=scope_digest, campaign=policy, role=role_policy, task=task_policy,
         )
         if any(not grant.allows_path("read", path) for path in paths):
             raise EvidenceAdapterError("source allowlist exceeds the approved campaign capability policy")
@@ -182,15 +254,27 @@ class EvidenceOnlyAttemptAdapter:
             authority.close()
         manifest["grant_digest"] = grant.grant_digest
         request = {"schema": "evidence-only-attempt-v1", "campaign_id": self.campaign_id,
-                   "node_id": node_id, "spec_hash": spec.approved_hash(), "base_commit": resolved_commit,
+                   "node_id": node_id, "spec_hash": spec_hash, "base_commit": resolved_commit,
                    "approved_base_ref": spec.base_commit,
                    "source_repo": str(repo), "capability_manifest": manifest,
                    "capability_manifest_digest": capability_hash, "capability_digest": grant.grant_digest,
                    "capability_grant": grant.model_dump(mode="json"),
-                   "node_revision": node_revision}
-        return self.queue.enqueue(job_id=job_id, enqueue_key=job_id, campaign_id=self.campaign_id,
-                                  action_id=f"exploration:{node_id}", resource="agent_calls",
-                                  upper_bound=1, request=request)
+                   "node_revision": node_revision,
+                   "role_binding": role_binding,
+                   "role_context": role_context.model_dump(mode="json"),
+                   "team_manifest_digest": team_manifest.manifest_digest,
+                   "role_registry_digest": team_manifest.registry_digest}
+        return self.queue.enqueue(
+            job_id=job_id, enqueue_key=job_id, campaign_id=self.campaign_id,
+            action_id=f"exploration:{node_id}", resource="agent_calls", upper_bound=1,
+            request=request,
+            role_allocation={
+                "manifest_digest": team_manifest.manifest_digest,
+                "role_instance_id": researcher.instance_id,
+                "role_id": researcher.role.role_id,
+                "calls_limit": researcher.role.calls_per_instance,
+            },
+        )
 
     def _workspace(self, job: dict[str, Any], fence: int) -> tuple[Path, Path]:
         request = job["request"]
@@ -240,7 +324,17 @@ class EvidenceOnlyAttemptAdapter:
 
     def run_one(self, *, job_id: str, worker_id: str,
                 execute: Callable[[dict[str, Any], ToolGateway], dict[str, Any]],
+                executor_binding: dict[str, str],
                 lease_seconds: int = 300) -> dict[str, Any]:
+        before_dispatch = self.queue.get_job(job_id)
+        if before_dispatch["state"] != "READY":
+            raise EvidenceAdapterError("role-bound worker job is not READY")
+        expected_executor = {
+            key: before_dispatch["request"]["role_binding"][key]
+            for key in ("adapter", "provider", "model", "model_version")
+        }
+        if executor_binding != expected_executor:
+            raise EvidenceAdapterError("executor does not match the pinned role provider/model/version")
         lease = self.queue.claim(job_id, worker_id, lease_seconds=lease_seconds)
         fence = int(lease["fence"])
         try:
@@ -306,6 +400,30 @@ class EvidenceOnlyAttemptAdapter:
         spec = self.graph.campaign_spec()
         if not isinstance(spec, ExplorationCampaignSpecV2) or spec.approved_hash() != request["spec_hash"]:
             raise EvidenceAdapterError("campaign spec changed since the attempt was enqueued")
+        try:
+            authority = TeamManifestAuthority(self.queue.path)
+            try:
+                team_manifest = authority.load(
+                    self.campaign_id,
+                    spec_hash=spec.approved_hash(),
+                    registry_digest=spec.role_registry_digest,
+                )
+            finally:
+                authority.close()
+            if team_manifest.manifest_digest != request.get("team_manifest_digest"):
+                raise RoleContractError("worker request changed its team manifest binding")
+            role_context = build_role_context(team_manifest.member(
+                request["role_binding"]["role_instance_id"]), request["role_context"],
+            )
+            expected_binding = team_manifest.job_binding(
+                request["role_binding"]["role_instance_id"],
+                action_id=request["role_binding"]["action_id"],
+                context_digest=role_context.digest(),
+            )
+            if expected_binding != request["role_binding"]:
+                raise RoleContractError("worker request role binding failed verification")
+        except (RoleContractError, KeyError, TypeError, ValueError) as exc:
+            raise EvidenceAdapterError("worker request is not bound to the pinned team manifest") from exc
         artifacts_parent = _ensure_state_dir(self.state_root, "rpdi05", "artifacts")
         artifact_directory = artifacts_parent / f"{job_id}-f{durable['fence']}"
         if artifact_directory.is_symlink() or not artifact_directory.is_dir() or not artifact_directory.resolve().is_relative_to(artifacts_parent.resolve()):
