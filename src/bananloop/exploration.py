@@ -14,7 +14,7 @@ import subprocess
 import tarfile
 import tempfile
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -25,8 +25,9 @@ from .capabilities import (
 from .contracts import ExplorationCampaignSpecV2
 from .graph_store import ExplorationCompletionV2, GraphRepository, GraphStoreError
 from .roles import (
-    RoleContractError, RoleRegistryV1, TeamFactoryV1, TeamManifestAuthority,
-    TeamRequestV1, build_role_context,
+    PinnedRoleExecutorV1, RoleContextSourceV1,
+    RoleContractError, RoleContextV1, RoleRegistryV1, TeamFactoryV1,
+    TeamManifestAuthority, TeamRequestV1, build_role_context,
 )
 from .worker_queue import DurableWorkerQueue, WorkerQueueError
 from .scheduler import HybridScheduler
@@ -196,14 +197,24 @@ class EvidenceOnlyAttemptAdapter:
         if researcher is None:
             raise EvidenceAdapterError("pinned team manifest has no researcher instance")
         try:
-            role_context = build_role_context(researcher, {
-                "campaign_goal": spec.goal,
-                "node_id": node_id,
-                "node_phase": target_node["phase"],
-                "public_task": spec.goal,
-                "evidence_refs": (),
-                "budget_remaining": {"agent_calls": spec.budget.max_agent_calls},
-            })
+            role_context_source = RoleContextSourceV1(
+                campaign_goal={"value": spec.goal, "classification": "PUBLIC_SPEC",
+                               "source_ref": "campaign://spec/goal"},
+                fields={
+                    "node_id": {"value": node_id, "classification": "PUBLIC_NODE",
+                                "source_ref": f"graph://nodes/{node_id}"},
+                    "node_phase": {"value": target_node["phase"], "classification": "PUBLIC_NODE",
+                                   "source_ref": f"graph://nodes/{node_id}"},
+                    "public_task": {"value": spec.goal, "classification": "PUBLIC_SPEC",
+                                    "source_ref": "campaign://spec/goal"},
+                    "evidence_refs": {"value": (), "classification": "PUBLIC_NODE",
+                                      "source_ref": f"graph://nodes/{node_id}"},
+                    "budget_remaining": {"value": {"agent_calls": spec.budget.max_agent_calls},
+                                         "classification": "CORE_BUDGET",
+                                         "source_ref": f"budget://campaign/{self.campaign_id}"},
+                },
+            )
+            role_context = build_role_context(researcher, role_context_source)
         except Exception as exc:
             raise EvidenceAdapterError(f"cannot build isolated researcher context: {type(exc).__name__}") from exc
         role_binding = team_manifest.job_binding(
@@ -261,7 +272,7 @@ class EvidenceOnlyAttemptAdapter:
                    "capability_grant": grant.model_dump(mode="json"),
                    "node_revision": node_revision,
                    "role_binding": role_binding,
-                   "role_context": role_context.model_dump(mode="json"),
+                   "role_context": role_context.model_dump(mode="json", exclude_unset=True),
                    "team_manifest_digest": team_manifest.manifest_digest,
                    "role_registry_digest": team_manifest.registry_digest}
         return self.queue.enqueue(
@@ -273,6 +284,8 @@ class EvidenceOnlyAttemptAdapter:
                 "role_instance_id": researcher.instance_id,
                 "role_id": researcher.role.role_id,
                 "calls_limit": researcher.role.calls_per_instance,
+                "tokens_limit": researcher.role.tokens_per_instance,
+                "token_upper_bound": researcher.role.tokens_per_instance // researcher.role.calls_per_instance,
             },
         )
 
@@ -323,18 +336,28 @@ class EvidenceOnlyAttemptAdapter:
         return workspace, artifacts
 
     def run_one(self, *, job_id: str, worker_id: str,
-                execute: Callable[[dict[str, Any], ToolGateway], dict[str, Any]],
-                executor_binding: dict[str, str],
+                executor: PinnedRoleExecutorV1,
                 lease_seconds: int = 300) -> dict[str, Any]:
         before_dispatch = self.queue.get_job(job_id)
         if before_dispatch["state"] != "READY":
             raise EvidenceAdapterError("role-bound worker job is not READY")
-        expected_executor = {
-            key: before_dispatch["request"]["role_binding"][key]
-            for key in ("adapter", "provider", "model", "model_version")
-        }
-        if executor_binding != expected_executor:
-            raise EvidenceAdapterError("executor does not match the pinned role provider/model/version")
+        spec = self.graph.campaign_spec()
+        if not isinstance(spec, ExplorationCampaignSpecV2):
+            raise EvidenceAdapterError("campaign no longer resolves to an Exploration spec")
+        try:
+            manifest_authority = TeamManifestAuthority(self.queue.path)
+            try:
+                team_manifest = manifest_authority.load(
+                    self.campaign_id, spec_hash=spec.approved_hash(),
+                    registry_digest=spec.role_registry_digest,
+                )
+            finally:
+                manifest_authority.close()
+            bound_member = team_manifest.member(before_dispatch["request"]["role_binding"]["role_instance_id"])
+            if executor.manifest_digest != team_manifest.manifest_digest or executor.member != bound_member:
+                raise RoleContractError("executor was not built from the pinned role manifest member")
+        except (RoleContractError, KeyError, TypeError) as exc:
+            raise EvidenceAdapterError("executor does not match the pinned team manifest") from exc
         lease = self.queue.claim(job_id, worker_id, lease_seconds=lease_seconds)
         fence = int(lease["fence"])
         try:
@@ -346,7 +369,7 @@ class EvidenceOnlyAttemptAdapter:
                 backend = LocalBackend() if grant.backend == "LOCAL" else BubblewrapBackend()
                 gateway = ToolGateway(queue=self.queue, authority=authority, grant=grant, fence=fence,
                                       workspace=workspace, artifacts=artifacts, backend=backend)
-                raw = execute(dict(lease["request"]), gateway)
+                raw = executor.dispatch(dict(lease["request"]), gateway)
             finally:
                 authority.close()
             output = EvidenceOnlyOutputV2.model_validate(raw)
@@ -412,9 +435,11 @@ class EvidenceOnlyAttemptAdapter:
                 authority.close()
             if team_manifest.manifest_digest != request.get("team_manifest_digest"):
                 raise RoleContractError("worker request changed its team manifest binding")
-            role_context = build_role_context(team_manifest.member(
-                request["role_binding"]["role_instance_id"]), request["role_context"],
-            )
+            role_context = RoleContextV1.model_validate(request["role_context"])
+            member = team_manifest.member(request["role_binding"]["role_instance_id"])
+            if role_context.role_id != member.role.role_id or not set(role_context.model_fields_set) <= (
+                    set(member.role.context_fields) | {"role_id"}):
+                raise RoleContractError("worker role context exceeds its pinned field allowlist")
             expected_binding = team_manifest.job_binding(
                 request["role_binding"]["role_instance_id"],
                 action_id=request["role_binding"]["action_id"],
