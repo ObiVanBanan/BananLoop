@@ -456,6 +456,14 @@ def test_worker_cgroup_enforces_tree_memory_and_process_bounds(tmp_path):
     mountinfo = tmp_path / "mountinfo"
     mountinfo.write_text(f"29 23 0:26 / {root} rw,nosuid - cgroup2 cgroup rw\n", encoding="utf-8")
     assert _is_cgroup2_path(root, mountinfo=mountinfo)
+    nested = root / "nested"
+    nested.mkdir()
+    mountinfo.write_text(
+        f"29 23 0:26 / {root} rw,nosuid - cgroup2 cgroup rw\n"
+        f"30 29 0:27 / {nested} rw - tmpfs tmpfs rw\n",
+        encoding="utf-8",
+    )
+    assert not _is_cgroup2_path(nested, mountinfo=mountinfo)
     child = root / "worker"
     child.mkdir()
     for name in ("memory.max", "memory.oom.group", "pids.max", "cgroup.procs",

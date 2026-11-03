@@ -61,23 +61,24 @@ def _cgroup_controllers_available(root: Path) -> bool:
 
 
 def _is_cgroup2_path(root: Path, *, mountinfo: Path = Path("/proc/self/mountinfo")) -> bool:
-    """Check that a directory is on a genuine cgroup v2 mount, not marker files."""
+    """Check the effective deepest mount is cgroup v2, not marker files."""
     try:
         resolved = root.resolve(strict=True)
-        for line in mountinfo.read_text(encoding="utf-8").splitlines():
+        matches: list[tuple[int, int, str]] = []
+        for index, line in enumerate(mountinfo.read_text(encoding="utf-8").splitlines()):
             before, separator, after = line.partition(" - ")
             if not separator:
                 continue
             fields, post_fields = before.split(), after.split()
-            if len(fields) < 5 or not post_fields or post_fields[0] != "cgroup2":
+            if len(fields) < 5 or not post_fields:
                 continue
             mount_text = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), fields[4])
             mountpoint = Path(mount_text).resolve(strict=True)
             if resolved.is_relative_to(mountpoint):
-                return True
+                matches.append((len(mountpoint.parts), index, post_fields[0]))
     except (OSError, RuntimeError):
         return False
-    return False
+    return bool(matches) and max(matches)[2] == "cgroup2"
 
 
 @dataclass(frozen=True)
