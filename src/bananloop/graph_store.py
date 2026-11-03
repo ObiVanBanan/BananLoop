@@ -497,7 +497,7 @@ class GraphRepository:
             )]
             edges = [dict(row) for row in self.conn.execute(
                 "SELECT src_id,dst_id,edge_type FROM research_edges "
-                "WHERE edge_type='REQUIRES' ORDER BY src_id,dst_id"
+                "ORDER BY src_id,dst_id,edge_type"
             )]
             groups = [dict(row) for row in self.conn.execute(
                 "SELECT group_id,owner_node_id,kind FROM graph_groups ORDER BY owner_node_id,group_id"
@@ -511,7 +511,8 @@ class GraphRepository:
                          if node["status"] == "COMPLETED" and _has_verified_completion(node["payload_json"])}
             prerequisites: dict[str, list[str]] = {}
             for edge in edges:
-                prerequisites.setdefault(edge["dst_id"], []).append(edge["src_id"])
+                if edge["edge_type"] == "REQUIRES":
+                    prerequisites.setdefault(edge["dst_id"], []).append(edge["src_id"])
             owned_groups: dict[str, list[dict[str, Any]]] = {}
             for group in groups:
                 owned_groups.setdefault(group["owner_node_id"], []).append(group)
@@ -532,7 +533,17 @@ class GraphRepository:
                 result.append({**node, "payload": json.loads(node["payload_json"]),
                                "ready": node["status"] in {"PENDING", "READY"} and not blockers,
                                "blockers": blockers})
-            return {"graph_revision": revision, "nodes": result}
+            return {
+                "graph_revision": revision,
+                "nodes": result,
+                "edges": [{"source_id": edge["src_id"], "target_id": edge["dst_id"],
+                           "type": edge["edge_type"]} for edge in edges],
+                "groups": [{"group_id": group["group_id"],
+                            "owner_node_id": group["owner_node_id"],
+                            "kind": group["kind"],
+                            "member_node_ids": members[group["group_id"]]}
+                           for group in groups],
+            }
         finally:
             self.conn.rollback()
 
