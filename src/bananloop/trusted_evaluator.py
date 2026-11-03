@@ -742,8 +742,7 @@ class TrustedEvaluatorAdapter:
         )
         proposal, verifier_receipt = authority.approved_protocol(reference.approval_digest)
         protocol = proposal.protocol
-        if (verifier_receipt.campaign_id != self.campaign_id
-                or protocol.content_digest() != reference.content_sha256
+        if (protocol.content_digest() != reference.content_sha256
                 or protocol.repeatability_runs < 2):
             raise TrustedEvaluatorError("Optimization protocol approval is stale or malformed")
         tier_ref = next((item for item in protocol.tiers if item.tier == tier), None)

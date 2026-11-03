@@ -490,6 +490,20 @@ class EvaluatorProtocolAuthority:
             decision TEXT NOT NULL CHECK(decision IN ('PASS','FAIL')),
             evidence_json TEXT NOT NULL
         )""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS evaluator_protocol_handoffs (
+            handoff_digest TEXT PRIMARY KEY CHECK(length(handoff_digest)=64),
+            child_campaign_id TEXT NOT NULL,
+            child_spec_hash TEXT NOT NULL CHECK(length(child_spec_hash)=64),
+            parent_campaign_id TEXT NOT NULL,
+            parent_spec_hash TEXT NOT NULL CHECK(length(parent_spec_hash)=64),
+            allocation_id TEXT NOT NULL,
+            approval_digest TEXT NOT NULL REFERENCES evaluator_verifier_receipts(approval_digest),
+            receipt_digest TEXT NOT NULL CHECK(length(receipt_digest)=64),
+            protocol_id TEXT NOT NULL,
+            protocol_version INTEGER NOT NULL CHECK(protocol_version>=1),
+            protocol_digest TEXT NOT NULL CHECK(length(protocol_digest)=64),
+            payload_json TEXT NOT NULL
+        )""")
         integration_columns = {row[1] for row in self.conn.execute(
             "PRAGMA table_info(evaluator_integration_receipts)")}
         if "core_evidence_digest" not in integration_columns:
@@ -498,7 +512,7 @@ class EvaluatorProtocolAuthority:
             )
         for table in ("evaluator_protocol_proposals", "evaluator_verifier_receipts",
                       "evaluator_integration_receipts", "evaluator_run_receipts",
-                      "evaluator_integration_evidence"):
+                      "evaluator_integration_evidence", "evaluator_protocol_handoffs"):
             self.conn.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_no_update BEFORE UPDATE ON {table} "
                               "BEGIN SELECT RAISE(ABORT,'evaluator verification records are immutable'); END")
             self.conn.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_no_delete BEFORE DELETE ON {table} "
@@ -671,16 +685,123 @@ class EvaluatorProtocolAuthority:
         receipt = VerifierReceiptV1.model_validate_json(row[0])
         return self.proposal(receipt.proposal_digest), receipt
 
+    def prepare_child_handoff(self, *, parent_campaign_id: str, parent_spec_hash: str,
+                              allocation_id: str, protocol_id: str, version: int,
+                              protocol_digest: str, approval_digest: str) -> dict[str, Any]:
+        """Validate the parent's frozen approval and return its immutable transfer proof."""
+        receipt = self.require_frozen_reference(
+            protocol_id, version, protocol_digest, approval_digest,
+            campaign_id=parent_campaign_id, spec_hash=parent_spec_hash,
+        )
+        proposal, stored_receipt = self.approved_protocol(approval_digest)
+        if (stored_receipt.receipt_digest != receipt.receipt_digest
+                or proposal.protocol.source_snapshot_id != proposal.source_snapshot_id):
+            raise EvaluatorVerificationError("parent protocol approval is stale or inconsistent")
+        payload = {
+            "schema_version": 1, "parent_campaign_id": parent_campaign_id,
+            "parent_spec_hash": parent_spec_hash, "allocation_id": allocation_id,
+            "proposal_digest": proposal.proposal_digest,
+            "receipt_digest": receipt.receipt_digest, "approval_digest": approval_digest,
+            "protocol_id": protocol_id, "protocol_version": version,
+            "protocol_digest": protocol_digest,
+            "source_snapshot_id": proposal.source_snapshot_id,
+        }
+        return {"handoff_digest": _digest(payload), "payload": payload,
+                "proposal": proposal, "receipt": receipt}
+
+    def install_child_handoff(self, handoff: dict[str, Any], *,
+                              child_campaign_id: str, child_spec: Any) -> None:
+        """Copy an already verified approval into a child DB with exact lineage binding."""
+        from .contracts import OptimizationCampaignSpecV2
+        if not isinstance(child_spec, OptimizationCampaignSpecV2) or child_spec.parent is None:
+            raise EvaluatorVerificationError("protocol handoff requires an Optimization child with lineage")
+        payload = handoff.get("payload")
+        proposal = handoff.get("proposal")
+        receipt = handoff.get("receipt")
+        if not isinstance(payload, dict) or not isinstance(proposal, MetricDiscoveryProposalV1) \
+                or not isinstance(receipt, VerifierReceiptV1):
+            raise EvaluatorVerificationError("protocol handoff proof is malformed")
+        if (_digest(payload) != handoff.get("handoff_digest")
+                or child_spec.parent.protocol_handoff_digest != handoff.get("handoff_digest")
+                or child_spec.parent.parent_campaign_id != payload.get("parent_campaign_id")
+                or child_spec.parent.parent_spec_hash != payload.get("parent_spec_hash")
+                or child_spec.parent.allocation_id != payload.get("allocation_id")
+                or child_spec.evaluation.approval_digest != payload.get("approval_digest")
+                or child_spec.evaluation.protocol_id != payload.get("protocol_id")
+                or child_spec.evaluation.version != payload.get("protocol_version")
+                or child_spec.evaluation.content_sha256 != payload.get("protocol_digest")
+                or proposal.proposal_digest != payload.get("proposal_digest")
+                or receipt.receipt_digest != payload.get("receipt_digest")
+                or proposal.protocol.content_digest() != payload.get("protocol_digest")
+                or proposal.protocol.source_snapshot_id != payload.get("source_snapshot_id")):
+            raise EvaluatorVerificationError("protocol handoff proof does not match the frozen child spec")
+        self._append_proposal(proposal)
+        self._append_verified_receipt(receipt)
+        encoded = _canonical(payload)
+        self.conn.execute("INSERT OR IGNORE INTO evaluator_protocol_handoffs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (
+            handoff["handoff_digest"], child_campaign_id, child_spec.approved_hash(),
+            payload["parent_campaign_id"], payload["parent_spec_hash"], payload["allocation_id"],
+            payload["approval_digest"], payload["receipt_digest"], payload["protocol_id"],
+            payload["protocol_version"], payload["protocol_digest"], encoded,
+        ))
+        row = self.conn.execute("SELECT payload_json,child_spec_hash FROM evaluator_protocol_handoffs "
+                                "WHERE handoff_digest=? AND child_campaign_id=?",
+                                (handoff["handoff_digest"], child_campaign_id)).fetchone()
+        if row is None or row[0] != encoded or row[1] != child_spec.approved_hash():
+            raise EvaluatorVerificationError("protocol handoff digest already names different child evidence")
+
     def require_frozen_reference(self, protocol_id: str, version: int, protocol_digest: str,
                                  approval_digest: str, *, campaign_id: str,
                                  spec_hash: str | None = None) -> VerifierReceiptV1:
         proposal, receipt = self.approved_protocol(approval_digest)
         if (proposal.protocol.protocol_id != protocol_id or proposal.protocol.version != version
                 or proposal.protocol.content_digest() != protocol_digest
-                or receipt.protocol_digest != protocol_digest
-                or receipt.campaign_id != campaign_id or proposal.campaign_id != campaign_id
-                or (spec_hash is not None and receipt.spec_hash != spec_hash)):
+                or receipt.protocol_digest != protocol_digest):
             raise EvaluatorVerificationError("frozen evaluator reference does not match its verifier receipt")
+        if receipt.campaign_id == campaign_id and proposal.campaign_id == campaign_id:
+            if spec_hash is not None and receipt.spec_hash != spec_hash:
+                raise EvaluatorVerificationError("frozen evaluator approval belongs to another spec")
+            return receipt
+        campaign = self.conn.execute("SELECT spec_json,spec_hash FROM campaigns WHERE id=1").fetchone()
+        if campaign is None:
+            raise EvaluatorVerificationError("child campaign has no immutable spec for approval handoff")
+        try:
+            from .contracts import OptimizationCampaignSpecV2, parse_campaign_spec_document
+            child_spec = parse_campaign_spec_document(campaign["spec_json"])
+        except Exception as exc:
+            raise EvaluatorVerificationError("child spec for approval handoff is corrupt") from exc
+        child_hash = child_spec.approved_hash()
+        if (not isinstance(child_spec, OptimizationCampaignSpecV2)
+                or child_hash != campaign["spec_hash"]
+                or (spec_hash is not None and spec_hash != child_hash)
+                or child_spec.evaluation.approval_digest != approval_digest
+                or child_spec.evaluation.protocol_id != protocol_id
+                or child_spec.evaluation.version != version
+                or child_spec.evaluation.content_sha256 != protocol_digest
+                or child_spec.parent is None
+                or not child_spec.parent.protocol_handoff_digest):
+            raise EvaluatorVerificationError("child campaign has no matching approved protocol handoff")
+        row = self.conn.execute(
+            "SELECT payload_json,child_spec_hash,approval_digest,receipt_digest,protocol_digest "
+            "FROM evaluator_protocol_handoffs WHERE handoff_digest=? AND child_campaign_id=?",
+            (child_spec.parent.protocol_handoff_digest, campaign_id),
+        ).fetchone()
+        if row is None:
+            raise EvaluatorVerificationError("child campaign has no durable approved protocol handoff")
+        try:
+            payload = json.loads(row["payload_json"])
+        except Exception as exc:
+            raise EvaluatorVerificationError("child protocol handoff record is corrupt") from exc
+        if (_digest(payload) != child_spec.parent.protocol_handoff_digest
+                or row["child_spec_hash"] != child_hash
+                or row["approval_digest"] != approval_digest
+                or row["receipt_digest"] != receipt.receipt_digest
+                or row["protocol_digest"] != protocol_digest
+                or payload.get("parent_campaign_id") != child_spec.parent.parent_campaign_id
+                or payload.get("parent_spec_hash") != child_spec.parent.parent_spec_hash
+                or payload.get("allocation_id") != child_spec.parent.allocation_id
+                or payload.get("proposal_digest") != proposal.proposal_digest):
+            raise EvaluatorVerificationError("child protocol handoff is stale or mismatched")
         return receipt
 
     def require_rejected_proposal(self, receipt_digest: str, *, spec_hash: str,

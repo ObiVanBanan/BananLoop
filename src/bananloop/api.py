@@ -15,13 +15,13 @@ from urllib.parse import parse_qs, urlsplit
 from pydantic import ValidationError
 
 from .application import CampaignApplication
-from .contracts import PivotDecisionCommand
+from .contracts import PivotDecisionCommand, PivotProposal
 from .graph_store import GraphStoreError
 from .registry import RegistryError
 from .store import StoreError
 
 MAX_BODY_BYTES = 64 * 1024
-_CAMPAIGN_PATH = re.compile(r"^/v1/campaigns/([^/]+)(?:/(snapshot|events|events/stream|graph|graph/commands|commands/(pause|resume|stop)|pivot-decisions))?$")
+_CAMPAIGN_PATH = re.compile(r"^/v1/campaigns/([^/]+)(?:/(snapshot|events|events/stream|graph|graph/commands|commands/(pause|resume|stop)|pivot-decisions|v2/pivot-proposals|v2/pivot-decisions))?$")
 
 
 def _openapi() -> dict[str, Any]:
@@ -37,11 +37,14 @@ def _openapi() -> dict[str, Any]:
             "/v1/campaigns/{campaign_id}/events/stream": {"get": {"operationId": "campaignEventStream", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}, {"name": "after", "in": "query", "schema": {"type": "integer", "minimum": 0}}], "responses": {"200": {"description": "Server-sent event stream", "content": {"text/event-stream": {"schema": {"type": "string"}}}}}}},
             "/v1/campaigns/{campaign_id}/commands/{command}": {"post": {"operationId": "submitControlCommand", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}, {"name": "command", "in": "path", "required": True, "schema": {"type": "string", "enum": ["pause", "resume", "stop"]}}, {"name": "Idempotency-Key", "in": "header", "required": True, "schema": {"type": "string"}}], "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ControlRequest"}}}}, "responses": {"200": {"description": "Durable command receipt"}}}},
             "/v1/campaigns/{campaign_id}/pivot-decisions": {"post": {"operationId": "recordPivotDecision", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}, {"name": "Idempotency-Key", "in": "header", "required": True, "schema": {"type": "string"}}], "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PivotDecision"}}}}, "responses": {"200": {"description": "Decision receipt"}}}},
+            "/v1/campaigns/{campaign_id}/v2/pivot-proposals": {"post": {"operationId": "recordV2PivotProposal", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}, {"name": "Idempotency-Key", "in": "header", "required": True, "schema": {"type": "string"}}], "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/V2PivotProposal"}}}}, "responses": {"200": {"description": "Durable v2 proposal receipt"}}}},
+            "/v1/campaigns/{campaign_id}/v2/pivot-decisions": {"post": {"operationId": "recordV2PivotDecision", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}, {"name": "Idempotency-Key", "in": "header", "required": True, "schema": {"type": "string"}}], "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PivotDecision"}}}}, "responses": {"200": {"description": "Durable v2 decision receipt"}}}},
         },
         "security": [{}, {"BearerToken": []}],
         "components": {"securitySchemes": {"BearerToken": {"type": "http", "scheme": "bearer"}}, "schemas": {
             "ControlRequest": {"type": "object", "additionalProperties": False, "properties": {"request_id": {"type": "string", "minLength": 1, "maxLength": 200}}, "required": ["request_id"]},
             "PivotDecision": {"type": "object", "additionalProperties": False, "properties": {"campaign_id": {"type": "string"}, "request_id": {"type": "string"}, "proposal_id": {"type": "string"}, "digest": {"type": "string"}, "decision": {"type": "string", "enum": ["approve", "reject"]}, "rejection_action": {"type": ["string", "null"], "enum": ["continue_old_plan", "change_conditions", "end_campaign", None]}}, "required": ["campaign_id", "request_id", "proposal_id", "digest", "decision"]},
+            "V2PivotProposal": {"type": "object", "additionalProperties": False, "properties": {"proposal_id": {"type": "string"}, "digest": {"type": "string"}, "spec_hash": {"type": "string"}, "trigger_experiment_ordinal": {"type": "integer"}, "current_architecture": {"type": "string"}, "proposed_architecture": {"type": "string"}, "rationale": {"type": "string"}, "expected_effect": {"type": "string"}, "changed_scope": {"type": "array", "items": {"type": "string"}}, "resources": {"type": "object"}}, "required": ["proposal_id", "digest", "spec_hash", "trigger_experiment_ordinal", "current_architecture", "proposed_architecture", "rationale", "expected_effect", "changed_scope", "resources"]},
             "GraphMutation": {"type": "object", "additionalProperties": False, "properties": {"command_id": {"type": "string", "minLength": 1, "maxLength": 200}, "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 200}, "expected_graph_revision": {"type": "integer", "minimum": 0}, "changes": {"type": "array", "minItems": 1, "items": {"$ref": "#/components/schemas/GraphChange"}}, "evidence_refs": {"type": "array", "items": {"type": "string"}}}, "required": ["command_id", "idempotency_key", "expected_graph_revision", "changes"]},
             "GraphChange": {"oneOf": [{"$ref": "#/components/schemas/AddNode"}, {"$ref": "#/components/schemas/AddEdge"}, {"$ref": "#/components/schemas/AddGroup"}, {"$ref": "#/components/schemas/TransitionNodePhase"}, {"$ref": "#/components/schemas/TransitionNodeStatus"}], "discriminator": {"propertyName": "type"}},
             "AddNode": {"type": "object", "additionalProperties": False, "properties": {"type": {"const": "AddNode"}, "node_id": {"type": "string", "maxLength": 200}, "phase": {"type": "string", "enum": ["EXPLORATION", "METRIC_DISCOVERY", "OPTIMIZATION", "VERIFICATION", "CONSOLIDATION"]}, "payload": {"type": "object"}}, "required": ["type", "node_id", "phase"]},
@@ -197,6 +200,20 @@ def create_server(
                 app = self._application(campaign_id)
                 if endpoint == "graph/commands":
                     receipt = app.mutate_graph(body, idempotency_key)
+                    self._json(HTTPStatus.OK, receipt)
+                    return
+                if endpoint == "v2/pivot-proposals":
+                    proposal = PivotProposal.model_validate(body)
+                    if idempotency_key != proposal.proposal_id:
+                        raise ValueError
+                    receipt = app.v2_record_pivot_proposal(proposal)
+                    self._json(HTTPStatus.OK, receipt)
+                    return
+                if endpoint == "v2/pivot-decisions":
+                    command = PivotDecisionCommand.model_validate(body)
+                    if command.campaign_id != campaign_id or command.request_id != idempotency_key:
+                        raise ValueError
+                    receipt = app.v2_pivot_decision(command)
                     self._json(HTTPStatus.OK, receipt)
                     return
                 with app.open_store() as (store, selected_id):

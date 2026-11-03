@@ -235,7 +235,41 @@ class CampaignRegistry:
             finally:
                 conn.close()
 
-    def reserve(self, goal: str, request_id: str | None = None) -> tuple[CampaignEntry, Path, bool]:
+    def lookup_request(
+        self, goal: str, request_id: str,
+    ) -> tuple[CampaignEntry, Path] | None:
+        """Resolve an exact reserved request without creating or activating it."""
+        key = request_key(goal, request_id)
+        fingerprint = goal_fingerprint(goal)
+        # A missing registry cannot contain the requested reservation. Avoid
+        # _connect() here so a verification read never creates registry state.
+        if not self.path.exists():
+            return None
+        assert_safe_local_path(self.path, "campaign registry")
+        uri = self.path.resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=30)
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                "SELECT * FROM campaign_index WHERE request_key=?", (key,),
+            ).fetchone()
+            if row is None:
+                return None
+            if row["goal_fingerprint"] != fingerprint:
+                raise RegistryError("campaign request mapping belongs to a different goal")
+            if (row["origin"] != "managed"
+                    or row["state_path"] != f"campaigns/{row['campaign_id']}"):
+                raise RegistryError("v2 child request mapping has a noncanonical registry identity")
+            entry = CampaignEntry(**dict(row))
+            return entry, self._validate_state_path(entry.state_path, entry.origin)
+        except sqlite3.DatabaseError as exc:
+            raise RegistryError("campaign request mapping cannot be read safely") from exc
+        finally:
+            conn.close()
+
+    def reserve(
+        self, goal: str, request_id: str | None = None, *, activate: bool = True,
+    ) -> tuple[CampaignEntry, Path, bool]:
         key = request_key(goal, request_id)
         fingerprint = goal_fingerprint(goal)
         self.ensure_legacy()
@@ -248,7 +282,8 @@ class CampaignRegistry:
                     if row["goal_fingerprint"] != fingerprint:
                         raise RegistryError("request-id already belongs to a different goal")
                     entry = CampaignEntry(**dict(row))
-                    conn.execute("UPDATE project_meta SET active_campaign_id=? WHERE id=1", (entry.campaign_id,))
+                    if activate:
+                        conn.execute("UPDATE project_meta SET active_campaign_id=? WHERE id=1", (entry.campaign_id,))
                     conn.commit()
                     return entry, self._validate_state_path(entry.state_path, entry.origin), False
                 if request_id is None:
@@ -269,7 +304,8 @@ class CampaignRegistry:
                             "UPDATE campaign_index SET request_key=?,goal_fingerprint=?,goal_summary=?,updated_at=? WHERE campaign_id='legacy'",
                             (key, fingerprint, " ".join((legacy_goal or legacy["goal_summary"]).split())[:240], now),
                         )
-                        conn.execute("UPDATE project_meta SET active_campaign_id='legacy' WHERE id=1")
+                        if activate:
+                            conn.execute("UPDATE project_meta SET active_campaign_id='legacy' WHERE id=1")
                         adopted = conn.execute("SELECT * FROM campaign_index WHERE campaign_id='legacy'").fetchone()
                         conn.commit()
                         entry = CampaignEntry(**dict(adopted))
@@ -283,7 +319,8 @@ class CampaignRegistry:
                 conn.execute("INSERT INTO campaign_index VALUES(?,?,?,?,?,?,?,?)", (
                     campaign_id, key, fingerprint, summary, relative, "managed", now, now,
                 ))
-                conn.execute("UPDATE project_meta SET active_campaign_id=? WHERE id=1", (campaign_id,))
+                if activate:
+                    conn.execute("UPDATE project_meta SET active_campaign_id=? WHERE id=1", (campaign_id,))
                 conn.commit()
                 return CampaignEntry(campaign_id, key, fingerprint, summary, relative, "managed", now, now), state, True
             except Exception:
