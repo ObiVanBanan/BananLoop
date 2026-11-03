@@ -10,7 +10,15 @@ import base64
 import hashlib
 import json
 import math
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
 from typing import Annotated, Literal
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -19,11 +27,27 @@ from .prereg import TrackManifest, canonical_bytes
 from .report import (
     BlindedScorePackage, pair_score_digest, score_payload_digest,
 )
+from .worker import (
+    ArmWorkerError, BubblewrapArmWorker, _WorkerCgroup, _check_worker_output,
+    _kill_process_group, _safe_workspace, _validate_command,
+)
 
 
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 MAX_OUTPUT_BYTES = 2_000_000
 MAX_REQUEST_BYTES = 64_000_000
+MAX_EVALUATOR_FILES = 10_000
+MAX_EVALUATOR_BYTES = 500_000_000
+MAX_EVALUATOR_FILE_BYTES = 50_000_000
+MAX_SCORER_LOG_BYTES = 1_000_000
+MAX_SCORER_PAIRS = 500
+MAX_TOTAL_OUTPUT_BYTES = 45_000_000
+EVALUATOR_CONSTITUENT_FILES = {
+    "protocol_sha256": "protocol.json",
+    "rubric_sha256": "rubric.json",
+    "validation_set_sha256": "validation-set.bin",
+    "holdout_set_sha256": "holdout-set.bin",
+}
 
 
 class ScorerModel(BaseModel):
@@ -145,6 +169,204 @@ class ScorerError(ValueError):
     """A blind scorer request or response is malformed or misbound."""
 
 
+def evaluator_bundle_fingerprint(root: str | Path) -> str:
+    """Hash a sealed evaluator tree using stable paths, modes, sizes, and bytes."""
+    bundle = _safe_workspace(root)
+    entries = []
+    total = 0
+    for current, dirs, files in os.walk(bundle, followlinks=False):
+        dirs.sort()
+        base = Path(current)
+        for name in dirs:
+            path = base / name
+            info = path.lstat()
+            if not stat.S_ISDIR(info.st_mode):
+                raise ScorerError("evaluator bundle contains a non-directory path")
+            entries.append({"path": path.relative_to(bundle).as_posix(),
+                            "kind": "directory", "mode": stat.S_IMODE(info.st_mode)})
+        for name in sorted(files):
+            path = base / name
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_EVALUATOR_FILE_BYTES:
+                raise ScorerError("evaluator bundle contains a special or oversized file")
+            total += info.st_size
+            if total > MAX_EVALUATOR_BYTES or len(entries) >= MAX_EVALUATOR_FILES:
+                raise ScorerError("evaluator bundle exceeds its file or byte limit")
+            entries.append({"path": path.relative_to(bundle).as_posix(), "kind": "file",
+                            "size": info.st_size, "mode": stat.S_IMODE(info.st_mode),
+                            "sha256": _sha(path.read_bytes())})
+    if len(entries) > MAX_EVALUATOR_FILES:
+        raise ScorerError("evaluator bundle exceeds its file or byte limit")
+    return _sha(canonical_bytes(entries))
+
+
+def verify_evaluator_constituents(root: str | Path, pin) -> None:
+    """Verify each named protocol, rubric, validation, and holdout artifact byte-for-byte."""
+    bundle = _safe_workspace(root)
+    for digest_field, relative_name in EVALUATOR_CONSTITUENT_FILES.items():
+        path = bundle / relative_name
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_EVALUATOR_FILE_BYTES:
+            raise ScorerError(f"pinned evaluator constituent is missing or unsafe: {relative_name}")
+        if _sha(path.read_bytes()) != getattr(pin, digest_field):
+            raise ScorerError(f"pinned evaluator constituent digest differs: {relative_name}")
+
+
+def _snapshot_evaluator(source: Path, destination: Path) -> None:
+    """Copy only regular tree entries into a private temporary snapshot."""
+    directory_modes = []
+    for current, dirs, files in os.walk(source, followlinks=False):
+        current_path = Path(current)
+        relative_dir = current_path.relative_to(source)
+        target_dir = destination / relative_dir
+        target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for name in dirs:
+            candidate = current_path / name
+            if candidate.is_symlink() or not candidate.is_dir():
+                raise ScorerError("evaluator source changed or contains a non-directory path")
+            target_child = target_dir / name
+            target_child.mkdir(mode=0o700, exist_ok=True)
+            directory_modes.append((target_child, stat.S_IMODE(candidate.stat().st_mode)))
+        for name in files:
+            candidate = current_path / name
+            if candidate.is_symlink() or not candidate.is_file():
+                raise ScorerError("evaluator source changed or contains a non-regular file")
+            info = candidate.stat()
+            if info.st_size > MAX_EVALUATOR_FILE_BYTES:
+                raise ScorerError("evaluator source contains an oversized file")
+            content = candidate.read_bytes()
+            target = target_dir / name
+            target.write_bytes(content)
+            target.chmod(stat.S_IMODE(info.st_mode))
+    for path, mode in reversed(directory_modes):
+        path.chmod(mode)
+
+
+class BubblewrapBlindScorer:
+    """Run the pinned evaluator in a fresh networkless process with no host accounting."""
+
+    def __init__(self, *, cgroup_root: str | Path, bwrap_binary: str | None = None):
+        self.cgroup_root = Path(cgroup_root).absolute()
+        self.bwrap_binary = bwrap_binary or shutil.which("bwrap") or ""
+
+    def available(self) -> bool:
+        return BubblewrapArmWorker(
+            bwrap_binary=self.bwrap_binary, cgroup_root=self.cgroup_root,
+        ).available()
+
+    def run(self, manifest: TrackManifest, request: BlindScorerInput,
+            *, evaluator_root: str | Path) -> bytes:
+        pin = manifest.evaluator
+        if (manifest.manifest_sha256 is None or request.manifest_sha256 != manifest.manifest_sha256
+                or request.track != manifest.track
+                or request.evaluator_pin_sha256 != _sha(canonical_bytes(pin))
+                or request.evaluator_protocol_sha256 != pin.protocol_sha256
+                or request.evaluator_bundle_sha256 != pin.bundle_sha256
+                or request.rubric_sha256 != pin.rubric_sha256
+                or request.validation_set_sha256 != pin.validation_set_sha256
+                or request.holdout_set_sha256 != pin.holdout_set_sha256):
+            raise ScorerError("blind scorer request differs from the frozen evaluator pins")
+        if not self.available():
+            raise ScorerError("bubblewrap or delegated cgroup v2 is unavailable; refusing scorer fallback")
+        try:
+            root = _safe_workspace(evaluator_root)
+            if evaluator_bundle_fingerprint(root) != pin.bundle_sha256:
+                raise ScorerError("evaluator bundle bytes differ from the frozen bundle digest")
+            verify_evaluator_constituents(root, pin)
+            argv = _validate_command(pin.scorer_entrypoint)
+            executable = argv[0]
+            if not executable.startswith("/evaluator/"):
+                raise ScorerError("scorer entrypoint must be inside the read-only evaluator bundle")
+            relative = Path(executable.removeprefix("/evaluator/"))
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ScorerError("scorer entrypoint escapes the evaluator bundle")
+            executable_path = root.joinpath(*relative.parts)
+            if (executable_path.is_symlink() or not executable_path.is_file()
+                    or not os.access(executable_path, os.X_OK)):
+                raise ScorerError("pinned scorer entrypoint is not an executable bundle file")
+        except ArmWorkerError as exc:
+            raise ScorerError("evaluator bundle is unsafe") from exc
+
+        request_bytes = canonical_bytes(request)
+        if len(request_bytes) > MAX_REQUEST_BYTES:
+            raise ScorerError("blind scorer request exceeds its byte limit")
+        started = time.monotonic()
+        with tempfile.TemporaryDirectory(prefix="rpdi14-blind-scorer-") as temp:
+            root_tmp = Path(temp)
+            evaluator_snapshot = root_tmp / "evaluator"
+            _snapshot_evaluator(root, evaluator_snapshot)
+            if evaluator_bundle_fingerprint(evaluator_snapshot) != pin.bundle_sha256:
+                raise ScorerError("private evaluator snapshot differs from the frozen bundle digest")
+            input_dir, output_dir = root_tmp / "input", root_tmp / "output"
+            input_dir.mkdir(mode=0o700)
+            output_dir.mkdir(mode=0o700)
+            input_path = input_dir / "request.json"
+            fd = os.open(input_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(request_bytes)
+                stream.flush()
+                os.fsync(stream.fileno())
+            command = [self.bwrap_binary, "--die-with-parent", "--new-session", "--unshare-user",
+                       "--unshare-pid", "--unshare-net", "--clearenv"]
+            for system in ("/usr", "/bin", "/lib", "/lib64"):
+                if Path(system).exists():
+                    command.extend(["--ro-bind", system, system])
+            command.extend(["--dir", "/evaluator", "--dir", "/input", "--dir", "/output",
+                            "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+                            "--ro-bind", str(evaluator_snapshot.resolve()), "/evaluator",
+                            "--ro-bind", str(input_dir.resolve()), "/input",
+                            "--bind", str(output_dir.resolve()), "/output",
+                            "--chdir", "/evaluator", "--setenv", "PATH", "/usr/bin:/bin",
+                            "--setenv", "HOME", "/tmp", "--setenv", "LANG", "C.UTF-8",
+                            "--setenv", "LC_ALL", "C.UTF-8",
+                            "--setenv", "BANANLOOP_SCORER_INPUT", "/input/request.json",
+                            "--setenv", "BANANLOOP_SCORER_RESULT", "/output/result.json",
+                            *argv])
+            stdout_path, stderr_path = root_tmp / "stdout", root_tmp / "stderr"
+            with stdout_path.open("wb") as stdout_file, stderr_path.open("wb") as stderr_file:
+                try:
+                    with _WorkerCgroup(
+                        self.cgroup_root, memory_bytes=pin.scorer_memory_bytes,
+                        process_limit=pin.scorer_process_limit,
+                    ) as cgroup_procs:
+                        launcher = Path(__file__).with_name("worker_launcher.py")
+                        launch_command = [sys.executable, str(launcher), cgroup_procs,
+                                          str(pin.scorer_timeout_seconds),
+                                          str(pin.scorer_memory_bytes), "--", *command]
+                        process = subprocess.Popen(
+                            launch_command, cwd=root, stdin=subprocess.DEVNULL,
+                            stdout=stdout_file, stderr=stderr_file,
+                            env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"},
+                            shell=False, start_new_session=True,
+                        )
+                        deadline = started + pin.scorer_timeout_seconds
+                        while process.poll() is None:
+                            _check_worker_output(output_dir)
+                            if (stdout_path.stat().st_size > MAX_SCORER_LOG_BYTES
+                                    or stderr_path.stat().st_size > MAX_SCORER_LOG_BYTES):
+                                raise ScorerError("blind scorer log exceeded its size limit")
+                            if time.monotonic() >= deadline:
+                                raise subprocess.TimeoutExpired(launch_command, pin.scorer_timeout_seconds)
+                            time.sleep(0.05)
+                except subprocess.TimeoutExpired as exc:
+                    _kill_process_group(process)
+                    raise ScorerError("isolated scorer exceeded its frozen timeout") from exc
+                except (ScorerError, ArmWorkerError):
+                    if "process" in locals() and process.poll() is None:
+                        _kill_process_group(process)
+                    raise
+                except OSError as exc:
+                    raise ScorerError("cannot start isolated blind scorer") from exc
+            if process.returncode != 0:
+                raise ScorerError("isolated blind scorer exited unsuccessfully")
+            _check_worker_output(output_dir)
+            result_path = output_dir / "result.json"
+            if result_path.is_symlink() or not result_path.is_file() or result_path.stat().st_size > MAX_REQUEST_BYTES:
+                raise ScorerError("isolated scorer result is missing or oversized")
+            raw_result = result_path.read_bytes()
+            validated = validate_blind_scorer_output(raw_result, request=request)
+            return canonical_bytes(validated)
+
+
 def scorer_output_projection(output: BlindScorerOutput | dict) -> dict:
     value = output.model_dump(mode="json") if isinstance(output, BlindScorerOutput) else dict(output)
     return {
@@ -155,12 +377,13 @@ def scorer_output_projection(output: BlindScorerOutput | dict) -> dict:
         "pairs": [
             {
                 "pair_id_sha256": pair["pair_id_sha256"],
+                "status": pair["status"],
                 "arm_a_score": pair.get("arm_a_score"),
                 "arm_b_score": pair.get("arm_b_score"),
                 "arm_a_output_sha256": pair.get("arm_a_output_sha256"),
                 "arm_b_output_sha256": pair.get("arm_b_output_sha256"),
             }
-            for pair in value["pairs"] if pair["status"] == "SCORED"
+            for pair in value["pairs"]
         ],
     }
 
@@ -178,6 +401,8 @@ def build_blind_scorer_input(
     """Read only anonymous output artifacts and frozen evaluator pins for one track."""
     if manifest.manifest_sha256 is None:
         raise ScorerError("manifest must be frozen before scorer input is prepared")
+    if len(manifest.task_pins) > MAX_SCORER_PAIRS:
+        raise ScorerError("frozen track exceeds the blind scorer pair-count limit")
     evaluator_sha = _sha(canonical_bytes(manifest.evaluator))
     if (package.manifest_sha256 != manifest.manifest_sha256 or package.track != manifest.track
             or package.evaluator_pin_sha256 != evaluator_sha):
@@ -186,6 +411,7 @@ def build_blind_scorer_input(
     if {pair.pair_id_sha256 for pair in package.pairs} != expected_pairs:
         raise ScorerError("score package pair set differs from the frozen manifest")
     input_pairs = []
+    total_output_bytes = 0
     for pair in package.pairs:
         outputs: dict[str, bytes | None] = {"arm_a": None, "arm_b": None}
         if pair.status == "SCORED":
@@ -199,6 +425,9 @@ def build_blind_scorer_input(
                         root=evidence_root, reference=reference, expected_sha256=digest,
                         max_bytes=MAX_OUTPUT_BYTES,
                     )
+                    total_output_bytes += len(outputs[label])
+                    if total_output_bytes > MAX_TOTAL_OUTPUT_BYTES:
+                        raise ScorerError("anonymous outputs exceed the aggregate scorer input limit")
                 except EvidenceError as exc:
                     raise ScorerError(f"scorer output artifact failed verification: {exc}") from exc
         input_pairs.append(ScorerInputPair(

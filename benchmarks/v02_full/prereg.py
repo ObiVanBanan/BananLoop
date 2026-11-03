@@ -89,6 +89,11 @@ class EvaluatorPin(FrozenModel):
     rubric_sha256: Digest
     validation_set_sha256: Digest
     holdout_set_sha256: Digest
+    scorer_entrypoint: tuple[str, ...] = Field(min_length=1, max_length=32)
+    scorer_timeout_seconds: PositiveInt
+    scorer_memory_bytes: Annotated[int, Field(strict=True, ge=128 * 1024 * 1024,
+                                               le=2 * 1024 * 1024 * 1024)]
+    scorer_process_limit: Annotated[int, Field(strict=True, ge=1, le=128)]
 
 
 class ExplorationCampaignAnchor(FrozenModel):
@@ -291,6 +296,8 @@ class TrackManifest(FrozenModel):
             for dimension in ResourceCaps.model_fields:
                 if getattr(arm.caps, dimension) != getattr(self.common_caps, dimension):
                     raise ValueError(f"{arm.arm} caps must exactly match common cap for {dimension}")
+        if self.evaluator.scorer_timeout_seconds > self.common_caps.wall_seconds:
+            raise ValueError("scorer timeout must fit within the frozen wall-time cap")
         if self.arms[1].iteration_policy.maximum_iterations < 2:
             raise ValueError("Codex Direct must have a preregistered iterative policy")
         if self.track == "OPTIMIZATION":

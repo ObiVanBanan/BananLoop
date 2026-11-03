@@ -271,7 +271,7 @@ def score_package_digest(package: BlindedScorePackage | dict) -> str:
 
 
 _SCORER_VISIBLE_PAIR_FIELDS = (
-    "pair_id_sha256", "arm_a_score", "arm_b_score",
+    "pair_id_sha256", "status", "arm_a_score", "arm_b_score",
     "arm_a_output_sha256", "arm_b_output_sha256",
 )
 
@@ -286,7 +286,7 @@ def score_payload_projection(package: BlindedScorePackage | dict) -> dict:
         "evaluator_pin_sha256": value["evaluator_pin_sha256"],
         "pairs": [
             {field: pair.get(field) for field in _SCORER_VISIBLE_PAIR_FIELDS}
-            for pair in value["pairs"] if pair["status"] == "SCORED"
+            for pair in value["pairs"]
         ],
     }
 
@@ -322,6 +322,8 @@ def aggregate_blinded_scores(
         )
         if package.package_sha256 != score_package_digest(package):
             raise ReportError("score package digest does not match its canonical contents")
+        if package.score_payload_sha256 != score_payload_digest(package):
+            raise ReportError("scorer-attested score projection does not match package outcomes")
         if any(item.pair_result_sha256 != pair_score_digest(item) for item in package.pairs):
             raise ReportError("a blinded pair result digest does not match its canonical contents")
         if package.manifest_sha256 != manifest.manifest_sha256 or package.track != manifest.track:

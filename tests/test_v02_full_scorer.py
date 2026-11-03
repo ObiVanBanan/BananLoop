@@ -9,11 +9,13 @@ import pytest
 
 from benchmarks.v02_full.prereg import canonical_bytes, freeze_manifest
 from benchmarks.v02_full.report import (
-    aggregate_blinded_scores, score_payload_digest,
+    ReportError, aggregate_blinded_scores, score_payload_digest,
 )
 from benchmarks.v02_full.scorer import (
-    BlindScorerOutput, ScorerError, ScorerOutputPair, apply_blind_scorer_output,
-    build_blind_scorer_input, scorer_output_digest, validate_blind_scorer_output,
+    EVALUATOR_CONSTITUENT_FILES, BlindScorerOutput, BubblewrapBlindScorer,
+    ScorerError, ScorerOutputPair,
+    apply_blind_scorer_output, build_blind_scorer_input, evaluator_bundle_fingerprint,
+    scorer_output_digest, validate_blind_scorer_output, verify_evaluator_constituents,
 )
 
 _spec = __import__("importlib.util", fromlist=["spec_from_file_location"]).spec_from_file_location(
@@ -124,3 +126,84 @@ def test_accounting_changes_do_not_change_the_score_attestation_payload(tmp_path
     raw_package["package_sha256"] = score_package_digest(raw_package)
     assert raw_package["score_payload_sha256"] == original_score_digest
     assert raw_package["package_sha256"] != original_package_digest
+
+
+def test_score_attestation_binds_failed_pair_classification(tmp_path):
+    manifest = freeze_manifest(_helpers._raw_manifest())
+    package = _helpers._report_package(manifest, tmp_path)
+    request = build_blind_scorer_input(manifest, package, evidence_root=str(tmp_path))
+    output = validate_blind_scorer_output(_scorer_output(request), request=request)
+    merged = apply_blind_scorer_output(package, output)
+    payload = merged.model_dump(mode="json")
+    pair = next(item for item in payload["pairs"] if item["status"] == "SCORED")
+    pair.update(status="FAILED", arm_a_score=None, arm_b_score=None, reason="changed after scoring")
+    pair.pop("pair_result_sha256")
+    pair["pair_result_sha256"] = __import__(
+        "benchmarks.v02_full.report", fromlist=["pair_score_digest"],
+    ).pair_score_digest(pair)
+    assert score_payload_digest(payload) != merged.score_payload_sha256
+
+
+def test_aggregate_rechecks_stale_score_digest_even_after_model_copy(tmp_path):
+    manifest = freeze_manifest(_helpers._raw_manifest())
+    package = _helpers._report_package(manifest, tmp_path)
+    request = build_blind_scorer_input(manifest, package, evidence_root=str(tmp_path))
+    output = validate_blind_scorer_output(_scorer_output(request), request=request)
+    merged = apply_blind_scorer_output(package, output)
+    pair = next(item for item in merged.pairs if item.status == "SCORED")
+    changed = pair.model_copy(update={
+        "status": "FAILED", "arm_a_score": None, "arm_b_score": None,
+        "reason": "changed after scoring",
+    })
+    from benchmarks.v02_full.report import pair_score_digest, score_package_digest
+    changed = changed.model_copy(update={"pair_result_sha256": pair_score_digest(changed)})
+    pairs = tuple(changed if item.pair_id_sha256 == pair.pair_id_sha256 else item
+                  for item in merged.pairs)
+    bad_payload = merged.model_dump(mode="json")
+    bad_payload["pairs"] = [item.model_dump(mode="json") for item in pairs]
+    bad_payload.pop("package_sha256")
+    bad_payload["package_sha256"] = score_package_digest(bad_payload)
+    tampered = merged.model_copy(update={
+        "pairs": pairs, "package_sha256": bad_payload["package_sha256"],
+    })
+    scoring_ref, unblinding_ref = _helpers._attest_score_package(tmp_path, manifest, merged)
+    gate_evidence, trust_policy = _helpers._valid_evidence(manifest, tmp_path)
+    with pytest.raises(ReportError, match="scorer-attested score projection"):
+        aggregate_blinded_scores(
+            manifest, tampered, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
+            unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
+            trust_policy=trust_policy,
+        )
+
+
+def test_evaluator_bundle_fingerprint_is_content_and_mode_bound(tmp_path):
+    bundle = tmp_path / "evaluator"
+    bundle.mkdir()
+    executable = bundle / "score"
+    executable.write_bytes(b"#!/bin/sh\nexit 0\n")
+    executable.chmod(0o700)
+    first = evaluator_bundle_fingerprint(bundle)
+    assert evaluator_bundle_fingerprint(bundle) == first
+    executable.chmod(0o500)
+    assert evaluator_bundle_fingerprint(bundle) != first
+
+
+def test_blind_scorer_does_not_report_available_without_isolation(tmp_path):
+    scorer = BubblewrapBlindScorer(cgroup_root=tmp_path, bwrap_binary="/missing/bwrap")
+    assert not scorer.available()
+
+
+def test_evaluator_constituents_are_checked_against_individual_pins(tmp_path):
+    from benchmarks.v02_full.prereg import freeze_manifest
+
+    manifest = freeze_manifest(_helpers._raw_manifest())
+    fields = {}
+    for field, filename in EVALUATOR_CONSTITUENT_FILES.items():
+        content = f"pinned {filename}".encode()
+        (tmp_path / filename).write_bytes(content)
+        fields[field] = hashlib.sha256(content).hexdigest()
+    pin = manifest.evaluator.model_copy(update=fields)
+    verify_evaluator_constituents(tmp_path, pin)
+    (tmp_path / "holdout-set.bin").write_bytes(b"changed holdout")
+    with pytest.raises(ScorerError, match="constituent digest differs"):
+        verify_evaluator_constituents(tmp_path, pin)
