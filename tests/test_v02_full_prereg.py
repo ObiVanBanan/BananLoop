@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from bananloop.contracts import FeatureFlagsV2, V2_FULL_FEATURES
 from benchmarks.v02_full.evidence import (
     EvidenceArtifactRef, EvidenceError, SignedEvidence, TrustPolicy, TrustedSigner,
-    load_trust_policy, sign_evidence,
+    load_trust_policy, sign_evidence, verify_protected_directory,
 )
 from benchmarks.v02_full.accounting import (
     AccountingResult, ResourceUsage, make_receipt, validate_accounting_chain,
@@ -33,7 +33,8 @@ from benchmarks.v02_full.report import (
     pair_score_digest, report_digest, score_package_digest,
 )
 from benchmarks.v02_full.execution import (
-    RunStartAuthorization, RunStartError, authorize_run_start,
+    RunStartAuthorization, RunStartError, TaskMaterial, assign_tasks_after_run_authorization,
+    authorize_run_start,
     gate_evidence_sha256, track_pair_sha256, verify_run_start_authorization,
 )
 
@@ -411,7 +412,7 @@ def test_run_start_authorization_requires_both_track_gates_and_signs_exact_input
     verify_run_start_authorization(
         authorization, optimization=optimization, exploration=exploration,
         optimization_evidence=optimization_gate, exploration_evidence=exploration_gate,
-        trust_policy_path=str(policy_path),
+        trust_policy_path=str(policy_path), evidence_root=str(evidence_root),
     )
     assert authorization.document.payload["optimization_manifest_sha256"] == optimization.manifest_sha256
     assert authorization.document.payload["exploration_manifest_sha256"] == exploration.manifest_sha256
@@ -433,7 +434,7 @@ def test_run_start_authorization_requires_both_track_gates_and_signs_exact_input
         verify_run_start_authorization(
             authorization, optimization=optimization, exploration=optimization,
             optimization_evidence=optimization_gate, exploration_evidence=exploration_gate,
-            trust_policy_path=str(policy_path),
+            trust_policy_path=str(policy_path), evidence_root=str(evidence_root),
         )
 
 
@@ -480,7 +481,7 @@ def test_run_start_verifier_rejects_author_and_reviewer_signers(tmp_path, author
         verify_run_start_authorization(
             authorization, optimization=optimization, exploration=exploration,
             optimization_evidence=optimization_gate, exploration_evidence=exploration_gate,
-            trust_policy_path=str(policy_path),
+            trust_policy_path=str(policy_path), evidence_root=str(evidence_root),
         )
 
 
@@ -498,6 +499,128 @@ def test_trust_policy_loader_rejects_symlink_ancestor(tmp_path):
     alias.symlink_to(protected.parent, target_is_directory=True)
     with pytest.raises(EvidenceError):
         load_trust_policy(alias / protected.name)
+    with pytest.raises(EvidenceError):
+        verify_protected_directory(alias)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="protected run-start trust root currently requires POSIX openat")
+def test_task_material_is_loaded_and_assigned_only_after_auth_and_exact_pin_checks(tmp_path):
+    def frozen(track, task_id, suffix):
+        raw = _raw_manifest(track, task_id=task_id, suffix=suffix)
+        materials = {}
+        for pin in raw["task_pins"]:
+            payload = f"{track}-case-{pin['task_id']}".encode()
+            rights = f"rights-for-{track}-{pin['task_id']}".encode()
+            pin["task_data_sha256"] = hashlib.sha256(payload).hexdigest()
+            pin["rights_record_sha256"] = hashlib.sha256(rights).hexdigest()
+            materials[pin["task_id"]] = TaskMaterial(
+                task_payload=payload, rights_record=rights,
+                initial_tree_sha256=pin["initial_tree_sha256"],
+            )
+        return freeze_manifest(raw), materials
+
+    optimization, opt_materials = frozen("OPTIMIZATION", "task-opt", "opt")
+    exploration, exp_materials = frozen("EXPLORATION", "task-explore", "explore")
+    evidence_root = tmp_path / "evidence"
+    optimization_gate, policy = _valid_evidence(optimization, evidence_root)
+    exploration_gate, _ = _valid_evidence(exploration, evidence_root)
+    policy_path = _write_trust_policy(tmp_path / "protected" / "trust-policy.json", policy)
+    authorizer = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(_sha("secret-RUN_START_AUTHORIZER")))
+    authorization = authorize_run_start(
+        optimization, exploration, optimization_gate, exploration_gate,
+        evidence_root=str(evidence_root), trust_policy_path=str(policy_path),
+        authorization_key_id="key-run_start_authorizer", authorization_private_key=authorizer,
+    )
+    loaded_tracks = []
+    assigned = []
+
+    def loader(manifest):
+        loaded_tracks.append(manifest.track)
+        return opt_materials if manifest.track == "OPTIMIZATION" else exp_materials
+
+    result = assign_tasks_after_run_authorization(
+        authorization, optimization, exploration, optimization_gate, exploration_gate,
+        trust_policy_path=str(policy_path), evidence_root=str(evidence_root), material_loader=loader,
+        assignment_hook=lambda plan: assigned.append(plan) or len(plan.optimization.tasks),
+    )
+    assert result == len(optimization.task_pins)
+    assert loaded_tracks == ["OPTIMIZATION", "EXPLORATION"]
+    assert len(assigned) == 1
+    assert assigned[0].authorization_sha256 == authorization.artifact_sha256
+    assert {item.task_id for item in assigned[0].optimization.tasks} == set(opt_materials)
+    assert {item.task_id for item in assigned[0].exploration.tasks} == set(exp_materials)
+
+    review_pin = optimization_gate.technical_review
+    review_ref = next(item for item in optimization_gate.evidence_artifacts
+                      if item.artifact_sha256 == review_pin.artifact_sha256)
+    review_path = evidence_root / review_ref.path
+    original_review = review_path.read_bytes()
+    review_path.write_bytes(b"changed after authorization")
+    blocked_loads = []
+    blocked_assignments = []
+    with pytest.raises(RunStartError, match="gate evidence no longer verifies"):
+        assign_tasks_after_run_authorization(
+            authorization, optimization, exploration, optimization_gate, exploration_gate,
+            trust_policy_path=str(policy_path), evidence_root=str(evidence_root),
+            material_loader=lambda manifest: blocked_loads.append(manifest.track) or {},
+            assignment_hook=lambda plan: blocked_assignments.append(plan),
+        )
+    assert blocked_loads == blocked_assignments == []
+    review_path.write_bytes(original_review)
+
+    rejected_loads = []
+    rejected_assignments = []
+    changed_gate = exploration_gate.model_copy(update={"full_flag_hash": _sha("changed-flags")})
+    with pytest.raises(RunStartError, match="different manifests or gate evidence"):
+        assign_tasks_after_run_authorization(
+            authorization, optimization, exploration, optimization_gate, changed_gate,
+            trust_policy_path=str(policy_path), evidence_root=str(evidence_root),
+            material_loader=lambda manifest: rejected_loads.append(manifest.track) or {},
+            assignment_hook=lambda plan: rejected_assignments.append(plan),
+        )
+    assert rejected_loads == rejected_assignments == []
+
+    mismatched_materials = dict(opt_materials)
+    first_task = optimization.task_pins[0].task_id
+    mismatched_materials[first_task] = TaskMaterial(
+        task_payload=b"tampered", rights_record=b"bad-rights",
+        initial_tree_sha256=optimization.task_pins[0].initial_tree_sha256,
+    )
+    loader_calls = []
+    with pytest.raises(RunStartError, match="do not match the frozen task digest"):
+        assign_tasks_after_run_authorization(
+            authorization, optimization, exploration, optimization_gate, exploration_gate,
+            trust_policy_path=str(policy_path), evidence_root=str(evidence_root),
+            material_loader=lambda manifest: loader_calls.append(manifest.track) or (
+                mismatched_materials if manifest.track == "OPTIMIZATION" else exp_materials),
+            assignment_hook=lambda plan: rejected_assignments.append(plan),
+        )
+    assert loader_calls == ["OPTIMIZATION"]
+    assert rejected_assignments == []
+
+    for bad_material, message in (
+        (TaskMaterial(
+            task_payload=opt_materials[first_task].task_payload,
+            rights_record=b"wrong-rights", initial_tree_sha256=optimization.task_pins[0].initial_tree_sha256,
+        ), "rights record"),
+        (TaskMaterial(
+            task_payload=opt_materials[first_task].task_payload,
+            rights_record=opt_materials[first_task].rights_record, initial_tree_sha256=_sha("wrong-tree"),
+        ), "initial tree"),
+    ):
+        rejected = dict(opt_materials)
+        rejected[first_task] = bad_material
+        loader_calls.clear()
+        with pytest.raises(RunStartError, match=message):
+            assign_tasks_after_run_authorization(
+                authorization, optimization, exploration, optimization_gate, exploration_gate,
+                trust_policy_path=str(policy_path), evidence_root=str(evidence_root),
+                material_loader=lambda manifest: loader_calls.append(manifest.track) or (
+                    rejected if manifest.track == "OPTIMIZATION" else exp_materials),
+                assignment_hook=lambda plan: rejected_assignments.append(plan),
+            )
+        assert loader_calls == ["OPTIMIZATION"]
+        assert rejected_assignments == []
 
 
 def test_run_gate_requires_exact_head_e2e_ci_review_and_independent_attestations(tmp_path):

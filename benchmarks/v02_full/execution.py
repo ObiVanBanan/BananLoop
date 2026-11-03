@@ -1,13 +1,15 @@
 """Side-effect-free authorization for the future RPDI-14 paired runner.
 
 This module validates both preregistered tracks and both exact run gates, then
-produces a signed authorization artifact. It never reveals task assignments or
-launches models, tools, or evaluators.
+produces a signed authorization artifact. Its guarded assignment entrypoint
+opens task material only after authorization and frozen-pin checks; this module
+never launches models, tools, or evaluators.
 """
 from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from typing import Callable, Literal, Mapping, TypeVar
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -15,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .evidence import (
     EvidenceError, SignedEvidence, load_trust_policy, sign_evidence,
+    verify_protected_directory,
 )
 from .prereg import (
     GateEvidence, PreregError, TrackManifest, canonical_bytes, validate_run_gate,
@@ -39,8 +42,77 @@ class RunStartAuthorization:
     trust_policy_sha256: str
 
 
+@dataclass(frozen=True)
+class TaskMaterial:
+    task_payload: bytes
+    rights_record: bytes
+    initial_tree_sha256: str
+
+
+@dataclass(frozen=True)
+class AssignedTask:
+    task_id: str
+    blinded_pair_id_sha256: str
+    task_data_sha256: str
+    initial_tree_sha256: str
+    rights_record_sha256: str
+    task_payload: bytes
+
+
+@dataclass(frozen=True)
+class TrackAssignments:
+    track: Literal["OPTIMIZATION", "EXPLORATION"]
+    manifest_sha256: str
+    tasks: tuple[AssignedTask, ...]
+
+
+@dataclass(frozen=True)
+class AuthorizedAssignmentPlan:
+    authorization_sha256: str
+    track_pair_sha256: str
+    optimization: TrackAssignments
+    exploration: TrackAssignments
+
+
 class RunStartError(ValueError):
     """The paired benchmark cannot receive a run-start authorization."""
+
+
+T = TypeVar("T")
+
+
+def _load_pinned_tasks(
+    manifest: TrackManifest,
+    material_loader: Callable[[TrackManifest], Mapping[str, TaskMaterial]],
+) -> TrackAssignments:
+    materials = material_loader(manifest)
+    if not isinstance(materials, Mapping) or set(materials) != {pin.task_id for pin in manifest.task_pins}:
+        raise RunStartError(f"{manifest.track} task material set differs from the frozen task pins")
+    assignments = []
+    for pin in manifest.task_pins:
+        material = materials.get(pin.task_id)
+        if not isinstance(material, TaskMaterial):
+            raise RunStartError(f"{manifest.track} task {pin.task_id} has no typed sealed material")
+        if not isinstance(material.task_payload, bytes) or not isinstance(material.rights_record, bytes):
+            raise RunStartError(f"{manifest.track} task {pin.task_id} material must be immutable bytes")
+        if hashlib.sha256(material.task_payload).hexdigest() != pin.task_data_sha256:
+            raise RunStartError(f"{manifest.track} task {pin.task_id} bytes do not match the frozen task digest")
+        if hashlib.sha256(material.rights_record).hexdigest() != pin.rights_record_sha256:
+            raise RunStartError(f"{manifest.track} task {pin.task_id} rights record does not match the frozen digest")
+        if material.initial_tree_sha256 != pin.initial_tree_sha256:
+            raise RunStartError(f"{manifest.track} task {pin.task_id} initial tree differs from the frozen digest")
+        assignments.append(AssignedTask(
+            task_id=pin.task_id,
+            blinded_pair_id_sha256=pin.blinded_pair_id_sha256,
+            task_data_sha256=pin.task_data_sha256,
+            initial_tree_sha256=pin.initial_tree_sha256,
+            rights_record_sha256=pin.rights_record_sha256,
+            task_payload=material.task_payload,
+        ))
+    return TrackAssignments(
+        track=manifest.track, manifest_sha256=manifest.manifest_sha256,
+        tasks=tuple(assignments),
+    )
 
 
 def _validate_authorizer(signer, trust_policy, optimization: TrackManifest) -> None:
@@ -92,6 +164,7 @@ def authorize_run_start(
     """
     try:
         trust_policy, trust_sha = load_trust_policy(trust_policy_path)
+        verify_protected_directory(evidence_root)
         validate_track_pair(optimization, exploration)
         if optimization.track != "OPTIMIZATION" or exploration.track != "EXPLORATION":
             raise PreregError("run start requires Optimization and Exploration manifests")
@@ -158,6 +231,7 @@ def verify_run_start_authorization(
     optimization_evidence: GateEvidence,
     exploration_evidence: GateEvidence,
     trust_policy_path: str,
+    evidence_root: str,
 ) -> None:
     """Check the signed authorization is bound to the exact supplied run inputs."""
     try:
@@ -166,6 +240,7 @@ def verify_run_start_authorization(
         raise RunStartError(str(exc)) from exc
     try:
         trust_policy, trust_sha = load_trust_policy(trust_policy_path)
+        verify_protected_directory(evidence_root)
     except EvidenceError as exc:
         raise RunStartError(str(exc)) from exc
     if trust_sha != authorization.trust_policy_sha256:
@@ -200,9 +275,65 @@ def verify_run_start_authorization(
             or authorization.document.subject_sha != pair_sha):
         raise RunStartError("run-start authorization identity is invalid")
     try:
+        validate_run_gate(
+            exploration, exploration_evidence,
+            evidence_root=evidence_root, trust_policy=trust_policy,
+        )
+        validate_run_gate(
+            optimization, optimization_evidence,
+            evidence_root=evidence_root, trust_policy=trust_policy,
+        )
+    except PreregError as exc:
+        raise RunStartError(f"run-start gate evidence no longer verifies: {exc}") from exc
+    try:
         Ed25519PublicKey.from_public_bytes(signer.public_key).verify(
             bytes.fromhex(authorization.document.signature_ed25519),
             canonical_bytes(authorization.document.unsigned_payload()),
         )
     except Exception as exc:
         raise RunStartError("run-start authorization signature is invalid") from exc
+
+
+def assign_tasks_after_run_authorization(
+    authorization: RunStartAuthorization,
+    optimization: TrackManifest,
+    exploration: TrackManifest,
+    optimization_evidence: GateEvidence,
+    exploration_evidence: GateEvidence,
+    *,
+    trust_policy_path: str,
+    evidence_root: str,
+    material_loader: Callable[[TrackManifest], Mapping[str, TaskMaterial]],
+    assignment_hook: Callable[[AuthorizedAssignmentPlan], T],
+) -> T:
+    """Open task material and invoke assignment only after verifying signed authorization.
+
+    This is the only RPDI-14 assignment entrypoint. `material_loader` is called
+    only after the signed authorization, frozen pair, both gate-evidence
+    digests, protected evidence root, current trust policy, and both signed
+    gates have been rechecked. The assignment hook is called only after both
+    tracks' task and rights bytes plus initial-tree identities match every
+    frozen task pin. The hook must durably assign both tracks atomically or
+    idempotently by `authorization_sha256`; it must not launch either arm.
+    """
+    verify_run_start_authorization(
+        authorization, optimization=optimization, exploration=exploration,
+        optimization_evidence=optimization_evidence,
+        exploration_evidence=exploration_evidence,
+        trust_policy_path=trust_policy_path,
+        evidence_root=evidence_root,
+    )
+    try:
+        optimization_assignments = _load_pinned_tasks(optimization, material_loader)
+        exploration_assignments = _load_pinned_tasks(exploration, material_loader)
+    except RunStartError:
+        raise
+    except Exception as exc:
+        raise RunStartError(f"sealed task loading failed: {exc}") from exc
+    plan = AuthorizedAssignmentPlan(
+        authorization_sha256=authorization.artifact_sha256,
+        track_pair_sha256=authorization.pair_sha256,
+        optimization=optimization_assignments,
+        exploration=exploration_assignments,
+    )
+    return assignment_hook(plan)

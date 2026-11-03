@@ -89,6 +89,47 @@ class TrustPolicy:
         object.__setattr__(self, "signers", MappingProxyType(dict(self.signers)))
 
 
+def verify_protected_directory(path: str | Path) -> None:
+    """Require a POSIX directory path that cannot be redirected by untrusted users."""
+    directory = Path(path)
+    if os.name != "posix" or os.open not in getattr(os, "supports_dir_fd", set()):
+        raise EvidenceError("protected evidence roots require POSIX descriptor-relative no-follow opens")
+    if not directory.is_absolute() or ".." in directory.parts:
+        raise EvidenceError("protected directory path must be absolute and traversal-free")
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    nofollow_flag = getattr(os, "O_NOFOLLOW", 0)
+    if not directory_flag or not nofollow_flag:
+        raise EvidenceError("platform cannot securely open the protected directory path")
+    descriptors: list[int] = []
+    try:
+        current_fd = os.open("/", os.O_RDONLY | directory_flag | nofollow_flag)
+        descriptors.append(current_fd)
+        service_uid = os.geteuid() if hasattr(os, "geteuid") else 0
+        parts = directory.parts[1:]
+        for index, part in enumerate(parts):
+            next_fd = os.open(part, os.O_RDONLY | directory_flag | nofollow_flag, dir_fd=current_fd)
+            descriptors.append(next_fd)
+            info = os.fstat(next_fd)
+            if not stat.S_ISDIR(info.st_mode):
+                raise EvidenceError("protected path contains a non-directory component")
+            is_final = index == len(parts) - 1
+            trusted_owner = info.st_uid in {0, service_uid}
+            sticky_shared = bool(info.st_mode & stat.S_ISVTX)
+            if is_final:
+                if info.st_mode & 0o022 or not trusted_owner:
+                    raise EvidenceError("protected directory must be root/service-owned and not group/other writable")
+            elif (not trusted_owner or info.st_mode & 0o022) and not sticky_shared:
+                raise EvidenceError("protected path contains an untrusted writable directory")
+            current_fd = next_fd
+    except EvidenceError:
+        raise
+    except OSError as exc:
+        raise EvidenceError("protected directory is missing, symlinked, or unreadable") from exc
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
 def load_trust_policy(path: str | Path) -> tuple[TrustPolicy, str]:
     """Load a canonical public-key trust root from a protected local file."""
     policy_path = Path(path)
