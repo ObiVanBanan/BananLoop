@@ -65,6 +65,10 @@ class ArmConfig(FrozenModel):
     model_version: str = Field(min_length=1, max_length=200)
     reasoning_settings_sha256: Digest
     tool_policy_sha256: Digest
+    worker_bundle_sha256: Digest
+    worker_memory_bytes: Annotated[int, Field(strict=True, ge=128 * 1024 * 1024,
+                                                le=2 * 1024 * 1024 * 1024)]
+    worker_process_limit: Annotated[int, Field(strict=True, ge=1, le=128)]
     iteration_policy: IterationPolicy
     role_roster_sha256: Digest | None = None
     caps: ResourceCaps
@@ -99,7 +103,7 @@ class ExplorationCampaignAnchor(FrozenModel):
 
 CONTROL_KEYS = frozenset({
     "provider", "model", "model_version", "reasoning_settings", "tool_policy",
-    "maximum_iterations", "feedback_source", "permits_repair", "stopping_rule",
+    "worker_bundle", "worker_memory", "worker_processes", "maximum_iterations", "feedback_source", "permits_repair", "stopping_rule",
     "role_roster", "resource_caps", "approved_dev_information",
 })
 
@@ -107,7 +111,7 @@ CONTROL_KEYS = frozenset({
 class ControlComparison(FrozenModel):
     control_key: Literal[
         "provider", "model", "model_version", "reasoning_settings", "tool_policy",
-        "maximum_iterations", "feedback_source", "permits_repair", "stopping_rule",
+        "worker_bundle", "worker_memory", "worker_processes", "maximum_iterations", "feedback_source", "permits_repair", "stopping_rule",
         "role_roster", "resource_caps", "approved_dev_information",
     ]
     bananloop_value_sha256: Digest
@@ -381,6 +385,9 @@ def _arm_control_hashes(arms: tuple[ArmConfig, ArmConfig],
         "model_version": (full.model_version, direct.model_version),
         "reasoning_settings": (full.reasoning_settings_sha256, direct.reasoning_settings_sha256),
         "tool_policy": (full.tool_policy_sha256, direct.tool_policy_sha256),
+        "worker_bundle": (full.worker_bundle_sha256, direct.worker_bundle_sha256),
+        "worker_memory": (full.worker_memory_bytes, direct.worker_memory_bytes),
+        "worker_processes": (full.worker_process_limit, direct.worker_process_limit),
         "maximum_iterations": (full.iteration_policy.maximum_iterations,
                                direct.iteration_policy.maximum_iterations),
         "feedback_source": (full.iteration_policy.feedback_source,

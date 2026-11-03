@@ -193,6 +193,7 @@ def _verified_accounting(receipts, action_attestations, *, pair_id: str,
             return None, False, None
         meter_principals: set[str] = set()
         meter_keys: set[str] = set()
+        settlements_sealed = True
         for receipt, receipt_attestation in zip(receipts, action_attestations, strict=True):
             usage_sha = _digest(receipt.usage)
             verified_action = verify_evidence_artifact(
@@ -212,6 +213,9 @@ def _verified_accounting(receipts, action_attestations, *, pair_id: str,
                 return None, False, None
             meter_principals.add(verified_action.issuer_principal_id)
             meter_keys.add(verified_action.issuer_key_id)
+            settlements_sealed = settlements_sealed and (
+                verified_action.payload.get("settlement_state") == "SEALED"
+            )
         if len(meter_principals) != 1 or len(meter_keys) != 1:
             return None, False, None
         head = receipts[-1].receipt_sha256
@@ -240,7 +244,8 @@ def _verified_accounting(receipts, action_attestations, *, pair_id: str,
     except (EvidenceError, ValueError, IndexError):
         return None, False, None
     return actual, (
-        claimed is not None
+        settlements_sealed
+        and claimed is not None
         and claimed.model_dump(mode="json") == actual.model_dump(mode="json")
         and _accounting_summary_is_eligible(actual, caps)
     ), (meter_principal, hashlib.sha256(meter_public_key).digest())

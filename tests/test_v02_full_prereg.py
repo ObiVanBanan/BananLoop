@@ -29,12 +29,12 @@ from benchmarks.v02_full.prereg import (
     verify_frozen_manifest,
 )
 from benchmarks.v02_full.report import (
-    BlindedPairScore, BlindedScorePackage, ReportError, aggregate_blinded_scores,
+    ActionReceiptAttestation, BlindedPairScore, BlindedScorePackage, ReportError, aggregate_blinded_scores,
     pair_score_digest, report_digest, score_package_digest,
 )
 from benchmarks.v02_full.execution import (
     RunStartAuthorization, RunStartError, TaskMaterial, assign_tasks_after_run_authorization,
-    authorize_run_start,
+    authorize_run_start, _validate_assignment_signer,
     gate_evidence_sha256, track_pair_sha256, verify_run_start_authorization,
 )
 
@@ -52,6 +52,9 @@ def _raw_manifest(track="OPTIMIZATION", *, task_id="task-opt", suffix="opt"):
     arm_common = {
         "provider": "provider-pin", "model": "model-pin", "model_version": "model-version-pin",
         "reasoning_settings_sha256": _sha("reasoning"), "tool_policy_sha256": _sha("tools"),
+        "worker_bundle_sha256": _sha(f"worker-bundle-{suffix}"),
+        "worker_memory_bytes": 128 * 1024 * 1024,
+        "worker_process_limit": 32,
         "caps": caps,
     }
     raw = {
@@ -110,6 +113,9 @@ def _raw_manifest(track="OPTIMIZATION", *, task_id="task-opt", suffix="opt"):
         "model_version": (full["model_version"], direct["model_version"]),
         "reasoning_settings": (full["reasoning_settings_sha256"], direct["reasoning_settings_sha256"]),
         "tool_policy": (full["tool_policy_sha256"], direct["tool_policy_sha256"]),
+        "worker_bundle": (full["worker_bundle_sha256"], direct["worker_bundle_sha256"]),
+        "worker_memory": (full["worker_memory_bytes"], direct["worker_memory_bytes"]),
+        "worker_processes": (full["worker_process_limit"], direct["worker_process_limit"]),
         "maximum_iterations": (full["iteration_policy"]["maximum_iterations"],
                                direct["iteration_policy"]["maximum_iterations"]),
         "feedback_source": (full["iteration_policy"]["feedback_source"],
@@ -165,6 +171,7 @@ def _valid_evidence(manifest, evidence_dir, *, duplicate_independent_principal=F
         "INDEPENDENT_OPERATOR": "principal-ledger-reviewer",
         "INDEPENDENT_SCORER": "principal-scorer",
         "RUN_START_AUTHORIZER": "principal-run-authorizer",
+        "TASK_ASSIGNMENT_AUTHORIZER": "principal-task-assignment-authorizer",
         "ACTION_METER_ATTESTOR": "principal-action-meter",
         "RIGHTS_AUTHORIZER": "principal-rights",
         "SPEND_AUTHORIZER": "principal-spend",
@@ -343,7 +350,7 @@ def test_arm_controls_are_derived_from_pinned_values_and_every_difference_is_dis
 
     raw = _raw_manifest()
     raw["control_comparisons"].pop()
-    with pytest.raises(PreregError, match="at least 12 items"):
+    with pytest.raises(PreregError, match="at least 15 items"):
         freeze_manifest(raw)
 
 
@@ -540,7 +547,9 @@ def test_task_material_is_loaded_and_assigned_only_after_auth_and_exact_pin_chec
 
     result = assign_tasks_after_run_authorization(
         authorization, optimization, exploration, optimization_gate, exploration_gate,
-        trust_policy_path=str(policy_path), evidence_root=str(evidence_root), material_loader=loader,
+        trust_policy_path=str(policy_path), evidence_root=str(evidence_root),
+        assignment_key_id="key-task_assignment_authorizer",
+        assignment_private_key=Ed25519PrivateKey.from_private_bytes(bytes.fromhex(_sha("secret-TASK_ASSIGNMENT_AUTHORIZER"))), material_loader=loader,
         assignment_hook=lambda plan: assigned.append(plan) or len(plan.optimization.tasks),
     )
     assert result == len(optimization.task_pins)
@@ -562,6 +571,8 @@ def test_task_material_is_loaded_and_assigned_only_after_auth_and_exact_pin_chec
         assign_tasks_after_run_authorization(
             authorization, optimization, exploration, optimization_gate, exploration_gate,
             trust_policy_path=str(policy_path), evidence_root=str(evidence_root),
+            assignment_key_id="key-task_assignment_authorizer",
+            assignment_private_key=Ed25519PrivateKey.from_private_bytes(bytes.fromhex(_sha("secret-TASK_ASSIGNMENT_AUTHORIZER"))),
             material_loader=lambda manifest: blocked_loads.append(manifest.track) or {},
             assignment_hook=lambda plan: blocked_assignments.append(plan),
         )
@@ -575,6 +586,8 @@ def test_task_material_is_loaded_and_assigned_only_after_auth_and_exact_pin_chec
         assign_tasks_after_run_authorization(
             authorization, optimization, exploration, optimization_gate, changed_gate,
             trust_policy_path=str(policy_path), evidence_root=str(evidence_root),
+            assignment_key_id="key-task_assignment_authorizer",
+            assignment_private_key=Ed25519PrivateKey.from_private_bytes(bytes.fromhex(_sha("secret-TASK_ASSIGNMENT_AUTHORIZER"))),
             material_loader=lambda manifest: rejected_loads.append(manifest.track) or {},
             assignment_hook=lambda plan: rejected_assignments.append(plan),
         )
@@ -591,6 +604,8 @@ def test_task_material_is_loaded_and_assigned_only_after_auth_and_exact_pin_chec
         assign_tasks_after_run_authorization(
             authorization, optimization, exploration, optimization_gate, exploration_gate,
             trust_policy_path=str(policy_path), evidence_root=str(evidence_root),
+            assignment_key_id="key-task_assignment_authorizer",
+            assignment_private_key=Ed25519PrivateKey.from_private_bytes(bytes.fromhex(_sha("secret-TASK_ASSIGNMENT_AUTHORIZER"))),
             material_loader=lambda manifest: loader_calls.append(manifest.track) or (
                 mismatched_materials if manifest.track == "OPTIMIZATION" else exp_materials),
             assignment_hook=lambda plan: rejected_assignments.append(plan),
@@ -615,12 +630,27 @@ def test_task_material_is_loaded_and_assigned_only_after_auth_and_exact_pin_chec
             assign_tasks_after_run_authorization(
                 authorization, optimization, exploration, optimization_gate, exploration_gate,
                 trust_policy_path=str(policy_path), evidence_root=str(evidence_root),
+                assignment_key_id="key-task_assignment_authorizer",
+                assignment_private_key=Ed25519PrivateKey.from_private_bytes(bytes.fromhex(_sha("secret-TASK_ASSIGNMENT_AUTHORIZER"))),
                 material_loader=lambda manifest: loader_calls.append(manifest.track) or (
                     rejected if manifest.track == "OPTIMIZATION" else exp_materials),
                 assignment_hook=lambda plan: rejected_assignments.append(plan),
             )
         assert loader_calls == ["OPTIMIZATION"]
         assert rejected_assignments == []
+
+
+def test_assignment_authority_rejects_multipurpose_signer(tmp_path):
+    from dataclasses import replace
+
+    manifest = freeze_manifest(_raw_manifest())
+    _, policy = _valid_evidence(manifest, tmp_path / "evidence")
+    signer = policy.signers["key-task_assignment_authorizer"]
+    multipurpose = replace(signer, permitted_roles=frozenset({
+        "TASK_ASSIGNMENT_AUTHORIZER", "OWNER_APPROVER",
+    }))
+    with pytest.raises(EvidenceError, match="exclusively for assignment"):
+        _validate_assignment_signer(multipurpose, policy, manifest)
 
 
 def test_run_gate_requires_exact_head_e2e_ci_review_and_independent_attestations(tmp_path):
@@ -746,7 +776,8 @@ def _receipt_chain(pair_id, arm_label, *, unknown_spend=False):
 
 def _report_package(manifest, evidence_root, *, unknown_pair_id=None,
                     forged_eligible_pair_id=None, failed_pair_id=None,
-                    missing_head_pair_id=None, meter_is_ledger_operator=False):
+                    missing_head_pair_id=None, meter_is_ledger_operator=False,
+                    settlement_state_pair_id=None, settlement_state="SEALED"):
     pair_scores = []
     for index, task in enumerate(manifest.task_pins):
         pair_id = task.blinded_pair_id_sha256
@@ -760,7 +791,9 @@ def _report_package(manifest, evidence_root, *, unknown_pair_id=None,
                 role="ACTION_METER_ATTESTOR", principal="principal-action-meter",
                 payload={"pair_id_sha256": pair_id, "arm_label": "A",
                          "sequence": str(receipt.sequence), "action_id_sha256": receipt.action_id,
-                         "usage_sha256": hashlib.sha256(canonical_bytes(receipt.usage)).hexdigest()},
+                         "usage_sha256": hashlib.sha256(canonical_bytes(receipt.usage)).hexdigest(),
+                         "settlement_state": (settlement_state if pair_id == settlement_state_pair_id
+                                               else "SEALED")},
             ).model_dump(),
         } for receipt in receipts_a)
         action_evidence_b = tuple({
@@ -771,7 +804,9 @@ def _report_package(manifest, evidence_root, *, unknown_pair_id=None,
                 role="ACTION_METER_ATTESTOR", principal="principal-action-meter",
                 payload={"pair_id_sha256": pair_id, "arm_label": "B",
                          "sequence": str(receipt.sequence), "action_id_sha256": receipt.action_id,
-                         "usage_sha256": hashlib.sha256(canonical_bytes(receipt.usage)).hexdigest()},
+                         "usage_sha256": hashlib.sha256(canonical_bytes(receipt.usage)).hexdigest(),
+                         "settlement_state": (settlement_state if pair_id == settlement_state_pair_id
+                                               else "SEALED")},
             ).model_dump(),
         } for receipt in receipts_b)
         pair_a = validate_accounting_chain(
@@ -935,6 +970,27 @@ def test_unknown_accounting_pair_is_retained_but_not_scored_as_eligible(tmp_path
     assert excluded.oriented_benefit_delta is None
 
 
+@pytest.mark.parametrize("settlement_state", ["UNKNOWN", "OVER_BOUND"])
+def test_nonsealed_meter_settlement_is_ineligible_even_when_usage_fits_caps(tmp_path, settlement_state):
+    manifest = freeze_manifest(_raw_manifest())
+    bad_pair_id = manifest.task_pins[0].blinded_pair_id_sha256
+    package = _report_package(
+        manifest, tmp_path, settlement_state_pair_id=bad_pair_id,
+        settlement_state=settlement_state,
+    )
+    scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
+    gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
+    report = aggregate_blinded_scores(
+        manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
+        unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
+        trust_policy=trust_policy,
+    )
+    pair = next(item for item in report.pair_results if item.pair_id_sha256 == bad_pair_id)
+    assert pair.status == "INELIGIBLE_ACCOUNTING"
+    assert pair.accounting_status == "INELIGIBLE"
+    assert report.usable_pairs == len(manifest.task_pins) - 1
+
+
 def test_forged_eligible_accounting_summary_is_not_scored(tmp_path):
     manifest = freeze_manifest(_raw_manifest())
     bad_pair_id = manifest.task_pins[0].blinded_pair_id_sha256
@@ -1017,6 +1073,57 @@ def test_missing_signed_ledger_head_makes_scored_pair_accounting_unknown(tmp_pat
     assert pair.status == "INELIGIBLE_ACCOUNTING"
     assert pair.accounting_status == "UNKNOWN"
     assert report.usable_pairs == 11
+
+
+def test_orphan_sealed_receipt_without_canonical_ledger_head_is_not_scored(tmp_path):
+    manifest = freeze_manifest(_raw_manifest())
+    package = _report_package(manifest, tmp_path)
+    pair = package.pairs[0]
+    previous = pair.arm_a_receipts[-1]
+    orphan = make_receipt(
+        pair_id=pair.pair_id_sha256, arm_label="A", sequence=previous.sequence + 1,
+        action_id=_sha(f"orphan-action-{pair.pair_id_sha256}"), action_kind="MODEL_CALL",
+        actor_id_digest=_sha("actor-A"),
+        usage=ResourceUsage(
+            agent_calls=1, evaluator_calls=0, experiments=0, retries=0,
+            input_tokens=1, output_tokens=1, cached_tokens=0,
+            wall_seconds=1, spend_microusd=1,
+        ).model_dump(mode="json"),
+        previous_receipt_sha256=previous.receipt_sha256,
+    )
+    orphan_attestation = _write_report_attestation(
+        tmp_path, name=f"orphan-{orphan.receipt_sha256}", evidence_type="ACTION_RECEIPT",
+        subject_sha=orphan.receipt_sha256, role="ACTION_METER_ATTESTOR",
+        principal="principal-action-meter",
+        payload={"pair_id_sha256": pair.pair_id_sha256, "arm_label": "A",
+                 "sequence": str(orphan.sequence), "action_id_sha256": orphan.action_id,
+                 "usage_sha256": hashlib.sha256(canonical_bytes(orphan.usage)).hexdigest(),
+                 "settlement_state": "SEALED"},
+    )
+    changed_pair = pair.model_copy(update={
+        "arm_a_receipts": (*pair.arm_a_receipts, orphan),
+        "arm_a_action_attestations": (*pair.arm_a_action_attestations, ActionReceiptAttestation(
+            receipt_sha256=orphan.receipt_sha256, evidence_ref=orphan_attestation,
+        )),
+    })
+    changed_pair = changed_pair.model_copy(update={"pair_result_sha256": pair_score_digest(changed_pair)})
+    changed_pairs = tuple(changed_pair if item.pair_id_sha256 == pair.pair_id_sha256 else item
+                          for item in package.pairs)
+    changed_payload = package.model_dump(mode="json")
+    changed_payload["pairs"] = [item.model_dump(mode="json") for item in changed_pairs]
+    changed_payload.pop("package_sha256")
+    changed_payload["package_sha256"] = score_package_digest(changed_payload)
+    package = BlindedScorePackage.model_validate_json(json.dumps(changed_payload), strict=True)
+    scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
+    gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
+    report = aggregate_blinded_scores(
+        manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
+        unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path), trust_policy=trust_policy,
+    )
+    orphan_pair = next(item for item in report.pair_results if item.pair_id_sha256 == pair.pair_id_sha256)
+    assert orphan_pair.status == "INELIGIBLE_ACCOUNTING"
+    assert orphan_pair.accounting_status == "UNKNOWN"
+    assert report.usable_pairs == len(manifest.task_pins) - 1
 
 
 def test_unattested_action_receipt_makes_scored_pair_accounting_unknown(tmp_path):
