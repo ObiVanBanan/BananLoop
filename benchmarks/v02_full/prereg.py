@@ -45,6 +45,7 @@ class ResourceCaps(FrozenModel):
 
 class TaskPin(FrozenModel):
     task_id: str = Field(min_length=1, max_length=200)
+    blinded_pair_id_sha256: Digest
     task_data_sha256: Digest
     initial_tree_sha256: Digest
     rights_record_sha256: Digest
@@ -273,6 +274,8 @@ class TrackManifest(FrozenModel):
             raise ValueError("arms must be ordered BANANLOOP_V02_FULL, CODEX_DIRECT")
         if len({task.task_id for task in self.task_pins}) != len(self.task_pins):
             raise ValueError("task_ids must be unique within a track")
+        if len({task.blinded_pair_id_sha256 for task in self.task_pins}) != len(self.task_pins):
+            raise ValueError("blind pair IDs must be unique within a track")
         if self.repeats_per_task != 1:
             raise ValueError("v1 sample-size calculations require one independent pair per task")
         expected_pairs = len(self.task_pins) * self.repeats_per_task
@@ -327,6 +330,7 @@ class VerificationPin(FrozenModel):
         "INTEGRATED_E2E_VERIFIER",
         "SCREEN_READER_REVIEWER",
         "BENCHMARK_OPERATOR",
+        "INDEPENDENT_SCORER",
     ]
 
 
