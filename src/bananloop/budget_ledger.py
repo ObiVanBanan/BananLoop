@@ -243,7 +243,7 @@ class BudgetLedger:
                             or matched[0].get("child_id") != allocation["child_id"]
                             or matched[0].get("child_spec_hash") != allocation["spec_hash"]):
                         return None
-                return expected, expected_caps
+                return expected
             finally:
                 conn.close()
         except (OSError, sqlite3.DatabaseError, ValueError, RegistryError):
@@ -657,7 +657,7 @@ class BudgetLedger:
                 if (control is None or control["state"] not in {"CANCEL_REQUESTED", "CANCELLED"}
                         or control["control_digest"] != expected):
                     return None
-                return expected
+                return expected, expected_caps
             finally:
                 conn.close()
         except (OSError, sqlite3.DatabaseError, ValueError, RegistryError):
