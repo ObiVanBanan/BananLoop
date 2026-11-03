@@ -492,7 +492,7 @@ def validate_run_gate(
     *,
     evidence_root: str,
     trust_policy: TrustPolicy,
-) -> None:
+) -> BlindLabelAssignment:
     """Authenticate prerequisite artifacts; never assigns or runs a task."""
     if manifest.manifest_sha256 is None:
         raise PreregError("track manifest must be frozen before gate validation")
@@ -675,6 +675,13 @@ def validate_run_gate(
             raise PreregError(f"CI job {job.name} is for a different source SHA")
     if not required.issubset(jobs):
         raise PreregError("exact-head CI matrix is incomplete")
+    try:
+        return BlindLabelAssignment.model_validate({
+            **blinding_document.payload,
+            "schema_version": 1,
+        }, strict=True)
+    except Exception as exc:
+        raise PreregError("signed blind label assignment is malformed") from exc
 
 
 def validate_track_pair(optimization: TrackManifest, exploration: TrackManifest) -> None:

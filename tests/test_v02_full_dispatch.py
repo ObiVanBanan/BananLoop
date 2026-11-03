@@ -80,6 +80,86 @@ def _bounds(**updates):
     return ResourceUsage(**value)
 
 
+def test_dispatch_rejects_same_role_arm_config_substitution(tmp_path):
+    boundary, _ = _setup(tmp_path)
+    try:
+        # The fixture freezes BANANLOOP_V02_FULL as A and CODEX_DIRECT as B.
+        # A caller must not be able to change model/bundle data while keeping
+        # the semantic arm and its signed blinded label.
+        boundary._arm_config = boundary.arm_config.model_copy(
+            update={"worker_bundle_sha256": "f" * 64},
+        )
+        with pytest.raises(DispatchBoundaryError, match="arm configuration differs"):
+            boundary._ensure_authorized()
+    finally:
+        boundary.close()
+
+
+def test_dispatch_rejects_blinded_label_swap(tmp_path):
+    boundary, _ = _setup(tmp_path)
+    try:
+        boundary.arm_label = "B"
+        with pytest.raises(DispatchBoundaryError, match="signed pre-run assignment"):
+            boundary._ensure_authorized()
+    finally:
+        boundary.close()
+
+
+def test_pending_recovery_rejects_unpinned_arm_config_digest(tmp_path):
+    boundary, _ = _setup(tmp_path)
+    bounds = _bounds(agent_calls=1)
+    action_id = _helpers._sha("action")
+    try:
+        intent = boundary._reserve_intent(
+            action_id=action_id, action_kind="MODEL_CALL",
+            actor_id_digest=_helpers._sha("actor"), bounds=bounds,
+            bound_proof=b"provider-ceiling-v1",
+        )
+        boundary.conn.execute(
+            "UPDATE meter_actions SET arm_configuration_sha256=? WHERE pair_id=? AND arm_label=? AND sequence=?",
+            ("f" * 64, boundary.pair_id, boundary.arm_label, intent.sequence),
+        )
+        with pytest.raises(DispatchBoundaryError, match="pending action arm configuration"):
+            boundary._recover_pending()
+    finally:
+        boundary.close()
+
+
+@pytest.mark.parametrize("mutation", ["config", "label"])
+def test_provider_bound_verifier_cannot_change_arm_context_before_dispatch(tmp_path, mutation):
+    boundary, _ = _setup(tmp_path)
+    original_verifier = boundary.provider_bound_verifier
+    operation_called = False
+
+    def mutating_verifier(*args):
+        result = original_verifier(*args)
+        if mutation == "config":
+            boundary._arm_config = boundary.arm_config.model_copy(
+                update={"worker_bundle_sha256": "f" * 64},
+            )
+        else:
+            boundary.arm_label = "B"
+        return result
+
+    def operation():
+        nonlocal operation_called
+        operation_called = True
+        return None
+
+    boundary.provider_bound_verifier = mutating_verifier
+    try:
+        with pytest.raises(DispatchBoundaryError, match="configuration differs|label does not match"):
+            boundary.dispatch_one(
+                action_id=_helpers._sha("action"), action_kind="MODEL_CALL",
+                actor_id_digest=_helpers._sha("actor"), bounds=_bounds(agent_calls=1),
+                bound_proof=b"provider-ceiling-v1", operation=operation,
+            )
+        assert not operation_called
+        assert boundary.conn.execute("SELECT COUNT(*) FROM meter_actions").fetchone()[0] == 0
+    finally:
+        boundary.close()
+
+
 def test_dispatch_persists_signed_receipt_and_exposes_report_refs(tmp_path):
     boundary, _ = _setup(tmp_path)
     result = boundary.dispatch_one(

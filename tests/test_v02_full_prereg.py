@@ -809,8 +809,11 @@ def _receipt_chain(pair_id, arm_label, *, unknown_spend=False):
 def _report_package(manifest, evidence_root, *, unknown_pair_id=None,
                     forged_eligible_pair_id=None, failed_pair_id=None,
                     missing_head_pair_id=None, meter_is_ledger_operator=False,
-                    settlement_state_pair_id=None, settlement_state="SEALED"):
+                    settlement_state_pair_id=None, settlement_state="SEALED",
+                    wrong_arm_configuration_pair_id=None):
     pair_scores = []
+    arm_configuration_sha256_a = hashlib.sha256(canonical_bytes(manifest.arms[0])).hexdigest()
+    arm_configuration_sha256_b = hashlib.sha256(canonical_bytes(manifest.arms[1])).hexdigest()
     for index, task in enumerate(manifest.task_pins):
         pair_id = task.blinded_pair_id_sha256
         receipts_a = _receipt_chain(pair_id, "A", unknown_spend=pair_id == unknown_pair_id)
@@ -823,6 +826,10 @@ def _report_package(manifest, evidence_root, *, unknown_pair_id=None,
                 role="ACTION_METER_ATTESTOR", principal="principal-action-meter",
                 payload={"pair_id_sha256": pair_id, "arm_label": "A",
                          "sequence": str(receipt.sequence), "action_id_sha256": receipt.action_id,
+                         "arm_configuration_sha256": (
+                             "f" * 64 if pair_id == wrong_arm_configuration_pair_id
+                             else arm_configuration_sha256_a
+                         ),
                          "usage_sha256": hashlib.sha256(canonical_bytes(receipt.usage)).hexdigest(),
                          "settlement_state": (settlement_state if pair_id == settlement_state_pair_id
                                                else "SEALED")},
@@ -836,6 +843,7 @@ def _report_package(manifest, evidence_root, *, unknown_pair_id=None,
                 role="ACTION_METER_ATTESTOR", principal="principal-action-meter",
                 payload={"pair_id_sha256": pair_id, "arm_label": "B",
                          "sequence": str(receipt.sequence), "action_id_sha256": receipt.action_id,
+                         "arm_configuration_sha256": arm_configuration_sha256_b,
                          "usage_sha256": hashlib.sha256(canonical_bytes(receipt.usage)).hexdigest(),
                          "settlement_state": (settlement_state if pair_id == settlement_state_pair_id
                                                else "SEALED")},
@@ -1068,6 +1076,24 @@ def test_unknown_accounting_pair_is_retained_but_not_scored_as_eligible(tmp_path
     assert excluded.oriented_benefit_delta is None
 
 
+def test_action_attestation_must_bind_the_frozen_arm_configuration(tmp_path):
+    manifest = freeze_manifest(_raw_manifest())
+    bad_pair_id = manifest.task_pins[0].blinded_pair_id_sha256
+    package = _report_package(
+        manifest, tmp_path, wrong_arm_configuration_pair_id=bad_pair_id,
+    )
+    scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
+    gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
+    report = aggregate_blinded_scores(
+        manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
+        unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
+        trust_policy=trust_policy,
+    )
+    excluded = next(item for item in report.pair_results if item.pair_id_sha256 == bad_pair_id)
+    assert excluded.status == "INELIGIBLE_ACCOUNTING"
+    assert report.usable_pairs == len(manifest.task_pins) - 1
+
+
 @pytest.mark.parametrize("settlement_state", ["UNKNOWN", "OVER_BOUND"])
 def test_nonsealed_meter_settlement_is_ineligible_even_when_usage_fits_caps(tmp_path, settlement_state):
     manifest = freeze_manifest(_raw_manifest())
@@ -1196,6 +1222,8 @@ def test_orphan_sealed_receipt_without_canonical_ledger_head_is_not_scored(tmp_p
         principal="principal-action-meter",
         payload={"pair_id_sha256": pair.pair_id_sha256, "arm_label": "A",
                  "sequence": str(orphan.sequence), "action_id_sha256": orphan.action_id,
+                 "arm_configuration_sha256": hashlib.sha256(
+                     canonical_bytes(manifest.arms[0])).hexdigest(),
                  "usage_sha256": hashlib.sha256(canonical_bytes(orphan.usage)).hexdigest(),
                  "settlement_state": "SEALED"},
     )

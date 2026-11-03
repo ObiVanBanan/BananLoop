@@ -219,7 +219,7 @@ class MeteredDispatchBoundary:
         self.task_id = task_id
         self.pair_id = pair_id
         self.arm_label = arm_label
-        self.arm_config = arm_config
+        self._arm_config = arm_config
         self.evidence_root = Path(evidence_root)
         self.trust_policy_path = Path(trust_policy_path)
         self.meter_key_id = meter_key_id
@@ -321,9 +321,14 @@ class MeteredDispatchBoundary:
     def close(self) -> None:
         self.conn.close()
 
+    @property
+    def arm_config(self) -> ArmConfig:
+        """Expose the manifest-pinned immutable config without allowing reassignment."""
+        return self._arm_config
+
     def _verify_authority(self) -> TrustPolicy:
         try:
-            verify_arm_run_authorization(
+            self.blind_assignment = verify_arm_run_authorization(
                 self.authorization,
                 manifest=self.manifest,
                 gate_evidence=self.gate_evidence,
@@ -356,6 +361,22 @@ class MeteredDispatchBoundary:
         return policy
 
     def _validate_assignment(self, policy: TrustPolicy) -> None:
+        if not isinstance(self.arm_config, ArmConfig):
+            raise DispatchBoundaryError("arm configuration is not a typed frozen configuration")
+        frozen_arm_config = next(
+            (item for item in self.manifest.arms if item.arm == self.arm_config.arm), None,
+        )
+        if frozen_arm_config is None or self.arm_config != frozen_arm_config:
+            raise DispatchBoundaryError("arm configuration differs from its frozen manifest entry")
+        expected_label = (
+            self.blind_assignment.bananloop_arm_label
+            if self.arm_config.arm == "BANANLOOP_V02_FULL"
+            else self.blind_assignment.codex_direct_arm_label
+        )
+        if self.arm_label != expected_label:
+            raise DispatchBoundaryError(
+                "blinded arm label does not match the signed pre-run assignment for this arm configuration"
+            )
         try:
             verify_assignment_projection(
                 self.assignment, authorization=self.authorization,
@@ -376,6 +397,13 @@ class MeteredDispatchBoundary:
                 or task.rights_record_sha256 != pin.rights_record_sha256
                 or hashlib.sha256(task.task_payload).hexdigest() != pin.task_data_sha256):
             raise DispatchBoundaryError("assigned task bytes or rights/tree pins do not match the manifest")
+
+    def _dispatch_context_snapshot(self) -> tuple:
+        """Capture all authorization-bound identities used by one dispatch."""
+        return (
+            self.authorization, self.manifest, self.gate_evidence, self.track,
+            self.assignment, self.task_id, self.pair_id, self.arm_label, self.arm_config,
+        )
 
     def _read_head(self) -> sqlite3.Row:
         row = self.conn.execute(
@@ -412,6 +440,8 @@ class MeteredDispatchBoundary:
     def _reserve_intent(
         self, *, action_id: str, action_kind: str, actor_id_digest: str, bounds: ResourceUsage,
         bound_proof: bytes, provider_receipt_sha256: str | None = None,
+        expected_arm_config: ArmConfig | None = None,
+        expected_arm_label: Literal["A", "B"] | None = None,
     ) -> _PendingIntent:
         if not _DIGEST.fullmatch(action_id) or not _DIGEST.fullmatch(actor_id_digest):
             raise DispatchBoundaryError("action and actor IDs must be lowercase SHA-256 digests")
@@ -426,11 +456,17 @@ class MeteredDispatchBoundary:
         if not isinstance(bound_proof, bytes) or not bound_proof or len(bound_proof) > 1_000_000:
             raise DispatchBoundaryError("provider ceiling proof must be bounded nonempty bytes")
         self._ensure_authorized()
+        arm_config_snapshot = self.arm_config
+        arm_label_snapshot = self.arm_label
+        if (expected_arm_config is not None and arm_config_snapshot != expected_arm_config
+                or expected_arm_label is not None and arm_label_snapshot != expected_arm_label):
+            raise DispatchBoundaryError("arm configuration or label changed before action reservation")
+        context_snapshot = self._dispatch_context_snapshot()
         # Refuse a sealed chain before asking any adapter to prepare a new call.
         self._read_head()
         try:
             if not self.provider_bound_verifier(
-                self.manifest, self.arm_config, self.pair_id, self.arm_label,
+                context_snapshot[1], arm_config_snapshot, context_snapshot[6], arm_label_snapshot,
                 action_id, action_kind, bounds, bound_proof,
             ):
                 raise DispatchBoundaryError(
@@ -440,6 +476,12 @@ class MeteredDispatchBoundary:
             raise
         except Exception as exc:
             raise DispatchBoundaryError("provider ceiling proof could not be verified") from exc
+        self._ensure_authorized()
+        if (self._dispatch_context_snapshot() != context_snapshot
+                or self.arm_config != arm_config_snapshot or self.arm_label != arm_label_snapshot
+                or expected_arm_config is not None and self.arm_config != expected_arm_config
+                or expected_arm_label is not None and self.arm_label != expected_arm_label):
+            raise DispatchBoundaryError("provider ceiling verifier changed the authorized arm context")
 
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -450,7 +492,7 @@ class MeteredDispatchBoundary:
                     raise DispatchBoundaryError(f"pre-dispatch bound exceeds frozen {name} cap")
             sequence = int(head["sequence"]) + 1
             previous = head["receipt_sha256"]
-            arm_configuration_sha256 = _digest(canonical_bytes(self.arm_config))
+            arm_configuration_sha256 = _digest(canonical_bytes(arm_config_snapshot))
             bound_proof_sha256 = _digest(bound_proof)
             if provider_receipt_sha256 is not None and not _DIGEST.fullmatch(provider_receipt_sha256):
                 raise DispatchBoundaryError("provider receipt digest must be lowercase SHA-256")
@@ -459,7 +501,7 @@ class MeteredDispatchBoundary:
                 "bounds_json,previous_receipt_sha256,arm_configuration_sha256,bound_proof_sha256,"
                 "provider_receipt_sha256,state,receipt_json,evidence_path,evidence_sha256) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,'PENDING',NULL,NULL,NULL)",
-                (self.pair_id, self.arm_label, sequence, action_id, action_kind,
+                (context_snapshot[6], arm_label_snapshot, sequence, action_id, action_kind,
                  actor_id_digest, _canonical(bounds.model_dump(mode="json")).decode(), previous,
                  arm_configuration_sha256, bound_proof_sha256, provider_receipt_sha256),
             )
@@ -486,6 +528,9 @@ class MeteredDispatchBoundary:
             usage=usage.model_dump(mode="json"),
             previous_receipt_sha256=intent.previous_receipt_sha256,
         )
+        expected_arm_configuration_sha256 = _digest(canonical_bytes(self.arm_config))
+        if intent.arm_configuration_sha256 != expected_arm_configuration_sha256:
+            raise DispatchBoundaryError("pending action arm configuration differs from the frozen manifest")
         usage_sha = _digest(canonical_bytes(receipt.usage))
         signed = sign_evidence(
             {
@@ -497,6 +542,7 @@ class MeteredDispatchBoundary:
                     "arm_label": self.arm_label,
                     "sequence": str(receipt.sequence),
                     "action_id_sha256": receipt.action_id,
+                    "arm_configuration_sha256": intent.arm_configuration_sha256,
                     "usage_sha256": usage_sha,
                     "settlement_state": status,
                 },
@@ -566,6 +612,9 @@ class MeteredDispatchBoundary:
         if row is None:
             return
         self._ensure_authorized()
+        expected_arm_configuration_sha256 = _digest(canonical_bytes(self.arm_config))
+        if row["arm_configuration_sha256"] != expected_arm_configuration_sha256:
+            raise DispatchBoundaryError("pending action arm configuration differs from the frozen manifest")
         intent = _PendingIntent(
             sequence=int(row["sequence"]), action_id=row["action_id"], action_kind=row["action_kind"],
             actor_id_digest=row["actor_id_digest"],
@@ -602,6 +651,15 @@ class MeteredDispatchBoundary:
         """
         if not isinstance(worker, BubblewrapArmWorker):
             raise DispatchBoundaryError("a bubblewrap isolated arm worker is required")
+        self._ensure_authorized()
+        dispatch_context = self._dispatch_context_snapshot()
+        manifest = dispatch_context[1]
+        track = dispatch_context[3]
+        assignment = dispatch_context[4]
+        task_id = dispatch_context[5]
+        pair_id = dispatch_context[6]
+        arm_label = dispatch_context[7]
+        arm_config = dispatch_context[8]
         try:
             reserved = _known_usage(bounds, label="pre-dispatch resource bounds")
         except (AttributeError, DispatchBoundaryError) as exc:
@@ -615,7 +673,7 @@ class MeteredDispatchBoundary:
             raise DispatchBoundaryError("provider timeout must fit within the worker wall ceiling")
         if type(memory_bytes) is not int or memory_bytes < 1:
             raise DispatchBoundaryError("worker memory ceiling must be positive")
-        if memory_bytes != self.arm_config.worker_memory_bytes:
+        if memory_bytes != arm_config.worker_memory_bytes:
             raise DispatchBoundaryError("worker memory ceiling differs from the frozen arm configuration")
         if (reserved["agent_calls"] != 1 or reserved["input_tokens"] < 1
                 or reserved["output_tokens"] < 1):
@@ -623,23 +681,25 @@ class MeteredDispatchBoundary:
 
         def run_one_model_action() -> InvocationOutput:
             try:
+                if self._dispatch_context_snapshot() != dispatch_context:
+                    raise DispatchBoundaryError("authorized arm context changed before isolated worker launch")
                 with OneShotProviderBroker(
-                    provider_adapter, action_id=action_id, arm_config=self.arm_config,
+                    provider_adapter, action_id=action_id, arm_config=arm_config,
                     resource_bounds=bounds,
                     timeout_seconds=provider_timeout_seconds,
                 ) as broker:
                     result = worker.run(
-                        argv=argv, workspace=workspace, projection=self.assignment,
-                        manifest=self.manifest, arm_config=self.arm_config,
-                        arm_label=self.arm_label, action_id=action_id,
+                        argv=argv, workspace=workspace, projection=assignment,
+                        manifest=manifest, arm_config=arm_config,
+                        arm_label=arm_label, action_id=action_id,
                         timeout_seconds=timeout_seconds,
                         memory_bytes=memory_bytes, provider_broker_socket=broker.socket_path,
                     )
                     broker_receipt = broker.verify_complete()
                 if (not isinstance(result, ArmWorkerResult)
-                        or result.task_id != self.task_id
-                        or result.track != self.track
-                        or result.pair_id_sha256 != self.pair_id
+                        or result.task_id != task_id
+                        or result.track != track
+                        or result.pair_id_sha256 != pair_id
                         or not math.isfinite(result.elapsed_seconds)
                         or result.elapsed_seconds < 0
                         or result.elapsed_seconds > timeout_seconds):
@@ -681,9 +741,13 @@ class MeteredDispatchBoundary:
         """Reserve, invoke exactly once, authenticate usage and append signed evidence."""
         if not callable(operation):
             raise DispatchBoundaryError("one trusted single-invocation adapter is required")
+        arm_config_snapshot = self.arm_config
+        arm_label_snapshot = self.arm_label
         intent = self._reserve_intent(
             action_id=action_id, action_kind=action_kind, actor_id_digest=actor_id_digest,
             bounds=bounds, bound_proof=bound_proof,
+            expected_arm_config=arm_config_snapshot,
+            expected_arm_label=arm_label_snapshot,
         )
         started = time.monotonic()
         try:

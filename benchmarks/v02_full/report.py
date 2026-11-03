@@ -207,7 +207,7 @@ def _accounting_summary_is_eligible(result: AccountingResult | None, caps) -> bo
 
 
 def _verified_accounting(receipts, action_attestations, *, pair_id: str,
-                         arm_label: Literal["A", "B"], caps,
+                         arm_label: Literal["A", "B"], arm_configuration_sha256: str, caps,
                          claimed: AccountingResult | None, attestation: EvidenceArtifactRef | None,
                          manifest: TrackManifest, evidence_root: str,
                          trust_policy: TrustPolicy) -> tuple[AccountingResult | None, bool, tuple[str, bytes] | None]:
@@ -233,6 +233,7 @@ def _verified_accounting(receipts, action_attestations, *, pair_id: str,
                     "arm_label": arm_label,
                     "sequence": str(receipt.sequence),
                     "action_id_sha256": receipt.action_id,
+                    "arm_configuration_sha256": arm_configuration_sha256,
                     "usage_sha256": usage_sha,
                 },
             ).document
@@ -409,6 +410,11 @@ def aggregate_blinded_scores(
             or unblinder.payload["blinding_assignment_sha256"] != manifest.blinding_assignment_sha256):
         raise ReportError("post-run unblinding differs from the pre-run blinded label assignment")
     bananloop_label = unblinder.payload["bananloop_arm_label"]
+    codex_direct_label = unblinder.payload["codex_direct_arm_label"]
+    arm_configuration_by_label = {
+        bananloop_label: manifest.arms[0],
+        codex_direct_label: manifest.arms[1],
+    }
     inference: InferencePlan = manifest.inference
 
     pair_reports: list[ReportPair] = []
@@ -455,6 +461,7 @@ def aggregate_blinded_scores(
         accounting_a, eligible_a, meter_a = _verified_accounting(
             item.arm_a_receipts, item.arm_a_action_attestations,
             pair_id=item.pair_id_sha256, arm_label="A",
+            arm_configuration_sha256=_digest(arm_configuration_by_label["A"]),
             caps=caps_a, claimed=item.arm_a_accounting,
             attestation=item.arm_a_ledger_attestation, manifest=manifest,
             evidence_root=evidence_root, trust_policy=trust_policy,
@@ -462,6 +469,7 @@ def aggregate_blinded_scores(
         accounting_b, eligible_b, meter_b = _verified_accounting(
             item.arm_b_receipts, item.arm_b_action_attestations,
             pair_id=item.pair_id_sha256, arm_label="B",
+            arm_configuration_sha256=_digest(arm_configuration_by_label["B"]),
             caps=caps_b, claimed=item.arm_b_accounting,
             attestation=item.arm_b_ledger_attestation, manifest=manifest,
             evidence_root=evidence_root, trust_policy=trust_policy,

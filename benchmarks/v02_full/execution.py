@@ -23,8 +23,8 @@ from .evidence import (
     sign_evidence, verify_evidence_artifact, verify_protected_directory,
 )
 from .prereg import (
-    GateEvidence, PreregError, TrackManifest, canonical_bytes, validate_run_gate,
-    validate_track_pair,
+    BlindLabelAssignment, GateEvidence, PreregError, TrackManifest, canonical_bytes,
+    validate_run_gate, validate_track_pair,
 )
 
 
@@ -318,7 +318,7 @@ def verify_arm_run_authorization(
     gate_evidence: GateEvidence,
     trust_policy_path: str,
     evidence_root: str,
-) -> None:
+) -> BlindLabelAssignment:
     """Revalidate one arm without loading the opposite track's task manifest."""
     if manifest.track not in {"OPTIMIZATION", "EXPLORATION"}:
         raise RunStartError("arm manifest has an invalid track")
@@ -370,10 +370,15 @@ def verify_arm_run_authorization(
             bytes.fromhex(authorization.document.signature_ed25519),
             canonical_bytes(authorization.document.unsigned_payload()),
         )
-        validate_run_gate(manifest, gate_evidence, evidence_root=evidence_root,
-                          trust_policy=trust_policy)
+        blind_assignment = validate_run_gate(
+            manifest, gate_evidence, evidence_root=evidence_root,
+            trust_policy=trust_policy,
+        )
     except Exception as exc:
         raise RunStartError(f"arm run gate or run-start signature failed verification: {exc}") from exc
+    return blind_assignment
+
+
 def assign_tasks_after_run_authorization(
     authorization: RunStartAuthorization,
     optimization: TrackManifest,
