@@ -164,6 +164,7 @@ def _valid_evidence(manifest, evidence_dir, *, duplicate_independent_principal=F
         "INDEPENDENT_OPERATOR": "principal-ledger-reviewer",
         "INDEPENDENT_SCORER": "principal-scorer",
         "RUN_START_AUTHORIZER": "principal-run-authorizer",
+        "ACTION_METER_ATTESTOR": "principal-action-meter",
         "RIGHTS_AUTHORIZER": "principal-rights",
         "SPEND_AUTHORIZER": "principal-spend",
         "OWNER_APPROVER": "principal-owner",
@@ -622,12 +623,34 @@ def _receipt_chain(pair_id, arm_label, *, unknown_spend=False):
 
 def _report_package(manifest, evidence_root, *, unknown_pair_id=None,
                     forged_eligible_pair_id=None, failed_pair_id=None,
-                    missing_head_pair_id=None):
+                    missing_head_pair_id=None, meter_is_ledger_operator=False):
     pair_scores = []
     for index, task in enumerate(manifest.task_pins):
         pair_id = task.blinded_pair_id_sha256
         receipts_a = _receipt_chain(pair_id, "A", unknown_spend=pair_id == unknown_pair_id)
         receipts_b = _receipt_chain(pair_id, "B")
+        action_evidence_a = tuple({
+            "receipt_sha256": receipt.receipt_sha256,
+            "evidence_ref": _write_report_attestation(
+                evidence_root, name=f"meter-{pair_id}-A-{receipt.sequence}",
+                evidence_type="ACTION_RECEIPT", subject_sha=receipt.receipt_sha256,
+                role="ACTION_METER_ATTESTOR", principal="principal-action-meter",
+                payload={"pair_id_sha256": pair_id, "arm_label": "A",
+                         "sequence": str(receipt.sequence), "action_id_sha256": receipt.action_id,
+                         "usage_sha256": hashlib.sha256(canonical_bytes(receipt.usage)).hexdigest()},
+            ).model_dump(),
+        } for receipt in receipts_a)
+        action_evidence_b = tuple({
+            "receipt_sha256": receipt.receipt_sha256,
+            "evidence_ref": _write_report_attestation(
+                evidence_root, name=f"meter-{pair_id}-B-{receipt.sequence}",
+                evidence_type="ACTION_RECEIPT", subject_sha=receipt.receipt_sha256,
+                role="ACTION_METER_ATTESTOR", principal="principal-action-meter",
+                payload={"pair_id_sha256": pair_id, "arm_label": "B",
+                         "sequence": str(receipt.sequence), "action_id_sha256": receipt.action_id,
+                         "usage_sha256": hashlib.sha256(canonical_bytes(receipt.usage)).hexdigest()},
+            ).model_dump(),
+        } for receipt in receipts_b)
         pair_a = validate_accounting_chain(
             receipts_a, pair_id=pair_id, arm_label="A", caps=manifest.arms[0].caps,
             expected_final_receipt_sha256=receipts_a[-1].receipt_sha256,
@@ -641,10 +664,15 @@ def _report_package(manifest, evidence_root, *, unknown_pair_id=None,
                 "totals": {**pair_a.totals, "spend_microusd": None},
                 "unknown_dimensions": ("spend_microusd",),
             })
+        ledger_principal = "principal-action-meter" if meter_is_ledger_operator else "principal-ledger-reviewer"
+        ledger_role_args = ({"signing_role": "ACTION_METER_ATTESTOR",
+                             "key_id": "key-action_meter_attestor",
+                             "key_secret": "secret-ACTION_METER_ATTESTOR"}
+                            if meter_is_ledger_operator else {})
         ledger_a = None if pair_id == missing_head_pair_id else _write_report_attestation(
             evidence_root, name=f"ledger-{pair_id}-A", evidence_type="RESOURCE_LEDGER_HEAD",
             subject_sha=manifest.manifest_sha256, role="INDEPENDENT_OPERATOR",
-            principal="principal-ledger-reviewer",
+            principal=ledger_principal, **ledger_role_args,
             payload={"pair_id_sha256": pair_id, "arm_label": "A",
                      "action_count": str(len(receipts_a)),
                      "final_receipt_sha256": receipts_a[-1].receipt_sha256},
@@ -652,7 +680,7 @@ def _report_package(manifest, evidence_root, *, unknown_pair_id=None,
         ledger_b = None if pair_id == missing_head_pair_id else _write_report_attestation(
             evidence_root, name=f"ledger-{pair_id}-B", evidence_type="RESOURCE_LEDGER_HEAD",
             subject_sha=manifest.manifest_sha256, role="INDEPENDENT_OPERATOR",
-            principal="principal-ledger-reviewer",
+            principal=ledger_principal, **ledger_role_args,
             payload={"pair_id_sha256": pair_id, "arm_label": "B",
                      "action_count": str(len(receipts_b)),
                      "final_receipt_sha256": receipts_b[-1].receipt_sha256},
@@ -679,6 +707,8 @@ def _report_package(manifest, evidence_root, *, unknown_pair_id=None,
             ).model_dump() if output_b_sha else None),
             "arm_a_receipts": tuple(item.model_dump(mode="json") for item in receipts_a),
             "arm_b_receipts": tuple(item.model_dump(mode="json") for item in receipts_b),
+            "arm_a_action_attestations": action_evidence_a,
+            "arm_b_action_attestations": action_evidence_b,
             "arm_a_ledger_attestation": ledger_a.model_dump() if ledger_a else None,
             "arm_b_ledger_attestation": ledger_b.model_dump() if ledger_b else None,
             "arm_a_accounting": pair_a.model_dump(),
@@ -864,6 +894,73 @@ def test_missing_signed_ledger_head_makes_scored_pair_accounting_unknown(tmp_pat
     assert pair.status == "INELIGIBLE_ACCOUNTING"
     assert pair.accounting_status == "UNKNOWN"
     assert report.usable_pairs == 11
+
+
+def test_unattested_action_receipt_makes_scored_pair_accounting_unknown(tmp_path):
+    manifest = freeze_manifest(_raw_manifest())
+    missing_attestation_pair_id = manifest.task_pins[0].blinded_pair_id_sha256
+    package = _report_package(manifest, tmp_path)
+    pair = next(item for item in package.pairs if item.pair_id_sha256 == missing_attestation_pair_id)
+    changed_pair = pair.model_copy(update={"arm_a_action_attestations": ()})
+    changed_pair = changed_pair.model_copy(update={"pair_result_sha256": pair_score_digest(changed_pair)})
+    changed_pairs = tuple(changed_pair if item.pair_id_sha256 == pair.pair_id_sha256 else item
+                          for item in package.pairs)
+    changed_payload = package.model_dump(mode="json")
+    changed_payload["pairs"] = [item.model_dump(mode="json") for item in changed_pairs]
+    changed_payload.pop("package_sha256")
+    changed_payload["package_sha256"] = score_package_digest(changed_payload)
+    package = BlindedScorePackage.model_validate_json(json.dumps(changed_payload), strict=True)
+    scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
+    gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
+    report = aggregate_blinded_scores(
+        manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
+        unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
+        trust_policy=trust_policy,
+    )
+    pair_result = next(item for item in report.pair_results
+                       if item.pair_id_sha256 == missing_attestation_pair_id)
+    assert pair_result.status == "INELIGIBLE_ACCOUNTING"
+    assert pair_result.accounting_status == "UNKNOWN"
+
+
+def test_action_meter_signature_must_bind_the_exact_receipt_bytes(tmp_path):
+    manifest = freeze_manifest(_raw_manifest())
+    package = _report_package(manifest, tmp_path)
+    pair = package.pairs[0]
+    attestation = pair.arm_a_action_attestations[0]
+    (tmp_path / attestation.evidence_ref.path).write_text("tampered", encoding="utf-8")
+    scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
+    gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
+    report = aggregate_blinded_scores(
+        manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
+        unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
+        trust_policy=trust_policy,
+    )
+    assert report.usable_pairs == 11
+    assert next(item for item in report.pair_results if item.pair_id_sha256 == pair.pair_id_sha256).status == "INELIGIBLE_ACCOUNTING"
+
+
+def test_action_meter_cannot_attest_its_own_ledger_head(tmp_path):
+    manifest = freeze_manifest(_raw_manifest())
+    package = _report_package(manifest, tmp_path, meter_is_ledger_operator=True)
+    scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
+    gate_evidence, policy = _valid_evidence(manifest, tmp_path)
+    meter = policy.signers["key-action_meter_attestor"]
+    signers = dict(policy.signers)
+    signers[meter.key_id] = TrustedSigner(
+        key_id=meter.key_id, principal_id=meter.principal_id, public_key=meter.public_key,
+        permitted_roles=meter.permitted_roles | {"INDEPENDENT_OPERATOR"},
+    )
+    shared_meter_policy = TrustPolicy(
+        signers=signers, independent_principal_exclusions=policy.independent_principal_exclusions,
+    )
+    report = aggregate_blinded_scores(
+        manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
+        unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
+        trust_policy=shared_meter_policy,
+    )
+    assert report.usable_pairs == 0
+    assert all(item.status == "INELIGIBLE_ACCOUNTING" for item in report.pair_results)
 
 
 def test_scored_output_bytes_must_match_the_frozen_digest(tmp_path):

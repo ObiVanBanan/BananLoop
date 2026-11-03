@@ -30,6 +30,11 @@ class ReportModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True, allow_inf_nan=False)
 
 
+class ActionReceiptAttestation(ReportModel):
+    receipt_sha256: Digest
+    evidence_ref: EvidenceArtifactRef
+
+
 class BlindedPairScore(ReportModel):
     pair_id_sha256: Digest
     status: Literal["SCORED", "FAILED", "EXCLUDED", "MISSING"]
@@ -41,6 +46,8 @@ class BlindedPairScore(ReportModel):
     arm_b_output_ref: EvidenceArtifactRef | None = None
     arm_a_receipts: tuple[ActionReceipt, ...] = ()
     arm_b_receipts: tuple[ActionReceipt, ...] = ()
+    arm_a_action_attestations: tuple[ActionReceiptAttestation, ...] = ()
+    arm_b_action_attestations: tuple[ActionReceiptAttestation, ...] = ()
     arm_a_ledger_attestation: EvidenceArtifactRef | None = None
     arm_b_ledger_attestation: EvidenceArtifactRef | None = None
     arm_a_accounting: AccountingResult | None = None
@@ -157,7 +164,7 @@ class ReportError(ValueError):
 
 
 def _accounting_summary_is_eligible(result: AccountingResult | None, caps) -> bool:
-    """Reject internally inconsistent summaries; receipt-chain authenticity is separate."""
+    """Reject internally inconsistent summaries after action-origin verification."""
     if result is None or result.status != "ELIGIBLE" or result.action_count < 1:
         return False
     if result.final_receipt_sha256 is None:
@@ -172,14 +179,41 @@ def _accounting_summary_is_eligible(result: AccountingResult | None, caps) -> bo
     return True
 
 
-def _verified_accounting(receipts, *, pair_id: str, arm_label: Literal["A", "B"], caps,
+def _verified_accounting(receipts, action_attestations, *, pair_id: str,
+                         arm_label: Literal["A", "B"], caps,
                          claimed: AccountingResult | None, attestation: EvidenceArtifactRef | None,
                          manifest: TrackManifest, evidence_root: str,
-                         trust_policy: TrustPolicy) -> tuple[AccountingResult | None, bool]:
-    """Recompute accounting from receipts pinned by a trusted ledger-head signer."""
-    if not receipts or attestation is None:
-        return None, False
+                         trust_policy: TrustPolicy) -> tuple[AccountingResult | None, bool, tuple[str, bytes] | None]:
+    """Recompute accounting from meter-attested receipts and a signed ledger head."""
+    if not receipts or attestation is None or len(action_attestations) != len(receipts):
+        return None, False, None
     try:
+        if tuple(item.receipt_sha256 for item in action_attestations) != tuple(
+                item.receipt_sha256 for item in receipts):
+            return None, False, None
+        meter_principals: set[str] = set()
+        meter_keys: set[str] = set()
+        for receipt, receipt_attestation in zip(receipts, action_attestations, strict=True):
+            usage_sha = _digest(receipt.usage)
+            verified_action = verify_evidence_artifact(
+                root=evidence_root, reference=receipt_attestation.evidence_ref,
+                policy=trust_policy, evidence_type="ACTION_RECEIPT",
+                subject_sha=receipt.receipt_sha256, conclusion="ACCEPTED",
+                issuer_role="ACTION_METER_ATTESTOR",
+                expected_payload={
+                    "pair_id_sha256": pair_id,
+                    "arm_label": arm_label,
+                    "sequence": str(receipt.sequence),
+                    "action_id_sha256": receipt.action_id,
+                    "usage_sha256": usage_sha,
+                },
+            ).document
+            if verified_action.issuer_principal_id in trust_policy.independent_principal_exclusions:
+                return None, False, None
+            meter_principals.add(verified_action.issuer_principal_id)
+            meter_keys.add(verified_action.issuer_key_id)
+        if len(meter_principals) != 1 or len(meter_keys) != 1:
+            return None, False, None
         head = receipts[-1].receipt_sha256
         verified_head = verify_evidence_artifact(
             root=evidence_root, reference=attestation, policy=trust_policy,
@@ -191,18 +225,25 @@ def _verified_accounting(receipts, *, pair_id: str, arm_label: Literal["A", "B"]
             },
         ).document
         if verified_head.issuer_principal_id in trust_policy.independent_principal_exclusions:
-            return None, False
+            return None, False, None
+        meter_principal = next(iter(meter_principals))
+        meter_key_id = next(iter(meter_keys))
+        meter_public_key = trust_policy.signers[meter_key_id].public_key
+        head_public_key = trust_policy.signers[verified_head.issuer_key_id].public_key
+        if (verified_head.issuer_principal_id == meter_principal
+                or hashlib.sha256(head_public_key).digest() == hashlib.sha256(meter_public_key).digest()):
+            return None, False, None
         actual = validate_accounting_chain(
             receipts, pair_id=pair_id, arm_label=arm_label, caps=caps,
             expected_final_receipt_sha256=verified_head.payload["final_receipt_sha256"],
         )
     except (EvidenceError, ValueError, IndexError):
-        return None, False
+        return None, False, None
     return actual, (
         claimed is not None
         and claimed.model_dump(mode="json") == actual.model_dump(mode="json")
         and _accounting_summary_is_eligible(actual, caps)
-    )
+    ), (meter_principal, hashlib.sha256(meter_public_key).digest())
 
 
 def _digest(value: BaseModel | dict) -> str:
@@ -315,19 +356,31 @@ def aggregate_blinded_scores(
                 except EvidenceError as exc:
                     raise ReportError(f"arm {label} output artifact verification failed: {exc}") from exc
         caps_a, caps_b = manifest.arms[0].caps, manifest.arms[1].caps
-        accounting_a, eligible_a = _verified_accounting(
-            item.arm_a_receipts, pair_id=item.pair_id_sha256, arm_label="A",
+        accounting_a, eligible_a, meter_a = _verified_accounting(
+            item.arm_a_receipts, item.arm_a_action_attestations,
+            pair_id=item.pair_id_sha256, arm_label="A",
             caps=caps_a, claimed=item.arm_a_accounting,
             attestation=item.arm_a_ledger_attestation, manifest=manifest,
             evidence_root=evidence_root, trust_policy=trust_policy,
         )
-        accounting_b, eligible_b = _verified_accounting(
-            item.arm_b_receipts, pair_id=item.pair_id_sha256, arm_label="B",
+        accounting_b, eligible_b, meter_b = _verified_accounting(
+            item.arm_b_receipts, item.arm_b_action_attestations,
+            pair_id=item.pair_id_sha256, arm_label="B",
             caps=caps_b, claimed=item.arm_b_accounting,
             attestation=item.arm_b_ledger_attestation, manifest=manifest,
             evidence_root=evidence_root, trust_policy=trust_policy,
         )
         accounting_ok = eligible_a and eligible_b
+        for meter in (meter_a, meter_b):
+            if meter is None:
+                continue
+            meter_principal, meter_fingerprint = meter
+            if (meter_principal in {scorer.issuer_principal_id, unblinder.issuer_principal_id}
+                    or meter_fingerprint in {
+                        hashlib.sha256(scorer_signer.public_key).digest(),
+                        hashlib.sha256(unblinder_signer.public_key).digest(),
+                    }):
+                raise ReportError("action meter must be independent from scorer and unblinding operator")
         accounting_unknown = (
             accounting_a is None or accounting_b is None
             or accounting_a.status == "INELIGIBLE_UNKNOWN_ACCOUNTING"
