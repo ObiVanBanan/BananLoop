@@ -211,6 +211,15 @@ def test_populated_v4_database_reads_legacy_evaluator_binding_without_rewrite(tm
     store = CampaignStore(path)
     try:
         assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        legacy_spec = CampaignSpec.model_validate({
+            "schema_version": 1, "goal": "preserve legacy evaluator binding",
+            "source_repo": "repo", "base_commit": "abc",
+            "evaluation_command": ["python", "evaluator.py"],
+            "primary_metric": {"name": "quality", "direction": "maximize",
+                               "target": 1.0, "min_improvement": 0.1},
+        })
+        store.initialize(legacy_spec)
+        legacy_hash = store.spec().approved_hash()
         store.save_evaluator_binding(
             "legacy-binding-v1",
             hashlib.sha256(binding_json.encode()).hexdigest(),
@@ -230,6 +239,8 @@ def test_populated_v4_database_reads_legacy_evaluator_binding_without_rewrite(tm
             "SELECT id,binding_id,binding_hash,binding_json FROM evaluator_bindings WHERE id=1"
         ).fetchone())
         assert reopened.evaluator_binding()["binding_json"] == binding_json
+        assert reopened.spec().approved_hash() == legacy_hash
+        assert reopened.campaign()["spec_hash"] == legacy_hash
         assert reopened.conn.execute("PRAGMA user_version").fetchone()[0] == 4
         assert after == before
     finally:
