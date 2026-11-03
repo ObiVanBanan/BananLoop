@@ -37,19 +37,33 @@ A smoke set is only an integration check. It is not a capability score and must 
 
 Run only after the v0.2 Full architecture and Role Registry are stable enough to instantiate each role with its frozen contract.
 
-Initial pilot targets:
+### Codex Plus quota protection — default execution plan
 
-| Role | Pilot target | Confirmatory target |
-|---|---:|---:|
-| Campaign bootstrapper | 5–10 | 30–50 |
-| Researcher | 5–10 | 30–50 |
-| Proposer | 5–10 | 30–50 |
-| Selector | 5–10 portfolios | 30–50 portfolios |
-| Implementer | 5–10 | 30–50 |
-| Diagnostic | 10–15 | 50–100 |
-| Pivot advisor | 5–10 | 20–30 |
+The owner's Codex Plus subscription has a limited, variable usage allowance; there is no reliable fixed conversion from a benchmark invocation to subscription quota. **Do not assume a token cap equals a subscription-quota cap.** No autonomous recurring real-model benchmark runs are approved.
 
-Use at least three seeds for pilot cases where model stochasticity applies. Confirmatory runs should use a preregistered repetition count, normally five or more for stochastic comparisons where budget allows. Preserve every attempt.
+1. Run *all* contract, schema, security, budget, and report checks with deterministic fixtures, mocks/replays, and local Python first: **0 Codex calls**.
+2. For the first live smoke, run **at most two short, single-case, single-seed trials total**, one at a time. This is a wiring test, not capability evidence.
+3. If both succeed and the owner explicitly approves further quota use, extend the initial live pilot to **at most eight Codex model invocations in total across all roles**, inclusive of the first two trials, all retries, format-repair turns, helper roles, and any bootstrap calls.
+4. Per batch: **maximum two Codex invocations**; check the subscription usage remaining before starting the next batch. A batch does not start when usage is unknown or a configured quota warning is active.
+5. Default **one seed per live pilot case**. Do not do three/five repetitions or 30–100-case live suites on the Plus subscription by default. The pilot must report that uncertainty was not estimated.
+6. Disable speculative parallel agent calls and automatic retries; record failures without silently rerunning them. If the adapter internally consumes multiple model requests, count all of them toward the ceiling. If reliable request counting or pre-dispatch cap enforcement is unavailable, **fail closed / stop after the current safe check**, rather than treating an estimate as a hard guarantee.
+7. Heavy SWE-bench, MLS-Bench, or long-horizon AutoResearchExam runs are **not authorized** by this plan. They need their own budget, execution environment, and explicit owner decision.
+
+The numbers above are **pilot design ceilings, not guaranteed Codex Plus quota consumption**. A single long Codex invocation may use more quota than several short ones. Stop on provider usage-limit warnings or uncertainty about remaining allowance. Never automatically reschedule a batch when quota renews.
+
+### Target coverage, without committing Plus quota
+
+| Role | Offline fixture/contract target | First live pilot | Later confirmatory target |
+|---|---:|---:|---:|
+| Campaign bootstrapper | 5–10 | optional, quota-limited | 30–50 |
+| Researcher | 5–10 | optional, quota-limited | 30–50 |
+| Proposer | 5–10 | optional, quota-limited | 30–50 |
+| Selector | 5–10 portfolios | optional, quota-limited | 30–50 |
+| Implementer | 5–10 | optional, quota-limited | 30–50 |
+| Diagnostic | 10–15 | optional, quota-limited | 50–100 |
+| Pivot advisor | 5–10 | optional, quota-limited | 20–30 |
+
+The first live pilot will **not necessarily cover all roles** under the eight-invocation ceiling. Uncovered roles remain `NOT_TESTED`; do not impute scores. Confirmatory suites and paired-seed repetition require a **separately authorized** budget/capacity profile (e.g. dedicated metered API funds or otherwise available quota). All attempts and missing usage must be reported.
 
 The pilot can identify broken contracts and obvious weak areas. Do not use it to claim a universal role ranking.
 
@@ -98,6 +112,7 @@ A scored run is blocked until all applicable items pass:
 - [ ] Model, prompt, adapter, role, team, source, evaluator, and runtime identities are pinned.
 - [ ] Resource ceilings are known and enforced or the run is explicitly marked ineligible.
 - [ ] Independent evaluator receipts and complete per-attempt logs are reproducible.
+- [ ] Live Codex pilot has explicit owner authorization, a hard pre-dispatch call ceiling, no automatic retries or parallel launches, and a quota-availability check; unknown subscription quota means do not start the next batch.
 
 ## Stop conditions
 
