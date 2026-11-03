@@ -21,6 +21,7 @@ from bananloop.registry import CampaignRegistry, RegistryError
 from bananloop.v2_pivot_saga import PivotSagaError, V2PivotSaga, _budget_caps, _parse_v2_spec
 from bananloop.api import create_server
 from bananloop.application import CampaignApplication
+from bananloop.store import StoreError
 from bananloop.trusted_evaluator import TrustedEvaluatorAdapter
 from bananloop.evaluator_verification import (
     EvaluatorProtocolAuthority, EvaluatorProtocolV1, EvaluatorTierManifestV1,
@@ -754,6 +755,91 @@ def test_supervised_plan_cannot_exceed_live_budget_envelope(tmp_path):
     ledger = setup["registry"].budget_ledger()
     assert ledger.conn.execute("SELECT COUNT(*) FROM child_allocations").fetchone()[0] == 0
     ledger.close()
+
+
+def test_supervised_nested_pivot_cannot_exceed_parent_allocation_even_with_root_funds(tmp_path):
+    setup = _setup(tmp_path, mode="SUPERVISED")
+
+    # Create a funded first-level campaign whose ledger allocation caps the
+    # nested parent's agent calls at 20 while the project root still has 100.
+    first_child = dict(setup["child_spec"])
+    first_scope = AutonomyScopeV2(
+        version=2, allowed_paths=("src/optimizer/model",),
+        max_child_depth=2, max_child_campaigns=1,
+    )
+    first_child["autonomy"] = {
+        "mode": "SUPERVISED", "scope_digest": first_scope.content_digest(),
+        "scope_version": first_scope.version, "scope": first_scope.model_dump(mode="json"),
+    }
+    first_proposal = _proposal_for_child(setup, first_child)
+    first_approval = PivotDecisionCommand(
+        campaign_id=setup["parent_id"], request_id="nested-parent-approval",
+        proposal_id=first_proposal.proposal_id, digest=first_proposal.digest,
+        decision="approve",
+    )
+    root_saga = _saga(setup)
+    root_saga.record_pivot_proposal(first_proposal)
+    root_saga.record_pivot_decision(first_approval)
+    first_receipt = root_saga.create_child(
+        idempotency_key="create-nested-parent", proposal=first_proposal,
+        child_spec=first_child, approval=first_approval,
+    )
+    nested_parent_id = first_receipt["child_campaign_id"]
+    nested_parent_dir, _ = setup["registry"].resolve(nested_parent_id, activate=False)
+    nested_parent_db = nested_parent_dir / "campaign.sqlite3"
+    with sqlite3.connect(nested_parent_db) as conn:
+        conn.execute("UPDATE campaigns SET status='PAUSED_NEEDS_INPUT' WHERE id=1")
+
+    with sqlite3.connect(nested_parent_db) as conn:
+        nested_parent_payload = conn.execute(
+            "SELECT spec_json FROM campaigns WHERE id=1",
+        ).fetchone()[0]
+    nested_parent_spec = _parse_v2_spec(nested_parent_payload)
+    expanded = dict(setup["child_spec"])
+    expanded["goal"] = "Nested child with explicitly approved larger budget"
+    expanded["budget"] = dict(expanded["budget"], max_agent_calls=30)
+    path = "src/optimizer/model/ranker.py"
+    nested_setup = {
+        **setup,
+        "parent_id": nested_parent_id,
+        "parent_db": nested_parent_db,
+        "parent_spec": nested_parent_spec,
+    }
+    proposal = _proposal_for_child(nested_setup, expanded)
+    approval = PivotDecisionCommand(
+        campaign_id=nested_parent_id, request_id="nested-child-approval",
+        proposal_id=proposal.proposal_id, digest=proposal.digest, decision="approve",
+    )
+    nested_saga = V2PivotSaga(
+        repo=setup["repo"], state_root=setup["state_root"],
+        parent_campaign_id=nested_parent_id,
+    )
+    nested_saga.record_pivot_proposal(proposal)
+    nested_saga.record_pivot_decision(approval)
+
+    ledger = setup["registry"].budget_ledger()
+    try:
+        root_agent = ledger.snapshot(setup["parent_id"])["agent_calls"]
+        assert root_agent["cap"] == 100
+        assert root_agent["reserved"] == 20
+        assert root_agent["spent"] == 0
+        with pytest.raises(PivotSagaError, match="budget|cap|envelope"):
+            nested_saga.create_child(
+                idempotency_key="nested-expansion-over-parent-allocation",
+                proposal=proposal, child_spec=expanded, approval=approval,
+            )
+        allocations = ledger.conn.execute(
+            "SELECT COUNT(*) FROM child_allocations",
+        ).fetchone()[0]
+        assert allocations == 1
+        root_agent = ledger.snapshot(setup["parent_id"])["agent_calls"]
+        assert root_agent["cap"] == 100
+        assert root_agent["reserved"] == 20
+        assert root_agent["spent"] == 0
+    finally:
+        ledger.close()
+
+
 def test_v2_human_steering_api_records_durable_proposal_and_decision(tmp_path):
     setup = _setup(tmp_path, mode="SUPERVISED")
     server = create_server(str(setup["repo"]), port=0, token="v2-api-token")
@@ -809,6 +895,13 @@ def test_v2_human_steering_api_records_durable_proposal_and_decision(tmp_path):
         with urllib.request.urlopen(request, timeout=5) as response:
             child = json.loads(response.read())
         assert child["state"] == "ACTIVE"
+        replay = CampaignApplication(
+            setup["repo"], campaign_id=setup["parent_id"],
+        ).v2_execute_pivot(
+            setup["proposal"].proposal_id, setup["proposal"].digest,
+            "api-approved-pivot",
+        )
+        assert replay["child_campaign_id"] == child["child_campaign_id"]
     finally:
         server.shutdown()
         thread.join(timeout=3)
@@ -841,6 +934,36 @@ def test_v2_human_steering_cli_records_proposal_and_decision(tmp_path, capsys):
         idempotency_key="cli-approved-pivot",
     )) == 0
     assert json.loads(capsys.readouterr().out)["state"] == "ACTIVE"
+
+
+def test_application_execute_requires_persisted_approval_and_reloads_for_replay(tmp_path):
+    setup = _setup(tmp_path, mode="SUPERVISED")
+    app = CampaignApplication(setup["repo"], campaign_id=setup["parent_id"])
+    app.v2_record_pivot_proposal(setup["proposal"])
+    with pytest.raises(StoreError, match="no matching durable Supervised approval"):
+        app.v2_execute_pivot(
+            setup["proposal"].proposal_id, setup["proposal"].digest,
+            "approval-required-before-execute",
+        )
+
+    approval = PivotDecisionCommand(
+        campaign_id=setup["parent_id"], request_id="restart-approval",
+        proposal_id=setup["proposal"].proposal_id,
+        digest=setup["proposal"].digest, decision="approve",
+    )
+    app.v2_pivot_decision(approval)
+    restarted_app = CampaignApplication(setup["repo"], campaign_id=setup["parent_id"])
+    first = restarted_app.v2_execute_pivot(
+        setup["proposal"].proposal_id, setup["proposal"].digest,
+        "restart-replay-key",
+    )
+    reloaded_app = CampaignApplication(setup["repo"], campaign_id=setup["parent_id"])
+    replay = reloaded_app.v2_execute_pivot(
+        setup["proposal"].proposal_id, setup["proposal"].digest,
+        "restart-replay-key",
+    )
+    assert first["child_campaign_id"] == replay["child_campaign_id"]
+    assert first["allocation_id"] == replay["allocation_id"]
 
 
 def test_saga_idempotency_key_cannot_be_reused_for_different_child_spec(tmp_path):
