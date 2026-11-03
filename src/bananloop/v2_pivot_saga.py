@@ -537,7 +537,14 @@ class V2PivotSaga:
                 if state == "ACTIVE":
                     activation_digest = _digest({"key": idempotency_key, "request_hash": plan["request_hash"],
                                                  "allocation_id": plan["allocation_id"], "child_id": row["child_id"]})
-                    ledger.activate_child(plan["allocation_id"], row["child_id"], plan["child_spec_hash"], activation_digest)
+                    gate = ledger.conn.execute(
+                        "SELECT state FROM child_allocation_gates WHERE allocation_id=?",
+                        (plan["allocation_id"],),
+                    ).fetchone()
+                    if gate is None:
+                        raise PivotSagaError("active pivot allocation gate is missing")
+                    if gate["state"] != "CLOSED":
+                        ledger.activate_child(plan["allocation_id"], row["child_id"], plan["child_spec_hash"], activation_digest)
                     self._set_control_active(conn, idempotency_key, activation_digest)
                     self._verify_active_saga(
                         conn, row, plan, ledger, require_active_event=True,

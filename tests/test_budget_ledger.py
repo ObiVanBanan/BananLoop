@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing
+import sqlite3
 
 import pytest
 
@@ -17,8 +18,67 @@ def _bind_child(ledger: BudgetLedger, *, allocation: str, parent: str, child: st
         caps=caps,
     )
     ledger.bind_child(allocation, child, spec_hash)
-    ledger.activate_child(allocation, child, spec_hash, "c" * 64)
+    digest = _record_parent_activation(ledger, parent=parent, allocation=allocation,
+                                       child=child, spec_hash=spec_hash)
+    ledger.activate_child(allocation, child, spec_hash, digest)
 
+
+
+def _record_parent_activation(ledger: BudgetLedger, *, parent: str, allocation: str,
+                             child: str, spec_hash: str, gate_state="ACTIVE") -> str:
+    import hashlib
+    import json
+    from pathlib import Path
+    root = Path(ledger.path).parent
+    ledger.conn.execute("""CREATE TABLE IF NOT EXISTS campaign_index (
+        campaign_id TEXT PRIMARY KEY, request_key TEXT NOT NULL, goal_fingerprint TEXT NOT NULL,
+        goal_summary TEXT NOT NULL, state_path TEXT NOT NULL, origin TEXT NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )""")
+    now = "2026-01-01T00:00:00Z"
+    ledger.conn.execute(
+        "INSERT OR REPLACE INTO campaign_index VALUES(?,?,?,?,?,?,?,?)",
+        (parent, "request:" + parent, "f" * 64, parent, f"campaigns/{parent}", "managed", now, now),
+    )
+    parent_db = root / "campaigns" / parent / "campaign.sqlite3"
+    parent_db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(parent_db)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS events(event_type TEXT,payload_json TEXT,created_at TEXT);
+        CREATE TABLE IF NOT EXISTS v2_pivot_sagas(
+            idempotency_key TEXT PRIMARY KEY,request_hash TEXT,parent_campaign_id TEXT,
+            allocation_id TEXT,child_id TEXT,child_spec_hash TEXT,state TEXT
+        );
+        CREATE TABLE IF NOT EXISTS v2_pivot_saga_control(
+            idempotency_key TEXT PRIMARY KEY,state TEXT,control_digest TEXT,updated_at TEXT
+        );
+    """)
+    key, request_hash = "pivot:" + allocation, "e" * 64
+    digest = hashlib.sha256(json.dumps(
+        {"key": key, "request_hash": request_hash, "allocation_id": allocation, "child_id": child},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode()).hexdigest()
+    conn.execute(
+        "INSERT OR REPLACE INTO v2_pivot_sagas VALUES(?,?,?,?,?,?,?)",
+        (key, request_hash, parent, allocation, child, spec_hash, "ACTIVE"),
+    )
+    if gate_state == "ACTIVE":
+        conn.execute(
+            "INSERT OR REPLACE INTO v2_pivot_saga_control VALUES(?,?,?,?)",
+            (key, "ACTIVE", digest, now),
+        )
+    elif gate_state == "LEGACY_ACTIVE":
+        conn.execute(
+            "INSERT OR REPLACE INTO events VALUES('PIVOT_CHILD_ACTIVE',?,?)",
+            (json.dumps({"allocation_id": allocation, "campaign_id": parent,
+                         "child_id": child, "child_spec_hash": spec_hash}), now),
+        )
+    if gate_state == "LEGACY_ACTIVE":
+        conn.execute("DROP TABLE v2_pivot_saga_control")
+    conn.commit()
+    conn.close()
+    ledger.conn.commit()
+    return digest
 
 def _reserve_from_process(path, index: int, start_event, result_queue) -> None:
     ledger = BudgetLedger(path)
@@ -160,14 +220,18 @@ def test_bound_child_rejects_actions_until_activation_gate_opens(tmp_path):
                          parent_id="root", spec_hash="a" * 64,
                          caps={"agent_calls": 4})
     ledger.bind_child("alloc-bound", "child-bound", "a" * 64)
+    with pytest.raises(BudgetLedgerError, match="durable parent saga"):
+        ledger.activate_child("alloc-bound", "child-bound", "a" * 64, "d" * 64)
     with pytest.raises(BudgetLedgerError, match="admission gate"):
         ledger.reserve_action(
             reservation_id="res-bound", campaign_id="child-bound", action_id="act-bound",
             resource="agent_calls", amount=1, idempotency_key="reserve:bound",
             allocation_id="alloc-bound",
         )
-    ledger.activate_child("alloc-bound", "child-bound", "a" * 64, "d" * 64)
-    ledger.activate_child("alloc-bound", "child-bound", "a" * 64, "d" * 64)
+    digest = _record_parent_activation(ledger, parent="root", allocation="alloc-bound",
+                                       child="child-bound", spec_hash="a" * 64)
+    ledger.activate_child("alloc-bound", "child-bound", "a" * 64, digest)
+    ledger.activate_child("alloc-bound", "child-bound", "a" * 64, digest)
     ledger.reserve_action(
         reservation_id="res-active", campaign_id="child-bound", action_id="act-active",
         resource="agent_calls", amount=1, idempotency_key="reserve:active",
@@ -177,3 +241,42 @@ def test_bound_child_rejects_actions_until_activation_gate_opens(tmp_path):
         "SELECT state FROM child_allocation_gates WHERE allocation_id='alloc-bound'",
     ).fetchone()[0] == "ACTIVE"
     ledger.close()
+
+
+@pytest.mark.parametrize("evidence", ["none", "legacy_event", "control"])
+def test_legacy_active_allocation_backfill_requires_durable_parent_activation(tmp_path, evidence):
+    path = tmp_path / "campaign-registry.sqlite3"
+    ledger = BudgetLedger(path)
+    ledger.create_root("root", {"agent_calls": 5})
+    ledger.reserve_child(allocation_id="legacy-alloc", idempotency_key="allocate:legacy",
+                         parent_id="root", spec_hash="a" * 64,
+                         caps={"agent_calls": 4})
+    ledger.bind_child("legacy-alloc", "legacy-child", "a" * 64)
+    ledger.conn.execute(
+        "UPDATE child_allocations SET state='ACTIVE' WHERE allocation_id='legacy-alloc'",
+    )
+    if evidence != "none":
+        digest = _record_parent_activation(
+            ledger, parent="root", allocation="legacy-alloc", child="legacy-child",
+            spec_hash="a" * 64,
+            gate_state="LEGACY_ACTIVE" if evidence == "legacy_event" else "ACTIVE",
+        )
+    ledger.conn.execute("DROP TABLE child_allocation_gates")
+    ledger.close()
+
+    upgraded = BudgetLedger(path)
+    gate = upgraded.conn.execute(
+        "SELECT state,activation_digest FROM child_allocation_gates WHERE allocation_id='legacy-alloc'",
+    ).fetchone()
+    if evidence != "none":
+        assert gate["state"] == "ACTIVE"
+        assert gate["activation_digest"] == digest
+    else:
+        assert gate["state"] == "BOUND"
+        with pytest.raises(BudgetLedgerError, match="admission gate"):
+            upgraded.reserve_action(
+                reservation_id="legacy-res", campaign_id="legacy-child", action_id="legacy-act",
+                resource="agent_calls", amount=1, idempotency_key="legacy:reserve",
+                allocation_id="legacy-alloc",
+            )
+    upgraded.close()

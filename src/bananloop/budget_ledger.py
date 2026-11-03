@@ -123,14 +123,121 @@ class BudgetLedger:
                 "(allocation_id,state,activation_digest,cancellation_digest,updated_at) "
                 "SELECT allocation_id,CASE "
                 "WHEN state='RESERVED' AND child_id IS NULL THEN 'RESERVED' "
-                "WHEN state='RESERVED' AND child_id IS NOT NULL THEN 'BOUND' "
-                "WHEN state='ACTIVE' THEN 'ACTIVE' ELSE 'CLOSED' END,"
+                "WHEN state='CLOSED' THEN 'CLOSED' ELSE 'BOUND' END,"
                 "NULL,NULL,created_at FROM child_allocations"
             )
             self.conn.commit()
         except Exception:
             self.conn.rollback()
             raise
+        # Reconcile each gate only from durable parent-side ACTIVE evidence.
+        rows = self.conn.execute("SELECT * FROM child_allocations WHERE child_id IS NOT NULL").fetchall()
+        for allocation in rows:
+            digest = self._durable_parent_activation(allocation)
+            gate = self.conn.execute(
+                "SELECT state,activation_digest FROM child_allocation_gates WHERE allocation_id=?",
+                (allocation["allocation_id"],),
+            ).fetchone()
+            if gate is None or gate["state"] in {"CANCELLED", "CLOSED"}:
+                continue
+            if digest is not None:
+                self.conn.execute(
+                    "UPDATE child_allocation_gates SET state='ACTIVE',activation_digest=?,updated_at=? WHERE allocation_id=?",
+                    (digest, utc_now(), allocation["allocation_id"]),
+                )
+            elif gate["state"] == "ACTIVE":
+                self.conn.execute(
+                    "UPDATE child_allocation_gates SET state='BOUND',activation_digest=NULL,updated_at=? WHERE allocation_id=?",
+                    (utc_now(), allocation["allocation_id"]),
+                )
+
+    def _durable_parent_activation(self, allocation: sqlite3.Row) -> str | None:
+        """Return the activation proof only when the registered parent saga is ACTIVE."""
+        if self.path is None:
+            return None
+        try:
+            tables = {r[0] for r in self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )}
+            if "campaign_index" not in tables:
+                return None
+            parent = self.conn.execute(
+                "SELECT origin,state_path FROM campaign_index WHERE campaign_id=?",
+                (allocation["parent_id"],),
+            ).fetchone()
+            if (parent is None or parent["origin"] != "managed"
+                    or parent["state_path"] != f"campaigns/{allocation['parent_id']}"):
+                return None
+            parent_db = self.path.parent / parent["state_path"] / "campaign.sqlite3"
+            from .registry import assert_safe_campaign_db, assert_safe_local_path
+            assert_safe_local_path(self.path, "campaign registry")
+            assert_safe_campaign_db(parent_db)
+            if not parent_db.is_file():
+                return None
+            conn = sqlite3.connect(parent_db.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+            conn.row_factory = sqlite3.Row
+            try:
+                table_names = {r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )}
+                if "v2_pivot_sagas" not in table_names:
+                    return None
+                saga = conn.execute(
+                    "SELECT * FROM v2_pivot_sagas WHERE allocation_id=?",
+                    (allocation["allocation_id"],),
+                ).fetchone()
+                if (saga is None or saga["state"] != "ACTIVE"
+                        or saga["parent_campaign_id"] != allocation["parent_id"]
+                        or saga["child_id"] != allocation["child_id"]
+                        or saga["child_spec_hash"] != allocation["spec_hash"]):
+                    return None
+                expected = hashlib.sha256(_canonical({
+                    "key": saga["idempotency_key"],
+                    "request_hash": saga["request_hash"],
+                    "allocation_id": allocation["allocation_id"],
+                    "child_id": allocation["child_id"],
+                }).encode("utf-8")).hexdigest()
+                use_legacy_event = "v2_pivot_saga_control" not in table_names
+                if not use_legacy_event:
+                    control = conn.execute(
+                        "SELECT state,control_digest FROM v2_pivot_saga_control WHERE idempotency_key=?",
+                        (saga["idempotency_key"],),
+                    ).fetchone()
+                    if control is None:
+                        return None
+                    if control["control_digest"] is not None:
+                        if (control["state"] not in {"ACTIVATING", "ACTIVE"}
+                                or control["control_digest"] != expected):
+                            return None
+                    else:
+                        # A migrated pre-control ACTIVE saga is trusted only with
+                        # its original unique ACTIVE event binding.
+                        use_legacy_event = control["state"] == "ACTIVE"
+                        if not use_legacy_event:
+                            return None
+                if use_legacy_event:
+                    if "events" not in table_names:
+                        return None
+                    matched = []
+                    for event in conn.execute(
+                        "SELECT payload_json FROM events WHERE event_type='PIVOT_CHILD_ACTIVE'"
+                    ):
+                        try:
+                            payload = json.loads(event["payload_json"])
+                        except (TypeError, json.JSONDecodeError):
+                            return None
+                        if payload.get("allocation_id") == allocation["allocation_id"]:
+                            matched.append(payload)
+                    if (len(matched) != 1
+                            or matched[0].get("campaign_id") != allocation["parent_id"]
+                            or matched[0].get("child_id") != allocation["child_id"]
+                            or matched[0].get("child_spec_hash") != allocation["spec_hash"]):
+                        return None
+                return expected
+            finally:
+                conn.close()
+        except (OSError, sqlite3.DatabaseError, ValueError):
+            return None
 
     def _ensure_dispatch_column(self) -> None:
         columns = {row[1] for row in self.conn.execute("PRAGMA table_info(budget_reservations)")}
@@ -351,6 +458,8 @@ class BudgetLedger:
             gate = self.conn.execute("SELECT * FROM child_allocation_gates WHERE allocation_id=?", (allocation_id,)).fetchone()
             if row is None or gate is None or row["child_id"] != child_id or row["spec_hash"] != spec_hash:
                 raise BudgetLedgerError("activation does not match the bound child")
+            if self._durable_parent_activation(row) != activation_digest:
+                raise BudgetLedgerError("activation lacks matching durable parent saga ACTIVE evidence")
             if gate["state"] == "ACTIVE":
                 if gate["activation_digest"] != activation_digest:
                     raise BudgetLedgerError("activation replay digest mismatch")

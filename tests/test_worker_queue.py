@@ -1,12 +1,56 @@
 from __future__ import annotations
 
 import multiprocessing
+import hashlib
+import json
+import sqlite3
 
 import pytest
 
 from bananloop.budget_ledger import BudgetExceeded, BudgetLedger, BudgetLedgerError
 from bananloop.worker_queue import DurableWorkerQueue, WorkerBudgetError, WorkerQueueError
 
+
+
+def _activate_parent_proof(ledger, *, parent, allocation, child, spec_hash):
+    from pathlib import Path
+    root = Path(ledger.path).parent
+    ledger.conn.execute("""CREATE TABLE IF NOT EXISTS campaign_index (
+        campaign_id TEXT PRIMARY KEY, request_key TEXT NOT NULL, goal_fingerprint TEXT NOT NULL,
+        goal_summary TEXT NOT NULL, state_path TEXT NOT NULL, origin TEXT NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    )""")
+    now = "2026-01-01T00:00:00Z"
+    ledger.conn.execute(
+        "INSERT OR REPLACE INTO campaign_index VALUES(?,?,?,?,?,?,?,?)",
+        (parent, "request:" + parent, "f" * 64, parent, f"campaigns/{parent}", "managed", now, now),
+    )
+    db = root / "campaigns" / parent / "campaign.sqlite3"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS events(event_type TEXT,payload_json TEXT,created_at TEXT);
+        CREATE TABLE IF NOT EXISTS v2_pivot_sagas(
+            idempotency_key TEXT PRIMARY KEY,request_hash TEXT,parent_campaign_id TEXT,
+            allocation_id TEXT,child_id TEXT,child_spec_hash TEXT,state TEXT
+        );
+        CREATE TABLE IF NOT EXISTS v2_pivot_saga_control(
+            idempotency_key TEXT PRIMARY KEY,state TEXT,control_digest TEXT,updated_at TEXT
+        );
+    """)
+    key, request_hash = "pivot:" + allocation, "e" * 64
+    digest = hashlib.sha256(json.dumps(
+        {"key": key, "request_hash": request_hash, "allocation_id": allocation, "child_id": child},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode()).hexdigest()
+    conn.execute("INSERT OR REPLACE INTO v2_pivot_sagas VALUES(?,?,?,?,?,?,?)",
+                 (key, request_hash, parent, allocation, child, spec_hash, "ACTIVE"))
+    conn.execute("INSERT OR REPLACE INTO v2_pivot_saga_control VALUES(?,?,?,?)",
+                 (key, "ACTIVE", digest, now))
+    conn.commit()
+    conn.close()
+    ledger.conn.commit()
+    return digest
 
 def _queue(tmp_path, *, cap: int = 20):
     path = tmp_path / "campaign-registry.sqlite3"
@@ -109,7 +153,9 @@ def test_child_worker_claim_charges_its_parent_allocation(tmp_path):
                          parent_id="root", spec_hash="a" * 64,
                          caps={"agent_calls": 6})
     ledger.bind_child("alloc-child", "child", "a" * 64)
-    ledger.activate_child("alloc-child", "child", "a" * 64, "c" * 64)
+    digest = _activate_parent_proof(ledger, parent="root", allocation="alloc-child",
+                                    child="child", spec_hash="a" * 64)
+    ledger.activate_child("alloc-child", "child", "a" * 64, digest)
     ledger.close()
     queue.enqueue(job_id="job-child", enqueue_key="enqueue:child", campaign_id="child",
                   action_id="action:child", resource="agent_calls", upper_bound=4,
@@ -245,10 +291,16 @@ def test_nested_child_overrun_propagates_to_root_before_next_allocation(tmp_path
                          parent_id="root", spec_hash="a" * 64,
                          caps={"agent_calls": 8})
     ledger.bind_child("alloc-parent", "parent", "a" * 64)
+    digest = _activate_parent_proof(ledger, parent="root", allocation="alloc-parent",
+                                    child="parent", spec_hash="a" * 64)
+    ledger.activate_child("alloc-parent", "parent", "a" * 64, digest)
     ledger.reserve_child(allocation_id="alloc-grand", idempotency_key="allocate:grand",
                          parent_id="parent", spec_hash="b" * 64,
                          caps={"agent_calls": 5})
     ledger.bind_child("alloc-grand", "grandchild", "b" * 64)
+    digest = _activate_parent_proof(ledger, parent="parent", allocation="alloc-grand",
+                                    child="grandchild", spec_hash="b" * 64)
+    ledger.activate_child("alloc-grand", "grandchild", "b" * 64, digest)
     ledger.close()
 
     queue.enqueue(job_id="job-grand", enqueue_key="enqueue:grand", campaign_id="grandchild",
@@ -446,6 +498,9 @@ def test_vector_child_allocation_settles_each_independent_resource(tmp_path):
         caps={"evaluator_calls": 4, "evaluation_units": 40},
     )
     ledger.bind_child("alloc-vector-child", "child-vector", "a" * 64)
+    digest = _activate_parent_proof(ledger, parent="root", allocation="alloc-vector-child",
+                                    child="child-vector", spec_hash="a" * 64)
+    ledger.activate_child("alloc-vector-child", "child-vector", "a" * 64, digest)
     ledger.close()
     _enqueue_vector(queue, "job-child-vector", calls=2, units=20,
                     campaign_id="child-vector", action_id="evaluate:child")
