@@ -243,7 +243,7 @@ class BudgetLedger:
                             or matched[0].get("child_id") != allocation["child_id"]
                             or matched[0].get("child_spec_hash") != allocation["spec_hash"]):
                         return None
-                return expected
+                return expected, expected_caps
             finally:
                 conn.close()
         except (OSError, sqlite3.DatabaseError, ValueError, RegistryError):
@@ -574,7 +574,7 @@ class BudgetLedger:
                 self.conn.rollback()
             raise
 
-    def _durable_parent_cancellation(self, allocation: sqlite3.Row) -> str | None:
+    def _durable_parent_cancellation(self, allocation: sqlite3.Row) -> tuple[str, dict[str, int]] | None:
         """Require the parent saga's durable cancellation CAS before releasing escrow."""
         if self.path is None:
             return None
@@ -621,6 +621,25 @@ class BudgetLedger:
                 proposal_digest = proposal.get("digest")
                 if not isinstance(proposal_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", proposal_digest):
                     return None
+                child_document = json.loads(saga["child_spec_json"])
+                budget = child_document.get("budget")
+                if not isinstance(budget, dict):
+                    return None
+                expected_caps = {
+                    "agent_calls": budget.get("max_agent_calls"),
+                    "evaluator_calls": budget.get("max_evaluator_calls"),
+                    "experiments": budget.get("max_experiments"),
+                    "attempts": budget.get("max_attempts"),
+                }
+                for resource, field in (("model_tokens", "max_model_tokens"),
+                                        ("evaluation_units", "max_evaluation_units")):
+                    if budget.get(field) is not None:
+                        expected_caps[resource] = budget[field]
+                if any(type(value) is not int or value <= 0 for value in expected_caps.values()):
+                    return None
+                frozen_caps = json.loads(saga["budget_caps_json"])
+                if frozen_caps != expected_caps:
+                    return None
                 registry_request_id = "pivot-v2:" + hashlib.sha256(
                     f"{allocation['parent_id']}:{saga['idempotency_key']}:{proposal_digest}".encode()
                 ).hexdigest()[:48]
@@ -658,8 +677,25 @@ class BudgetLedger:
             ).fetchone()
             if allocation is None or gate is None:
                 raise BudgetLedgerError("unknown child allocation")
-            if self._durable_parent_cancellation(allocation) != cancellation_digest:
+            cancellation_proof = self._durable_parent_cancellation(allocation)
+            if cancellation_proof is None or cancellation_proof[0] != cancellation_digest:
                 raise BudgetLedgerError("cancellation lacks matching durable parent saga control")
+            expected_caps = cancellation_proof[1]
+            resource_rows = self.conn.execute(
+                "SELECT resource,cap FROM child_allocation_resources WHERE allocation_id=?",
+                (allocation_id,),
+            ).fetchall()
+            allocation_caps = {row["resource"]: int(row["cap"]) for row in resource_rows}
+            if allocation_caps != expected_caps:
+                raise BudgetLedgerError("allocation resource vector differs from the frozen child budget")
+            if allocation["child_id"] is not None:
+                child_rows = self.conn.execute(
+                    "SELECT resource,cap FROM budget_accounts WHERE campaign_id=?",
+                    (allocation["child_id"],),
+                ).fetchall()
+                child_caps = {row["resource"]: int(row["cap"]) for row in child_rows}
+                if child_caps != expected_caps:
+                    raise BudgetLedgerError("bound child account vector differs from its frozen allocation")
             if gate["state"] == "CANCELLED":
                 if gate["cancellation_digest"] != cancellation_digest:
                     raise BudgetLedgerError("cancellation replay digest mismatch")
