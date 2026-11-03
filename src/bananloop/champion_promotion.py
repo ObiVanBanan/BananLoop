@@ -97,6 +97,20 @@ class ChampionPromotionService:
             raise ChampionPromotionError("promotion requires an exact trusted integration PASS") from exc
         self.conn.execute("BEGIN IMMEDIATE")
         try:
+            replay = self.conn.execute(
+                """SELECT campaign_id,promoted_snapshot_id,revision
+                   FROM champion_promotion_history WHERE integration_receipt_digest=?""",
+                (integration_receipt_digest,),
+            ).fetchone()
+            if replay is not None:
+                if replay[0] != campaign_id or replay[1] != candidate_snapshot_id:
+                    raise ChampionPromotionError("integration receipt was already used for a different promotion")
+                result = {
+                    "campaign_id": replay[0], "snapshot_id": replay[1],
+                    "revision": int(replay[2]), "replayed": True,
+                }
+                self.conn.commit()
+                return result
             cursor = self.conn.execute(
                 """UPDATE champion_state SET snapshot_id=?, revision=revision+1
                    WHERE id=1 AND campaign_id=? AND snapshot_id=? AND revision=?""",
