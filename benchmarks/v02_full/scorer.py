@@ -22,7 +22,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .evidence import EvidenceError, read_content_artifact
+from .evidence import EvidenceError, TrustPolicy, read_content_artifact, verify_output_anonymization
 from .prereg import TrackManifest, canonical_bytes
 from .report import (
     BlindedScorePackage, pair_score_digest, score_payload_digest,
@@ -504,6 +504,7 @@ def build_blind_scorer_input(
     package: BlindedScorePackage,
     *,
     evidence_root: str,
+    trust_policy: TrustPolicy,
 ) -> BlindScorerInput:
     """Read only anonymous output artifacts and frozen evaluator pins for one track."""
     if manifest.manifest_sha256 is None:
@@ -525,8 +526,23 @@ def build_blind_scorer_input(
             for label in ("arm_a", "arm_b"):
                 reference = getattr(pair, f"{label}_output_ref")
                 digest = getattr(pair, f"{label}_output_sha256")
-                if reference is None or digest is None:
-                    raise ScorerError("scored pair lacks an anonymized output artifact")
+                raw_reference = getattr(pair, f"{label}_raw_output_ref")
+                raw_digest = getattr(pair, f"{label}_raw_output_sha256")
+                attestation = getattr(pair, f"{label}_anonymization_attestation")
+                if any(value is None for value in (reference, digest, raw_reference,
+                                                   raw_digest, attestation)):
+                    raise ScorerError("scored pair lacks raw/sanitized output evidence")
+                try:
+                    verify_output_anonymization(
+                        root=evidence_root, policy=trust_policy, reference=attestation,
+                        pair_id_sha256=pair.pair_id_sha256,
+                        arm_label="A" if label == "arm_a" else "B",
+                        raw_reference=raw_reference, raw_sha256=raw_digest,
+                        sanitized_reference=reference, sanitized_sha256=digest,
+                        anonymizer_sha256=manifest.evaluator.output_anonymizer_sha256,
+                    )
+                except EvidenceError as exc:
+                    raise ScorerError(f"output anonymization evidence is invalid: {exc}") from exc
                 try:
                     outputs[label] = read_content_artifact(
                         root=evidence_root, reference=reference, expected_sha256=digest,

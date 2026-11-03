@@ -46,6 +46,7 @@ class SignedEvidence(BaseModel):
         "OPERATOR_ACCEPTANCE", "OWNER_APPROVAL", "INDEPENDENT_OPERATOR", "CI_JOB",
         "BLINDED_SCORE_PACKAGE", "UNBLINDING", "RESOURCE_LEDGER_HEAD",
         "RUN_AUTHORIZATION", "TASK_ASSIGNMENT", "ACTION_RECEIPT",
+        "OUTPUT_ANONYMIZATION",
     ]
     subject_sha: Digest
     conclusion: Literal["PASS", "ACCEPTED", "SUCCESS"]
@@ -389,3 +390,39 @@ def verify_evidence_artifact(
                                             for key, value in expected_payload.items()):
         raise EvidenceError("signed evidence payload does not match the frozen gate inputs")
     return VerifiedEvidence(reference=reference, document=document)
+
+
+def verify_output_anonymization(
+    *, root: str | Path, policy: TrustPolicy, reference: EvidenceArtifactRef,
+    pair_id_sha256: str, arm_label: Literal["A", "B"],
+    raw_reference: EvidenceArtifactRef, raw_sha256: str,
+    sanitized_reference: EvidenceArtifactRef, sanitized_sha256: str,
+    anonymizer_sha256: str,
+) -> VerifiedEvidence:
+    """Verify retained raw/sanitized bytes and independent approval of their mapping."""
+    verify_content_artifact(
+        root=root, reference=raw_reference, expected_sha256=raw_sha256,
+    )
+    verify_content_artifact(
+        root=root, reference=sanitized_reference, expected_sha256=sanitized_sha256,
+    )
+    verified = verify_evidence_artifact(
+        root=root, reference=reference, policy=policy,
+        evidence_type="OUTPUT_ANONYMIZATION", subject_sha=raw_sha256,
+        conclusion="ACCEPTED", issuer_role="INDEPENDENT_ANONYMIZER",
+        expected_payload={
+            "pair_id_sha256": pair_id_sha256,
+            "arm_label": arm_label,
+            "raw_output_sha256": raw_sha256,
+            "sanitized_output_sha256": sanitized_sha256,
+            "anonymizer_sha256": anonymizer_sha256,
+        },
+    )
+    if set(verified.document.payload) != {
+        "pair_id_sha256", "arm_label", "raw_output_sha256",
+        "sanitized_output_sha256", "anonymizer_sha256",
+    }:
+        raise EvidenceError("output anonymization attestation has unrelated payload fields")
+    if verified.document.issuer_principal_id in policy.independent_principal_exclusions:
+        raise EvidenceError("an arm author/operator cannot attest output anonymization")
+    return verified

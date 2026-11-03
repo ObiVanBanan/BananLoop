@@ -94,7 +94,8 @@ def _raw_manifest(track="OPTIMIZATION", *, task_id="task-opt", suffix="opt"):
                       "scorer_memory_bytes": 536870912,
                       "scorer_process_limit": 8,
                       "scorer_runtime_sha256": _sha(f"scorer-runtime-{suffix}"),
-                      "scorer_sandbox_sha256": _sha(f"scorer-bwrap-{suffix}")},
+                      "scorer_sandbox_sha256": _sha(f"scorer-bwrap-{suffix}"),
+                      "output_anonymizer_sha256": _sha(f"output-anonymizer-{suffix}")},
         "deterministic_seed": f"seed-{suffix}",
         "inference": {"estimand": f"Mean paired score difference for {suffix} tasks",
                       "primary_outcome": f"{suffix}_primary_score", "direction": "HIGHER_IS_BETTER",
@@ -176,6 +177,7 @@ def _valid_evidence(manifest, evidence_dir, *, duplicate_independent_principal=F
         "BENCHMARK_OPERATOR": "principal-operator",
         "INDEPENDENT_OPERATOR": "principal-ledger-reviewer",
         "INDEPENDENT_SCORER": "principal-scorer",
+        "INDEPENDENT_ANONYMIZER": "principal-anonymizer",
         "RUN_START_AUTHORIZER": "principal-run-authorizer",
         "TASK_ASSIGNMENT_AUTHORIZER": "principal-task-assignment-authorizer",
         "ACTION_METER_ATTESTOR": "principal-action-meter",
@@ -850,13 +852,43 @@ def _report_package(manifest, evidence_root, *, unknown_pair_id=None,
                      "final_receipt_sha256": receipts_b[-1].receipt_sha256},
         )
         failed = pair_id == failed_pair_id
-        output_a = None if failed else f"anonymized output A for {pair_id}\n".encode()
-        output_b = None if failed else f"anonymized output B for {pair_id}\n".encode()
+        raw_output_a = None if failed else f"raw arm A from provider-pin for {pair_id}\n".encode()
+        raw_output_b = None if failed else f"raw arm B from model-pin for {pair_id}\n".encode()
+        output_a = None if failed else f"sanitized candidate A {index}\n".encode()
+        output_b = None if failed else f"sanitized candidate B {index}\n".encode()
         if output_a is not None:
             (evidence_root / f"output-{pair_id}-A.bin").write_bytes(output_a)
             (evidence_root / f"output-{pair_id}-B.bin").write_bytes(output_b)
+            (evidence_root / f"raw-output-{pair_id}-A.bin").write_bytes(raw_output_a)
+            (evidence_root / f"raw-output-{pair_id}-B.bin").write_bytes(raw_output_b)
         output_a_sha = hashlib.sha256(output_a).hexdigest() if output_a is not None else None
         output_b_sha = hashlib.sha256(output_b).hexdigest() if output_b is not None else None
+        raw_output_a_sha = hashlib.sha256(raw_output_a).hexdigest() if raw_output_a is not None else None
+        raw_output_b_sha = hashlib.sha256(raw_output_b).hexdigest() if raw_output_b is not None else None
+        anonymization_a = anonymization_b = None
+        if not failed:
+            anonymizer_payload_a = {
+                "pair_id_sha256": pair_id, "arm_label": "A",
+                "raw_output_sha256": raw_output_a_sha,
+                "sanitized_output_sha256": output_a_sha,
+                "anonymizer_sha256": manifest.evaluator.output_anonymizer_sha256,
+            }
+            anonymizer_payload_b = {
+                "pair_id_sha256": pair_id, "arm_label": "B",
+                "raw_output_sha256": raw_output_b_sha,
+                "sanitized_output_sha256": output_b_sha,
+                "anonymizer_sha256": manifest.evaluator.output_anonymizer_sha256,
+            }
+            anonymization_a = _write_report_attestation(
+                evidence_root, name=f"anonymize-{pair_id}-A", evidence_type="OUTPUT_ANONYMIZATION",
+                subject_sha=raw_output_a_sha, role="INDEPENDENT_ANONYMIZER",
+                principal="principal-anonymizer", payload=anonymizer_payload_a,
+            )
+            anonymization_b = _write_report_attestation(
+                evidence_root, name=f"anonymize-{pair_id}-B", evidence_type="OUTPUT_ANONYMIZATION",
+                subject_sha=raw_output_b_sha, role="INDEPENDENT_ANONYMIZER",
+                principal="principal-anonymizer", payload=anonymizer_payload_b,
+            )
         raw_pair = {
             "pair_id_sha256": pair_id, "status": "FAILED" if failed else "SCORED",
             "arm_a_score": None if failed else 2.0 + index / 100,
@@ -869,6 +901,18 @@ def _report_package(manifest, evidence_root, *, unknown_pair_id=None,
             "arm_b_output_ref": (EvidenceArtifactRef(
                 path=f"output-{pair_id}-B.bin", artifact_sha256=output_b_sha,
             ).model_dump() if output_b_sha else None),
+            "arm_a_raw_output_sha256": raw_output_a_sha,
+            "arm_b_raw_output_sha256": raw_output_b_sha,
+            "arm_a_raw_output_ref": (EvidenceArtifactRef(
+                path=f"raw-output-{pair_id}-A.bin", artifact_sha256=raw_output_a_sha,
+            ).model_dump() if raw_output_a_sha else None),
+            "arm_b_raw_output_ref": (EvidenceArtifactRef(
+                path=f"raw-output-{pair_id}-B.bin", artifact_sha256=raw_output_b_sha,
+            ).model_dump() if raw_output_b_sha else None),
+            "arm_a_anonymization_attestation": (anonymization_a.model_dump()
+                                                if anonymization_a else None),
+            "arm_b_anonymization_attestation": (anonymization_b.model_dump()
+                                                if anonymization_b else None),
             "arm_a_receipts": tuple(item.model_dump(mode="json") for item in receipts_a),
             "arm_b_receipts": tuple(item.model_dump(mode="json") for item in receipts_b),
             "arm_a_action_attestations": action_evidence_a,
@@ -1218,7 +1262,7 @@ def test_scored_output_bytes_must_match_the_frozen_digest(tmp_path):
     gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
     first_ref = package.pairs[0].arm_a_output_ref
     (tmp_path / first_ref.path).write_bytes(b"changed after scorer sealed the package")
-    with pytest.raises(ReportError, match="output artifact verification failed"):
+    with pytest.raises(ReportError, match="output anonymization verification failed"):
         aggregate_blinded_scores(
             manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
             unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),

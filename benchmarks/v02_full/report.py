@@ -14,8 +14,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .accounting import ActionReceipt, AccountingResult, validate_accounting_chain
 from .evidence import (
-    EvidenceArtifactRef, EvidenceError, TrustPolicy, verify_content_artifact,
-    verify_evidence_artifact,
+    EvidenceArtifactRef, EvidenceError, TrustPolicy,
+    verify_evidence_artifact, verify_output_anonymization,
 )
 from .prereg import (
     GateEvidence, InferencePlan, PreregError, ResourceCaps, TrackManifest, _normal_critical,
@@ -44,6 +44,12 @@ class BlindedPairScore(ReportModel):
     arm_b_output_sha256: Digest | None = None
     arm_a_output_ref: EvidenceArtifactRef | None = None
     arm_b_output_ref: EvidenceArtifactRef | None = None
+    arm_a_raw_output_sha256: Digest | None = None
+    arm_b_raw_output_sha256: Digest | None = None
+    arm_a_raw_output_ref: EvidenceArtifactRef | None = None
+    arm_b_raw_output_ref: EvidenceArtifactRef | None = None
+    arm_a_anonymization_attestation: EvidenceArtifactRef | None = None
+    arm_b_anonymization_attestation: EvidenceArtifactRef | None = None
     arm_a_receipts: tuple[ActionReceipt, ...] = ()
     arm_b_receipts: tuple[ActionReceipt, ...] = ()
     arm_a_action_attestations: tuple[ActionReceiptAttestation, ...] = ()
@@ -63,6 +69,12 @@ class BlindedPairScore(ReportModel):
                 raise ValueError("scored pair requires both anonymized outputs and scores")
             if self.arm_a_output_ref is None or self.arm_b_output_ref is None:
                 raise ValueError("scored pair requires content-addressed output artifact refs")
+            if any(value is None for value in (
+                self.arm_a_raw_output_sha256, self.arm_b_raw_output_sha256,
+                self.arm_a_raw_output_ref, self.arm_b_raw_output_ref,
+                self.arm_a_anonymization_attestation, self.arm_b_anonymization_attestation,
+            )):
+                raise ValueError("scored pair requires raw output evidence and independent anonymization attestations")
             if self.reason is not None:
                 raise ValueError("scored pair cannot have a failure/exclusion reason")
         else:
@@ -73,12 +85,24 @@ class BlindedPairScore(ReportModel):
         if ((self.arm_a_output_sha256 is None) != (self.arm_a_output_ref is None)
                 or (self.arm_b_output_sha256 is None) != (self.arm_b_output_ref is None)):
             raise ValueError("each output digest must be paired with its artifact reference")
+        if ((self.arm_a_raw_output_sha256 is None) != (self.arm_a_raw_output_ref is None)
+                or (self.arm_b_raw_output_sha256 is None) != (self.arm_b_raw_output_ref is None)):
+            raise ValueError("each raw output digest must be paired with its artifact reference")
+        if ((self.arm_a_raw_output_sha256 is None) != (self.arm_a_anonymization_attestation is None)
+                or (self.arm_b_raw_output_sha256 is None) != (self.arm_b_anonymization_attestation is None)):
+            raise ValueError("raw outputs must have corresponding anonymization attestations")
         if (self.arm_a_output_ref is not None
                 and self.arm_a_output_ref.artifact_sha256 != self.arm_a_output_sha256):
             raise ValueError("arm A output ref must match its output digest")
         if (self.arm_b_output_ref is not None
                 and self.arm_b_output_ref.artifact_sha256 != self.arm_b_output_sha256):
             raise ValueError("arm B output ref must match its output digest")
+        if (self.arm_a_raw_output_ref is not None
+                and self.arm_a_raw_output_ref.artifact_sha256 != self.arm_a_raw_output_sha256):
+            raise ValueError("arm A raw output ref must match its output digest")
+        if (self.arm_b_raw_output_ref is not None
+                and self.arm_b_raw_output_ref.artifact_sha256 != self.arm_b_raw_output_sha256):
+            raise ValueError("arm B raw output ref must match its output digest")
         if self.pair_result_sha256 != pair_score_digest(self):
             raise ValueError("pair result digest does not match its canonical score record")
         return self
@@ -379,18 +403,43 @@ def aggregate_blinded_scores(
     pair_reports: list[ReportPair] = []
     deltas: list[float] = []
     wins = ties = losses = 0
+    anonymizer_principals: set[str] = set()
+    anonymizer_key_fingerprints: set[bytes] = set()
     for item in package.pairs:
-        for label, reference, digest in (
-            ("A", item.arm_a_output_ref, item.arm_a_output_sha256),
-            ("B", item.arm_b_output_ref, item.arm_b_output_sha256),
+        for label, output_ref, output_sha, raw_ref, raw_sha, attestation_ref in (
+            ("A", item.arm_a_output_ref, item.arm_a_output_sha256,
+             item.arm_a_raw_output_ref, item.arm_a_raw_output_sha256,
+             item.arm_a_anonymization_attestation),
+            ("B", item.arm_b_output_ref, item.arm_b_output_sha256,
+             item.arm_b_raw_output_ref, item.arm_b_raw_output_sha256,
+             item.arm_b_anonymization_attestation),
         ):
-            if reference is not None and digest is not None:
+            if item.status == "SCORED":
+                if any(value is None for value in (
+                    output_ref, output_sha, raw_ref, raw_sha, attestation_ref,
+                )):
+                    raise ReportError(f"arm {label} lacks required output anonymization evidence")
                 try:
-                    verify_content_artifact(
-                        root=evidence_root, reference=reference, expected_sha256=digest,
+                    anonymizer = verify_output_anonymization(
+                        root=evidence_root, policy=trust_policy, reference=attestation_ref,
+                        pair_id_sha256=item.pair_id_sha256, arm_label=label,
+                        raw_reference=raw_ref, raw_sha256=raw_sha,
+                        sanitized_reference=output_ref, sanitized_sha256=output_sha,
+                        anonymizer_sha256=manifest.evaluator.output_anonymizer_sha256,
                     )
                 except EvidenceError as exc:
-                    raise ReportError(f"arm {label} output artifact verification failed: {exc}") from exc
+                    raise ReportError(f"arm {label} output anonymization verification failed: {exc}") from exc
+                document = anonymizer.document
+                signer = trust_policy.signers[document.issuer_key_id]
+                fingerprint = hashlib.sha256(signer.public_key).digest()
+                if (document.issuer_principal_id in {scorer.issuer_principal_id,
+                                                     unblinder.issuer_principal_id}
+                        or document.issuer_key_id in {scorer.issuer_key_id, unblinder.issuer_key_id}
+                        or fingerprint in {hashlib.sha256(scorer_signer.public_key).digest(),
+                                           hashlib.sha256(unblinder_signer.public_key).digest()}):
+                    raise ReportError("output anonymizer must be independent from scorer and unblinder")
+                anonymizer_principals.add(document.issuer_principal_id)
+                anonymizer_key_fingerprints.add(fingerprint)
         caps_a, caps_b = manifest.arms[0].caps, manifest.arms[1].caps
         accounting_a, eligible_a, meter_a = _verified_accounting(
             item.arm_a_receipts, item.arm_a_action_attestations,
@@ -412,10 +461,12 @@ def aggregate_blinded_scores(
                 continue
             meter_principal, meter_fingerprint = meter
             if (meter_principal in {scorer.issuer_principal_id, unblinder.issuer_principal_id}
+                    or meter_principal in anonymizer_principals
                     or meter_fingerprint in {
                         hashlib.sha256(scorer_signer.public_key).digest(),
                         hashlib.sha256(unblinder_signer.public_key).digest(),
-                    }):
+                    }
+                    or meter_fingerprint in anonymizer_key_fingerprints):
                 raise ReportError("action meter must be independent from scorer and unblinding operator")
         accounting_unknown = (
             accounting_a is None or accounting_b is None
