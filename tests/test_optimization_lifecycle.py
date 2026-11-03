@@ -309,6 +309,12 @@ def test_integration_decision_projects_guarded_phase_and_replays(
             "campaign_id": graph.campaign_id, "snapshot_id": "b" * 40, "revision": 1,
         }
         assert champion.current()["snapshot_id"] == "b" * 40
+        replayed_promotion = coordinator.promote_candidate(
+            node_id="candidate-1", expected_champion_snapshot_id="a" * 40,
+            expected_champion_revision=0,
+        )
+        assert replayed_promotion["replayed"] is True
+        assert replayed_promotion["revision"] == 1
     else:
         with pytest.raises(OptimizationLifecycleError, match="COMPLETED CONSOLIDATION"):
             coordinator.promote_candidate(
