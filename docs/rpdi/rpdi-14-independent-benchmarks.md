@@ -64,19 +64,29 @@ evaluator identity sealed until both arms have frozen their final artifacts.
 - Per-arm ceilings for calls, input/output/cached tokens, wall time, evaluator
   calls, experiments, retries, and spend. Record a resource receipt for every
   action. Missing spend/token data is `UNKNOWN`, never zero or free.
-- Per-track primary outcome, score direction, deterministic seeds, permitted
-  DEV feedback, stopping rule, tie rule, minimum usable pairs, exclusion
-  criteria, and the statistical summary to report. Freeze these before any
-  scored task is run; later changes require a new protocol version and a new
-  untouched task set.
+- Per-track estimand and primary outcome, score direction, deterministic
+  seeds, permitted DEV feedback, stopping rule, tie rule, minimum usable pairs,
+  and exclusion criteria. Freeze the inference method too: paired estimator,
+  uncertainty interval method and coverage level, one- or two-sided decision,
+  and treatment of task strata, clustering, missing pairs, and ties. State an
+  a priori sample-size target using either a power target with its assumed
+  effect and variance or a precision target for the interval width. Do not
+  infer adequacy from a historical ten-task plan or a small DEV fixture.
+  Specify how Optimization and Exploration decisions will be reported
+  separately; any joint superiority claim across both tracks requires a
+  preregistered multiplicity rule. Freeze all of this before any scored task is
+  run; later changes require a new protocol version and a new untouched task
+  set.
 - Sealed task assignment, anonymized arm labels, evaluator identity and
   isolation attestation, artifact-retention plan, and canonical hashes for
   every final result artifact.
 
-The preregistration must define enough usable task pairs for its stated
-uncertainty analysis. Do not infer sample adequacy from a historical ten-task
-plan or a small DEV fixture. Do not use AutoResearchExam or any dataset with
-uncleared use/redistribution rights.
+The preregistration must show that its planned number of usable task pairs
+meets the chosen power or precision target under stated assumptions. If rights,
+task availability, or the attainable sample size cannot support that target,
+classify the track as underpowered/ineligible rather than silently relaxing
+the target. Do not use AutoResearchExam or any dataset with uncleared
+use/redistribution rights.
 
 ## Arm and scoring controls
 
