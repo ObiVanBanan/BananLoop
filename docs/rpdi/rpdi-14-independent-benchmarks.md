@@ -17,7 +17,10 @@ other arm.
 Each BananLoop Optimization trial uses the selected v0.2 Full Exploration
 campaign and, only after its frozen verification gate passes, a distinct
 Optimization campaign carrying the exact approved evaluator protocol and
-assets. No mode or evaluator protocol may be changed in place. Full means the
+assets. Its Optimization manifest pins the selected Exploration campaign ID,
+campaign spec, exact source/Full identity, verification receipt, and evaluator
+protocol/bundle digests; the run gate requires a signed verification artifact
+over that complete anchor. No mode or evaluator protocol may be changed in place. Full means the
 complete approved feature-flag hash, not a diagnostic subset.
 
 ## Run-order gates
@@ -154,7 +157,7 @@ use/redistribution rights.
 | Blind isolated scoring | Negative tests show sealed data and labels cannot reach agents, logs, artifacts, or evaluator-side feedback before both arms freeze |
 | Honest eligibility and reports | Tests preserve failures/exclusions and produce paired per-task results with uncertainty, resource totals, and deviation records |
 | Rights and spend clearance | Task-level rights register and owner spend authorization are complete before allocation |
-| Run gate | Runner refuses any start before RPDI-13 E2E, exact-head CI/review, and independent isolation attestations are recorded |
+| Run gate | Runner refuses any start before RPDI-13 E2E, exact-head CI/review, independent isolation, and (for Optimization) the signed exact Exploration verification/evaluator handoff are recorded |
 | Reproducibility | A clean replay of the frozen manifest reproduces eligibility decisions, score aggregation, and artifact hashes without rerunning paid arms |
 
 ## Release boundary

@@ -80,9 +80,20 @@ class ArmConfig(FrozenModel):
 class EvaluatorPin(FrozenModel):
     evaluator_sha256: Digest
     protocol_sha256: Digest
+    bundle_sha256: Digest
     rubric_sha256: Digest
     validation_set_sha256: Digest
     holdout_set_sha256: Digest
+
+
+class ExplorationCampaignAnchor(FrozenModel):
+    campaign_id: str = Field(min_length=1, max_length=200)
+    campaign_spec_sha256: Digest
+    source_sha: Digest
+    full_flag_hash: Digest
+    verification_gate_receipt_sha256: Digest
+    approved_evaluator_protocol_sha256: Digest
+    approved_evaluator_bundle_sha256: Digest
 
 
 CONTROL_KEYS = frozenset({
@@ -237,6 +248,7 @@ class TrackManifest(FrozenModel):
     arms: tuple[ArmConfig, ArmConfig]
     common_caps: ResourceCaps
     evaluator: EvaluatorPin
+    exploration_anchor: ExplorationCampaignAnchor | None = None
     deterministic_seed: str = Field(min_length=1, max_length=200)
     repeats_per_task: PositiveInt
     inference: InferencePlan
@@ -274,6 +286,17 @@ class TrackManifest(FrozenModel):
                     raise ValueError(f"{arm.arm} caps must exactly match common cap for {dimension}")
         if self.arms[1].iteration_policy.maximum_iterations < 2:
             raise ValueError("Codex Direct must have a preregistered iterative policy")
+        if self.track == "OPTIMIZATION":
+            if self.exploration_anchor is None:
+                raise ValueError("Optimization requires a pinned verified Full Exploration campaign")
+            anchor = self.exploration_anchor
+            if anchor.source_sha != self.source_sha or anchor.full_flag_hash != self.full_flag_hash:
+                raise ValueError("Optimization Exploration anchor source/Full identity differs")
+            if (anchor.approved_evaluator_protocol_sha256 != self.evaluator.protocol_sha256
+                    or anchor.approved_evaluator_bundle_sha256 != self.evaluator.bundle_sha256):
+                raise ValueError("Optimization evaluator protocol/assets differ from the verified Exploration handoff")
+        elif self.exploration_anchor is not None:
+            raise ValueError("the separate Exploration benchmark track cannot carry an Optimization handoff anchor")
         if {item.control_key for item in self.control_comparisons} != CONTROL_KEYS:
             raise ValueError("control comparisons must explicitly cover every exposed arm control")
         expected_controls = _arm_control_hashes(self.arms, self.approved_dev_information_sha256)
@@ -300,6 +323,7 @@ class VerificationPin(FrozenModel):
         "INDEPENDENT_TECHNICAL_REVIEWER",
         "INDEPENDENT_STATISTICAL_REVIEWER",
         "INDEPENDENT_EVALUATOR_ISOLATION_AUDITOR",
+        "EXPLORATION_GATE_VERIFIER",
         "INTEGRATED_E2E_VERIFIER",
         "SCREEN_READER_REVIEWER",
         "BENCHMARK_OPERATOR",
@@ -317,6 +341,7 @@ class GateEvidence(FrozenModel):
     technical_review: VerificationPin
     statistical_review: VerificationPin
     evaluator_isolation: VerificationPin
+    exploration_verification: VerificationPin | None = None
     rights_register_sha256: Digest
     spend_authorization_sha256: Digest
     operator_acceptance_sha256: Digest
@@ -482,9 +507,20 @@ def validate_run_gate(
         verify_pin(evidence.evaluator_isolation, "EVALUATOR_ISOLATION"),
         verify_pin(evidence.independent_operator, "INDEPENDENT_OPERATOR"),
     ]
+    if manifest.track == "OPTIMIZATION":
+        if evidence.exploration_verification is None or manifest.exploration_anchor is None:
+            raise PreregError("Optimization run gate requires verified Full Exploration campaign evidence")
+        anchor_sha = hashlib.sha256(canonical_bytes(manifest.exploration_anchor)).hexdigest()
+        if evidence.exploration_verification.subject_sha != anchor_sha:
+            raise PreregError("Exploration verification is for a different campaign/spec/evaluator handoff")
+        reviewer_documents.append(verify_pin(evidence.exploration_verification,
+                                             "EXPLORATION_VERIFICATION"))
+    elif evidence.exploration_verification is not None:
+        raise PreregError("separate Exploration benchmark runs cannot import an Optimization handoff receipt")
     distinct_principal_roles = {
         "INDEPENDENT_TECHNICAL_REVIEWER", "INDEPENDENT_STATISTICAL_REVIEWER",
-        "INDEPENDENT_EVALUATOR_ISOLATION_AUDITOR", "BENCHMARK_OPERATOR",
+        "INDEPENDENT_EVALUATOR_ISOLATION_AUDITOR", "EXPLORATION_GATE_VERIFIER",
+        "BENCHMARK_OPERATOR",
     }
     independent_docs = [doc for doc in reviewer_documents if doc.issuer_role in distinct_principal_roles]
     principals = [doc.issuer_principal_id for doc in independent_docs]

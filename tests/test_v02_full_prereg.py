@@ -67,6 +67,7 @@ def _raw_manifest(track="OPTIMIZATION", *, task_id="task-opt", suffix="opt"):
         "repeats_per_task": 1,
         "evaluator": {"evaluator_sha256": _sha(f"evaluator-{suffix}"),
                       "protocol_sha256": _sha(f"protocol-{suffix}"),
+                      "bundle_sha256": _sha(f"bundle-{suffix}"),
                       "rubric_sha256": _sha(f"rubric-{suffix}"),
                       "validation_set_sha256": _sha(f"validation-{suffix}"),
                       "holdout_set_sha256": _sha(f"holdout-{suffix}")},
@@ -121,6 +122,18 @@ def _raw_manifest(track="OPTIMIZATION", *, task_id="task-opt", suffix="opt"):
             "status": "MATCHED" if matched else "UNMATCHED",
             "difference_disclosure": None if matched else f"Deliberate difference in {key}.",
         })
+    if track == "OPTIMIZATION":
+        raw["exploration_anchor"] = {
+            "campaign_id": "verified-exploration-campaign",
+            "campaign_spec_sha256": _sha("selected-exploration-spec"),
+            "source_sha": raw["source_sha"],
+            "full_flag_hash": raw["full_flag_hash"],
+            "verification_gate_receipt_sha256": _sha("exploration-gate-receipt"),
+            "approved_evaluator_protocol_sha256": raw["evaluator"]["protocol_sha256"],
+            "approved_evaluator_bundle_sha256": raw["evaluator"]["bundle_sha256"],
+        }
+    else:
+        raw["exploration_anchor"] = None
     return raw
 
 
@@ -132,6 +145,7 @@ def _valid_evidence(manifest, evidence_dir, *, duplicate_independent_principal=F
         "INDEPENDENT_TECHNICAL_REVIEWER": "principal-technical",
         "INDEPENDENT_STATISTICAL_REVIEWER": "principal-technical" if duplicate_independent_principal else "principal-statistical",
         "INDEPENDENT_EVALUATOR_ISOLATION_AUDITOR": "principal-isolation",
+        "EXPLORATION_GATE_VERIFIER": "principal-exploration-gate",
         "BENCHMARK_OPERATOR": "principal-operator",
         "RIGHTS_AUTHORIZER": "principal-rights",
         "SPEND_AUTHORIZER": "principal-spend",
@@ -200,6 +214,11 @@ def _valid_evidence(manifest, evidence_dir, *, duplicate_independent_principal=F
                          "ACCEPTED", "OWNER_APPROVER",
                          {"approval_sha256": manifest.owner_approval_sha256})
     assert all(ref.artifact_sha256 for ref in (rights_ref, spend_ref, operator_acceptance_ref, owner_ref))
+    exploration_verification = None
+    if manifest.exploration_anchor is not None:
+        anchor_sha = hashlib.sha256(canonical_bytes(manifest.exploration_anchor)).hexdigest()
+        exploration_verification = pin("exploration-verification", "EXPLORATION_VERIFICATION",
+                                       anchor_sha, "PASS", "EXPLORATION_GATE_VERIFIER")
 
     evidence = GateEvidence(
         source_sha=source,
@@ -218,6 +237,7 @@ def _valid_evidence(manifest, evidence_dir, *, duplicate_independent_principal=F
         evaluator_isolation=pin("evaluator-isolation", "EVALUATOR_ISOLATION",
                                 hashlib.sha256(canonical_bytes(manifest.evaluator)).hexdigest(),
                                 "PASS", "INDEPENDENT_EVALUATOR_ISOLATION_AUDITOR"),
+        exploration_verification=exploration_verification,
         rights_register_sha256=manifest.rights_register_sha256,
         spend_authorization_sha256=manifest.spend_authorization_sha256,
         operator_acceptance_sha256=manifest.operator_acceptance_sha256,
@@ -280,6 +300,17 @@ def test_arm_controls_are_derived_from_pinned_values_and_every_difference_is_dis
     raw["control_comparisons"].pop()
     with pytest.raises(PreregError, match="at least 12 items"):
         freeze_manifest(raw)
+
+
+def test_optimization_requires_full_exploration_handoff_and_exact_evaluator_assets():
+    raw = _raw_manifest()
+    raw["exploration_anchor"] = None
+    with pytest.raises(PreregError, match="requires a pinned verified Full Exploration"):
+        freeze_manifest(raw)
+    raw = _raw_manifest()
+    raw["exploration_anchor"]["approved_evaluator_bundle_sha256"] = _sha("different-bundle")
+    with pytest.raises(PreregError, match="assets differ from the verified Exploration handoff"):
+        freeze_manifest(raw)
     raw = _raw_manifest()
     raw["arms"][1]["iteration_policy"]["maximum_iterations"] = 1
     with pytest.raises(PreregError, match="iterative policy"):
@@ -326,6 +357,9 @@ def test_run_gate_requires_exact_head_e2e_ci_review_and_independent_attestations
                                  trust_policy=trust)
 
     validate()
+    missing_exploration = evidence.model_copy(update={"exploration_verification": None})
+    with pytest.raises(PreregError, match="requires verified Full Exploration"):
+        validate(missing_exploration)
     tampered = manifest.model_copy(update={"task_pins": (manifest.task_pins[0],)})
     with pytest.raises(PreregError, match="content has changed"):
         validate_run_gate(tampered, evidence, evidence_root=str(tmp_path / "bundle"), trust_policy=policy)
