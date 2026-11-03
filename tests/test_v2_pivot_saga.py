@@ -1138,6 +1138,68 @@ def test_full_auto_api_executes_persisted_plan_without_approval_body(tmp_path):
         server.server_close()
 
 
+def test_supervised_api_fails_closed_without_approval_and_replays_concurrently(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from urllib.error import HTTPError
+
+    setup = _setup(tmp_path, mode="SUPERVISED")
+    server = create_server(str(setup["repo"]), port=0, token="supervised-api-token")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}/v1/campaigns/{setup['parent_id']}"
+
+    def post(path, payload, key):
+        request = urllib.request.Request(
+            base + path, data=json.dumps(payload).encode(),
+            headers={
+                "Authorization": "Bearer supervised-api-token",
+                "Content-Type": "application/json",
+                "Idempotency-Key": key,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read())
+
+    try:
+        proposal = setup["proposal"].model_dump(mode="json")
+        post("/v2/pivot-proposals", proposal, setup["proposal"].proposal_id)
+        execute_payload = {
+            "proposal_id": setup["proposal"].proposal_id,
+            "digest": setup["proposal"].digest,
+        }
+        with pytest.raises(HTTPError) as rejected:
+            post("/v2/pivot-executions", execute_payload, "missing-api-approval")
+        assert rejected.value.code == 409
+
+        approval = PivotDecisionCommand(
+            campaign_id=setup["parent_id"], request_id="supervised-api-approval",
+            proposal_id=setup["proposal"].proposal_id,
+            digest=setup["proposal"].digest, decision="approve",
+        )
+        post("/v2/pivot-decisions", approval.model_dump(mode="json"), approval.request_id)
+        barrier = Barrier(2)
+
+        def execute():
+            barrier.wait(timeout=5)
+            return post("/v2/pivot-executions", execute_payload, "concurrent-api-key")
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: execute(), range(2)))
+        assert results[0]["child_campaign_id"] == results[1]["child_campaign_id"]
+        assert results[0]["allocation_id"] == results[1]["allocation_id"]
+        ledger = setup["registry"].budget_ledger()
+        try:
+            assert ledger.conn.execute("SELECT COUNT(*) FROM child_allocations").fetchone()[0] == 1
+        finally:
+            ledger.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+        server.server_close()
+
+
 def test_saga_idempotency_key_cannot_be_reused_for_different_child_spec(tmp_path):
     setup = _setup(tmp_path)
     _saga(setup).create_child(
