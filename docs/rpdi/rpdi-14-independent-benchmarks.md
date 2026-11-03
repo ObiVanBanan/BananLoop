@@ -61,6 +61,10 @@ evaluator identity sealed until both arms have frozen their final artifacts.
 - Codex Direct model/provider/version and reasoning settings, tool allowlist,
   initial state, and iteration policy. Match these to the BananLoop arm wherever
   the two systems expose the same control; disclose unavoidable differences.
+  The frozen manifest hashes every exposed provider/model/reasoning/tool,
+  iteration, role-roster, and resource-cap value on both arms, checks each
+  `MATCHED`/`UNMATCHED` label against those hashes, and requires a disclosure
+  for every difference.
 - Per-arm ceilings for calls, input/output/cached tokens, wall time, evaluator
   calls, experiments, retries, and spend. Record a resource receipt for every
   action. Missing spend/token data is `UNKNOWN`, never zero or free.
@@ -87,11 +91,21 @@ evaluator identity sealed until both arms have frozen their final artifacts.
   verify the method and sample-size result for its stated assumptions and sign
   the exact canonical manifest digest. Unsupported designs require a separately
   reviewed method/version, not a hand-edited pair count.
-- Preregistration evidence pins are structural references only. In particular,
-  a statistical-review digest is not a verified signature. Before any trial is
-  eligible, an evidence verifier must authenticate reviewer identity and
-  independence and validate the referenced signed review artifact; the same
-  applies to CI, rights, spend, operator, owner, E2E, and isolation evidence.
+- The offline gate verifier authenticates canonical, size-bounded evidence
+  documents against a protected local trust policy. It checks artifact bytes,
+  Ed25519 signature, authorized public key and role, exact subject and conclusion, signed
+  CI job/head payloads, and distinct principals/keys for technical, statistical,
+  evaluator-isolation, and benchmark-operator attestations. The trust policy is
+  verifier-only and must be provisioned through a protected channel. Issuers
+  keep Ed25519 private keys outside the verifier; the trust policy contains
+  public keys only. The author/operator exclusion set is mandatory and independent
+  reviewers/operators must use distinct principals and keys.
+  On platforms without descriptor-relative no-follow file opens, the evidence
+  root must be protected by filesystem ACLs from modification throughout gate
+  verification.
+  Synthetic fixtures demonstrate the mechanics only and provide no real gate
+  evidence. No run is eligible until actual artifact files are reviewed, signed,
+  and verified for the exact immutable inputs.
 - Sealed task assignment, anonymized arm labels, evaluator identity and
   isolation attestation, artifact-retention plan, and canonical hashes for
   every final result artifact.
@@ -133,9 +147,9 @@ use/redistribution rights.
 | Requirement | Evidence required before an authorized run |
 | --- | --- |
 | Two separate benchmark tracks | Distinct manifests, task sets, primary outcomes, evaluator/rubric pins, and reports for Optimization and Exploration |
-| Frozen protocol and Full identity | Canonical manifest validation rejects changed source, flags, spec, model, evaluator, seed, task, or budget after freeze; an independent statistical review signs the exact manifest digest |
-| Matched iterative baseline | Harness tests prove same starting state/DEV information/resource ceilings and permit bounded Codex Direct iteration |
-| Complete resource accounting | Receipts reconcile every role, retry, tool, token class, evaluator call, elapsed time, and spend; unknowns make a pair ineligible |
+| Frozen protocol and Full identity | Canonical manifest validation rejects changed source, flags, spec, model, evaluator, seed, task, or budget after freeze; authenticated independent statistical review signs the exact manifest digest |
+| Matched iterative baseline | Tests prove each exposed arm-control pin matches its `MATCHED`/`UNMATCHED` classification, all differences are disclosed, task/DEV starting state and resource ceilings align, and Codex Direct can iterate within its frozen policy |
+| Complete resource accounting | Hash-chained action receipts reconcile every role, retry, tool, token class, evaluator call, elapsed time, and spend against each arm cap; unknowns or overages make a pair ineligible. The current validator checks submitted receipt chains but is not yet run-gate integrated, does not authenticate the final head pin, and cannot prove that the provider emitted every billable event. |
 | Blind isolated scoring | Negative tests show sealed data and labels cannot reach agents, logs, artifacts, or evaluator-side feedback before both arms freeze |
 | Honest eligibility and reports | Tests preserve failures/exclusions and produce paired per-task results with uncertainty, resource totals, and deviation records |
 | Rights and spend clearance | Task-level rights register and owner spend authorization are complete before allocation |

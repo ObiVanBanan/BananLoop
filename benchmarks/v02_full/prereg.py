@@ -17,6 +17,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from bananloop.contracts import FeatureFlagsV2, V2_FULL_FEATURES
 
+from .evidence import (
+    EvidenceArtifactRef, EvidenceError, SignedEvidence, TrustPolicy, verify_evidence_artifact,
+)
+
 
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 PositiveInt = Annotated[int, Field(strict=True, ge=1)]
@@ -79,6 +83,37 @@ class EvaluatorPin(FrozenModel):
     rubric_sha256: Digest
     validation_set_sha256: Digest
     holdout_set_sha256: Digest
+
+
+CONTROL_KEYS = frozenset({
+    "provider", "model", "model_version", "reasoning_settings", "tool_policy",
+    "maximum_iterations", "feedback_source", "permits_repair", "stopping_rule",
+    "role_roster", "resource_caps",
+})
+
+
+class ControlComparison(FrozenModel):
+    control_key: Literal[
+        "provider", "model", "model_version", "reasoning_settings", "tool_policy",
+        "maximum_iterations", "feedback_source", "permits_repair", "stopping_rule",
+        "role_roster", "resource_caps",
+    ]
+    bananloop_value_sha256: Digest
+    codex_direct_value_sha256: Digest
+    status: Literal["MATCHED", "UNMATCHED"]
+    difference_disclosure: str | None = None
+
+    @model_validator(mode="after")
+    def classification_is_true(self) -> "ControlComparison":
+        equal = self.bananloop_value_sha256 == self.codex_direct_value_sha256
+        if (self.status == "MATCHED") != equal:
+            raise ValueError("control comparison status does not match the pinned arm values")
+        if self.status == "UNMATCHED" and (self.difference_disclosure is None
+                                             or not self.difference_disclosure.strip()):
+            raise ValueError("every unmatched control requires a disclosure")
+        if self.status == "MATCHED" and self.difference_disclosure is not None:
+            raise ValueError("matched controls cannot carry an unmatched difference disclosure")
+        return self
 
 
 def _normal_critical(coverage_percent: int, sidedness: str) -> float:
@@ -204,12 +239,13 @@ class TrackManifest(FrozenModel):
     deterministic_seed: str = Field(min_length=1, max_length=200)
     repeats_per_task: PositiveInt
     inference: InferencePlan
-    matched_controls: tuple[str, ...] = Field(min_length=1)
-    unmatched_control_disclosures: tuple[str, ...]
+    control_comparisons: tuple[ControlComparison, ...] = Field(min_length=len(CONTROL_KEYS))
     rights_register_sha256: Digest
     spend_authorization_sha256: Digest
     operator_acceptance_sha256: Digest
     owner_approval_sha256: Digest
+    arm_author_principal_ids: tuple[str, ...] = Field(min_length=1, max_length=32)
+    arm_operator_principal_ids: tuple[str, ...] = Field(min_length=1, max_length=32)
     frozen_at: str = Field(min_length=1, max_length=100)
     manifest_sha256: Digest | None = None
 
@@ -237,6 +273,14 @@ class TrackManifest(FrozenModel):
                     raise ValueError(f"{arm.arm} caps must exactly match common cap for {dimension}")
         if self.arms[1].iteration_policy.maximum_iterations < 2:
             raise ValueError("Codex Direct must have a preregistered iterative policy")
+        if {item.control_key for item in self.control_comparisons} != CONTROL_KEYS:
+            raise ValueError("control comparisons must explicitly cover every exposed arm control")
+        expected_controls = _arm_control_hashes(self.arms)
+        for comparison in self.control_comparisons:
+            expected_full, expected_direct = expected_controls[comparison.control_key]
+            if (comparison.bananloop_value_sha256 != expected_full
+                    or comparison.codex_direct_value_sha256 != expected_direct):
+                raise ValueError(f"control comparison {comparison.control_key} is not bound to the arm configurations")
         return self
 
 
@@ -244,6 +288,7 @@ class CIJob(FrozenModel):
     name: str = Field(min_length=1, max_length=200)
     conclusion: Literal["success"]
     head_sha: Digest
+    evidence_artifact_sha256: Digest
 
 
 class VerificationPin(FrozenModel):
@@ -256,6 +301,7 @@ class VerificationPin(FrozenModel):
         "INDEPENDENT_EVALUATOR_ISOLATION_AUDITOR",
         "INTEGRATED_E2E_VERIFIER",
         "SCREEN_READER_REVIEWER",
+        "BENCHMARK_OPERATOR",
     ]
 
 
@@ -274,7 +320,8 @@ class GateEvidence(FrozenModel):
     spend_authorization_sha256: Digest
     operator_acceptance_sha256: Digest
     owner_approval_sha256: Digest
-    independent_operator: bool
+    independent_operator: VerificationPin
+    evidence_artifacts: tuple[EvidenceArtifactRef, ...] = Field(min_length=1, max_length=64)
 
 
 REQUIRED_CI_JOBS = frozenset({
@@ -293,6 +340,30 @@ def canonical_bytes(value: BaseModel | dict) -> bytes:
     raw = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
     return json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
                       allow_nan=False).encode("utf-8")
+
+
+def _arm_control_hashes(arms: tuple[ArmConfig, ArmConfig]) -> dict[str, tuple[str, str]]:
+    full, direct = arms
+    values = {
+        "provider": (full.provider, direct.provider),
+        "model": (full.model, direct.model),
+        "model_version": (full.model_version, direct.model_version),
+        "reasoning_settings": (full.reasoning_settings_sha256, direct.reasoning_settings_sha256),
+        "tool_policy": (full.tool_policy_sha256, direct.tool_policy_sha256),
+        "maximum_iterations": (full.iteration_policy.maximum_iterations,
+                               direct.iteration_policy.maximum_iterations),
+        "feedback_source": (full.iteration_policy.feedback_source,
+                            direct.iteration_policy.feedback_source),
+        "permits_repair": (full.iteration_policy.permits_repair,
+                           direct.iteration_policy.permits_repair),
+        "stopping_rule": (full.iteration_policy.stopping_rule_sha256,
+                          direct.iteration_policy.stopping_rule_sha256),
+        "role_roster": (full.role_roster_sha256 or "NO_ROLE_ROSTER",
+                        direct.role_roster_sha256 or "NO_ROLE_ROSTER"),
+        "resource_caps": (full.caps.model_dump(mode="json"), direct.caps.model_dump(mode="json")),
+    }
+    return {key: tuple(hashlib.sha256(canonical_bytes(value)).hexdigest() for value in pair)
+            for key, pair in values.items()}
 
 
 def manifest_digest(manifest: TrackManifest) -> str:
@@ -324,8 +395,14 @@ def verify_frozen_manifest(manifest: TrackManifest, expected_sha256: str) -> Non
         raise PreregError("frozen manifest content has changed")
 
 
-def validate_run_gate(manifest: TrackManifest, evidence: GateEvidence) -> None:
-    """Validate prerequisites only; this function never assigns or runs a task."""
+def validate_run_gate(
+    manifest: TrackManifest,
+    evidence: GateEvidence,
+    *,
+    evidence_root: str,
+    trust_policy: TrustPolicy,
+) -> None:
+    """Authenticate prerequisite artifacts; never assigns or runs a task."""
     if manifest.manifest_sha256 is None:
         raise PreregError("track manifest must be frozen before gate validation")
     verify_frozen_manifest(manifest, manifest.manifest_sha256)
@@ -372,8 +449,101 @@ def validate_run_gate(manifest: TrackManifest, evidence: GateEvidence) -> None:
         raise PreregError("evaluator isolation review must be independent")
     if evidence.browser_ci.name != "dashboard-browser" or evidence.browser_ci.head_sha != manifest.source_sha:
         raise PreregError("browser CI is missing or for a different source SHA")
-    if not evidence.independent_operator:
-        raise PreregError("an independent benchmark operator must accept the frozen protocol")
+    if len({item.path for item in evidence.evidence_artifacts}) != len(evidence.evidence_artifacts):
+        raise PreregError("signed evidence artifact paths must be unique")
+    if len({item.artifact_sha256 for item in evidence.evidence_artifacts}) != len(evidence.evidence_artifacts):
+        raise PreregError("signed evidence artifact digests must be unique")
+    artifact_by_digest = {item.artifact_sha256: item for item in evidence.evidence_artifacts}
+    used_artifacts: set[str] = set()
+
+    def verify_pin(pin: VerificationPin, evidence_type: str):
+        reference = artifact_by_digest.get(pin.artifact_sha256)
+        if reference is None:
+            raise PreregError(f"missing signed artifact for {evidence_type}")
+        used_artifacts.add(reference.artifact_sha256)
+        try:
+            return verify_evidence_artifact(
+                root=evidence_root, reference=reference, policy=trust_policy,
+                evidence_type=evidence_type, subject_sha=pin.subject_sha,
+                conclusion=pin.conclusion, issuer_role=pin.reviewer_role,
+            ).document
+        except EvidenceError as exc:
+            raise PreregError(f"invalid {evidence_type} evidence: {exc}") from exc
+
+    reviewer_documents = [
+        verify_pin(evidence.rpdi13_e2e, "RPDI13_E2E"),
+        verify_pin(evidence.rpdi13_accessibility, "RPDI13_ACCESSIBILITY"),
+        verify_pin(evidence.technical_review, "TECHNICAL_REVIEW"),
+        verify_pin(evidence.statistical_review, "STATISTICAL_REVIEW"),
+        verify_pin(evidence.evaluator_isolation, "EVALUATOR_ISOLATION"),
+        verify_pin(evidence.independent_operator, "INDEPENDENT_OPERATOR"),
+    ]
+    distinct_principal_roles = {
+        "INDEPENDENT_TECHNICAL_REVIEWER", "INDEPENDENT_STATISTICAL_REVIEWER",
+        "INDEPENDENT_EVALUATOR_ISOLATION_AUDITOR", "BENCHMARK_OPERATOR",
+    }
+    independent_docs = [doc for doc in reviewer_documents if doc.issuer_role in distinct_principal_roles]
+    principals = [doc.issuer_principal_id for doc in independent_docs]
+    key_ids = [doc.issuer_key_id for doc in independent_docs]
+    key_fingerprints = [hashlib.sha256(trust_policy.signers[key].public_key).hexdigest()
+                        for key in key_ids]
+    if (len(principals) != len(set(principals)) or len(key_ids) != len(set(key_ids))
+            or len(key_fingerprints) != len(set(key_fingerprints))):
+        raise PreregError("independent technical, statistical, isolation and operator signers must use distinct principals and keys")
+    if set(principals) & trust_policy.independent_principal_exclusions:
+        raise PreregError("an arm author/operator cannot act as an independent gate reviewer or operator")
+    required_exclusions = set(manifest.arm_author_principal_ids) | set(manifest.arm_operator_principal_ids)
+    if not required_exclusions <= trust_policy.independent_principal_exclusions:
+        raise PreregError("trust policy does not exclude every frozen arm author and operator")
+
+    pin_values = (
+        ("RIGHTS_REGISTER", "RIGHTS_AUTHORIZER", "register_sha256", manifest.rights_register_sha256),
+        ("SPEND_AUTHORIZATION", "SPEND_AUTHORIZER", "authorization_sha256", manifest.spend_authorization_sha256),
+        ("OPERATOR_ACCEPTANCE", "BENCHMARK_OPERATOR", "acceptance_sha256", manifest.operator_acceptance_sha256),
+        ("OWNER_APPROVAL", "OWNER_APPROVER", "approval_sha256", manifest.owner_approval_sha256),
+    )
+    docs_by_sha = {item.artifact_sha256: item for item in evidence.evidence_artifacts}
+    signed_gate_documents: dict[str, SignedEvidence] = {}
+    for evidence_type, role, payload_key, bound_sha in pin_values:
+        matches = []
+        for reference in evidence.evidence_artifacts:
+            try:
+                document = verify_evidence_artifact(
+                    root=evidence_root, reference=reference, policy=trust_policy,
+                    evidence_type=evidence_type, subject_sha=manifest.manifest_sha256,
+                    conclusion="ACCEPTED", issuer_role=role,
+                    expected_payload={payload_key: bound_sha},
+                ).document
+                matches.append((reference, document))
+            except EvidenceError:
+                continue
+        if len(matches) != 1:
+            raise PreregError(f"{evidence_type} must have exactly one authenticated matching artifact")
+        used_artifacts.add(matches[0][0].artifact_sha256)
+        signed_gate_documents[evidence_type] = matches[0][1]
+    independent_operator_document = reviewer_documents[5]
+    operator_acceptance_document = signed_gate_documents["OPERATOR_ACCEPTANCE"]
+    if (operator_acceptance_document.issuer_principal_id != independent_operator_document.issuer_principal_id
+            or operator_acceptance_document.issuer_key_id != independent_operator_document.issuer_key_id):
+        raise PreregError("operator acceptance and independent-operator sign-off must come from the same trusted signer")
+
+    for job in (*evidence.ci_jobs, evidence.browser_ci):
+        reference = docs_by_sha.get(job.evidence_artifact_sha256)
+        if reference is None:
+            raise PreregError(f"CI job {job.name} has no signed result artifact")
+        used_artifacts.add(reference.artifact_sha256)
+        try:
+            verify_evidence_artifact(
+                root=evidence_root, reference=reference, policy=trust_policy,
+                evidence_type="CI_JOB", subject_sha=manifest.source_sha,
+                conclusion="SUCCESS", issuer_role="CI_ATTESTOR",
+                expected_payload={"job_name": job.name, "conclusion": job.conclusion,
+                                  "head_sha": job.head_sha},
+            )
+        except EvidenceError as exc:
+            raise PreregError(f"CI job {job.name} evidence is invalid: {exc}") from exc
+    if used_artifacts != set(artifact_by_digest):
+        raise PreregError("evidence bundle contains unreferenced signed artifacts")
     required = REQUIRED_CI_JOBS
     jobs: dict[str, CIJob] = {}
     for job in evidence.ci_jobs:
@@ -408,4 +578,7 @@ def validate_track_pair(optimization: TrackManifest, exploration: TrackManifest)
         raise PreregError("tracks require distinct primary outcomes")
     if optimization.evaluator == exploration.evaluator:
         raise PreregError("tracks require separate evaluator/protocol/rubric/data pins")
+    if (optimization.arm_author_principal_ids != exploration.arm_author_principal_ids
+            or optimization.arm_operator_principal_ids != exploration.arm_operator_principal_ids):
+        raise PreregError("paired tracks must bind the same excluded authors and operators")
 
