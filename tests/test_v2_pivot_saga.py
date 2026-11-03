@@ -936,6 +936,42 @@ def test_v2_human_steering_cli_records_proposal_and_decision(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["state"] == "ACTIVE"
 
 
+def test_full_auto_application_and_cli_execute_persisted_plan(tmp_path, capsys):
+    import argparse
+    from bananloop.cli import cmd_v2_pivot_execute, cmd_v2_pivot_proposal
+
+    app_root = tmp_path / "app"
+    app_root.mkdir()
+    app_setup = _setup(app_root, mode="FULL_AUTO")
+    app = CampaignApplication(app_setup["repo"], campaign_id=app_setup["parent_id"])
+    app.v2_record_pivot_proposal(app_setup["proposal"])
+    app_receipt = app.v2_execute_pivot(
+        app_setup["proposal"].proposal_id, app_setup["proposal"].digest,
+        "full-auto-app-key",
+    )
+    assert app_receipt["state"] == "ACTIVE"
+
+    cli_root = tmp_path / "cli"
+    cli_root.mkdir()
+    cli_setup = _setup(cli_root, mode="FULL_AUTO")
+    proposal_file = tmp_path / "full-auto-proposal.json"
+    proposal_file.write_text(
+        json.dumps(cli_setup["proposal"].model_dump(mode="json")), encoding="utf-8",
+    )
+    assert cmd_v2_pivot_proposal(argparse.Namespace(
+        repo=str(cli_setup["repo"]), campaign_id=cli_setup["parent_id"],
+        input=str(proposal_file),
+    )) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "PENDING"
+    assert cmd_v2_pivot_execute(argparse.Namespace(
+        repo=str(cli_setup["repo"]), campaign_id=cli_setup["parent_id"],
+        proposal_id=cli_setup["proposal"].proposal_id,
+        digest=cli_setup["proposal"].digest,
+        idempotency_key="full-auto-cli-key",
+    )) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "ACTIVE"
+
+
 def test_application_execute_requires_persisted_approval_and_reloads_for_replay(tmp_path):
     setup = _setup(tmp_path, mode="SUPERVISED")
     app = CampaignApplication(setup["repo"], campaign_id=setup["parent_id"])
@@ -1172,6 +1208,11 @@ def test_supervised_api_fails_closed_without_approval_and_replays_concurrently(t
         with pytest.raises(HTTPError) as rejected:
             post("/v2/pivot-executions", execute_payload, "missing-api-approval")
         assert rejected.value.code == 409
+        with pytest.raises(HTTPError) as stale:
+            post("/v2/pivot-executions", {
+                **execute_payload, "digest": "0" * 64,
+            }, "stale-api-digest")
+        assert stale.value.code == 409
 
         approval = PivotDecisionCommand(
             campaign_id=setup["parent_id"], request_id="supervised-api-approval",
