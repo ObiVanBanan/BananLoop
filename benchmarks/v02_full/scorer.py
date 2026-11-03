@@ -209,6 +209,8 @@ def verify_evaluator_constituents(root: str | Path, pin) -> None:
         path = bundle / relative_name
         if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_EVALUATOR_FILE_BYTES:
             raise ScorerError(f"pinned evaluator constituent is missing or unsafe: {relative_name}")
+        if digest_field == "output_anonymizer_sha256" and not os.access(path, os.X_OK):
+            raise ScorerError("pinned output anonymizer is not executable")
         if _sha(path.read_bytes()) != getattr(pin, digest_field):
             raise ScorerError(f"pinned evaluator constituent digest differs: {relative_name}")
 

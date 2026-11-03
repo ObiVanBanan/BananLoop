@@ -212,6 +212,8 @@ def test_evaluator_constituents_are_checked_against_individual_pins(tmp_path):
     for field, filename in EVALUATOR_CONSTITUENT_FILES.items():
         content = f"pinned {filename}".encode()
         (tmp_path / filename).write_bytes(content)
+        if field == "output_anonymizer_sha256":
+            (tmp_path / filename).chmod(0o700)
         fields[field] = hashlib.sha256(content).hexdigest()
     pin = manifest.evaluator.model_copy(update=fields)
     verify_evaluator_constituents(tmp_path, pin)
