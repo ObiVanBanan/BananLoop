@@ -203,3 +203,28 @@ def test_legacy_campaign_store_fails_closed_on_v2_spec(tmp_path):
             store.spec()
     finally:
         store.close()
+
+
+def test_populated_v4_database_reads_legacy_evaluator_binding_without_rewrite(tmp_path):
+    path = tmp_path / "historical-v4.sqlite3"
+    binding_json = '{"command":["python","evaluator.py"],"metric":"quality"}'
+    with CampaignStore(path) as store:
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        store.save_evaluator_binding(
+            "legacy-binding-v1",
+            hashlib.sha256(binding_json.encode()).hexdigest(),
+            binding_json,
+        )
+        before = tuple(store.conn.execute(
+            "SELECT id,binding_id,binding_hash,binding_json FROM evaluator_bindings WHERE id=1"
+        ).fetchone())
+
+    # Reopen the populated v4 database through the current store reader. The
+    # legacy singleton is read as-is; v2 protocol onboarding does not rewrite it.
+    with CampaignStore(path) as reopened:
+        after = tuple(reopened.conn.execute(
+            "SELECT id,binding_id,binding_hash,binding_json FROM evaluator_bindings WHERE id=1"
+        ).fetchone())
+        assert reopened.evaluator_binding()["binding_json"] == binding_json
+        assert reopened.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert after == before
