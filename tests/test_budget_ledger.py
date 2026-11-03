@@ -607,6 +607,10 @@ def test_cancel_refunds_optional_budget_dimensions_exactly_once(tmp_path, option
         ledger, parent="root", allocation="optional-cancel", child="optional-child",
         spec_hash="a" * 64,
     )
+    # Model an allocation bound to a child but not yet admitted for work.
+    ledger.conn.execute(
+        "UPDATE child_allocation_gates SET state='BOUND' WHERE allocation_id='optional-cancel'",
+    )
     assert {resource: value["reserved"] for resource, value in ledger.snapshot("root").items()} == caps
     ledger.cancel_child("optional-cancel", cancellation_digest=digest)
     ledger.cancel_child("optional-cancel", cancellation_digest=digest)
