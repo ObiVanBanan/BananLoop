@@ -224,10 +224,6 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
 
         # A forged append-only row can self-hash, so projections must derive
         # the canonical finding again from the durable worker result.
-        original_row = graph.conn.execute(
-            "SELECT * FROM research_evidence WHERE evidence_id=?",
-            (projection.evidence[0].evidence_id,),
-        ).fetchone()
         forged_payload = projection.evidence[0].content_payload()
         forged_payload["statement"] = "Forged statement with copied provenance."
         forged_id = hashlib.sha256(json.dumps(
