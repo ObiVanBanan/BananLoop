@@ -200,8 +200,8 @@ Do not average raw scores from different task metrics. Do not produce one cross-
 ## 8. Statistical minimums
 
 - A 5-case-per-role smoke is a protocol check only, not evidence of capability.
-- The pilot should use repeated seeds and report every attempt.
-- Confirmatory role suites should target 30–50 independently authored or sampled cases per role; diagnostic should target 50–100 because its failure taxonomy is broader.
+- The subscription-limited *live smoke* uses **one seed per case**, at most **two invocations before review**, and no more than **eight total Codex invocations** in the entire explicitly approved first pilot (including retries, internal model turns, and bootstrap). Repeat-seed statistical estimates are **not available** from this smoke. All offline fixtures may run without Codex.
+- Confirmatory role suites should target 30–50 independently authored or sampled cases per role; diagnostic should target 50–100 because its failure taxonomy is broader. **Do not run these suites against the default Codex Plus pilot budget; authorize a separate capacity profile first.**
 - Use paired comparisons where the same task can be run under two conditions.
 - Report per-task deltas and uncertainty; do not pool heterogeneous rewards into a single winner.
 - Freeze the task list, splits, evaluator, seeds, model, prompt, budget, and analysis plan before confirmatory runs.
