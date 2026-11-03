@@ -102,6 +102,40 @@ def _proposal_for_child(setup, child_payload):
     )
 
 
+def _supervised_expansion_plan(setup, *, approval_request_id="expanded-approval"):
+    from bananloop.contracts import CapabilityPolicyV2
+
+    expanded = dict(setup["child_spec"])
+    expanded["goal"] = "Explore a separately approved subsystem"
+    expanded["budget"] = dict(expanded["budget"], max_agent_calls=30)
+    scope = AutonomyScopeV2(
+        version=2, allowed_paths=("src/new-area",),
+        max_child_depth=1, max_child_campaigns=1,
+    )
+    expanded["autonomy"] = {
+        "mode": "SUPERVISED", "scope_digest": scope.content_digest(),
+        "scope_version": scope.version, "scope": scope.model_dump(mode="json"),
+        "capability_policy": CapabilityPolicyV2(
+            tools=("read_file", "write_file"), read_paths=("src/new-area/**",),
+            write_paths=("src/new-area/**",), backend="ISOLATED",
+        ).model_dump(mode="json"),
+    }
+    path = "src/new-area/model.py"
+    proposal = PivotProposal.build(
+        spec_hash=setup["parent_spec"].approved_hash(), trigger_experiment_ordinal=2,
+        current_architecture="existing subsystem", proposed_architecture="new subsystem",
+        rationale="Supervised expansion is explicit in the plan.",
+        expected_effect="Evaluate a separate implementation path.", changed_scope=(path,),
+        resources={"additional_agent_calls": 10},
+        execution_plan=_execution_plan(expanded, (path,)),
+    )
+    approval = PivotDecisionCommand(
+        campaign_id=setup["parent_id"], request_id=approval_request_id,
+        proposal_id=proposal.proposal_id, digest=proposal.digest, decision="approve",
+    )
+    return expanded, proposal, approval
+
+
 def _setup(tmp_path: Path, *, mode="FULL_AUTO", max_child_campaigns=2):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -638,37 +672,8 @@ def test_supervised_pivot_keeps_explicit_approval_requirement_and_receipt(tmp_pa
 
 
 def test_supervised_approved_plan_can_expand_scope_capabilities_and_funded_budget(tmp_path):
-    from bananloop.contracts import CapabilityPolicyV2
-
     setup = _setup(tmp_path, mode="SUPERVISED")
-    expanded = dict(setup["child_spec"])
-    expanded["goal"] = "Explore a separately approved subsystem"
-    expanded["budget"] = dict(expanded["budget"], max_agent_calls=30)
-    scope = AutonomyScopeV2(
-        version=2, allowed_paths=("src/new-area",),
-        max_child_depth=1, max_child_campaigns=1,
-    )
-    expanded["autonomy"] = {
-        "mode": "SUPERVISED", "scope_digest": scope.content_digest(),
-        "scope_version": scope.version, "scope": scope.model_dump(mode="json"),
-        "capability_policy": CapabilityPolicyV2(
-            tools=("read_file", "write_file"), read_paths=("src/new-area/**",),
-            write_paths=("src/new-area/**",), backend="ISOLATED",
-        ).model_dump(mode="json"),
-    }
-    path = "src/new-area/model.py"
-    proposal = PivotProposal.build(
-        spec_hash=setup["parent_spec"].approved_hash(), trigger_experiment_ordinal=2,
-        current_architecture="existing subsystem", proposed_architecture="new subsystem",
-        rationale="Supervised expansion is explicit in the plan.",
-        expected_effect="Evaluate a separate implementation path.", changed_scope=(path,),
-        resources={"additional_agent_calls": 10},
-        execution_plan=_execution_plan(expanded, (path,)),
-    )
-    approval = PivotDecisionCommand(
-        campaign_id=setup["parent_id"], request_id="expanded-approval",
-        proposal_id=proposal.proposal_id, digest=proposal.digest, decision="approve",
-    )
+    expanded, proposal, approval = _supervised_expansion_plan(setup)
     saga = _saga(setup)
     saga.record_pivot_proposal(proposal)
     saga.record_pivot_decision(approval)
@@ -908,6 +913,64 @@ def test_v2_human_steering_api_records_durable_proposal_and_decision(tmp_path):
         server.server_close()
 
 
+def test_supervised_expansion_executes_from_the_approved_plan_through_api(tmp_path):
+    from urllib.error import HTTPError
+
+    setup = _setup(tmp_path, mode="SUPERVISED")
+    expanded, proposal, approval = _supervised_expansion_plan(
+        setup, approval_request_id="expanded-api-approval",
+    )
+    server = create_server(str(setup["repo"]), port=0, token="expanded-api-token")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}/v1/campaigns/{setup['parent_id']}"
+
+    def post(path, payload, key):
+        request = urllib.request.Request(
+            base + path, data=json.dumps(payload).encode(),
+            headers={
+                "Authorization": "Bearer expanded-api-token",
+                "Content-Type": "application/json",
+                "Idempotency-Key": key,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read())
+
+    try:
+        proposal_receipt = post(
+            "/v2/pivot-proposals", proposal.model_dump(mode="json"), proposal.proposal_id,
+        )
+        assert proposal_receipt["execution_plan"]["changed_paths"] == ["src/new-area/model.py"]
+        assert proposal_receipt["resource_estimate_authoritative"] is False
+        with pytest.raises(HTTPError) as pending:
+            post("/v2/pivot-executions", {
+                "proposal_id": proposal.proposal_id, "digest": proposal.digest,
+            }, "expanded-api-execution")
+        assert pending.value.code == 409
+        post("/v2/pivot-decisions", approval.model_dump(mode="json"), approval.request_id)
+        receipt = post("/v2/pivot-executions", {
+            "proposal_id": proposal.proposal_id, "digest": proposal.digest,
+        }, "expanded-api-execution")
+        assert receipt["state"] == "ACTIVE"
+        child_dir, _ = setup["registry"].resolve(receipt["child_campaign_id"], activate=False)
+        with sqlite3.connect(child_dir / "campaign.sqlite3") as conn:
+            child = _parse_v2_spec(conn.execute(
+                "SELECT spec_json FROM campaigns WHERE id=1",
+            ).fetchone()[0])
+        assert child.autonomy.scope.allowed_paths == ("src/new-area",)
+        assert child.autonomy.capability_policy.write_paths == ("src/new-area/**",)
+        assert child.budget.max_agent_calls == 30
+        child_projection = child.model_dump(mode="json")
+        child_projection["parent"] = None
+        assert _parse_v2_spec(expanded).approved_hash() == _parse_v2_spec(child_projection).approved_hash()
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+        server.server_close()
+
+
 def test_v2_human_steering_cli_records_proposal_and_decision(tmp_path, capsys):
     import argparse
     from bananloop.cli import cmd_v2_pivot_decision, cmd_v2_pivot_execute, cmd_v2_pivot_proposal
@@ -934,6 +997,46 @@ def test_v2_human_steering_cli_records_proposal_and_decision(tmp_path, capsys):
         idempotency_key="cli-approved-pivot",
     )) == 0
     assert json.loads(capsys.readouterr().out)["state"] == "ACTIVE"
+
+
+def test_supervised_expansion_executes_from_the_approved_plan_through_cli(tmp_path, capsys):
+    import argparse
+    from bananloop.cli import cmd_v2_pivot_decision, cmd_v2_pivot_execute, cmd_v2_pivot_proposal
+
+    setup = _setup(tmp_path, mode="SUPERVISED")
+    expanded, proposal, approval = _supervised_expansion_plan(
+        setup, approval_request_id="expanded-cli-approval",
+    )
+    proposal_file = tmp_path / "expanded-cli-proposal.json"
+    proposal_file.write_text(json.dumps(proposal.model_dump(mode="json")), encoding="utf-8")
+    assert cmd_v2_pivot_proposal(argparse.Namespace(
+        repo=str(setup["repo"]), campaign_id=setup["parent_id"], input=str(proposal_file),
+    )) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "PENDING"
+    assert cmd_v2_pivot_decision(argparse.Namespace(
+        repo=str(setup["repo"]), campaign_id=setup["parent_id"],
+        request_id=approval.request_id, proposal_id=proposal.proposal_id,
+        digest=proposal.digest, decision="approve", on_reject=None,
+    )) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "APPROVED"
+    assert cmd_v2_pivot_execute(argparse.Namespace(
+        repo=str(setup["repo"]), campaign_id=setup["parent_id"],
+        proposal_id=proposal.proposal_id, digest=proposal.digest,
+        idempotency_key="expanded-cli-execution",
+    )) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["state"] == "ACTIVE"
+    child_dir, _ = setup["registry"].resolve(receipt["child_campaign_id"], activate=False)
+    with sqlite3.connect(child_dir / "campaign.sqlite3") as conn:
+        child = _parse_v2_spec(conn.execute(
+            "SELECT spec_json FROM campaigns WHERE id=1",
+        ).fetchone()[0])
+    assert child.autonomy.scope.allowed_paths == ("src/new-area",)
+    assert child.autonomy.capability_policy.write_paths == ("src/new-area/**",)
+    assert child.budget.max_agent_calls == 30
+    child_projection = child.model_dump(mode="json")
+    child_projection["parent"] = None
+    assert _parse_v2_spec(expanded).approved_hash() == _parse_v2_spec(child_projection).approved_hash()
 
 
 def test_full_auto_application_and_cli_execute_persisted_plan(tmp_path, capsys):
