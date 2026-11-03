@@ -1059,12 +1059,7 @@ def _protocol_handoff_assets(proposal: MetricDiscoveryProposalV1,
         root = Path(published_root) if published_root is not None else None
         if root is None or root.is_symlink() or not root.is_dir():
             raise EvaluatorVerificationError("protocol handoff requires a safe parent published-artifact store")
-        target = root / tier.manifest_sha256
-        if target.is_symlink() or not target.is_file() or not target.resolve().is_relative_to(root.resolve()):
-            raise EvaluatorVerificationError("approved evaluator manifest is missing or escaped its store")
-        raw = target.read_bytes()
-        if len(raw) > 25 * 1024 * 1024 or hashlib.sha256(raw).hexdigest() != tier.manifest_sha256:
-            raise EvaluatorVerificationError("approved evaluator manifest is oversized or has invalid bytes")
+        raw = _read_published_blob(root, tier.manifest_sha256, digests)
         try:
             manifest = ProtocolManifest.model_validate_json(raw)
         except Exception as exc:

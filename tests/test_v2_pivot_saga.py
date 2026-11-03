@@ -398,6 +398,41 @@ def test_optimization_handoff_fails_closed_when_parent_asset_is_missing_or_tampe
     assert (child_dir / "rpdi05" / "published" / digest).read_bytes() == original
 
 
+def test_optimization_handoff_rejects_oversized_protocol_manifest_before_child_creation(tmp_path):
+    setup = _setup(tmp_path, isolated_state=True)
+    protocol, _, receipt = _seed_parent_protocol_approval(setup)
+    child_spec = dict(setup["child_spec"])
+    child_spec["mode"] = "OPTIMIZATION"
+    child_spec["evaluation"] = {
+        "protocol_id": protocol.protocol_id, "version": protocol.version,
+        "content_sha256": protocol.content_digest(), "approval_digest": receipt.approval_digest,
+    }
+    proposal = _proposal_for_child(setup, child_spec)
+    published = (
+        setup["registry"].resolve(setup["parent_id"], activate=False)[0]
+        / "rpdi05" / "published"
+    )
+    manifest_path = published / protocol.tiers[0].manifest_sha256
+    with manifest_path.open("wb") as stream:
+        stream.truncate(25 * 1024 * 1024 + 1)
+
+    with pytest.raises(PivotSagaError, match="no valid parent protocol approval") as error:
+        _saga(setup).create_child(
+            idempotency_key="oversized-protocol-manifest",
+            proposal=proposal, child_spec=child_spec,
+        )
+    assert "pinned protocol artifact exceeds" in str(error.value.__cause__)
+
+    parent_conn = sqlite3.connect(setup["parent_db"])
+    try:
+        assert parent_conn.execute(
+            "SELECT COUNT(*) FROM v2_pivot_sagas WHERE idempotency_key=?",
+            ("oversized-protocol-manifest",),
+        ).fetchone()[0] == 0
+    finally:
+        parent_conn.close()
+
+
 def test_pivot_child_executes_evaluator_from_handed_off_assets_and_replays(tmp_path):
     setup = _setup(tmp_path, isolated_state=True)
     repo = setup["repo"]

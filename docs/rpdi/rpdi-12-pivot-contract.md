@@ -8,6 +8,10 @@ An approved pivot is an immutable authorization for one exact child execution pl
 
 For Optimization handoff, verification completes against the frozen protocol first. A new Optimization campaign is then created with a child-bound copy of the approved protocol evidence. The existing campaign's mode, spec, and frozen evaluator protocol are not mutated.
 
+The child-bound handoff includes the exact content-addressed assets required to
+execute every tier of that frozen protocol. It must not depend on the parent's
+published-artifact directory after activation.
+
 ## Required invariants
 
 ### Proposal and execution-plan binding
@@ -25,6 +29,25 @@ For Optimization handoff, verification completes against the frozen protocol fir
 - Supervised may widen only the paths, capabilities, and resource dimensions explicitly stated in the immutable approved plan. Approval alone cannot create budget: the saga must reserve the expanded amount from currently available parent/ancestor funds before child allocation.
 - Absolute project limits and protected-path rules cannot be overridden. Parent spec and approval hashes remain immutable.
 - Missing, stale, mismatched, rejected, or unpersisted approval fails closed before escrow or child allocation.
+
+### Frozen evaluator asset handoff
+
+- The handoff proof binds the approved evaluator bundle, every tier manifest,
+  and every case-input blob named by those manifests as a sorted set of
+  `(sha256, size)` records. Its digest is bound into the Optimization child
+  lineage alongside the protocol and approval digests.
+- Core copies only that exact closure from the parent's content-addressed
+  `rpdi05/published` store into the child-local published-artifact store. The
+  child remains executable if the parent directory is later unavailable.
+- Before publishing a child asset, Core verifies the source root and each blob
+  path are safe, enforces a maximum of 30,004 unique assets and 25 MiB aggregate
+  bytes, and verifies each blob's size and SHA-256. Staging and no-clobber
+  installation are atomic per content-addressed blob. Existing assets on
+  idempotent replay must match their committed digest and size.
+- Missing, escaped, symlinked, tampered, oversized, malformed, or uncommitted
+  assets fail closed. The child cannot become active without the complete
+  digest-bound asset closure. Evaluator reads continue to validate content
+  hashes, so later disk tampering is rejected.
 
 ### Application, API, CLI, and recovery
 
@@ -51,7 +74,7 @@ For Optimization handoff, verification completes against the frozen protocol fir
 | Explicit Supervised expansion | Application/API/CLI tests approve a plan that widens named paths, capabilities, and funded budget; reject any widening omitted from the approved plan; prove insufficient parent/ancestor funds fail before allocation |
 | Durable execute/resume | App, API, and CLI tests load persisted approval and plan; no request override fields; same-key replay, conflicting reuse, concurrent calls, restart recovery, and cancellation races |
 | Saga safety | Fault injection at each durable boundary; child dispatch gate; exact-once escrow settlement; authoritative terminal-state settlement |
-| Optimization handoff | Verification precedes child creation; a distinct Optimization campaign receives child-bound frozen protocol evidence; source campaign mode/spec/protocol stay unchanged |
+| Optimization handoff | Verification precedes child creation; a distinct Optimization campaign receives child-bound frozen protocol evidence and the exact digest/size-bound asset closure; evaluator execution succeeds after handoff; missing, tampered, oversized and replay cases fail or recover as specified; source campaign mode/spec/protocol stay unchanged |
 | Compatibility | Existing schema/hash fixtures reopen and retain byte-for-byte legacy identities |
 | End-to-end DoD | Exact-head CI on supported Linux/Windows Python versions, technical review, and RPDI-12 DoD checklist updated with evidence |
 
