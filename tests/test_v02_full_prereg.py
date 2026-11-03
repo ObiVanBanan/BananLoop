@@ -46,6 +46,7 @@ def _raw_manifest(track="OPTIMIZATION", *, task_id="task-opt", suffix="opt"):
         "protocol_id": f"rpdi14-{suffix}",
         "protocol_version": 1,
         "source_sha": _sha("full-source"),
+        "approved_dev_information_sha256": _sha("approved-dev-information"),
         "full_feature_flags": list(V2_FULL_FEATURES),
         "full_flag_hash": FeatureFlagsV2(profile="FULL").flag_hash(),
         "campaign_spec_sha256": _sha(f"spec-{suffix}"),
@@ -104,6 +105,8 @@ def _raw_manifest(track="OPTIMIZATION", *, task_id="task-opt", suffix="opt"):
         "role_roster": (full["role_roster_sha256"] or "NO_ROLE_ROSTER",
                         direct["role_roster_sha256"] or "NO_ROLE_ROSTER"),
         "resource_caps": (full["caps"], direct["caps"]),
+        "approved_dev_information": (raw["approved_dev_information_sha256"],
+                                     raw["approved_dev_information_sha256"]),
     }
     raw["control_comparisons"] = []
     for key, values in controls.items():
@@ -263,6 +266,11 @@ def test_arm_controls_are_derived_from_pinned_values_and_every_difference_is_dis
         freeze_manifest(raw)
 
     raw = _raw_manifest()
+    raw["approved_dev_information_sha256"] = _sha("different-dev-information")
+    with pytest.raises(PreregError, match="approved_dev_information is not bound"):
+        freeze_manifest(raw)
+
+    raw = _raw_manifest()
     role_roster = next(item for item in raw["control_comparisons"] if item["control_key"] == "role_roster")
     role_roster["difference_disclosure"] = ""
     with pytest.raises(PreregError, match="requires a disclosure"):
@@ -270,7 +278,7 @@ def test_arm_controls_are_derived_from_pinned_values_and_every_difference_is_dis
 
     raw = _raw_manifest()
     raw["control_comparisons"].pop()
-    with pytest.raises(PreregError, match="at least 11 items"):
+    with pytest.raises(PreregError, match="at least 12 items"):
         freeze_manifest(raw)
     raw = _raw_manifest()
     raw["arms"][1]["iteration_policy"]["maximum_iterations"] = 1

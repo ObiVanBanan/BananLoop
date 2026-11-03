@@ -64,7 +64,8 @@ evaluator identity sealed until both arms have frozen their final artifacts.
   The frozen manifest hashes every exposed provider/model/reasoning/tool,
   iteration, role-roster, and resource-cap value on both arms, checks each
   `MATCHED`/`UNMATCHED` label against those hashes, and requires a disclosure
-  for every difference.
+  for every difference. It also pins the exact approved DEV information digest
+  shared by both arms; the `APPROVED_DEV_ONLY` policy label alone is insufficient.
 - Per-arm ceilings for calls, input/output/cached tokens, wall time, evaluator
   calls, experiments, retries, and spend. Record a resource receipt for every
   action. Missing spend/token data is `UNKNOWN`, never zero or free.

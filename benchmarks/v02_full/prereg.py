@@ -88,7 +88,7 @@ class EvaluatorPin(FrozenModel):
 CONTROL_KEYS = frozenset({
     "provider", "model", "model_version", "reasoning_settings", "tool_policy",
     "maximum_iterations", "feedback_source", "permits_repair", "stopping_rule",
-    "role_roster", "resource_caps",
+    "role_roster", "resource_caps", "approved_dev_information",
 })
 
 
@@ -96,7 +96,7 @@ class ControlComparison(FrozenModel):
     control_key: Literal[
         "provider", "model", "model_version", "reasoning_settings", "tool_policy",
         "maximum_iterations", "feedback_source", "permits_repair", "stopping_rule",
-        "role_roster", "resource_caps",
+        "role_roster", "resource_caps", "approved_dev_information",
     ]
     bananloop_value_sha256: Digest
     codex_direct_value_sha256: Digest
@@ -229,6 +229,7 @@ class TrackManifest(FrozenModel):
     protocol_id: str = Field(min_length=1, max_length=200)
     protocol_version: PositiveInt
     source_sha: Digest
+    approved_dev_information_sha256: Digest
     full_feature_flags: tuple[str, ...]
     full_flag_hash: Digest
     campaign_spec_sha256: Digest
@@ -275,7 +276,7 @@ class TrackManifest(FrozenModel):
             raise ValueError("Codex Direct must have a preregistered iterative policy")
         if {item.control_key for item in self.control_comparisons} != CONTROL_KEYS:
             raise ValueError("control comparisons must explicitly cover every exposed arm control")
-        expected_controls = _arm_control_hashes(self.arms)
+        expected_controls = _arm_control_hashes(self.arms, self.approved_dev_information_sha256)
         for comparison in self.control_comparisons:
             expected_full, expected_direct = expected_controls[comparison.control_key]
             if (comparison.bananloop_value_sha256 != expected_full
@@ -342,7 +343,8 @@ def canonical_bytes(value: BaseModel | dict) -> bytes:
                       allow_nan=False).encode("utf-8")
 
 
-def _arm_control_hashes(arms: tuple[ArmConfig, ArmConfig]) -> dict[str, tuple[str, str]]:
+def _arm_control_hashes(arms: tuple[ArmConfig, ArmConfig],
+                        approved_dev_information_sha256: str) -> dict[str, tuple[str, str]]:
     full, direct = arms
     values = {
         "provider": (full.provider, direct.provider),
@@ -361,6 +363,8 @@ def _arm_control_hashes(arms: tuple[ArmConfig, ArmConfig]) -> dict[str, tuple[st
         "role_roster": (full.role_roster_sha256 or "NO_ROLE_ROSTER",
                         direct.role_roster_sha256 or "NO_ROLE_ROSTER"),
         "resource_caps": (full.caps.model_dump(mode="json"), direct.caps.model_dump(mode="json")),
+        "approved_dev_information": (approved_dev_information_sha256,
+                                     approved_dev_information_sha256),
     }
     return {key: tuple(hashlib.sha256(canonical_bytes(value)).hexdigest() for value in pair)
             for key, pair in values.items()}
