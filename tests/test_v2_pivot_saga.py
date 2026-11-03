@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -15,7 +16,7 @@ from bananloop.contracts import (
     parse_campaign_spec_document,
 )
 from bananloop.migrations import create_v5_graph_schema
-from bananloop.registry import CampaignRegistry
+from bananloop.registry import CampaignRegistry, RegistryError
 from bananloop.v2_pivot_saga import PivotSagaError, V2PivotSaga
 from bananloop.api import create_server
 from bananloop.application import CampaignApplication
@@ -990,7 +991,18 @@ def test_closed_allocation_cannot_activate_child_after_initialized_state_is_dura
             child_conn.close()
         ledger = setup["registry"].budget_ledger()
         try:
-            ledger.close_child(saga_row["allocation_id"], terminal_status="STOPPED")
+            # Inject a corrupted premature terminal allocation to prove the
+            # activation verifier refuses to write PIVOT_CHILD_ACTIVE.
+            ledger.conn.execute("BEGIN IMMEDIATE")
+            ledger.conn.execute(
+                "UPDATE child_allocations SET state='CLOSED' WHERE allocation_id=?",
+                (saga_row["allocation_id"],),
+            )
+            ledger.conn.execute(
+                "UPDATE child_allocation_gates SET state='CLOSED' WHERE allocation_id=?",
+                (saga_row["allocation_id"],),
+            )
+            ledger.conn.commit()
         finally:
             ledger.close()
 
@@ -1021,3 +1033,162 @@ def test_closed_allocation_cannot_activate_child_after_initialized_state_is_dura
         ).fetchone()[0] == "CLOSED"
     finally:
         ledger.close()
+
+
+@pytest.mark.parametrize("crash_at", [
+    "AFTER_REGISTRY_RESERVE",
+    "AFTER_ALLOCATION_BIND",
+    "AFTER_CHILD_INITIALIZE",
+])
+def test_internal_cancel_proves_unused_child_and_tombstones_request(tmp_path, crash_at):
+    setup = _setup(tmp_path)
+    idem = "cancel-" + crash_at.lower().replace("_", "-")
+    fired = False
+
+    def fail_once(step):
+        nonlocal fired
+        if step == crash_at and not fired:
+            fired = True
+            raise RuntimeError("interrupted child creation")
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        _saga(setup, fail_once).create_child(
+            idempotency_key=idem, proposal=setup["proposal"], child_spec=setup["child_spec"],
+        )
+    request_id = "pivot-v2:" + hashlib.sha256(
+        f"{setup['parent_id']}:{idem}:{setup['proposal'].digest}".encode()
+    ).hexdigest()[:48]
+    saga = _saga(setup)
+    cancelled = saga._cancel_unactivated_child(
+        idempotency_key=idem, proposal=setup["proposal"], child_spec=setup["child_spec"],
+    )
+    assert cancelled["state"] == "CANCELLED"
+    replay = _saga(setup)._cancel_unactivated_child(
+        idempotency_key=idem, proposal=setup["proposal"], child_spec=setup["child_spec"],
+    )
+    assert replay["state"] == "CANCELLED"
+
+    ledger = setup["registry"].budget_ledger()
+    try:
+        allocation = ledger.conn.execute(
+            "SELECT allocation_id,state FROM child_allocations WHERE idempotency_key=?",
+            (request_id,),
+        ).fetchone()
+        assert allocation is not None and allocation["state"] == "CLOSED"
+        gate = ledger.conn.execute(
+            "SELECT state,cancellation_digest FROM child_allocation_gates WHERE allocation_id=?",
+            (allocation["allocation_id"],),
+        ).fetchone()
+        assert gate["state"] == "CANCELLED"
+        assert ledger.snapshot(setup["parent_id"])["agent_calls"]["reserved"] == 0
+    finally:
+        ledger.close()
+
+    registry_conn = setup["registry"]._connect()
+    try:
+        assert registry_conn.execute(
+            "SELECT COUNT(*) FROM campaign_request_tombstones WHERE allocation_id=?",
+            (allocation["allocation_id"],),
+        ).fetchone()[0] == 1
+        parent_conn = sqlite3.connect(setup["parent_db"])
+        try:
+            assert parent_conn.execute(
+                "SELECT state FROM v2_pivot_saga_control WHERE idempotency_key=?",
+                (idem,),
+            ).fetchone()[0] == "CANCELLED"
+            assert parent_conn.execute(
+                "SELECT COUNT(*) FROM events WHERE event_type='PIVOT_CHILD_CANCELLED'",
+            ).fetchone()[0] == 1
+        finally:
+            parent_conn.close()
+    finally:
+        registry_conn.close()
+
+    with pytest.raises(RegistryError, match="tombstoned"):
+        setup["registry"].reserve(setup["child_spec"]["goal"], request_id, activate=False)
+    with pytest.raises(PivotSagaError, match="cancelled"):
+        _saga(setup).create_child(
+            idempotency_key=idem, proposal=setup["proposal"], child_spec=setup["child_spec"],
+        )
+
+
+@pytest.mark.parametrize("crash_at", [
+    "AFTER_CANCEL_CONTROL",
+    "AFTER_CANCEL_LEDGER",
+    "AFTER_CANCEL_TOMBSTONE",
+])
+def test_internal_cancel_replays_after_each_durable_boundary(tmp_path, crash_at):
+    setup = _setup(tmp_path)
+    idem = "cancel-replay-" + crash_at.lower().replace("_", "-")
+    with pytest.raises(RuntimeError, match="process interruption"):
+        _saga(setup, lambda step: (_ for _ in ()).throw(RuntimeError("process interruption"))
+              if step == "AFTER_CHILD_INITIALIZE" else None).create_child(
+            idempotency_key=idem, proposal=setup["proposal"], child_spec=setup["child_spec"],
+        )
+    fired = False
+    def fail_cancel_once(step):
+        nonlocal fired
+        if step == crash_at and not fired:
+            fired = True
+            raise RuntimeError("interrupted cancellation")
+    with pytest.raises(RuntimeError, match="interrupted cancellation"):
+        _saga(setup, fail_cancel_once)._cancel_unactivated_child(
+            idempotency_key=idem, proposal=setup["proposal"], child_spec=setup["child_spec"],
+        )
+    result = _saga(setup)._cancel_unactivated_child(
+        idempotency_key=idem, proposal=setup["proposal"], child_spec=setup["child_spec"],
+    )
+    assert result["state"] == "CANCELLED"
+    ledger = setup["registry"].budget_ledger()
+    try:
+        assert ledger.snapshot(setup["parent_id"])["agent_calls"]["reserved"] == 0
+        assert ledger.conn.execute(
+            "SELECT COUNT(*) FROM campaign_request_tombstones",
+        ).fetchone()[0] == 1
+    finally:
+        ledger.close()
+
+
+def test_activation_and_cancellation_share_one_way_control_cas(tmp_path):
+    # Activation wins: cancellation is rejected after ACTIVATING.
+    setup = _setup(tmp_path)
+    idem = "cancel-race-activation-wins"
+    with pytest.raises(RuntimeError):
+        _saga(setup, lambda step: (_ for _ in ()).throw(RuntimeError())
+              if step == "AFTER_CHILD_INITIALIZE" else None).create_child(
+            idempotency_key=idem, proposal=setup["proposal"], child_spec=setup["child_spec"],
+        )
+    conn = sqlite3.connect(setup["parent_db"], isolation_level=None)
+    saga_row = conn.execute(
+        "SELECT request_hash,allocation_id,child_id FROM v2_pivot_sagas WHERE idempotency_key=?",
+        (idem,),
+    ).fetchone()
+    activation_digest = hashlib.sha256(json.dumps(
+        {"key": idem, "request_hash": saga_row[0], "allocation_id": saga_row[1],
+         "child_id": saga_row[2]},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode()).hexdigest()
+    _saga(setup)._begin_activation(conn, idem, activation_digest)
+    conn.close()
+    with pytest.raises(PivotSagaError, match="activation already won"):
+        _saga(setup)._cancel_unactivated_child(
+            idempotency_key=idem, proposal=setup["proposal"], child_spec=setup["child_spec"],
+        )
+
+    # Cancellation wins: subsequent activation CAS cannot proceed.
+    cancel_wins_root = tmp_path / "cancel-wins"
+    cancel_wins_root.mkdir()
+    setup = _setup(cancel_wins_root)
+    idem = "cancel-race-cancellation-wins"
+    with pytest.raises(RuntimeError):
+        _saga(setup, lambda step: (_ for _ in ()).throw(RuntimeError())
+              if step == "AFTER_CHILD_INITIALIZE" else None).create_child(
+            idempotency_key=idem, proposal=setup["proposal"], child_spec=setup["child_spec"],
+        )
+    _saga(setup)._cancel_unactivated_child(
+        idempotency_key=idem, proposal=setup["proposal"], child_spec=setup["child_spec"],
+    )
+    conn = sqlite3.connect(setup["parent_db"], isolation_level=None)
+    with pytest.raises(PivotSagaError, match="blocked by cancellation"):
+        _saga(setup)._begin_activation(conn, idem, "f" * 64)
+    conn.close()

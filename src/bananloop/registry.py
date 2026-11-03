@@ -82,6 +82,14 @@ CREATE TABLE IF NOT EXISTS codex_sessions (
   campaign_id TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS campaign_request_tombstones (
+  request_key TEXT PRIMARY KEY,
+  goal_fingerprint TEXT NOT NULL,
+  campaign_id TEXT NOT NULL,
+  allocation_id TEXT NOT NULL,
+  cancellation_digest TEXT NOT NULL CHECK(length(cancellation_digest)=64),
+  created_at TEXT NOT NULL
+);
 """
 
 
@@ -250,6 +258,14 @@ class CampaignRegistry:
         conn = sqlite3.connect(uri, uri=True, timeout=30)
         conn.row_factory = sqlite3.Row
         try:
+            has_tombstones = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='campaign_request_tombstones'",
+            ).fetchone()
+            tombstone = conn.execute(
+                "SELECT 1 FROM campaign_request_tombstones WHERE request_key=?", (key,),
+            ).fetchone() if has_tombstones else None
+            if tombstone:
+                raise RegistryError("campaign request was cancelled and is tombstoned")
             row = conn.execute(
                 "SELECT * FROM campaign_index WHERE request_key=?", (key,),
             ).fetchone()
@@ -267,6 +283,52 @@ class CampaignRegistry:
         finally:
             conn.close()
 
+    def cancel_request(
+        self, goal: str, request_id: str, *, campaign_id: str,
+        allocation_id: str, cancellation_digest: str,
+    ) -> None:
+        """Persist an immutable tombstone so a cancelled request cannot be recreated."""
+        if not re.fullmatch(r"[0-9a-f]{64}", cancellation_digest):
+            raise RegistryError("cancellation digest must be a lowercase SHA-256 digest")
+        key = request_key(goal, request_id)
+        fingerprint = goal_fingerprint(goal)
+        expected_id = "c-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+        if campaign_id != expected_id:
+            raise RegistryError("cancellation campaign identity is not deterministic for its request")
+        self.ensure_legacy()
+        with _RegistryLock(self.lock_path):
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                mapping = conn.execute("SELECT * FROM campaign_index WHERE request_key=?", (key,)).fetchone()
+                if mapping is not None and (
+                    mapping["campaign_id"] != campaign_id
+                    or mapping["goal_fingerprint"] != fingerprint
+                    or mapping["origin"] != "managed"
+                    or mapping["state_path"] != f"campaigns/{campaign_id}"
+                ):
+                    raise RegistryError("cancellation registry mapping is not the expected managed child")
+                old = conn.execute(
+                    "SELECT * FROM campaign_request_tombstones WHERE request_key=?", (key,),
+                ).fetchone()
+                if old is not None:
+                    if (old["campaign_id"], old["allocation_id"], old["cancellation_digest"], old["goal_fingerprint"]) != (
+                        campaign_id, allocation_id, cancellation_digest, fingerprint,
+                    ):
+                        raise RegistryError("request tombstone conflicts with cancellation replay")
+                    conn.commit()
+                    return
+                conn.execute(
+                    "INSERT INTO campaign_request_tombstones VALUES(?,?,?,?,?,?)",
+                    (key, fingerprint, campaign_id, allocation_id, cancellation_digest, utc_now()),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
     def reserve(
         self, goal: str, request_id: str | None = None, *, activate: bool = True,
     ) -> tuple[CampaignEntry, Path, bool]:
@@ -277,6 +339,11 @@ class CampaignRegistry:
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                tombstone = conn.execute(
+                    "SELECT 1 FROM campaign_request_tombstones WHERE request_key=?", (key,),
+                ).fetchone()
+                if tombstone:
+                    raise RegistryError("campaign request was cancelled and is tombstoned")
                 row = conn.execute("SELECT * FROM campaign_index WHERE request_key=?", (key,)).fetchone()
                 if row:
                     if row["goal_fingerprint"] != fingerprint:

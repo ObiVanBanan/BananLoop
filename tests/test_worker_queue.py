@@ -47,10 +47,40 @@ def _activate_parent_proof(ledger, *, parent, allocation, child, spec_hash):
                  (key, request_hash, parent, allocation, child, spec_hash, "ACTIVE"))
     conn.execute("INSERT OR REPLACE INTO v2_pivot_saga_control VALUES(?,?,?,?)",
                  (key, "ACTIVE", digest, now))
+    conn.execute("""CREATE TABLE IF NOT EXISTS campaigns(
+        id INTEGER PRIMARY KEY,spec_json TEXT NOT NULL,spec_hash TEXT NOT NULL,status TEXT NOT NULL
+    )""")
     conn.commit()
     conn.close()
+    child_dir = root / "campaigns" / child
+    child_dir.mkdir(parents=True, exist_ok=True)
+    child_db = child_dir / "campaign.sqlite3"
+    child_conn = sqlite3.connect(child_db)
+    child_conn.execute("""CREATE TABLE IF NOT EXISTS campaigns(
+        id INTEGER PRIMARY KEY,spec_json TEXT NOT NULL,spec_hash TEXT NOT NULL,status TEXT NOT NULL
+    )""")
+    child_conn.execute(
+        "INSERT OR REPLACE INTO campaigns VALUES(1,?,?, 'READY')",
+        (json.dumps({"parent":{"parent_campaign_id":parent,"allocation_id":allocation}},
+                    sort_keys=True, separators=(",", ":")), spec_hash),
+    )
+    child_conn.commit()
+    child_conn.close()
+    ledger.conn.execute(
+        "INSERT OR REPLACE INTO campaign_index VALUES(?,?,?,?,?,?,?,?)",
+        (child, "request:child:" + child, "a" * 64, child, f"campaigns/{child}", "managed", now, now),
+    )
     ledger.conn.commit()
     return digest
+
+
+def _set_child_status(ledger, child: str, status: str):
+    from pathlib import Path
+    db = Path(ledger.path).parent / "campaigns" / child / "campaign.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE campaigns SET status=? WHERE id=1", (status,))
+    conn.commit()
+    conn.close()
 
 def _queue(tmp_path, *, cap: int = 20):
     path = tmp_path / "campaign-registry.sqlite3"
@@ -165,6 +195,7 @@ def test_child_worker_claim_charges_its_parent_allocation(tmp_path):
     queue.complete("job-child", "worker-child", claim["fence"], output_digest="f" * 64,
                    actual_amount=3, receipt_digest="e" * 64, now=102)
     ledger = BudgetLedger(path)
+    _set_child_status(ledger, "child", "GOAL_MET")
     ledger.close_child("alloc-child", terminal_status="GOAL_MET")
     assert ledger.snapshot("root")["agent_calls"]["spent"] == 3
     assert ledger.snapshot("root")["agent_calls"]["reserved"] == 0
@@ -312,7 +343,9 @@ def test_nested_child_overrun_propagates_to_root_before_next_allocation(tmp_path
                    actual_amount=7, receipt_digest="4" * 64, now=102)
 
     ledger = BudgetLedger(path)
+    _set_child_status(ledger, "grandchild", "STOPPED")
     ledger.close_child("alloc-grand", terminal_status="STOPPED")
+    _set_child_status(ledger, "parent", "STOPPED")
     ledger.close_child("alloc-parent", terminal_status="STOPPED")
     assert ledger.snapshot("root")["agent_calls"]["spent"] == 7
     with pytest.raises(BudgetExceeded):
@@ -512,6 +545,7 @@ def test_vector_child_allocation_settles_each_independent_resource(tmp_path):
         receipt_digest="f" * 64, now=102,
     )
     ledger = BudgetLedger(path)
+    _set_child_status(ledger, "child-vector", "GOAL_MET")
     ledger.close_child("alloc-vector-child", terminal_status="GOAL_MET")
     snapshot = ledger.snapshot("root")
     assert snapshot["evaluator_calls"]["spent"] == 1
@@ -524,15 +558,20 @@ def test_vector_child_allocation_settles_each_independent_resource(tmp_path):
 
 def test_child_worker_claim_rolls_back_while_allocation_gate_is_bound(tmp_path):
     path, queue = _queue(tmp_path, cap=10)
+    queue.enqueue(job_id="job-bound", enqueue_key="enqueue:bound", campaign_id="child-bound",
+                  action_id="action:bound", resource="agent_calls", upper_bound=4,
+                  request={"operation": "agent"})
     ledger = BudgetLedger(path)
     ledger.reserve_child(allocation_id="alloc-bound", idempotency_key="allocate:bound",
                          parent_id="root", spec_hash="a" * 64,
                          caps={"agent_calls": 6})
     ledger.bind_child("alloc-bound", "child-bound", "a" * 64)
     ledger.close()
-    queue.enqueue(job_id="job-bound", enqueue_key="enqueue:bound", campaign_id="child-bound",
-                  action_id="action:bound", resource="agent_calls", upper_bound=4,
-                  request={"operation": "agent"})
+    with pytest.raises(WorkerQueueError, match="admission gate"):
+        queue.enqueue(job_id="job-bound-late", enqueue_key="enqueue:bound-late",
+                      campaign_id="child-bound", action_id="action:late",
+                      resource="agent_calls", upper_bound=1,
+                      request={"operation": "agent"})
     with pytest.raises(WorkerQueueError):
         queue.claim("job-bound", "worker-bound", lease_seconds=30, now=100)
     assert queue.get_job("job-bound")["state"] == "READY"

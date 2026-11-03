@@ -273,6 +273,13 @@ class DurableWorkerQueue:
                     if actual_token != wanted_token:
                         raise WorkerQueueError("replayed role-bound job has a different token allocation")
                 return self._job_view(replay)
+            binding = self.conn.execute(
+                "SELECT g.state FROM child_allocations a "
+                "JOIN child_allocation_gates g USING(allocation_id) WHERE a.child_id=?",
+                (campaign_id,),
+            ).fetchone()
+            if binding is not None and binding["state"] != "ACTIVE":
+                raise WorkerQueueError("child allocation admission gate is not active")
             if role_allocation is not None:
                 pinned = self.conn.execute(
                     "SELECT calls_limit FROM team_role_call_allocations WHERE campaign_id=? AND manifest_digest=? AND role_instance_id=? AND role_id=?",

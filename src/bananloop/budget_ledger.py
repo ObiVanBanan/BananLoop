@@ -574,6 +574,173 @@ class BudgetLedger:
                 self.conn.rollback()
             raise
 
+    def _durable_parent_cancellation(self, allocation: sqlite3.Row) -> str | None:
+        """Require the parent saga's durable cancellation CAS before releasing escrow."""
+        if self.path is None:
+            return None
+        from .registry import RegistryError
+        try:
+            tables = {r[0] for r in self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )}
+            if "campaign_index" not in tables:
+                return None
+            parent = self.conn.execute(
+                "SELECT origin,state_path FROM campaign_index WHERE campaign_id=?",
+                (allocation["parent_id"],),
+            ).fetchone()
+            if (parent is None or parent["origin"] != "managed"
+                    or parent["state_path"] != f"campaigns/{allocation['parent_id']}"):
+                return None
+            parent_db = self.path.parent / parent["state_path"] / "campaign.sqlite3"
+            self._assert_safe_path_chain(self.path, "campaign registry path")
+            self._assert_safe_path_chain(parent_db, "managed parent database path")
+            from .registry import assert_safe_campaign_db
+            assert_safe_campaign_db(parent_db)
+            if not parent_db.is_file():
+                return None
+            conn = sqlite3.connect(parent_db.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+            conn.row_factory = sqlite3.Row
+            try:
+                table_names = {r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )}
+                if not {"v2_pivot_sagas", "v2_pivot_saga_control"} <= table_names:
+                    return None
+                saga = conn.execute(
+                    "SELECT * FROM v2_pivot_sagas WHERE allocation_id=?",
+                    (allocation["allocation_id"],),
+                ).fetchone()
+                if (saga is None or saga["state"] == "ACTIVE"
+                        or saga["parent_campaign_id"] != allocation["parent_id"]
+                        or (allocation["child_id"] is not None
+                            and saga["child_id"] != allocation["child_id"])
+                        or saga["child_spec_hash"] != allocation["spec_hash"]):
+                    return None
+                proposal = json.loads(saga["proposal_json"])
+                proposal_digest = proposal.get("digest")
+                if not isinstance(proposal_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", proposal_digest):
+                    return None
+                registry_request_id = "pivot-v2:" + hashlib.sha256(
+                    f"{allocation['parent_id']}:{saga['idempotency_key']}:{proposal_digest}".encode()
+                ).hexdigest()[:48]
+                expected = hashlib.sha256(_canonical({
+                    "operation": "cancel-unactivated-pivot",
+                    "idempotency_key": saga["idempotency_key"],
+                    "request_hash": saga["request_hash"],
+                    "allocation_id": allocation["allocation_id"],
+                    "registry_request_id": registry_request_id,
+                }).encode("utf-8")).hexdigest()
+                control = conn.execute(
+                    "SELECT state,control_digest FROM v2_pivot_saga_control WHERE idempotency_key=?",
+                    (saga["idempotency_key"],),
+                ).fetchone()
+                if (control is None or control["state"] not in {"CANCEL_REQUESTED", "CANCELLED"}
+                        or control["control_digest"] != expected):
+                    return None
+                return expected
+            finally:
+                conn.close()
+        except (OSError, sqlite3.DatabaseError, ValueError, RegistryError):
+            return None
+
+    def cancel_child(self, allocation_id: str, *, cancellation_digest: str) -> None:
+        """Release only provably unused escrow; repeated identical cancellation is safe."""
+        if not re.fullmatch(r"[0-9a-f]{64}", cancellation_digest):
+            raise BudgetLedgerError("cancellation_digest must be a lowercase SHA-256 digest")
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            allocation = self.conn.execute(
+                "SELECT * FROM child_allocations WHERE allocation_id=?", (allocation_id,),
+            ).fetchone()
+            gate = self.conn.execute(
+                "SELECT * FROM child_allocation_gates WHERE allocation_id=?", (allocation_id,),
+            ).fetchone()
+            if allocation is None or gate is None:
+                raise BudgetLedgerError("unknown child allocation")
+            if self._durable_parent_cancellation(allocation) != cancellation_digest:
+                raise BudgetLedgerError("cancellation lacks matching durable parent saga control")
+            if gate["state"] == "CANCELLED":
+                if gate["cancellation_digest"] != cancellation_digest:
+                    raise BudgetLedgerError("cancellation replay digest mismatch")
+                self.conn.commit()
+                return
+            if gate["state"] not in {"RESERVED", "BOUND"}:
+                raise BudgetLedgerError("only a nonactive allocation can be cancelled")
+            if self.conn.execute(
+                "SELECT 1 FROM budget_reservations WHERE allocation_id=? AND state!='RELEASED' LIMIT 1",
+                (allocation_id,),
+            ).fetchone():
+                raise BudgetLedgerError("allocation has action history and cannot be proven unused")
+            if allocation["child_id"] is not None:
+                has_jobs = self.conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='worker_jobs'",
+                ).fetchone()
+                if has_jobs and self.conn.execute(
+                    "SELECT 1 FROM worker_jobs WHERE campaign_id=? LIMIT 1",
+                    (allocation["child_id"],),
+                ).fetchone():
+                    raise BudgetLedgerError("allocation has worker queue history and cannot be proven unused")
+            if self.conn.execute(
+                "SELECT 1 FROM child_allocations a JOIN child_allocation_gates g USING(allocation_id) "
+                "WHERE a.parent_id=? AND a.state IN ('RESERVED','ACTIVE') "
+                "AND g.state IN ('RESERVED','BOUND','ACTIVE') LIMIT 1",
+                (allocation["child_id"] or "",),
+            ).fetchone():
+                raise BudgetLedgerError("allocation has nested child allocations")
+            child_id = allocation["child_id"]
+            if child_id is not None:
+                for account in self.conn.execute(
+                    "SELECT * FROM budget_accounts WHERE campaign_id=?", (child_id,),
+                ):
+                    if int(account["spent"]) or int(account["reserved"]) or int(account["unknown"]):
+                        raise BudgetLedgerError("bound child has nonzero usage and cannot be cancelled")
+            resources = self.conn.execute(
+                "SELECT * FROM child_allocation_resources WHERE allocation_id=?", (allocation_id,),
+            ).fetchall()
+            ancestor = self.conn.execute(
+                "SELECT a.allocation_id FROM child_allocations a JOIN child_allocation_gates g USING(allocation_id) "
+                "WHERE a.child_id=? AND a.state='ACTIVE' AND g.state='ACTIVE'",
+                (allocation["parent_id"],),
+            ).fetchone()
+            for item in resources:
+                cap = int(item["cap"])
+                if int(item["spent"]) or int(item["reserved"]) or int(item["unknown"]):
+                    raise BudgetLedgerError("allocation resources are not proven unused")
+                parent = self.conn.execute(
+                    "SELECT reserved FROM budget_accounts WHERE campaign_id=? AND resource=?",
+                    (allocation["parent_id"], item["resource"]),
+                ).fetchone()
+                if parent is None or int(parent["reserved"]) < cap:
+                    raise BudgetLedgerError("parent escrow is inconsistent")
+                if ancestor is not None:
+                    upstream = self.conn.execute(
+                        "SELECT reserved FROM child_allocation_resources WHERE allocation_id=? AND resource=?",
+                        (ancestor["allocation_id"], item["resource"]),
+                    ).fetchone()
+                    if upstream is None or int(upstream["reserved"]) < cap:
+                        raise BudgetLedgerError("ancestor escrow is inconsistent")
+                    self.conn.execute(
+                        "UPDATE child_allocation_resources SET reserved=reserved-?,revision=revision+1 WHERE allocation_id=? AND resource=?",
+                        (cap, ancestor["allocation_id"], item["resource"]),
+                    )
+                self.conn.execute(
+                    "UPDATE budget_accounts SET reserved=reserved-?,revision=revision+1 WHERE campaign_id=? AND resource=?",
+                    (cap, allocation["parent_id"], item["resource"]),
+                )
+            self.conn.execute(
+                "UPDATE child_allocations SET state='CLOSED',closed_at=? WHERE allocation_id=?",
+                (utc_now(), allocation_id),
+            )
+            self.conn.execute(
+                "UPDATE child_allocation_gates SET state='CANCELLED',cancellation_digest=?,updated_at=? WHERE allocation_id=?",
+                (cancellation_digest, utc_now(), allocation_id),
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
     def settle_action(
         self, reservation_id: str, *, actual: int | None, quality: str,
         receipt_digest: str | None, fence: int, authoritative: bool = False,
@@ -739,69 +906,159 @@ class BudgetLedger:
                 self.conn.rollback()
             raise
 
-    def close_child(self, allocation_id: str, *, terminal_status: str) -> None:
-        """Return unused escrow once, only after all child actions are reconciled."""
-        if terminal_status not in {"GOAL_MET", "STOPPED"}:
-            raise BudgetLedgerError("child allocation can close only after a terminal campaign status")
-        self.conn.execute("BEGIN IMMEDIATE")
+    def close_child(self, allocation_id: str, *, terminal_status: str | None = None) -> None:
+        """Settle only when the registered child DB proves its terminal status."""
+        if self.path is None:
+            raise BudgetLedgerError("authoritative child settlement requires the project registry")
+        from .lock import CampaignLock
+        from .registry import RegistryError, assert_safe_campaign_db
+
+        self._assert_safe_path_chain(self.path, "campaign registry path")
+        registry = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+        registry.row_factory = sqlite3.Row
+        child_conn = None
+        lock = None
         try:
-            allocation = self.conn.execute("SELECT * FROM child_allocations WHERE allocation_id=?", (allocation_id,)).fetchone()
-            if allocation is None:
-                raise BudgetLedgerError("unknown child allocation")
-            if allocation["state"] == "CLOSED":
-                self.conn.commit()
-                return
-            if allocation["child_id"] is None:
-                raise BudgetLedgerError("unbound allocation cannot be closed; reconcile the creation saga first")
-            open_work = self.conn.execute(
-                "SELECT 1 FROM budget_reservations WHERE allocation_id=? AND state IN ('RESERVED','DISPATCHED','UNKNOWN') LIMIT 1",
-                (allocation_id,),
+            initial = self.conn.execute(
+                "SELECT * FROM child_allocations WHERE allocation_id=?", (allocation_id,),
             ).fetchone()
-            if open_work:
-                raise BudgetLedgerError("child has reserved or UNKNOWN work that requires reconciliation")
-            nested = self.conn.execute(
-                "SELECT 1 FROM child_allocations WHERE parent_id=? AND state IN ('RESERVED','ACTIVE') LIMIT 1",
-                (allocation["child_id"],),
+            if initial is None or initial["child_id"] is None:
+                raise BudgetLedgerError("unbound or unknown allocation cannot be settled")
+            mapping = registry.execute(
+                "SELECT origin,state_path FROM campaign_index WHERE campaign_id=?",
+                (initial["child_id"],),
             ).fetchone()
-            if nested:
-                raise BudgetLedgerError("child has open nested allocations that must be reconciled first")
-            rows = self.conn.execute("SELECT * FROM child_allocation_resources WHERE allocation_id=?", (allocation_id,)).fetchall()
-            for item in rows:
-                used = int(item["spent"])
-                cap = int(item["cap"])
-                if int(item["reserved"]) or int(item["unknown"]):
-                    raise BudgetLedgerError("child allocation still holds reserved or UNKNOWN resources")
-                parent = self.conn.execute(
-                    "SELECT * FROM budget_accounts WHERE campaign_id=? AND resource=?",
-                    (allocation["parent_id"], item["resource"]),
+            if (mapping is None or mapping["origin"] != "managed"
+                    or mapping["state_path"] != f"campaigns/{initial['child_id']}"):
+                raise BudgetLedgerError("allocation has no canonical managed child mapping")
+            child_dir = self.path.parent / mapping["state_path"]
+            child_db = child_dir / "campaign.sqlite3"
+            self._assert_safe_path_chain(child_db, "managed child database path")
+            assert_safe_campaign_db(child_db)
+            if not child_db.is_file():
+                raise BudgetLedgerError("registered child database is missing")
+            lock = CampaignLock(child_dir / "campaign.lock")
+            lock.acquire()
+            child_conn = sqlite3.connect(child_db, timeout=30, isolation_level=None)
+            child_conn.row_factory = sqlite3.Row
+            child_conn.execute("BEGIN IMMEDIATE")
+            columns = {r["name"] for r in child_conn.execute("PRAGMA table_info(campaigns)")}
+            if not {"id", "spec_json", "spec_hash", "status"} <= columns:
+                raise BudgetLedgerError("registered child DB lacks settlement identity fields")
+            child = child_conn.execute(
+                "SELECT spec_json,spec_hash,status FROM campaigns WHERE id=1",
+            ).fetchone()
+            if child is None or child["spec_hash"] != initial["spec_hash"]:
+                raise BudgetLedgerError("registered child DB spec differs from its allocation")
+            try:
+                child_spec = json.loads(child["spec_json"])
+                parent_ref = child_spec.get("parent")
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise BudgetLedgerError("registered child DB spec is corrupt") from exc
+            if (not isinstance(parent_ref, dict)
+                    or parent_ref.get("parent_campaign_id") != initial["parent_id"]
+                    or parent_ref.get("allocation_id") != allocation_id):
+                raise BudgetLedgerError("registered child DB lineage differs from its allocation")
+            actual_status = child["status"]
+            if actual_status not in {"GOAL_MET", "STOPPED"}:
+                raise BudgetLedgerError("registered child DB has no terminal campaign status")
+            if terminal_status is not None and terminal_status != actual_status:
+                raise BudgetLedgerError("caller terminal status differs from the registered child DB")
+
+            # Lock order: CampaignLock -> child DB transaction -> shared ledger transaction.
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                allocation = self.conn.execute(
+                    "SELECT * FROM child_allocations WHERE allocation_id=?", (allocation_id,),
                 ).fetchone()
-                if parent is None or int(parent["reserved"]) < cap:
-                    raise BudgetLedgerError("root escrow is inconsistent; refusing child closure")
-                ancestor = self.conn.execute(
-                    "SELECT allocation_id FROM child_allocations WHERE child_id=? AND state='ACTIVE'",
-                    (allocation["parent_id"],),
+                if (allocation is None or allocation["parent_id"] != initial["parent_id"]
+                        or allocation["child_id"] != initial["child_id"]
+                        or allocation["spec_hash"] != initial["spec_hash"]):
+                    raise BudgetLedgerError("allocation identity changed during settlement")
+                gate = self.conn.execute(
+                    "SELECT state FROM child_allocation_gates WHERE allocation_id=?",
+                    (allocation_id,),
                 ).fetchone()
-                if ancestor is not None:
-                    upstream = self.conn.execute(
-                        "SELECT * FROM child_allocation_resources WHERE allocation_id=? AND resource=?",
-                        (ancestor["allocation_id"], item["resource"]),
+                if allocation["state"] == "CLOSED":
+                    if gate is None or gate["state"] != "CLOSED":
+                        raise BudgetLedgerError("closed allocation gate is inconsistent")
+                    self.conn.commit()
+                    return
+                if gate is None or gate["state"] != "ACTIVE":
+                    raise BudgetLedgerError("only an active child allocation can be settled")
+                open_work = self.conn.execute(
+                    "SELECT 1 FROM budget_reservations WHERE allocation_id=? "
+                    "AND state IN ('RESERVED','DISPATCHED','UNKNOWN') LIMIT 1",
+                    (allocation_id,),
+                ).fetchone()
+                if open_work:
+                    raise BudgetLedgerError("child has reserved or UNKNOWN work that requires reconciliation")
+                nested = self.conn.execute(
+                    "SELECT 1 FROM child_allocations a JOIN child_allocation_gates g USING(allocation_id) "
+                    "WHERE a.parent_id=? AND a.state IN ('RESERVED','ACTIVE') "
+                    "AND g.state IN ('RESERVED','BOUND','ACTIVE') LIMIT 1",
+                    (allocation["child_id"],),
+                ).fetchone()
+                if nested:
+                    raise BudgetLedgerError("child has open nested allocations that must be reconciled first")
+                rows = self.conn.execute(
+                    "SELECT * FROM child_allocation_resources WHERE allocation_id=?", (allocation_id,),
+                ).fetchall()
+                for item in rows:
+                    used, cap = int(item["spent"]), int(item["cap"])
+                    if int(item["reserved"]) or int(item["unknown"]):
+                        raise BudgetLedgerError("child allocation still holds reserved or UNKNOWN resources")
+                    parent = self.conn.execute(
+                        "SELECT * FROM budget_accounts WHERE campaign_id=? AND resource=?",
+                        (allocation["parent_id"], item["resource"]),
                     ).fetchone()
-                    if upstream is None or int(upstream["reserved"]) < cap:
-                        raise BudgetLedgerError("ancestor escrow is inconsistent; refusing nested child closure")
+                    if parent is None or int(parent["reserved"]) < cap:
+                        raise BudgetLedgerError("root escrow is inconsistent; refusing child closure")
+                    ancestor = self.conn.execute(
+                        "SELECT a.allocation_id FROM child_allocations a JOIN child_allocation_gates g USING(allocation_id) "
+                        "WHERE a.child_id=? AND a.state='ACTIVE' AND g.state='ACTIVE'",
+                        (allocation["parent_id"],),
+                    ).fetchone()
+                    if ancestor is not None:
+                        upstream = self.conn.execute(
+                            "SELECT * FROM child_allocation_resources WHERE allocation_id=? AND resource=?",
+                            (ancestor["allocation_id"], item["resource"]),
+                        ).fetchone()
+                        if upstream is None or int(upstream["reserved"]) < cap:
+                            raise BudgetLedgerError("ancestor escrow is inconsistent; refusing nested child closure")
+                        self.conn.execute(
+                            "UPDATE child_allocation_resources SET reserved=reserved-?,spent=spent+?,revision=revision+1 "
+                            "WHERE allocation_id=? AND resource=?",
+                            (cap, used, ancestor["allocation_id"], item["resource"]),
+                        )
                     self.conn.execute(
-                        "UPDATE child_allocation_resources SET reserved=reserved-?,spent=spent+?,revision=revision+1 WHERE allocation_id=? AND resource=?",
-                        (cap, used, ancestor["allocation_id"], item["resource"]),
+                        "UPDATE budget_accounts SET reserved=reserved-?,spent=spent+?,revision=revision+1 "
+                        "WHERE campaign_id=? AND resource=?",
+                        (cap, used, allocation["parent_id"], item["resource"]),
                     )
+                now = utc_now()
                 self.conn.execute(
-                    "UPDATE budget_accounts SET reserved=reserved-?,spent=spent+?,revision=revision+1 WHERE campaign_id=? AND resource=?",
-                    (cap, used, allocation["parent_id"], item["resource"]),
+                    "UPDATE child_allocations SET state='CLOSED',closed_at=? WHERE allocation_id=?",
+                    (now, allocation_id),
                 )
-            self.conn.execute("UPDATE child_allocations SET state='CLOSED',closed_at=? WHERE allocation_id=?", (utc_now(), allocation_id))
-            self.conn.execute("UPDATE child_allocation_gates SET state='CLOSED',updated_at=? WHERE allocation_id=?", (utc_now(), allocation_id))
-            self.conn.commit()
-        except Exception:
-            self.conn.rollback()
-            raise
+                self.conn.execute(
+                    "UPDATE child_allocation_gates SET state='CLOSED',updated_at=? WHERE allocation_id=?",
+                    (now, allocation_id),
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+        except (sqlite3.DatabaseError, OSError, RegistryError) as exc:
+            raise BudgetLedgerError("registered child settlement could not be verified safely") from exc
+        finally:
+            if child_conn is not None:
+                if child_conn.in_transaction:
+                    child_conn.rollback()
+                child_conn.close()
+            if lock is not None:
+                lock.release()
+            registry.close()
 
     def snapshot(self, campaign_id: str) -> dict[str, dict[str, int]]:
         return {row["resource"]: {key: int(row[key]) for key in ("cap", "spent", "reserved", "unknown", "revision")}

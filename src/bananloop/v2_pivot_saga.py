@@ -534,6 +534,12 @@ class V2PivotSaga:
                     (idempotency_key,),
                 ).fetchone()
                 state = row["state"]
+                control = conn.execute(
+                    "SELECT state FROM v2_pivot_saga_control WHERE idempotency_key=?",
+                    (idempotency_key,),
+                ).fetchone()
+                if control is None or control["state"] in {"CANCEL_REQUESTED", "CANCELLED"}:
+                    raise PivotSagaError("pivot child saga is cancelled and cannot be resumed")
                 if state == "ACTIVE":
                     activation_digest = _digest({"key": idempotency_key, "request_hash": plan["request_hash"],
                                                  "allocation_id": plan["allocation_id"], "child_id": row["child_id"]})
@@ -583,11 +589,19 @@ class V2PivotSaga:
                     _, child_dir, _ = self.registry.reserve(
                         plan["child_spec"].goal, plan["registry_request_id"], activate=False,
                     )
-                    self._initialize_child_db(
-                        child_dir / "campaign.sqlite3", plan["child_spec"],
-                        parent_conn=conn, child_campaign_id=row["child_id"],
-                        protocol_handoff=plan["protocol_handoff"],
-                    )
+                    from .lock import CampaignLock
+                    with CampaignLock(child_dir / "campaign.lock"):
+                        control = conn.execute(
+                            "SELECT state FROM v2_pivot_saga_control WHERE idempotency_key=?",
+                            (idempotency_key,),
+                        ).fetchone()
+                        if control is None or control["state"] != "OPEN":
+                            raise PivotSagaError("pivot child cancellation won before initialization")
+                        self._initialize_child_db(
+                            child_dir / "campaign.sqlite3", plan["child_spec"],
+                            parent_conn=conn, child_campaign_id=row["child_id"],
+                            protocol_handoff=plan["protocol_handoff"],
+                        )
                     self._checkpoint("AFTER_CHILD_INITIALIZE")
                     self._transition(conn, idempotency_key, "CHILD_INITIALIZED")
                 elif state == "CHILD_INITIALIZED":
@@ -605,6 +619,214 @@ class V2PivotSaga:
                     raise PivotSagaError(f"unknown pivot saga state: {state}")
         except (BudgetLedgerError, RegistryError, sqlite3.DatabaseError) as exc:
             raise PivotSagaError(f"pivot child saga stopped safely and can be retried: {exc}") from exc
+        finally:
+            ledger.close()
+            conn.close()
+
+    def _cancel_unactivated_child(
+        self, *, idempotency_key: str, proposal: PivotProposal | dict[str, Any],
+        child_spec: dict[str, Any] | str | ExplorationCampaignSpecV2 | OptimizationCampaignSpecV2,
+        approval: PivotDecisionCommand | dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Recover a deliberately abandoned pre-ACTIVE saga after proving no work ran.
+
+        This is a Core recovery operation; it is not exposed by the user steering API.
+        """
+        parent_dir, parent_db = self._parent_location()
+        self.parent_spec = self._load_parent_spec(parent_db)
+        self.parent_spec_hash = self.parent_spec.approved_hash()
+        self.parent_depth = self._campaign_depth(self.parent_campaign_id, self.parent_spec)
+        conn = sqlite3.connect(parent_db, timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        ledger = self.registry.budget_ledger()
+        try:
+            _create_parent_saga_schema(conn)
+            self.child_count = self._active_child_count(conn, excluding=idempotency_key)
+            plan = self._prepare(
+                idempotency_key=idempotency_key, proposal=proposal,
+                child_spec=child_spec, approval=approval, parent_conn=conn,
+            )
+            saga = conn.execute(
+                "SELECT * FROM v2_pivot_sagas WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+            if saga is None or saga["request_hash"] != plan["request_hash"]:
+                raise PivotSagaError("cannot cancel a missing or mismatched pivot intent")
+            if saga["state"] == "ACTIVE":
+                raise PivotSagaError("an ACTIVE pivot child cannot be cancelled")
+            digest = _digest({
+                "operation": "cancel-unactivated-pivot",
+                "idempotency_key": idempotency_key,
+                "request_hash": plan["request_hash"],
+                "allocation_id": plan["allocation_id"],
+                "registry_request_id": plan["registry_request_id"],
+            })
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                control = conn.execute(
+                    "SELECT * FROM v2_pivot_saga_control WHERE idempotency_key=?",
+                    (idempotency_key,),
+                ).fetchone()
+                if control is None:
+                    raise PivotSagaError("pivot cancellation control is missing")
+                if control["state"] == "OPEN":
+                    changed = conn.execute(
+                        "UPDATE v2_pivot_saga_control SET state='CANCEL_REQUESTED',control_digest=?,updated_at=? "
+                        "WHERE idempotency_key=? AND state='OPEN'",
+                        (digest, utc_now(), idempotency_key),
+                    ).rowcount
+                    if changed != 1:
+                        raise PivotSagaError("pivot cancellation lost its control CAS")
+                elif control["state"] in {"CANCEL_REQUESTED", "CANCELLED"}:
+                    if control["control_digest"] != digest:
+                        raise PivotSagaError("cancellation replay digest mismatch")
+                else:
+                    raise PivotSagaError("pivot activation already won the lifecycle CAS")
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            self._checkpoint("AFTER_CANCEL_CONTROL")
+
+            allocation = ledger.conn.execute(
+                "SELECT * FROM child_allocations WHERE allocation_id=?",
+                (plan["allocation_id"],),
+            ).fetchone()
+            gate = ledger.conn.execute(
+                "SELECT * FROM child_allocation_gates WHERE allocation_id=?",
+                (plan["allocation_id"],),
+            ).fetchone()
+            if allocation is None or gate is None:
+                raise PivotSagaError("cancelled pivot allocation or gate is missing")
+            if (allocation["parent_id"] != self.parent_campaign_id
+                    or allocation["idempotency_key"] != plan["registry_request_id"]
+                    or allocation["spec_hash"] != plan["child_spec_hash"]):
+                raise PivotSagaError("cancellation allocation differs from its frozen saga plan")
+            ledger_cancelled_under_child_lock = False
+            if gate["state"] == "CANCELLED":
+                if gate["cancellation_digest"] != digest:
+                    raise PivotSagaError("ledger cancellation digest differs from saga control")
+            else:
+                if gate["state"] not in {"RESERVED", "BOUND"}:
+                    raise PivotSagaError("only a nonactive allocation can be cancelled")
+                request_key_value = self.registry.lookup_request(
+                    plan["child_spec"].goal, plan["registry_request_id"],
+                )
+                campaign_id = (
+                    request_key_value[0].campaign_id if request_key_value is not None else None
+                )
+                if allocation["child_id"] not in (None, campaign_id):
+                    raise PivotSagaError("registry and ledger disagree about the cancelled child")
+                child_id = allocation["child_id"] or campaign_id
+                if child_id is not None:
+                    jobs = ledger.conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='worker_jobs'",
+                    ).fetchone()
+                    if jobs and ledger.conn.execute(
+                        "SELECT 1 FROM worker_jobs WHERE campaign_id=? LIMIT 1", (child_id,),
+                    ).fetchone():
+                        raise PivotSagaError("child has worker queue history and cannot be cancelled")
+                if request_key_value is not None:
+                    entry, child_dir = request_key_value
+                    child_db = child_dir / "campaign.sqlite3"
+                    if child_db.exists():
+                        from .lock import CampaignLock
+                        ledger._assert_safe_path_chain(child_db, "managed child database path")
+                        assert_safe_campaign_db(child_db)
+                        with CampaignLock(child_dir / "campaign.lock"):
+                            child_conn = sqlite3.connect(child_db, timeout=10, isolation_level=None)
+                            child_conn.row_factory = sqlite3.Row
+                            try:
+                                child_conn.execute("BEGIN IMMEDIATE")
+                                cols = {r["name"] for r in child_conn.execute("PRAGMA table_info(campaigns)")}
+                                if not {"id", "spec_json", "spec_hash", "status"} <= cols:
+                                    raise PivotSagaError("child DB is incomplete; cancellation is ambiguous")
+                                child = child_conn.execute(
+                                    "SELECT spec_json,spec_hash,status FROM campaigns WHERE id=1",
+                                ).fetchone()
+                                if (child is None or child["status"] != "READY"
+                                        or child["spec_hash"] != plan["child_spec_hash"]
+                                        or child["spec_json"] != plan["child_spec_json"]):
+                                    raise PivotSagaError("child DB identity or status is not proven unused")
+                                lineage = json.loads(child["spec_json"]).get("parent")
+                                expected_parent = plan["child_spec"].parent.model_dump(mode="json")
+                                if lineage != expected_parent:
+                                    raise PivotSagaError("child lineage differs from the cancellation plan")
+                                ledger.cancel_child(plan["allocation_id"], cancellation_digest=digest)
+                                ledger_cancelled_under_child_lock = True
+                            finally:
+                                if child_conn.in_transaction:
+                                    child_conn.rollback()
+                                child_conn.close()
+                    elif saga["state"] in {"ALLOCATION_BOUND", "CHILD_INITIALIZED"}:
+                        raise PivotSagaError("initialized child DB is missing; cancellation is ambiguous")
+                elif saga["state"] in {"CHILD_RESERVED", "ALLOCATION_BOUND", "CHILD_INITIALIZED"}:
+                    raise PivotSagaError("saga expects a child registry identity; cancellation is ambiguous")
+                if not ledger_cancelled_under_child_lock:
+                    ledger.cancel_child(plan["allocation_id"], cancellation_digest=digest)
+            self._checkpoint("AFTER_CANCEL_LEDGER")
+
+            from .registry import request_key
+            registry_key = request_key(plan["child_spec"].goal, plan["registry_request_id"])
+            expected_child_id = "c-" + hashlib.sha256(registry_key.encode("utf-8")).hexdigest()[:32]
+            self.registry.cancel_request(
+                plan["child_spec"].goal, plan["registry_request_id"],
+                campaign_id=expected_child_id, allocation_id=plan["allocation_id"],
+                cancellation_digest=digest,
+            )
+            self._checkpoint("AFTER_CANCEL_TOMBSTONE")
+
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                control = conn.execute(
+                    "SELECT state,control_digest FROM v2_pivot_saga_control WHERE idempotency_key=?",
+                    (idempotency_key,),
+                ).fetchone()
+                if (control is None or control["state"] not in {"CANCEL_REQUESTED", "CANCELLED"}
+                        or control["control_digest"] != digest):
+                    raise PivotSagaError("pivot cancellation control changed before finalization")
+                existing = []
+                for event in conn.execute(
+                    "SELECT payload_json FROM events WHERE event_type='PIVOT_CHILD_CANCELLED'",
+                ):
+                    try:
+                        payload = json.loads(event["payload_json"])
+                    except (TypeError, json.JSONDecodeError) as exc:
+                        raise PivotSagaError("pivot cancellation event log is corrupt") from exc
+                    if payload.get("allocation_id") == plan["allocation_id"]:
+                        existing.append(payload)
+                if existing and (
+                    len(existing) != 1
+                    or existing[0].get("child_id") != expected_child_id
+                    or existing[0].get("cancellation_digest") != digest
+                ):
+                    raise PivotSagaError("pivot cancellation event conflicts with its durable control")
+                if not existing:
+                    _append_event(conn, "PIVOT_CHILD_CANCELLED", {
+                        "campaign_id": self.parent_campaign_id,
+                        "child_id": expected_child_id,
+                        "allocation_id": plan["allocation_id"],
+                        "cancellation_digest": digest,
+                    })
+                conn.execute(
+                    "UPDATE v2_pivot_saga_control SET state='CANCELLED',updated_at=? "
+                    "WHERE idempotency_key=? AND state IN ('CANCEL_REQUESTED','CANCELLED') "
+                    "AND control_digest=?",
+                    (utc_now(), idempotency_key, digest),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            return {
+                "parent_campaign_id": self.parent_campaign_id,
+                "child_campaign_id": expected_child_id,
+                "allocation_id": plan["allocation_id"],
+                "state": "CANCELLED",
+                "replayed": control["state"] == "CANCELLED",
+            }
+        except (BudgetLedgerError, RegistryError, sqlite3.DatabaseError) as exc:
+            raise PivotSagaError(f"pivot cancellation stopped safely and can be retried: {exc}") from exc
         finally:
             ledger.close()
             conn.close()
@@ -916,6 +1138,21 @@ class V2PivotSaga:
                 raise PivotSagaError("pivot saga intent disappeared")
             if child_id is not None and row["child_id"] not in (None, child_id):
                 raise PivotSagaError("registry child identity differs from the stored saga")
+            control = conn.execute(
+                "SELECT state,control_digest FROM v2_pivot_saga_control WHERE idempotency_key=?",
+                (idempotency_key,),
+            ).fetchone()
+            if control is None:
+                raise PivotSagaError("pivot saga control row disappeared")
+            if new_state == "ACTIVE":
+                activation_digest = _digest({
+                    "key": idempotency_key, "request_hash": row["request_hash"],
+                    "allocation_id": row["allocation_id"], "child_id": child_id or row["child_id"],
+                })
+                if control["state"] != "ACTIVATING" or control["control_digest"] != activation_digest:
+                    raise PivotSagaError("activation transition lost its one-way control CAS")
+            elif control["state"] != "OPEN":
+                raise PivotSagaError("pivot saga cannot advance after cancellation or activation control")
             current_index, next_index = _STATES.index(row["state"]), _STATES.index(new_state)
             if next_index <= current_index:
                 conn.commit()
