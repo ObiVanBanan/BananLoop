@@ -737,10 +737,14 @@ def test_full_auto_denies_the_same_explicit_scope_expansion_before_escrow(tmp_pa
 
 
 @pytest.mark.parametrize(("field", "parent_cap", "child_cap", "paired_updates"), [
+    ("max_experiments", 5, 6, {}),
+    ("max_attempts", 8, 9, {}),
+    ("max_agent_calls", 20, 30, {}),
+    ("max_evaluator_calls", 10, 11, {}),
     ("max_model_tokens", 1000, 2000, {}),
     ("max_evaluation_units", 10, 20, {"evaluation_units_per_call": 2}),
 ])
-def test_full_auto_rejects_optional_budget_dimension_expansion_before_escrow(
+def test_full_auto_rejects_ledger_budget_dimension_expansion_before_escrow(
     tmp_path, field, parent_cap, child_cap, paired_updates,
 ):
     setup = _setup(tmp_path, mode="FULL_AUTO")
