@@ -623,6 +623,11 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(
         assert graph.conn.execute(
             "SELECT COUNT(*) FROM evaluator_integration_evidence"
         ).fetchone()[0] == 1
+        # A successful local integration transition records evidence only.
+        # Global champion promotion is a separate explicit Core CAS command.
+        assert graph.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='champion_state'"
+        ).fetchone() is None
         with pytest.raises(sqlite3.IntegrityError, match="immutable"):
             graph.conn.execute(
                 "UPDATE evaluator_integration_receipts SET decision='FAIL' "
