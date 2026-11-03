@@ -280,3 +280,35 @@ def test_legacy_active_allocation_backfill_requires_durable_parent_activation(tm
                 allocation_id="legacy-alloc",
             )
     upgraded.close()
+
+
+def test_activation_rejects_symlinked_managed_parent_path(tmp_path):
+    from pathlib import Path
+
+    ledger = BudgetLedger(tmp_path / "campaign-registry.sqlite3")
+    ledger.create_root("root", {"agent_calls": 5})
+    ledger.reserve_child(allocation_id="symlink-alloc", idempotency_key="allocate:symlink",
+                         parent_id="root", spec_hash="a" * 64,
+                         caps={"agent_calls": 4})
+    ledger.bind_child("symlink-alloc", "symlink-child", "a" * 64)
+    digest = _record_parent_activation(
+        ledger, parent="root", allocation="symlink-alloc", child="symlink-child",
+        spec_hash="a" * 64,
+    )
+    campaign_dir = Path(ledger.path).parent / "campaigns" / "root"
+    outside = Path(ledger.path).parent / "root-moved"
+    campaign_dir.rename(outside)
+    try:
+        campaign_dir.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        outside.rename(campaign_dir)
+        ledger.close()
+        pytest.skip("directory symlinks are unavailable on this platform")
+    with pytest.raises(BudgetLedgerError, match="durable parent saga"):
+        ledger.activate_child("symlink-alloc", "symlink-child", "a" * 64, digest)
+    assert ledger.conn.execute(
+        "SELECT state FROM child_allocation_gates WHERE allocation_id='symlink-alloc'",
+    ).fetchone()[0] == "BOUND"
+    ledger.close()
+    campaign_dir.unlink()
+    outside.rename(campaign_dir)

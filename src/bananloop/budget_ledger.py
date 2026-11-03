@@ -6,6 +6,7 @@ This module deliberately does not alter v1 CampaignStore counters.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -155,6 +156,7 @@ class BudgetLedger:
         """Return the activation proof only when the registered parent saga is ACTIVE."""
         if self.path is None:
             return None
+        from .registry import RegistryError, assert_safe_campaign_db, assert_safe_local_path
         try:
             tables = {r[0] for r in self.conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
@@ -169,8 +171,10 @@ class BudgetLedger:
                     or parent["state_path"] != f"campaigns/{allocation['parent_id']}"):
                 return None
             parent_db = self.path.parent / parent["state_path"] / "campaign.sqlite3"
-            from .registry import assert_safe_campaign_db, assert_safe_local_path
             assert_safe_local_path(self.path, "campaign registry")
+            assert_safe_local_path(self.path.parent, "campaign state root")
+            assert_safe_local_path(self.path.parent / "campaigns", "managed campaigns directory")
+            assert_safe_local_path(self.path.parent / parent["state_path"], "managed parent campaign directory")
             assert_safe_campaign_db(parent_db)
             if not parent_db.is_file():
                 return None
@@ -236,7 +240,7 @@ class BudgetLedger:
                 return expected
             finally:
                 conn.close()
-        except (OSError, sqlite3.DatabaseError, ValueError):
+        except (OSError, sqlite3.DatabaseError, ValueError, RegistryError):
             return None
 
     def _ensure_dispatch_column(self) -> None:
