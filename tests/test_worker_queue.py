@@ -586,3 +586,33 @@ def test_child_worker_claim_rolls_back_while_allocation_gate_is_bound(tmp_path):
     finally:
         ledger.close()
         queue.close()
+
+
+@pytest.mark.parametrize("gate_state", ["BOUND", "CLOSED", "CANCELLED"])
+def test_child_enqueue_replay_rejects_stale_ready_job_when_gate_is_closed(tmp_path, gate_state):
+    path, queue = _queue(tmp_path, cap=10)
+    ledger = BudgetLedger(path)
+    ledger.reserve_child(allocation_id="alloc-replay-gate", idempotency_key="allocate:replay-gate",
+                         parent_id="root", spec_hash="a" * 64,
+                         caps={"agent_calls": 6})
+    ledger.bind_child("alloc-replay-gate", "child-replay-gate", "a" * 64)
+    digest = _activate_parent_proof(
+        ledger, parent="root", allocation="alloc-replay-gate",
+        child="child-replay-gate", spec_hash="a" * 64,
+    )
+    ledger.activate_child("alloc-replay-gate", "child-replay-gate", "a" * 64, digest)
+    ledger.close()
+    params = dict(job_id="job-replay-gate", enqueue_key="enqueue:replay-gate",
+                  campaign_id="child-replay-gate", action_id="action:replay-gate",
+                  resource="agent_calls", upper_bound=2, request={"operation":"agent"})
+    queue.enqueue(**params)
+    ledger = BudgetLedger(path)
+    ledger.conn.execute(
+        "UPDATE child_allocation_gates SET state=? WHERE allocation_id='alloc-replay-gate'",
+        (gate_state,),
+    )
+    ledger.close()
+    with pytest.raises(WorkerQueueError, match="admission gate"):
+        queue.enqueue(**params)
+    assert queue.get_job("job-replay-gate")["state"] == "READY"
+    queue.close()
