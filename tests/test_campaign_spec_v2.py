@@ -282,6 +282,7 @@ def test_pivot_child_parent_reference_binds_complete_lineage_without_changing_ol
     payload["parent"].pop("pivot_proposal_digest", None)
     payload["parent"].pop("pivot_decision_id", None)
     payload["parent"].pop("approval_request_id", None)
+    payload["parent"].pop("protocol_handoff_digest", None)
     expected = hashlib.sha256(json.dumps(
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
     ).encode()).hexdigest()

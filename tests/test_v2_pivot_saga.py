@@ -19,9 +19,11 @@ from bananloop.registry import CampaignRegistry
 from bananloop.v2_pivot_saga import PivotSagaError, V2PivotSaga
 from bananloop.api import create_server
 from bananloop.application import CampaignApplication
+from bananloop.trusted_evaluator import TrustedEvaluatorAdapter
 from bananloop.evaluator_verification import (
     EvaluatorProtocolAuthority, EvaluatorProtocolV1, EvaluatorTierManifestV1,
-    MetricDiscoveryProposalV1, ProtocolVerifierOutputV1, make_verifier_receipt,
+    EvaluatorVerificationError, MetricDiscoveryProposalV1, ProtocolVerifierOutputV1,
+    make_verifier_receipt,
     _digest as _protocol_digest,
 )
 import threading
@@ -287,6 +289,61 @@ def test_active_optimization_child_fails_closed_on_corrupt_handoff_record(tmp_pa
         ).fetchone()[0] == 1
     finally:
         parent_conn.close()
+
+
+def test_trusted_evaluator_accepts_adopted_child_protocol_and_rejects_missing_handoff(tmp_path):
+    from types import SimpleNamespace
+
+    setup = _setup(tmp_path)
+    protocol, _, receipt = _seed_parent_protocol_approval(setup)
+    child_spec = dict(setup["child_spec"])
+    child_spec["mode"] = "OPTIMIZATION"
+    child_spec["evaluation"] = {
+        "protocol_id": protocol.protocol_id, "version": protocol.version,
+        "content_sha256": protocol.content_digest(), "approval_digest": receipt.approval_digest,
+    }
+    result = _saga(setup).create_child(
+        idempotency_key="adapter-protocol-handoff", proposal=setup["proposal"],
+        child_spec=child_spec,
+    )
+    child_dir, _ = setup["registry"].resolve(result["child_campaign_id"], activate=False)
+    child_conn = sqlite3.connect(child_dir / "campaign.sqlite3", isolation_level=None)
+    child = parse_campaign_spec_document(
+        child_conn.execute("SELECT spec_json FROM campaigns WHERE id=1").fetchone()[0],
+    )
+
+    class RecordingQueue:
+        def __init__(self):
+            self.requests = []
+
+        def enqueue(self, **request):
+            self.requests.append(request)
+
+    queue = RecordingQueue()
+    graph = SimpleNamespace(
+        conn=child_conn, campaign_spec=lambda: child,
+        bind_campaign_id=lambda _campaign_id: None,
+    )
+    adapter = TrustedEvaluatorAdapter(
+        graph=graph, queue=queue, campaign_id=result["child_campaign_id"],
+        state_root=tmp_path, runner=object(),
+    )
+    adapter._resolve_frozen_assets = lambda *_args: None
+    adapter._snapshot_files = lambda *_args: None
+    jobs = adapter.enqueue_repeatability(candidate_snapshot_id="9" * 40, tier="dev")
+    assert len(jobs) == protocol.repeatability_runs
+    assert len(queue.requests) == protocol.repeatability_runs
+    assert all(item["campaign_id"] == result["child_campaign_id"] for item in queue.requests)
+    assert all(item["request"]["approval_digest"] == receipt.approval_digest for item in queue.requests)
+
+    child_conn.execute("DROP TRIGGER evaluator_protocol_handoffs_no_delete")
+    child_conn.execute(
+        "DELETE FROM evaluator_protocol_handoffs WHERE handoff_digest=?",
+        (child.parent.protocol_handoff_digest,),
+    )
+    with pytest.raises(EvaluatorVerificationError, match="durable approved protocol handoff"):
+        adapter.enqueue_repeatability(candidate_snapshot_id="9" * 40, tier="dev")
+    child_conn.close()
 
 
 def test_optimization_child_without_valid_parent_protocol_approval_fails_closed(tmp_path):

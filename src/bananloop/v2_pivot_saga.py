@@ -924,6 +924,7 @@ class V2PivotSaga:
                 "VALUES(1,?,?, 'READY',?,?)",
                 (serialized, expected_hash, created_at, created_at),
             )
+            conn.execute("PRAGMA user_version=5")
             if protocol_handoff is not None:
                 try:
                     from .evaluator_verification import EvaluatorProtocolAuthority

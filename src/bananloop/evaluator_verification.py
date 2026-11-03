@@ -760,9 +760,12 @@ class EvaluatorProtocolAuthority:
             raise EvaluatorVerificationError("frozen evaluator reference does not match its verifier receipt")
         if receipt.campaign_id == campaign_id and proposal.campaign_id == campaign_id:
             if spec_hash is not None and receipt.spec_hash != spec_hash:
-                raise EvaluatorVerificationError("frozen evaluator approval belongs to another spec")
+                raise EvaluatorVerificationError("frozen evaluator reference does not match its verifier receipt")
             return receipt
-        campaign = self.conn.execute("SELECT spec_json,spec_hash FROM campaigns WHERE id=1").fetchone()
+        try:
+            campaign = self.conn.execute("SELECT spec_json,spec_hash FROM campaigns WHERE id=1").fetchone()
+        except sqlite3.OperationalError as exc:
+            raise EvaluatorVerificationError("frozen evaluator reference does not match a bound child handoff") from exc
         if campaign is None:
             raise EvaluatorVerificationError("child campaign has no immutable spec for approval handoff")
         try:
