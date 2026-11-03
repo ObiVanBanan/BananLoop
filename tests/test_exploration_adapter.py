@@ -158,7 +158,7 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
 
         ledger = ResearchLedger(graph.conn)
         protocol_digest = ledger.protocol_digest_for_binding(job["request"]["role_binding"])
-        projection_before = ledger.project(campaign_ids=("campaign-test",), source_snapshot_id=base,
+        projection_before = ledger.project(graph=graph, queue=queue, campaign_ids=("campaign-test",), source_snapshot_id=base,
                                            protocol_digest=protocol_digest)
         assert len(projection_before.evidence) == 1
         assert projection_before.causal_memory[0].status == "UNVERIFIED"
@@ -169,7 +169,7 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
         assert ledger.ingest_completed_job(graph, queue, job["job_id"]) == (
             projection_before.evidence[0].evidence_id,
         )
-        assert ledger.project(campaign_ids=("campaign-test",), source_snapshot_id=base,
+        assert ledger.project(graph=graph, queue=queue, campaign_ids=("campaign-test",), source_snapshot_id=base,
                               protocol_digest=protocol_digest) == projection_before
         with pytest.raises(ResearchLedgerError, match="source snapshot"):
             ledger.ingest_completed_job(graph, queue, job["job_id"],
@@ -183,7 +183,7 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
         adapter = EvidenceOnlyAttemptAdapter(graph=graph, queue=queue, campaign_id="campaign-test",
                                              state_root=tmp_path, role_registry=roles)
         ledger = ResearchLedger(graph.conn)
-        assert ledger.project(campaign_ids=("campaign-test",), source_snapshot_id=base,
+        assert ledger.project(graph=graph, queue=queue, campaign_ids=("campaign-test",), source_snapshot_id=base,
                               protocol_digest=protocol_digest) == projection_before
 
         graph.mutate({"command_id": "add-second", "idempotency_key": "add-second",
@@ -191,6 +191,7 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
                       "changes": [{"type": "AddNode", "node_id": "explore-second", "phase": "EXPLORATION"}]})
         second_job = adapter.enqueue(node_id="explore-second", visible_paths=["README.md"])
         assert "effect:retrieval" in second_job["request"]["role_context"]["dev_summary"]
+        assert "intervention:" in second_job["request"]["role_context"]["dev_summary"]
 
         def contradict(_request, gateway, **_pin):
             content = b"counterevidence\n"
@@ -207,19 +208,40 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
         _, _, second_executor = _pinned_executor(queue, graph, "campaign-test", roles, second_job, contradict)
         adapter.run_one(job_id=second_job["job_id"], worker_id="worker-test", executor=second_executor)
         adapter.publish_completed(second_job["job_id"])
-        projection = ledger.project(campaign_ids=("campaign-test",), source_snapshot_id=base,
+        projection = ledger.project(graph=graph, queue=queue, campaign_ids=("campaign-test",), source_snapshot_id=base,
                                     protocol_digest=protocol_digest)
         assert len(projection.evidence) == 2
         assert len(projection.contradictions) == 1
         assert len(projection.contradictions[0].supporting_evidence_ids) == 1
         assert len(projection.contradictions[0].refuting_evidence_ids) == 1
         assert projection.causal_memory[0].status == "CONTRADICTED"
-        package = ledger.export_knowledge(campaign_ids=("campaign-test",), source_snapshot_id=base,
+        package = ledger.export_knowledge(graph=graph, queue=queue, campaign_ids=("campaign-test",), source_snapshot_id=base,
                                           protocol_digest=protocol_digest)
-        assert ledger.export_knowledge(campaign_ids=("campaign-test",), source_snapshot_id=base,
+        assert ledger.export_knowledge(graph=graph, queue=queue, campaign_ids=("campaign-test",), source_snapshot_id=base,
                                        protocol_digest=protocol_digest) == package
         assert "validation" not in package.model_dump_json().lower()
         assert "holdout" not in package.model_dump_json().lower()
+
+        # A forged append-only row can self-hash, so projections must derive
+        # the canonical finding again from the durable worker result.
+        original_row = graph.conn.execute(
+            "SELECT * FROM research_evidence WHERE evidence_id=?",
+            (projection.evidence[0].evidence_id,),
+        ).fetchone()
+        forged_payload = projection.evidence[0].content_payload()
+        forged_payload["statement"] = "Forged statement with copied provenance."
+        forged_id = hashlib.sha256(json.dumps(
+            forged_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
+        ).encode("utf-8")).hexdigest()
+        from bananloop.research_ledger import ResearchEvidenceV1
+        forged = ResearchEvidenceV1(evidence_id=forged_id, **forged_payload)
+        ledger.conn.execute(
+            "INSERT INTO research_evidence VALUES(" + ",".join("?" for _ in ledger._row_values(forged)) + ")",
+            ledger._row_values(forged),
+        )
+        with pytest.raises(ResearchLedgerError, match="differ from findings"):
+            ledger.project(graph=graph, queue=queue, campaign_ids=("campaign-test",),
+                           source_snapshot_id=base, protocol_digest=protocol_digest)
     finally:
         queue.close()
         graph.close()
