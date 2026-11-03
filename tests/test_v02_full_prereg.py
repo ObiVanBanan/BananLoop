@@ -1,6 +1,5 @@
 import hashlib
 import json
-from dataclasses import replace
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -564,12 +563,15 @@ def _report_package(manifest, evidence_root, *, unknown_pair_id=None,
 
 
 def _write_report_attestation(root, *, name, evidence_type, subject_sha, role, principal,
-                              payload, conclusion="ACCEPTED", signing_role=None):
-    private_key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(_sha(f"secret-{signing_role or role}")))
+                              payload, conclusion="ACCEPTED", signing_role=None, key_id=None,
+                              key_secret=None):
+    private_key = Ed25519PrivateKey.from_private_bytes(
+        bytes.fromhex(_sha(key_secret or f"secret-{signing_role or role}")),
+    )
     raw = sign_evidence({"schema_version": 1, "evidence_type": evidence_type,
                          "subject_sha": subject_sha, "conclusion": conclusion,
                          "issuer_role": role, "payload": payload},
-                        key_id=f"key-{role.lower()}", principal_id=principal,
+                        key_id=key_id or f"key-{role.lower()}", principal_id=principal,
                         private_key=private_key)
     path = f"{name}.json"
     (root / path).write_bytes(raw)
@@ -599,9 +601,9 @@ def test_blind_score_aggregation_requires_complete_package_and_separate_signed_u
     manifest = freeze_manifest(_raw_manifest())
     package = _report_package(manifest, tmp_path)
     scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
-    _, trust_policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
+    gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
     report = aggregate_blinded_scores(
-        manifest, package, scoring_attestation=scoring_ref,
+        manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
         unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
         trust_policy=trust_policy,
     )
@@ -609,6 +611,7 @@ def test_blind_score_aggregation_requires_complete_package_and_separate_signed_u
     assert report.usable_pairs == 12 and report.wins == 12
     assert report.losses == report.ties == 0
     assert report.report_sha256 == report_digest(report)
+    assert report.gate_evidence_sha256 == hashlib.sha256(canonical_bytes(gate_evidence)).hexdigest()
     assert report.pair_results[0].pair_id_sha256 in {task.blinded_pair_id_sha256 for task in manifest.task_pins}
 
     incomplete_payload = _report_package(manifest, tmp_path).model_dump()
@@ -620,7 +623,7 @@ def test_blind_score_aggregation_requires_complete_package_and_separate_signed_u
     )
     with pytest.raises(ReportError, match="preserve every preregistered pair"):
         aggregate_blinded_scores(
-            manifest, incomplete, scoring_attestation=scoring_ref,
+            manifest, incomplete, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
             unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
             trust_policy=trust_policy,
         )
@@ -631,9 +634,9 @@ def test_unknown_accounting_pair_is_retained_but_not_scored_as_eligible(tmp_path
     bad_pair_id = manifest.task_pins[0].blinded_pair_id_sha256
     package = _report_package(manifest, tmp_path, unknown_pair_id=bad_pair_id)
     scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
-    _, trust_policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
+    gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
     report = aggregate_blinded_scores(
-        manifest, package, scoring_attestation=scoring_ref,
+        manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
         unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
         trust_policy=trust_policy,
     )
@@ -650,9 +653,9 @@ def test_forged_eligible_accounting_summary_is_not_scored(tmp_path):
     bad_pair_id = manifest.task_pins[0].blinded_pair_id_sha256
     package = _report_package(manifest, tmp_path, forged_eligible_pair_id=bad_pair_id)
     scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
-    _, trust_policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
+    gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
     report = aggregate_blinded_scores(
-        manifest, package, scoring_attestation=scoring_ref,
+        manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
         unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
         trust_policy=trust_policy,
     )
@@ -684,9 +687,9 @@ def test_broken_receipt_chain_is_not_scored(tmp_path):
     changed_payload["package_sha256"] = score_package_digest(changed_payload)
     package = BlindedScorePackage.model_validate_json(json.dumps(changed_payload), strict=True)
     scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
-    _, trust_policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
+    gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
     report = aggregate_blinded_scores(
-        manifest, package, scoring_attestation=scoring_ref,
+        manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
         unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
         trust_policy=trust_policy,
     )
@@ -699,9 +702,9 @@ def test_failed_pair_retains_verified_resource_accounting(tmp_path):
     failed_pair_id = manifest.task_pins[0].blinded_pair_id_sha256
     package = _report_package(manifest, tmp_path, failed_pair_id=failed_pair_id)
     scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
-    _, trust_policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
+    gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
     report = aggregate_blinded_scores(
-        manifest, package, scoring_attestation=scoring_ref,
+        manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
         unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
         trust_policy=trust_policy,
     )
@@ -717,9 +720,9 @@ def test_missing_signed_ledger_head_makes_scored_pair_accounting_unknown(tmp_pat
     missing_head_pair_id = manifest.task_pins[0].blinded_pair_id_sha256
     package = _report_package(manifest, tmp_path, missing_head_pair_id=missing_head_pair_id)
     scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
-    _, trust_policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
+    gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
     report = aggregate_blinded_scores(
-        manifest, package, scoring_attestation=scoring_ref,
+        manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
         unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
         trust_policy=trust_policy,
     )
@@ -733,12 +736,12 @@ def test_scored_output_bytes_must_match_the_frozen_digest(tmp_path):
     manifest = freeze_manifest(_raw_manifest())
     package = _report_package(manifest, tmp_path)
     scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
-    _, trust_policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
+    gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
     first_ref = package.pairs[0].arm_a_output_ref
     (tmp_path / first_ref.path).write_bytes(b"changed after scorer sealed the package")
     with pytest.raises(ReportError, match="output artifact verification failed"):
         aggregate_blinded_scores(
-            manifest, package, scoring_attestation=scoring_ref,
+            manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
             unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
             trust_policy=trust_policy,
         )
@@ -748,22 +751,31 @@ def test_arm_author_cannot_unblind(tmp_path):
     manifest = freeze_manifest(_raw_manifest())
     package = _report_package(manifest, tmp_path)
     scoring_ref, _ = _attest_score_package(tmp_path, manifest, package)
-    _, policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
-    operator_key = "key-benchmark_operator"
+    gate_evidence, policy = _valid_evidence(manifest, tmp_path)
+    operator_key = "key-untrusted-author-operator"
+    malicious_private = Ed25519PrivateKey.from_private_bytes(
+        bytes.fromhex(_sha("secret-untrusted-author-operator")),
+    )
     signers = dict(policy.signers)
-    signers[operator_key] = replace(signers[operator_key], principal_id="principal-arm-author")
+    signers[operator_key] = TrustedSigner(
+        key_id=operator_key, principal_id="principal-arm-author",
+        public_key=malicious_private.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw,
+        ), permitted_roles=frozenset({"BENCHMARK_OPERATOR"}),
+    )
     author_policy = TrustPolicy(signers=signers,
                                 independent_principal_exclusions=policy.independent_principal_exclusions)
     unblinding_ref = _write_report_attestation(
         tmp_path, name="author-unblinding", evidence_type="UNBLINDING",
         subject_sha=package.package_sha256, role="BENCHMARK_OPERATOR",
         principal="principal-arm-author", signing_role="BENCHMARK_OPERATOR",
+            key_id=operator_key, key_secret="secret-untrusted-author-operator",
         payload={"score_package_sha256": package.package_sha256,
                  "bananloop_arm_label": "A", "codex_direct_arm_label": "B"},
     )
     with pytest.raises(ReportError, match="arm author/operator cannot serve as the unblinding"):
         aggregate_blinded_scores(
-            manifest, package, scoring_attestation=scoring_ref,
+            manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
             unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
             trust_policy=author_policy,
         )
@@ -773,11 +785,17 @@ def test_scorer_and_unblinder_cannot_share_signing_key(tmp_path):
     manifest = freeze_manifest(_raw_manifest())
     package = _report_package(manifest, tmp_path)
     scoring_ref, _ = _attest_score_package(tmp_path, manifest, package)
-    _, policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
+    gate_evidence, policy = _valid_evidence(manifest, tmp_path)
     signers = dict(policy.signers)
-    operator_key = "key-benchmark_operator"
-    signers[operator_key] = replace(
-        signers[operator_key], public_key=signers["key-independent_scorer"].public_key,
+    operator_key = "key-unblinder-shared-key"
+    shared_private = Ed25519PrivateKey.from_private_bytes(
+        bytes.fromhex(_sha("secret-INDEPENDENT_SCORER")),
+    )
+    signers[operator_key] = TrustedSigner(
+        key_id=operator_key, principal_id="principal-operator",
+        public_key=shared_private.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw,
+        ), permitted_roles=frozenset({"BENCHMARK_OPERATOR"}),
     )
     shared_key_policy = TrustPolicy(signers=signers,
                                     independent_principal_exclusions=policy.independent_principal_exclusions)
@@ -785,12 +803,13 @@ def test_scorer_and_unblinder_cannot_share_signing_key(tmp_path):
         tmp_path, name="shared-key-unblinding", evidence_type="UNBLINDING",
         subject_sha=package.package_sha256, role="BENCHMARK_OPERATOR",
         principal="principal-operator", signing_role="INDEPENDENT_SCORER",
+        key_id=operator_key,
         payload={"score_package_sha256": package.package_sha256,
                  "bananloop_arm_label": "A", "codex_direct_arm_label": "B"},
     )
     with pytest.raises(ReportError, match="distinct signing keys"):
         aggregate_blinded_scores(
-            manifest, package, scoring_attestation=scoring_ref,
+            manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
             unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
             trust_policy=shared_key_policy,
         )
@@ -802,10 +821,25 @@ def test_scorer_attestation_cannot_include_unblinding_mapping(tmp_path):
     scoring_ref, unblinding_ref = _attest_score_package(
         tmp_path, manifest, package, scorer_extra={"bananloop_arm_label": "A"},
     )
-    _, trust_policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
+    gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
     with pytest.raises(ReportError, match="must not contain unblinding"):
         aggregate_blinded_scores(
-            manifest, package, scoring_attestation=scoring_ref,
+            manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
             unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
             trust_policy=trust_policy,
+        )
+
+
+def test_report_refuses_to_score_without_verified_rpdi13_accessibility_gate(tmp_path):
+    manifest = freeze_manifest(_raw_manifest())
+    package = _report_package(manifest, tmp_path)
+    scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
+    gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
+    invalid_accessibility = gate_evidence.rpdi13_accessibility.model_copy(update={"conclusion": "ACCEPTED"})
+    invalid_gate = gate_evidence.model_copy(update={"rpdi13_accessibility": invalid_accessibility})
+    with pytest.raises(ReportError, match="RPDI-13 manual accessibility sign-off is missing"):
+        aggregate_blinded_scores(
+            manifest, package, gate_evidence=invalid_gate,
+            scoring_attestation=scoring_ref, unblinding_attestation=unblinding_ref,
+            evidence_root=str(tmp_path), trust_policy=trust_policy,
         )

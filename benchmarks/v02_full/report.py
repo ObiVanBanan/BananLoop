@@ -18,8 +18,8 @@ from .evidence import (
     verify_evidence_artifact,
 )
 from .prereg import (
-    InferencePlan, PreregError, ResourceCaps, TrackManifest, _normal_critical,
-    _student_t_critical_approx, canonical_bytes, verify_frozen_manifest,
+    GateEvidence, InferencePlan, PreregError, ResourceCaps, TrackManifest, _normal_critical,
+    _student_t_critical_approx, canonical_bytes, validate_run_gate,
 )
 
 
@@ -121,6 +121,7 @@ class PairedReport(ReportModel):
     schema_version: Literal[1] = 1
     track: Literal["OPTIMIZATION", "EXPLORATION"]
     manifest_sha256: Digest
+    gate_evidence_sha256: Digest
     score_package_sha256: Digest
     evaluator_pin_sha256: Digest
     bananloop_arm_label: Literal["A", "B"]
@@ -230,6 +231,7 @@ def aggregate_blinded_scores(
     manifest: TrackManifest,
     package: BlindedScorePackage,
     *,
+    gate_evidence: GateEvidence,
     scoring_attestation: EvidenceArtifactRef,
     unblinding_attestation: EvidenceArtifactRef,
     evidence_root: str,
@@ -239,7 +241,10 @@ def aggregate_blinded_scores(
     try:
         if manifest.manifest_sha256 is None:
             raise ReportError("track manifest must be frozen before scoring")
-        verify_frozen_manifest(manifest, manifest.manifest_sha256)
+        validate_run_gate(
+            manifest, gate_evidence, evidence_root=evidence_root,
+            trust_policy=trust_policy,
+        )
         if package.package_sha256 != score_package_digest(package):
             raise ReportError("score package digest does not match its canonical contents")
         if any(item.pair_result_sha256 != pair_score_digest(item) for item in package.pairs):
@@ -398,6 +403,7 @@ def aggregate_blinded_scores(
     payload = {
         "schema_version": 1, "track": manifest.track,
         "manifest_sha256": manifest.manifest_sha256,
+        "gate_evidence_sha256": _digest(gate_evidence),
         "score_package_sha256": package.package_sha256,
         "evaluator_pin_sha256": evaluator_sha,
         "bananloop_arm_label": bananloop_label, "decision": decision,
