@@ -625,17 +625,21 @@ class BudgetLedger:
                 budget = child_document.get("budget")
                 if not isinstance(budget, dict):
                     return None
-                expected_caps = {
-                    "agent_calls": budget.get("max_agent_calls"),
-                    "evaluator_calls": budget.get("max_evaluator_calls"),
-                    "experiments": budget.get("max_experiments"),
-                    "attempts": budget.get("max_attempts"),
-                }
-                for resource, field in (("model_tokens", "max_model_tokens"),
-                                        ("evaluation_units", "max_evaluation_units")):
-                    if budget.get(field) is not None:
-                        expected_caps[resource] = budget[field]
-                if any(type(value) is not int or value <= 0 for value in expected_caps.values()):
+                expected_caps = {}
+                for resource, field in (
+                    ("agent_calls", "max_agent_calls"),
+                    ("evaluator_calls", "max_evaluator_calls"),
+                    ("experiments", "max_experiments"),
+                    ("attempts", "max_attempts"),
+                    ("model_tokens", "max_model_tokens"),
+                    ("evaluation_units", "max_evaluation_units"),
+                ):
+                    value = budget.get(field)
+                    if value is not None:
+                        expected_caps[resource] = value
+                if (not expected_caps
+                        or any(type(value) is not int or value <= 0
+                               for value in expected_caps.values())):
                     return None
                 frozen_caps = json.loads(saga["budget_caps_json"])
                 if frozen_caps != expected_caps:
