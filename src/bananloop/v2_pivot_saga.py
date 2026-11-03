@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -633,19 +634,44 @@ class V2PivotSaga:
                     _, child_dir, _ = self.registry.reserve(
                         plan["child_spec"].goal, plan["registry_request_id"], activate=False,
                     )
-                    from .lock import CampaignLock
-                    with CampaignLock(child_dir / "campaign.lock"):
-                        control = conn.execute(
-                            "SELECT state FROM v2_pivot_saga_control WHERE idempotency_key=?",
-                            (idempotency_key,),
-                        ).fetchone()
-                        if control is None or control["state"] != "OPEN":
-                            raise PivotSagaError("pivot child cancellation won before initialization")
-                        self._initialize_child_db(
-                            child_dir / "campaign.sqlite3", plan["child_spec"],
-                            parent_conn=conn, child_campaign_id=row["child_id"],
-                            protocol_handoff=plan["protocol_handoff"],
-                        )
+                    from .lock import CampaignLock, CampaignLockError
+
+                    # A concurrent same-key replay may observe ALLOCATION_BOUND
+                    # while the winning caller initializes this exact child DB.
+                    # CampaignLock is deliberately nonblocking for normal writes;
+                    # retry only this idempotent initialization boundary so the
+                    # replay can observe and verify the winner's durable result.
+                    lock_deadline = time.monotonic() + 5.0
+                    already_initialized = False
+                    while True:
+                        try:
+                            with CampaignLock(child_dir / "campaign.lock"):
+                                control = conn.execute(
+                                    "SELECT state FROM v2_pivot_saga_control WHERE idempotency_key=?",
+                                    (idempotency_key,),
+                                ).fetchone()
+                                if control is None or control["state"] in {"CANCEL_REQUESTED", "CANCELLED"}:
+                                    raise PivotSagaError("pivot child cancellation won before initialization")
+                                if control["state"] == "OPEN":
+                                    self._initialize_child_db(
+                                        child_dir / "campaign.sqlite3", plan["child_spec"],
+                                        parent_conn=conn, child_campaign_id=row["child_id"],
+                                        protocol_handoff=plan["protocol_handoff"],
+                                    )
+                                else:
+                                    # Another same-key caller already initialized
+                                    # the child and moved the one-way activation
+                                    # control forward. Reload the saga state.
+                                    already_initialized = True
+                            break
+                        except CampaignLockError as exc:
+                            if time.monotonic() >= lock_deadline:
+                                raise PivotSagaError(
+                                    "pivot child initialization is busy; the same request can be retried"
+                                ) from exc
+                            time.sleep(0.01)
+                    if already_initialized:
+                        continue
                     self._checkpoint("AFTER_CHILD_INITIALIZE")
                     self._transition(conn, idempotency_key, "CHILD_INITIALIZED")
                 elif state == "CHILD_INITIALIZED":
@@ -1032,7 +1058,18 @@ class V2PivotSaga:
                 ):
                     raise PivotSagaError("active pivot saga has no unique matching ACTIVE event")
             elif active_events:
-                raise PivotSagaError("pivot saga has an ACTIVE event before its durable state transition")
+                latest = parent_conn.execute(
+                    "SELECT state FROM v2_pivot_sagas WHERE idempotency_key=?",
+                    (saga["idempotency_key"],),
+                ).fetchone()
+                if (
+                    latest is None or latest["state"] != "ACTIVE"
+                    or len(active_events) != 1
+                    or active_events[0].get("campaign_id") != self.parent_campaign_id
+                    or active_events[0].get("child_id") != saga["child_id"]
+                    or active_events[0].get("child_spec_hash") != saga["child_spec_hash"]
+                ):
+                    raise PivotSagaError("pivot saga has an ACTIVE event before its durable state transition")
         except PivotSagaError:
             raise
         except Exception as exc:
@@ -1188,19 +1225,31 @@ class V2PivotSaga:
             ).fetchone()
             if control is None:
                 raise PivotSagaError("pivot saga control row disappeared")
+            if control["state"] in {"CANCEL_REQUESTED", "CANCELLED"}:
+                raise PivotSagaError("pivot saga cannot advance after cancellation control")
+            current_index, next_index = _STATES.index(row["state"]), _STATES.index(new_state)
+            activation_digest = _digest({
+                "key": idempotency_key, "request_hash": row["request_hash"],
+                "allocation_id": row["allocation_id"], "child_id": child_id or row["child_id"],
+            })
+            if row["state"] == "ACTIVE" and control["state"] not in {"ACTIVATING", "ACTIVE"}:
+                raise PivotSagaError("active pivot saga has no ACTIVE control proof")
+            if control["state"] in {"ACTIVATING", "ACTIVE"}:
+                if control["control_digest"] != activation_digest:
+                    raise PivotSagaError("pivot activation replay digest mismatch")
+            if new_state == "ACTIVE" and control["state"] not in {"ACTIVATING", "ACTIVE"}:
+                raise PivotSagaError("activation transition lost its one-way control CAS")
+            if next_index <= current_index:
+                # Same-key callers may both finish an idempotent boundary. Once
+                # another caller has durably advanced the state, accept this
+                # no-op even if the activation CAS has moved beyond OPEN.
+                conn.commit()
+                return
             if new_state == "ACTIVE":
-                activation_digest = _digest({
-                    "key": idempotency_key, "request_hash": row["request_hash"],
-                    "allocation_id": row["allocation_id"], "child_id": child_id or row["child_id"],
-                })
-                if control["state"] != "ACTIVATING" or control["control_digest"] != activation_digest:
+                if control["state"] != "ACTIVATING":
                     raise PivotSagaError("activation transition lost its one-way control CAS")
             elif control["state"] != "OPEN":
                 raise PivotSagaError("pivot saga cannot advance after cancellation or activation control")
-            current_index, next_index = _STATES.index(row["state"]), _STATES.index(new_state)
-            if next_index <= current_index:
-                conn.commit()
-                return
             if next_index != current_index + 1:
                 raise PivotSagaError("pivot saga cannot skip a recovery state")
             now = utc_now()

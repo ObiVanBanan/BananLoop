@@ -966,6 +966,149 @@ def test_application_execute_requires_persisted_approval_and_reloads_for_replay(
     assert first["allocation_id"] == replay["allocation_id"]
 
 
+def test_application_rejected_or_stale_approval_and_wrong_digest_fail_before_escrow(tmp_path):
+    setup = _setup(tmp_path, mode="SUPERVISED")
+    app = CampaignApplication(setup["repo"], campaign_id=setup["parent_id"])
+    app.v2_record_pivot_proposal(setup["proposal"])
+
+    rejected = PivotDecisionCommand(
+        campaign_id=setup["parent_id"], request_id="rejected-approval",
+        proposal_id=setup["proposal"].proposal_id, digest=setup["proposal"].digest,
+        decision="reject", rejection_action="continue_old_plan",
+    )
+    app.v2_pivot_decision(rejected)
+    with pytest.raises(StoreError, match="no matching durable Supervised approval"):
+        app.v2_execute_pivot(
+            setup["proposal"].proposal_id, setup["proposal"].digest,
+            "rejected-approval-execution",
+        )
+    with pytest.raises(StoreError, match="identity does not match"):
+        app.v2_execute_pivot(
+            setup["proposal"].proposal_id, "0" * 64,
+            "wrong-digest-execution",
+        )
+
+    ledger = setup["registry"].budget_ledger()
+    assert ledger.conn.execute("SELECT COUNT(*) FROM child_allocations").fetchone()[0] == 0
+    ledger.close()
+    conn = sqlite3.connect(setup["parent_db"])
+    assert conn.execute("SELECT COUNT(*) FROM v2_pivot_sagas").fetchone()[0] == 0
+    conn.close()
+
+
+def test_application_conflicting_idempotency_key_cannot_execute_another_plan(tmp_path):
+    setup = _setup(tmp_path, mode="SUPERVISED")
+    app = CampaignApplication(setup["repo"], campaign_id=setup["parent_id"])
+    app.v2_record_pivot_proposal(setup["proposal"])
+    first_approval = PivotDecisionCommand(
+        campaign_id=setup["parent_id"], request_id="first-plan-approval",
+        proposal_id=setup["proposal"].proposal_id, digest=setup["proposal"].digest,
+        decision="approve",
+    )
+    app.v2_pivot_decision(first_approval)
+    first = app.v2_execute_pivot(
+        setup["proposal"].proposal_id, setup["proposal"].digest, "reused-execute-key",
+    )
+
+    alternate_child = dict(setup["child_spec"])
+    alternate_child["goal"] = "Different approved child plan"
+    alternate = _proposal_for_child(setup, alternate_child)
+    app.v2_record_pivot_proposal(alternate)
+    second_approval = PivotDecisionCommand(
+        campaign_id=setup["parent_id"], request_id="second-plan-approval",
+        proposal_id=alternate.proposal_id, digest=alternate.digest, decision="approve",
+    )
+    app.v2_pivot_decision(second_approval)
+    with pytest.raises(StoreError, match="reused with different content"):
+        app.v2_execute_pivot(
+            alternate.proposal_id, alternate.digest, "reused-execute-key",
+        )
+
+    ledger = setup["registry"].budget_ledger()
+    try:
+        assert ledger.conn.execute("SELECT COUNT(*) FROM child_allocations").fetchone()[0] == 1
+        assert first["child_campaign_id"]
+    finally:
+        ledger.close()
+
+
+def test_application_concurrent_execute_replay_creates_one_child(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    setup = _setup(tmp_path, mode="SUPERVISED")
+    app = CampaignApplication(setup["repo"], campaign_id=setup["parent_id"])
+    app.v2_record_pivot_proposal(setup["proposal"])
+    approval = PivotDecisionCommand(
+        campaign_id=setup["parent_id"], request_id="concurrent-approval",
+        proposal_id=setup["proposal"].proposal_id, digest=setup["proposal"].digest,
+        decision="approve",
+    )
+    app.v2_pivot_decision(approval)
+    barrier = Barrier(2)
+
+    def execute():
+        instance = CampaignApplication(setup["repo"], campaign_id=setup["parent_id"])
+        barrier.wait(timeout=10)
+        return instance.v2_execute_pivot(
+            setup["proposal"].proposal_id, setup["proposal"].digest,
+            "concurrent-execute-key",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: execute(), range(2)))
+    assert results[0]["child_campaign_id"] == results[1]["child_campaign_id"]
+    assert results[0]["allocation_id"] == results[1]["allocation_id"]
+    ledger = setup["registry"].budget_ledger()
+    try:
+        assert ledger.conn.execute("SELECT COUNT(*) FROM child_allocations").fetchone()[0] == 1
+    finally:
+        ledger.close()
+
+
+def test_full_auto_api_executes_persisted_plan_without_approval_body(tmp_path):
+    setup = _setup(tmp_path, mode="FULL_AUTO")
+    server = create_server(str(setup["repo"]), port=0, token="full-auto-api-token")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}/v1/campaigns/{setup['parent_id']}"
+    try:
+        request = urllib.request.Request(
+            base + "/v2/pivot-proposals",
+            data=json.dumps(setup["proposal"].model_dump(mode="json")).encode(),
+            headers={
+                "Authorization": "Bearer full-auto-api-token",
+                "Content-Type": "application/json",
+                "Idempotency-Key": setup["proposal"].proposal_id,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            proposal_receipt = json.loads(response.read())
+        assert proposal_receipt["automatic_execution"] is False
+        request = urllib.request.Request(
+            base + "/v2/pivot-executions",
+            data=json.dumps({
+                "proposal_id": setup["proposal"].proposal_id,
+                "digest": setup["proposal"].digest,
+            }).encode(),
+            headers={
+                "Authorization": "Bearer full-auto-api-token",
+                "Content-Type": "application/json",
+                "Idempotency-Key": "full-auto-api-execution",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            child = json.loads(response.read())
+        assert child["state"] == "ACTIVE"
+        assert child["child_campaign_id"]
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+        server.server_close()
+
+
 def test_saga_idempotency_key_cannot_be_reused_for_different_child_spec(tmp_path):
     setup = _setup(tmp_path)
     _saga(setup).create_child(
