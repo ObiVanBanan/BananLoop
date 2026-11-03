@@ -17,6 +17,7 @@ import signal
 import secrets
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -48,11 +49,35 @@ def _cgroup_controllers_available(root: Path) -> bool:
             or any(part.is_symlink() for part in (root, *root.parents))):
         return False
     try:
+        info = root.stat()
+        if (not _is_cgroup2_path(root) or info.st_uid != os.geteuid()
+                or info.st_mode & 0o022 or not os.access(root, os.W_OK)):
+            return False
         controllers = set((root / "cgroup.controllers").read_text(encoding="ascii").split())
         enabled = set((root / "cgroup.subtree_control").read_text(encoding="ascii").split())
     except OSError:
         return False
     return {"memory", "pids"}.issubset(controllers & enabled)
+
+
+def _is_cgroup2_path(root: Path, *, mountinfo: Path = Path("/proc/self/mountinfo")) -> bool:
+    """Check that a directory is on a genuine cgroup v2 mount, not marker files."""
+    try:
+        resolved = root.resolve(strict=True)
+        for line in mountinfo.read_text(encoding="utf-8").splitlines():
+            before, separator, after = line.partition(" - ")
+            if not separator:
+                continue
+            fields, post_fields = before.split(), after.split()
+            if len(fields) < 5 or not post_fields or post_fields[0] != "cgroup2":
+                continue
+            mount_text = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), fields[4])
+            mountpoint = Path(mount_text).resolve(strict=True)
+            if resolved.is_relative_to(mountpoint):
+                return True
+    except (OSError, RuntimeError):
+        return False
+    return False
 
 
 @dataclass(frozen=True)
@@ -146,9 +171,20 @@ def worker_bundle_fingerprint(
             })
         if total > _MAX_RUNTIME_BYTES or len(entries) > _MAX_RUNTIME_FILES:
             raise ArmWorkerError("worker runtime exceeds its file or byte limit")
+    launcher_interpreter = Path(sys.executable).resolve()
+    if not launcher_interpreter.is_file():
+        raise ArmWorkerError("trusted worker launcher interpreter is unavailable")
     return hashlib.sha256(canonical_bytes({
         "argv": list(command), "executable": executable_identity, "files": entries,
         "sandbox_sha256": hashlib.sha256(sandbox.read_bytes()).hexdigest(),
+        "worker_harness_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "worker_launcher_sha256": hashlib.sha256(
+            Path(__file__).with_name("worker_launcher.py").read_bytes()).hexdigest(),
+        "launcher_interpreter": {
+            "path": str(launcher_interpreter),
+            "sha256": hashlib.sha256(launcher_interpreter.read_bytes()).hexdigest(),
+            "python_version": sys.version,
+        },
     })).hexdigest()
 
 
@@ -228,30 +264,6 @@ def _validate_broker_socket(socket_path: str | Path | None) -> tuple[Path, str] 
     return path.parent, path.name
 
 
-def _limit_worker_process(timeout_seconds: int, memory_bytes: int, cgroup_procs: str) -> None:
-    try:
-        _attach_worker_process(cgroup_procs)
-        import resource
-        resource.setrlimit(resource.RLIMIT_CPU, (timeout_seconds + 1, timeout_seconds + 1))
-        resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
-        resource.setrlimit(resource.RLIMIT_FSIZE, (_MAX_OUTPUT_BYTES, _MAX_OUTPUT_BYTES))
-        resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
-    except ImportError:
-        os._exit(125)
-    except (OSError, ValueError):
-        os._exit(125)
-
-
-def _attach_worker_process(cgroup_procs: str) -> None:
-    fd = os.open(cgroup_procs, os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0))
-    try:
-        payload = str(os.getpid()).encode("ascii")
-        if os.write(fd, payload) != len(payload):
-            raise OSError("short cgroup.procs write")
-    finally:
-        os.close(fd)
-
-
 def _configure_worker_cgroup(child: Path, *, memory_bytes: int, process_limit: int) -> None:
     for name, value in (
         ("memory.max", str(memory_bytes)),
@@ -262,6 +274,8 @@ def _configure_worker_cgroup(child: Path, *, memory_bytes: int, process_limit: i
         if target.is_symlink() or not target.is_file():
             raise ArmWorkerError(f"delegated cgroup is missing {name}")
         target.write_text(value, encoding="ascii")
+        if target.read_text(encoding="ascii").strip() != value:
+            raise ArmWorkerError(f"delegated cgroup did not apply {name}")
     if not (child / "cgroup.procs").is_file():
         raise ArmWorkerError("delegated cgroup is missing cgroup.procs")
     if not (child / "cgroup.kill").is_file() or not (child / "cgroup.events").is_file():
@@ -433,13 +447,15 @@ class BubblewrapArmWorker:
                     raise ArmWorkerError("a delegated cgroup v2 root is required for worker launch")
                 with _WorkerCgroup(self.cgroup_root, memory_bytes=memory_bytes,
                                    process_limit=arm_config.worker_process_limit) as cgroup_procs:
+                    launcher = Path(__file__).with_name("worker_launcher.py")
+                    launch_command = [sys.executable, str(launcher), cgroup_procs,
+                                      str(timeout_seconds), str(memory_bytes), "--", *command]
                     try:
                         process = subprocess.Popen(
-                            command, cwd=runtime_root, stdin=subprocess.DEVNULL,
+                            launch_command, cwd=runtime_root, stdin=subprocess.DEVNULL,
                             stdout=stdout_file, stderr=stderr_file,
                             env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"},
                             shell=False, start_new_session=True,
-                            preexec_fn=lambda: _limit_worker_process(timeout_seconds, memory_bytes, cgroup_procs),
                         )
                     except OSError as exc:
                         raise ArmWorkerError("cannot start isolated arm worker") from exc
@@ -450,7 +466,7 @@ class BubblewrapArmWorker:
                             if stdout_path.stat().st_size > _MAX_LOG_BYTES or stderr_path.stat().st_size > _MAX_LOG_BYTES:
                                 raise ArmWorkerError("arm worker log exceeded its size limit")
                             if time.monotonic() >= deadline:
-                                raise subprocess.TimeoutExpired(command, timeout_seconds)
+                                raise subprocess.TimeoutExpired(launch_command, timeout_seconds)
                             time.sleep(0.05)
                     except (ArmWorkerError, subprocess.TimeoutExpired):
                         _kill_process_group(process)

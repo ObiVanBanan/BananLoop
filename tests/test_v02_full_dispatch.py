@@ -442,14 +442,20 @@ def test_worker_timeout_and_memory_are_checked_against_frozen_arm_caps_before_re
 
 def test_worker_cgroup_enforces_tree_memory_and_process_bounds(tmp_path):
     from benchmarks.v02_full.worker import (
-        _attach_worker_process, _cgroup_controllers_available, _configure_worker_cgroup,
+        _cgroup_controllers_available, _configure_worker_cgroup, _is_cgroup2_path,
     )
+    from benchmarks.v02_full.worker_launcher import attach_to_cgroup
 
     root = tmp_path / "delegated"
     root.mkdir()
     (root / "cgroup.controllers").write_text("cpu memory pids", encoding="ascii")
     (root / "cgroup.subtree_control").write_text("memory pids", encoding="ascii")
-    assert _cgroup_controllers_available(root)
+    # Marker files in an ordinary directory must never be accepted as cgroup v2.
+    assert not _cgroup_controllers_available(root)
+    assert not _is_cgroup2_path(root)
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(f"29 23 0:26 / {root} rw,nosuid - cgroup2 cgroup rw\n", encoding="utf-8")
+    assert _is_cgroup2_path(root, mountinfo=mountinfo)
     child = root / "worker"
     child.mkdir()
     for name in ("memory.max", "memory.oom.group", "pids.max", "cgroup.procs",
@@ -459,7 +465,7 @@ def test_worker_cgroup_enforces_tree_memory_and_process_bounds(tmp_path):
     assert (child / "memory.max").read_text(encoding="ascii") == str(128 * 1024 * 1024)
     assert (child / "memory.oom.group").read_text(encoding="ascii") == "1"
     assert (child / "pids.max").read_text(encoding="ascii") == "32"
-    _attach_worker_process(str(child / "cgroup.procs"))
+    attach_to_cgroup(str(child / "cgroup.procs"))
     assert (child / "cgroup.procs").read_text(encoding="ascii") == str(__import__("os").getpid())
     (root / "cgroup.subtree_control").write_text("", encoding="ascii")
     assert not _cgroup_controllers_available(root)
