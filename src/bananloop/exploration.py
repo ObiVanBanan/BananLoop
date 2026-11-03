@@ -228,6 +228,7 @@ class EvidenceOnlyAttemptAdapter:
                 )
             )
             projection = ResearchLedger(self.graph.conn).project(
+                graph=self.graph, queue=self.queue,
                 campaign_ids=(self.campaign_id,), source_snapshot_id=resolved_commit,
                 protocol_digest=protocol_digest,
             )
@@ -245,6 +246,13 @@ class EvidenceOnlyAttemptAdapter:
                         f"{item.claim_key} [{item.status}]: " + " | ".join(item.statements)
                         for item in projection.causal_memory
                     ]
+                    summary_lines.extend(
+                        f"{item.signature} [{item.status}]: {item.intervention_type}/"
+                        f"{item.algorithmic_layer}; paths={', '.join(item.affected_paths)}; "
+                        f"support={item.support_count}; refutation={item.refutation_count}; "
+                        f"evidence_ids={','.join(item.evidence_ids)}"
+                        for item in projection.structural_memory
+                    )
                     if projection.contradictions:
                         summary_lines.append(
                             f"{len(projection.contradictions)} conflicting public DEV finding(s) are retained separately."
