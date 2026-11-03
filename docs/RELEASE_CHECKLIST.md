@@ -1,17 +1,18 @@
 # v0.1.0 Research Preview — release checklist
 
-**Release intent (2026-10-29): closed Research Preview.** The repository endpoint reported public visibility on 2026-10-31 00:12 UTC, conflicting with the closed-preview intent. An apparent private result at 2026-10-30 22:09 UTC came from a branch/PR payload without repo-level visibility and is not valid evidence. Collaborator access and exposed-artifact review remain outstanding. This work does not change visibility. No announcement, package, tag, or release is authorized here. A reproducible head-to-head against ordinary iterative Codex and the other mandatory gates must pass before recommending any preview. Follow the [publication protocol](PUBLISH_PROTOCOL.md) and record exact-SHA evidence. Writing documentation is not a release.
+**Release intent (2026-10-29): closed Research Preview.** The repository endpoint reported public visibility on 2026-10-31 05:42 UTC, conflicting with the closed-preview intent. An apparent private result on 2026-10-30 came from a branch/PR payload without repo-level visibility and was not valid evidence. Collaborator access and exposed-artifact review remain outstanding. This work does not change visibility. No announcement, package, tag, or release is authorized here. A reproducible head-to-head against ordinary iterative Codex and the other mandatory gates must pass before recommending any preview. Follow the [publication protocol](PUBLISH_PROTOCOL.md) and record exact-SHA evidence. Writing documentation is not a release.
 
 ## Code / evaluation
 
-- [x] Stage [PR #75](https://github.com/ObiVanBanan/BananLoop/pull/75) campaign cursor fix in the combined integration candidate; final-main acceptance remains open.
-- [x] Stage [PR #61](https://github.com/ObiVanBanan/BananLoop/pull/61) opt-in Codex token accounting in the same integration candidate. It is not provider-enforced; final-main acceptance and budget limitations remain open.
+- [x] Merge [PR #75](https://github.com/ObiVanBanan/BananLoop/pull/75) campaign and snapshot cursor consistency fix.
+- [x] Merge [PR #61](https://github.com/ObiVanBanan/BananLoop/pull/61) opt-in Codex token accounting. It is not provider-enforced and does not remove budget limitations.
 - [x] Independent QA of semantic selector patch on SHA `c698e4966a0cf8621dbfbff8145c1397b278c2e8`: 335 pytest passed, six fresh Luna replay selections accepted, one CPU mini matcher smoke passed.
 - [x] Version in `pyproject.toml` is 0.1.0.
-- [ ] Run full suite on the exact final main release commit (documentation-only changes should not alter logic but warrant verification).
-- [ ] Check clean install and fixture on Linux / Windows; record actual stdout and versions.
+- [x] Run full suite on code SHA `44614ea22bc5967adb7ee607bce2472cc66487ee`: Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12 each report `448 passed, 1 skipped` in workflow #706. The skip is the unavailable pinned selector source commit.
+- [x] Check clean installation on Linux and Windows through CI `pip install -e ".[test]"`; each configuration completed installation before its passing suite. Local Windows full pytest is constrained by sandbox failures in child Git/MSYS; rely on exact-SHA hosted Windows evidence.
 - [ ] Review private evaluator and HOLDOUT isolation using the final tree.
-- [ ] Resolve CI infrastructure/billing issue, or explicitly document verified substitute checks before publishing.
+- [x] Run limited Issue #64 Docker control smoke using a digest-pinned official Python image; no benchmark code or model call. Full grader/agent isolation is still unverified; see `docs/BENCHMARK_STATUS.md` and `docs/reviews/are-isolation-smoke.md`.
+- [x] Verify the final-main CI/install substitute: exact-SHA workflow #706 passed across Windows/Linux. Benchmark billing authorization remains outstanding under the H2H gate.
 
 ## Head-to-head benchmark — release blocker
 
@@ -29,8 +30,7 @@
 - [ ] Verify README/banner display in GitHub dark **and** light theme, including mobile width; use [visual handoff](VISUAL_DIRECTION.md) without treating illustration as measured UI.
 - [ ] Review/copy the [suggested GitHub About text and preview notes](RELEASE_COPY.md) into repository settings when approved.
 - [ ] Resolve the verified public-visibility vs closed-preview discrepancy, then review collaborator access and exposed artifacts before any preview recommendation. Do not change repository visibility in this work.
-- [ ] Complete the history-wide secret/privacy audit. A limited 2026-10-30 pattern scan found zero selected-format matches in 3,999 reachable object IDs, but is not a complete scanner/clearance.
-- [ ] Complete a comprehensive history-wide secrets and rights audit before any preview recommendation. The limited selected-format scan recorded in the evidence docs is not full clearance. Do not change visibility as part of v0.1.0.
+- [ ] Complete a comprehensive history-wide secrets and rights audit before any preview recommendation. The 2026-10-31 selected-format scan checked 4,232 reachable Git objects (1,542 blobs) and found no matches in selected key/token formats; it does not replace a dedicated scanner, GitHub secret-alert review, or a rights audit. Do not change visibility as part of v0.1.0.
 
 ## Approve a closed preview
 
