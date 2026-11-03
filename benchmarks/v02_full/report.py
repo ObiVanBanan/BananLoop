@@ -95,6 +95,7 @@ class BlindedScorePackage(ReportModel):
     manifest_sha256: Digest
     evaluator_pin_sha256: Digest
     pairs: tuple[BlindedPairScore, ...] = Field(min_length=1)
+    score_payload_sha256: Digest
     package_sha256: Digest
 
     @model_validator(mode="after")
@@ -102,6 +103,8 @@ class BlindedScorePackage(ReportModel):
         pair_ids = tuple(item.pair_id_sha256 for item in self.pairs)
         if tuple(sorted(set(pair_ids))) != pair_ids:
             raise ValueError("blinded pair records must be unique and sorted by pair digest")
+        if self.score_payload_sha256 != score_payload_digest(self):
+            raise ValueError("score payload digest does not match scorer-visible fields")
         if self.package_sha256 != score_package_digest(self):
             raise ValueError("score package digest does not match its canonical contents")
         return self
@@ -267,6 +270,32 @@ def score_package_digest(package: BlindedScorePackage | dict) -> str:
     return _digest(payload)
 
 
+_SCORER_VISIBLE_PAIR_FIELDS = (
+    "pair_id_sha256", "arm_a_score", "arm_b_score",
+    "arm_a_output_sha256", "arm_b_output_sha256",
+)
+
+
+def score_payload_projection(package: BlindedScorePackage | dict) -> dict:
+    """Project only anonymous outputs and scores; omit all resource/account data."""
+    value = package.model_dump(mode="json") if isinstance(package, BlindedScorePackage) else dict(package)
+    return {
+        "schema_version": value["schema_version"],
+        "track": value["track"],
+        "manifest_sha256": value["manifest_sha256"],
+        "evaluator_pin_sha256": value["evaluator_pin_sha256"],
+        "pairs": [
+            {field: pair.get(field) for field in _SCORER_VISIBLE_PAIR_FIELDS}
+            for pair in value["pairs"] if pair["status"] == "SCORED"
+        ],
+    }
+
+
+def score_payload_digest(package: BlindedScorePackage | dict) -> str:
+    """Digest the exact scorer-visible projection without accounting metadata."""
+    return _digest(score_payload_projection(package))
+
+
 def report_digest(report: PairedReport | dict) -> str:
     payload = report.content_payload() if isinstance(report, PairedReport) else dict(report)
     payload.pop("report_sha256", None)
@@ -309,7 +338,7 @@ def aggregate_blinded_scores(
             root=evidence_root, reference=scoring_attestation, policy=trust_policy,
             evidence_type="BLINDED_SCORE_PACKAGE", subject_sha=manifest.manifest_sha256,
             conclusion="ACCEPTED", issuer_role="INDEPENDENT_SCORER",
-            expected_payload={"score_package_sha256": package.package_sha256,
+            expected_payload={"score_payload_sha256": package.score_payload_sha256,
                               "evaluator_pin_sha256": evaluator_sha},
         ).document
         unblinder = verify_evidence_artifact(
@@ -320,7 +349,7 @@ def aggregate_blinded_scores(
         ).document
     except (EvidenceError, PreregError) as exc:
         raise ReportError(str(exc)) from exc
-    if set(scorer.payload) != {"score_package_sha256", "evaluator_pin_sha256"}:
+    if set(scorer.payload) != {"score_payload_sha256", "evaluator_pin_sha256"}:
         raise ReportError("scorer attestation must not contain unblinding or unrelated payload fields")
     if set(unblinder.payload) != {
         "score_package_sha256", "bananloop_arm_label", "codex_direct_arm_label",

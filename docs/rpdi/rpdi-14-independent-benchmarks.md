@@ -138,6 +138,13 @@ use/redistribution rights.
   metadata removed. Randomize arm labels. The benchmark operator and scorer
   cannot be authors or operators of the BananLoop arm. The scorer returns only
   preregistered aggregate results after both arms are final.
+- The independent scorer attestation binds a canonical score projection:
+  track/manifest/evaluator pins, scored blinded pair digests, anonymized A/B
+  output digests, and scores. It excludes action receipts, accounting
+  summaries, artifact paths, failure reasons, and unblinding data. The scorer
+  receives only anonymous output bytes and nonsensitive outcome status; the
+  host joins separately verified accounting after scoring. The operator's
+  unblinding attestation binds the final package digest.
 - Optimization scoring uses the frozen protocol and identical evaluator
   version for both arms. Exploration scoring uses a separate rubric and task
   set fixed before the run. Do not let Research Intelligence findings count as

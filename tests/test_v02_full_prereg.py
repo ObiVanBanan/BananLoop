@@ -30,7 +30,7 @@ from benchmarks.v02_full.prereg import (
 )
 from benchmarks.v02_full.report import (
     ActionReceiptAttestation, BlindedPairScore, BlindedScorePackage, ReportError, aggregate_blinded_scores,
-    pair_score_digest, report_digest, score_package_digest,
+    pair_score_digest, report_digest, score_package_digest, score_payload_digest,
 )
 from benchmarks.v02_full.execution import (
     RunStartAuthorization, RunStartError, TaskMaterial, assign_tasks_after_run_authorization,
@@ -881,6 +881,7 @@ def _report_package(manifest, evidence_root, *, unknown_pair_id=None,
         "evaluator_pin_sha256": hashlib.sha256(canonical_bytes(manifest.evaluator)).hexdigest(),
         "pairs": tuple(item.model_dump() for item in pair_scores),
     }
+    raw_package["score_payload_sha256"] = score_payload_digest(raw_package)
     return BlindedScorePackage(**raw_package, package_sha256=score_package_digest(raw_package))
 
 
@@ -905,7 +906,7 @@ def _attest_score_package(root, manifest, package, *, scorer_extra=None):
         root, name="blinded-score", evidence_type="BLINDED_SCORE_PACKAGE",
         subject_sha=manifest.manifest_sha256, role="INDEPENDENT_SCORER",
         principal="principal-scorer",
-        payload={"score_package_sha256": package.package_sha256,
+        payload={"score_payload_sha256": package.score_payload_sha256,
                  "evaluator_pin_sha256": package.evaluator_pin_sha256,
                  **(scorer_extra or {})},
     )
@@ -939,6 +940,7 @@ def test_blind_score_aggregation_requires_complete_package_and_separate_signed_u
     incomplete_payload = _report_package(manifest, tmp_path).model_dump()
     incomplete_payload["pairs"] = incomplete_payload["pairs"][:-1]
     incomplete_payload.pop("package_sha256")
+    incomplete_payload["score_payload_sha256"] = score_payload_digest(incomplete_payload)
     incomplete = BlindedScorePackage(
         **incomplete_payload,
         package_sha256=score_package_digest(incomplete_payload),
@@ -1027,6 +1029,7 @@ def test_broken_receipt_chain_is_not_scored(tmp_path):
     changed_payload = package.model_dump(mode="json")
     changed_payload["pairs"] = [item.model_dump(mode="json") for item in changed_pairs]
     changed_payload.pop("package_sha256")
+    changed_payload["score_payload_sha256"] = score_payload_digest(changed_payload)
     changed_payload["package_sha256"] = score_package_digest(changed_payload)
     package = BlindedScorePackage.model_validate_json(json.dumps(changed_payload), strict=True)
     scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
@@ -1112,6 +1115,7 @@ def test_orphan_sealed_receipt_without_canonical_ledger_head_is_not_scored(tmp_p
     changed_payload = package.model_dump(mode="json")
     changed_payload["pairs"] = [item.model_dump(mode="json") for item in changed_pairs]
     changed_payload.pop("package_sha256")
+    changed_payload["score_payload_sha256"] = score_payload_digest(changed_payload)
     changed_payload["package_sha256"] = score_package_digest(changed_payload)
     package = BlindedScorePackage.model_validate_json(json.dumps(changed_payload), strict=True)
     scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
@@ -1130,6 +1134,7 @@ def test_unattested_action_receipt_makes_scored_pair_accounting_unknown(tmp_path
     manifest = freeze_manifest(_raw_manifest())
     missing_attestation_pair_id = manifest.task_pins[0].blinded_pair_id_sha256
     package = _report_package(manifest, tmp_path)
+    scoring_ref, _ = _attest_score_package(tmp_path, manifest, package)
     pair = next(item for item in package.pairs if item.pair_id_sha256 == missing_attestation_pair_id)
     changed_pair = pair.model_copy(update={"arm_a_action_attestations": ()})
     changed_pair = changed_pair.model_copy(update={"pair_result_sha256": pair_score_digest(changed_pair)})
@@ -1138,9 +1143,16 @@ def test_unattested_action_receipt_makes_scored_pair_accounting_unknown(tmp_path
     changed_payload = package.model_dump(mode="json")
     changed_payload["pairs"] = [item.model_dump(mode="json") for item in changed_pairs]
     changed_payload.pop("package_sha256")
+    changed_payload["score_payload_sha256"] = score_payload_digest(changed_payload)
+    assert changed_payload["score_payload_sha256"] == package.score_payload_sha256
     changed_payload["package_sha256"] = score_package_digest(changed_payload)
     package = BlindedScorePackage.model_validate_json(json.dumps(changed_payload), strict=True)
-    scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
+    unblinding_ref = _write_report_attestation(
+        tmp_path, name="unblinding-after-accounting-change", evidence_type="UNBLINDING",
+        subject_sha=package.package_sha256, role="BENCHMARK_OPERATOR", principal="principal-operator",
+        payload={"score_package_sha256": package.package_sha256,
+                 "bananloop_arm_label": "A", "codex_direct_arm_label": "B"},
+    )
     gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
     report = aggregate_blinded_scores(
         manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,

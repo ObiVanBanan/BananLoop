@@ -298,11 +298,11 @@ def _read_evidence_bounded(root: Path, relative: PurePosixPath, *, max_bytes: in
             os.close(descriptor)
 
 
-def verify_content_artifact(
+def read_content_artifact(
     *, root: str | Path, reference: EvidenceArtifactRef, expected_sha256: str,
     max_bytes: int = MAX_SCORE_OUTPUT_BYTES,
-) -> str:
-    """Verify bounded regular-file bytes under a trusted root without following symlinks."""
+) -> bytes:
+    """Read and verify bounded regular-file bytes without following symlinks."""
     raw_path = reference.path
     if "\\" in raw_path or "\x00" in raw_path:
         raise EvidenceError("content artifact path must be canonical relative POSIX")
@@ -324,7 +324,18 @@ def verify_content_artifact(
     digest = hashlib.sha256(content).hexdigest()
     if digest != reference.artifact_sha256 or digest != expected_sha256:
         raise EvidenceError("content artifact bytes do not match the pinned SHA-256")
-    return digest
+    return content
+
+
+def verify_content_artifact(
+    *, root: str | Path, reference: EvidenceArtifactRef, expected_sha256: str,
+    max_bytes: int = MAX_SCORE_OUTPUT_BYTES,
+) -> str:
+    """Verify bounded regular-file bytes under a trusted root without following symlinks."""
+    content = read_content_artifact(
+        root=root, reference=reference, expected_sha256=expected_sha256, max_bytes=max_bytes,
+    )
+    return hashlib.sha256(content).hexdigest()
 
 
 def verify_evidence_artifact(
