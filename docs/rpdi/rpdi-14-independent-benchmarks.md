@@ -77,6 +77,21 @@ evaluator identity sealed until both arms have frozen their final artifacts.
   preregistered multiplicity rule. Freeze all of this before any scored task is
   run; later changes require a new protocol version and a new untouched task
   set.
+- The v1 preregistration harness currently supports paired mean differences
+  with paired-t intervals and exactly one paired observation per independent
+  task; repeated observations within a task are rejected because v1 does not
+  model within-task correlation. Its sample-size helper uses a Cornish–Fisher
+  approximation for the t critical value and a normal approximation to power;
+  these calculations are planning estimates, not an exact guarantee of power.
+  Before freezing either track, an independent statistical reviewer must
+  verify the method and sample-size result for its stated assumptions and sign
+  the exact canonical manifest digest. Unsupported designs require a separately
+  reviewed method/version, not a hand-edited pair count.
+- Preregistration evidence pins are structural references only. In particular,
+  a statistical-review digest is not a verified signature. Before any trial is
+  eligible, an evidence verifier must authenticate reviewer identity and
+  independence and validate the referenced signed review artifact; the same
+  applies to CI, rights, spend, operator, owner, E2E, and isolation evidence.
 - Sealed task assignment, anonymized arm labels, evaluator identity and
   isolation attestation, artifact-retention plan, and canonical hashes for
   every final result artifact.
@@ -118,7 +133,7 @@ use/redistribution rights.
 | Requirement | Evidence required before an authorized run |
 | --- | --- |
 | Two separate benchmark tracks | Distinct manifests, task sets, primary outcomes, evaluator/rubric pins, and reports for Optimization and Exploration |
-| Frozen protocol and Full identity | Canonical manifest validation rejects changed source, flags, spec, model, evaluator, seed, task, or budget after freeze |
+| Frozen protocol and Full identity | Canonical manifest validation rejects changed source, flags, spec, model, evaluator, seed, task, or budget after freeze; an independent statistical review signs the exact manifest digest |
 | Matched iterative baseline | Harness tests prove same starting state/DEV information/resource ceilings and permit bounded Codex Direct iteration |
 | Complete resource accounting | Receipts reconcile every role, retry, tool, token class, evaluator call, elapsed time, and spend; unknowns make a pair ineligible |
 | Blind isolated scoring | Negative tests show sealed data and labels cannot reach agents, logs, artifacts, or evaluator-side feedback before both arms freeze |
