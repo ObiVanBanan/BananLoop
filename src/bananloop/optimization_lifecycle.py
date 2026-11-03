@@ -7,6 +7,7 @@ from typing import Any
 from .graph_store import MutateGraph, TransitionNodePhase, TransitionNodeStatus
 from .trusted_evaluator import EvaluatorRunReceiptV1
 from .evaluator_verification import IntegrationVerifierReceiptV1
+from .champion_promotion import ChampionPromotionError, ChampionPromotionService
 
 
 class OptimizationLifecycleError(RuntimeError):
@@ -235,6 +236,55 @@ class OptimizationAttemptCoordinator:
             evidence_refs=(receipt_ref,),
         ))
         return receipt
+
+    def promote_candidate(
+        self, *, node_id: str, expected_champion_snapshot_id: str,
+        expected_champion_revision: int,
+    ) -> dict[str, Any]:
+        """Promote an integrated candidate in a separate Core-owned champion CAS."""
+        node = self._node(node_id)
+        payload = node["payload"]
+        transition = payload.get("last_phase_transition", {})
+        if (node["phase"] != "CONSOLIDATION" or node["status"] != "COMPLETED"
+                or transition.get("guard") != "VERIFIED_RESULT"):
+            raise OptimizationLifecycleError(
+                "champion promotion requires a COMPLETED CONSOLIDATION node with VERIFIED_RESULT"
+            )
+        integration_ref = next(
+            (ref for ref in transition.get("evidence_refs", ())
+             if isinstance(ref, str) and ref.startswith("integration://receipt/")),
+            None,
+        )
+        if integration_ref is None:
+            raise OptimizationLifecycleError(
+                "champion promotion requires the exact PASS integration receipt"
+            )
+        receipt = self._require_integration_receipt(
+            integration_ref.removeprefix("integration://receipt/"),
+            decision="PASS", payload=payload,
+        )
+        spec = self.graph.campaign_spec()
+        campaign_id = self.graph.campaign_id
+        if campaign_id is None or spec.evaluation.approval_digest is None:
+            raise OptimizationLifecycleError("champion promotion has no immutable campaign/evaluator binding")
+        service = ChampionPromotionService(self.graph.conn, self.graph.evaluator_protocols)
+        try:
+            # First successful promotion initializes the campaign champion to
+            # the verified receipt's source. Repeated calls preserve that pin.
+            service.initialize(campaign_id=campaign_id, source_snapshot_id=receipt.source_snapshot_id)
+            return service.promote(
+                campaign_id=campaign_id,
+                expected_snapshot_id=expected_champion_snapshot_id,
+                expected_revision=expected_champion_revision,
+                candidate_snapshot_id=receipt.candidate_snapshot_id,
+                integration_receipt_digest=receipt.receipt_digest,
+                spec_hash=receipt.spec_hash,
+                source_snapshot_id=receipt.source_snapshot_id,
+                approval_digest=receipt.approval_digest,
+                protocol_digest=receipt.protocol_digest,
+            )
+        except ChampionPromotionError as exc:
+            raise OptimizationLifecycleError(str(exc)) from exc
 
     def _require_integration_receipt(
         self, receipt_digest: str, *, decision: str, payload: dict[str, Any],
