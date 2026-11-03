@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import sqlite3
+import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -10,6 +13,8 @@ import pytest
 from bananloop.budget_ledger import BudgetLedger, BudgetLedgerError
 from bananloop.contracts import (
     AutonomyScopeV2,
+    ProtocolCase,
+    ProtocolManifest,
     PivotDecisionCommand,
     PivotExecutionPlanV2,
     PivotProposal,
@@ -22,7 +27,11 @@ from bananloop.v2_pivot_saga import PivotSagaError, V2PivotSaga, _budget_caps, _
 from bananloop.api import create_server
 from bananloop.application import CampaignApplication
 from bananloop.store import StoreError
-from bananloop.trusted_evaluator import TrustedEvaluatorAdapter
+from bananloop.graph_store import GraphRepository
+from bananloop.trusted_evaluator import (
+    TrustedEvaluatorAdapter, TrustedEvaluatorRunner, _case_protocol_digest,
+)
+from bananloop.worker_queue import DurableWorkerQueue
 from bananloop.evaluator_verification import (
     EvaluatorProtocolAuthority, EvaluatorProtocolV1, EvaluatorTierManifestV1,
     EvaluatorVerificationError, MetricDiscoveryProposalV1, ProtocolVerifierOutputV1,
@@ -136,10 +145,11 @@ def _supervised_expansion_plan(setup, *, approval_request_id="expanded-approval"
     return expanded, proposal, approval
 
 
-def _setup(tmp_path: Path, *, mode="FULL_AUTO", max_child_campaigns=2):
+def _setup(tmp_path: Path, *, mode="FULL_AUTO", max_child_campaigns=2, isolated_state=False):
     repo = tmp_path / "repo"
     repo.mkdir()
-    registry = CampaignRegistry(repo)
+    paths = RuntimePaths.for_repo(repo, tmp_path / "state") if isolated_state else None
+    registry = CampaignRegistry(repo, paths)
     state_root = registry.root
     parent_entry, parent_dir, _ = registry.reserve("Parent research", "parent-seed")
     parent_scope = AutonomyScopeV2(
@@ -197,16 +207,49 @@ def _saga(setup, fault_hook=None):
 
 def _seed_parent_protocol_approval(setup):
     parent_spec = setup["parent_spec"]
+    published = (
+        setup["registry"].resolve(setup["parent_id"], activate=False)[0]
+        / "rpdi05" / "published"
+    )
+    published.mkdir(parents=True, exist_ok=True)
+    bundle_io = io.BytesIO()
+    with zipfile.ZipFile(bundle_io, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("evaluate.py", "# approved fixture\n")
+    bundle = bundle_io.getvalue()
+    bundle_digest = hashlib.sha256(bundle).hexdigest()
+    (published / bundle_digest).write_bytes(bundle)
+    input_bytes = [b"case input one", b"case input two"]
+    input_digests = [hashlib.sha256(item).hexdigest() for item in input_bytes]
+    for digest, data in zip(input_digests, input_bytes):
+        (published / digest).write_bytes(data)
+    setup["protocol_input_digests"] = input_digests
     protocol = EvaluatorProtocolV1(
         protocol_id="pivot-quality", version=1,
         source_snapshot_id=parent_spec.base_commit,
-        evaluator_bundle_sha256="b" * 64, entrypoint=("python", "evaluate.py"),
+        evaluator_bundle_sha256=bundle_digest, entrypoint=("python", "{evaluator}/evaluate.py"),
         metric_id="answer_quality", metric_field="quality", direction="MAXIMIZE",
         aggregation="MEAN", tiers=(
-            EvaluatorTierManifestV1(tier="dev", manifest_sha256="c" * 64, case_count=2),
-            EvaluatorTierManifestV1(tier="validation", manifest_sha256="d" * 64, case_count=2),
+            EvaluatorTierManifestV1(tier="dev", manifest_sha256="0" * 64, case_count=2),
+            EvaluatorTierManifestV1(tier="validation", manifest_sha256="0" * 64, case_count=2),
         ), repeatability_runs=2,
     )
+    manifest_digests = []
+    for tier in ("dev", "validation"):
+        manifest = ProtocolManifest(
+            protocol_sha256=_case_protocol_digest(protocol),
+            cases=(ProtocolCase(case_id=f"{tier}-1", input_sha256=input_digests[0]),
+                   ProtocolCase(case_id=f"{tier}-2", input_sha256=input_digests[1])),
+        )
+        raw = json.dumps(
+            manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
+        ).encode()
+        digest = hashlib.sha256(raw).hexdigest()
+        (published / digest).write_bytes(raw)
+        manifest_digests.append(digest)
+    protocol = protocol.model_copy(update={"tiers": (
+        EvaluatorTierManifestV1(tier="dev", manifest_sha256=manifest_digests[0], case_count=2),
+        EvaluatorTierManifestV1(tier="validation", manifest_sha256=manifest_digests[1], case_count=2),
+    )})
     payload = {
         "schema_version": 1, "campaign_id": setup["parent_id"],
         "spec_hash": parent_spec.approved_hash(), "source_snapshot_id": parent_spec.base_commit,
@@ -247,7 +290,7 @@ def _seed_parent_protocol_approval(setup):
 
 
 def test_approved_exploration_protocol_is_handed_off_to_immutable_optimization_child(tmp_path):
-    setup = _setup(tmp_path)
+    setup = _setup(tmp_path, isolated_state=True)
     protocol, proposal, receipt = _seed_parent_protocol_approval(setup)
     child_spec = dict(setup["child_spec"])
     child_spec["mode"] = "OPTIMIZATION"
@@ -272,6 +315,12 @@ def test_approved_exploration_protocol_is_handed_off_to_immutable_optimization_c
     finally:
         parent_conn.close()
     child_dir, _ = setup["registry"].resolve(result["child_campaign_id"], activate=False)
+    child_published = child_dir / "rpdi05" / "published"
+    assert {item.name for item in child_published.iterdir()} == {
+        protocol.evaluator_bundle_sha256,
+        *(tier.manifest_sha256 for tier in protocol.tiers),
+        *setup["protocol_input_digests"],
+    }
     child_conn = sqlite3.connect(child_dir / "campaign.sqlite3")
     try:
         child_row = child_conn.execute(
@@ -308,6 +357,148 @@ def test_approved_exploration_protocol_is_handed_off_to_immutable_optimization_c
         child_spec=child_spec,
     )
     assert replay["replayed"] is True
+    assert {item.name for item in child_published.iterdir()} == {
+        protocol.evaluator_bundle_sha256,
+        *(tier.manifest_sha256 for tier in protocol.tiers),
+        *setup["protocol_input_digests"],
+    }
+
+
+@pytest.mark.parametrize("damage", ["missing", "tampered"])
+def test_optimization_handoff_fails_closed_when_parent_asset_is_missing_or_tampered(tmp_path, damage):
+    setup = _setup(tmp_path, isolated_state=True)
+    protocol, _, receipt = _seed_parent_protocol_approval(setup)
+    child_spec = dict(setup["child_spec"])
+    child_spec["mode"] = "OPTIMIZATION"
+    child_spec["evaluation"] = {
+        "protocol_id": protocol.protocol_id, "version": protocol.version,
+        "content_sha256": protocol.content_digest(), "approval_digest": receipt.approval_digest,
+    }
+    proposal = _proposal_for_child(setup, child_spec)
+    source = (
+        setup["registry"].resolve(setup["parent_id"], activate=False)[0]
+        / "rpdi05" / "published"
+    )
+    digest = setup["protocol_input_digests"][0]
+    path = source / digest
+    original = path.read_bytes()
+    if damage == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(b"tampered")
+    with pytest.raises(PivotSagaError):
+        _saga(setup).create_child(
+            idempotency_key=f"asset-{damage}", proposal=proposal, child_spec=child_spec,
+        )
+    path.write_bytes(original)
+    result = _saga(setup).create_child(
+        idempotency_key=f"asset-{damage}", proposal=proposal, child_spec=child_spec,
+    )
+    child_dir, _ = setup["registry"].resolve(result["child_campaign_id"], activate=False)
+    assert (child_dir / "rpdi05" / "published" / digest).read_bytes() == original
+
+
+def test_pivot_child_executes_evaluator_from_handed_off_assets_and_replays(tmp_path):
+    setup = _setup(tmp_path, isolated_state=True)
+    repo = setup["repo"]
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.email", "handoff@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Handoff Test"], check=True,
+    )
+    (repo / "src").mkdir()
+    (repo / "src" / "app.py").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "src/app.py"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
+    base_commit = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+    ).decode().strip()
+    parent_payload = setup["parent_spec"].model_dump(mode="json")
+    parent_payload["base_commit"] = base_commit
+    parent_payload["autonomy"]["capability_policy"] = {
+        "tools": [], "read_paths": ["src/**"], "write_paths": [],
+        "backend": "ISOLATED", "network_access": False,
+    }
+    parent_spec = _parse_v2_spec(parent_payload)
+    with sqlite3.connect(setup["parent_db"]) as conn:
+        conn.execute("UPDATE campaigns SET spec_json=?,spec_hash=? WHERE id=1", (
+            json.dumps(parent_spec.model_dump(mode="json"), sort_keys=True, separators=(",", ":")),
+            parent_spec.approved_hash(),
+        ))
+    setup["parent_spec"] = parent_spec
+    setup["child_spec"]["base_commit"] = base_commit
+    setup["child_spec"]["autonomy"]["capability_policy"] = (
+        parent_payload["autonomy"]["capability_policy"]
+    )
+    protocol, _, receipt = _seed_parent_protocol_approval(setup)
+    child_spec = dict(setup["child_spec"])
+    child_spec["mode"] = "OPTIMIZATION"
+    child_spec["evaluation"] = {
+        "protocol_id": protocol.protocol_id, "version": protocol.version,
+        "content_sha256": protocol.content_digest(), "approval_digest": receipt.approval_digest,
+    }
+    proposal = _proposal_for_child(setup, child_spec)
+    result = _saga(setup).create_child(
+        idempotency_key="evaluator-child-handoff", proposal=proposal, child_spec=child_spec,
+    )
+    child_dir, _ = setup["registry"].resolve(result["child_campaign_id"], activate=False)
+    child_db = child_dir / "campaign.sqlite3"
+    ledger = BudgetLedger(child_db)
+    ledger.create_root(result["child_campaign_id"], {"evaluator_calls": 10})
+    ledger.close()
+    conn = sqlite3.connect(child_db, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    graph = GraphRepository(conn, campaign_id=result["child_campaign_id"])
+    queue = DurableWorkerQueue(child_db)
+
+    class DeterministicRunner(TrustedEvaluatorRunner):
+        def __init__(self):
+            super().__init__(bwrap_binary="not-used-in-test")
+            self.protocol_hash = _case_protocol_digest(protocol)
+
+        def _sandbox_available(self):
+            return True
+
+        def _execute_isolated(self, argv, *, readonly, output, candidate_snapshot_id, tier, timeout):
+            case_map = json.loads((readonly / "tier" / "input-map.json").read_text(encoding="utf-8"))
+            return json.dumps({
+                "status": "ok", "metrics": {"quality": 0.8},
+                "protocol_sha256": self.protocol_hash,
+                "cases": [{"case_id": item["case_id"], "repetition": item["repetition"],
+                           "input_sha256": item["input_sha256"], "metrics": {}}
+                          for item in case_map],
+                "diagnostics": {},
+            })
+
+    trusted = TrustedEvaluatorAdapter(
+        graph=graph, queue=queue, campaign_id=result["child_campaign_id"],
+        state_root=child_dir, runner=DeterministicRunner(),
+    )
+    try:
+        job_ids = trusted.enqueue_repeatability(candidate_snapshot_id=base_commit, tier="dev")
+        assert len(job_ids) == protocol.repeatability_runs
+        for job_id in job_ids:
+            trusted.run_one(job_id, worker_id="handoff-evaluator")
+        receipt_one = trusted.finalize_repeatability(job_ids)
+        receipt_two = trusted.finalize_repeatability(job_ids)
+        assert receipt_one == receipt_two
+        assert receipt_one.candidate_snapshot_id == base_commit
+        replay = _saga(setup).create_child(
+            idempotency_key="evaluator-child-handoff", proposal=proposal, child_spec=child_spec,
+        )
+        assert replay["replayed"] is True
+        child_assets = {item.name for item in (child_dir / "rpdi05" / "published").iterdir()}
+        assert {
+            protocol.evaluator_bundle_sha256,
+            *(tier.manifest_sha256 for tier in protocol.tiers),
+            *setup["protocol_input_digests"],
+        } <= child_assets
+    finally:
+        queue.close()
+        graph.close()
 
 
 @pytest.mark.parametrize("corruption", ["missing", "tampered"])

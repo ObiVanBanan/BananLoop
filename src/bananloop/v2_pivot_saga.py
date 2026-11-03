@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -186,6 +188,79 @@ def _append_event(conn: sqlite3.Connection, event_type: str, payload: dict[str, 
     )
 
 
+def _install_handoff_assets(handoff: dict[str, Any], destination_root: Path) -> None:
+    """Atomically install exactly the digest closure committed by a handoff proof."""
+    payload = handoff.get("payload")
+    assets = handoff.get("assets")
+    if (not isinstance(payload, dict) or not isinstance(assets, dict)
+            or _digest(payload) != handoff.get("handoff_digest")):
+        raise PivotSagaError("protocol asset handoff proof is malformed")
+    records = payload.get("assets")
+    if (not isinstance(records, list) or len(records) != len(assets)
+            or len(records) > 30004):
+        raise PivotSagaError("protocol asset handoff digest set is invalid")
+    total = 0
+    seen: set[str] = set()
+    verified: dict[str, bytes] = {}
+    for item in records:
+        if (not isinstance(item, dict) or set(item) != {"sha256", "size"}
+                or not isinstance(item["sha256"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"])
+                or not isinstance(item["size"], int) or item["size"] < 0
+                or item["sha256"] in seen):
+            raise PivotSagaError("protocol asset handoff digest set is malformed")
+        digest, size = item["sha256"], item["size"]
+        seen.add(digest)
+        data = assets.get(digest)
+        if not isinstance(data, bytes) or len(data) != size or size > 25 * 1024 * 1024:
+            raise PivotSagaError("approved protocol asset size differs from its handoff proof")
+        total += size
+        if total > 25 * 1024 * 1024 or len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+            raise PivotSagaError("approved protocol asset bytes are oversized or tampered")
+        verified[digest] = data
+    if seen != set(assets):
+        raise PivotSagaError("protocol asset handoff contains uncommitted bytes")
+    destination_root.parent.mkdir(parents=True, exist_ok=True)
+    if destination_root.parent.is_symlink():
+        raise PivotSagaError("child published-artifact path is unsafe")
+    destination_root.mkdir(exist_ok=True)
+    if destination_root.is_symlink() or not destination_root.is_dir():
+        raise PivotSagaError("child published-artifact store is unsafe")
+    resolved_dest = destination_root.resolve()
+    staged: dict[str, str] = {}
+    try:
+        for digest, data in verified.items():
+            size = len(data)
+            target = destination_root / digest
+            if target.exists() or target.is_symlink():
+                if (target.is_symlink() or not target.is_file()
+                        or not target.resolve().is_relative_to(resolved_dest)
+                        or target.stat().st_size != size
+                        or hashlib.sha256(target.read_bytes()).hexdigest() != digest):
+                    raise PivotSagaError("child protocol asset already exists with unsafe or different bytes")
+                continue
+            fd, temporary = tempfile.mkstemp(prefix=".handoff-", dir=destination_root)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+            staged[digest] = temporary
+        for digest, temporary in staged.items():
+            target = destination_root / digest
+            try:
+                os.link(temporary, target)
+            except FileExistsError:
+                if (target.is_symlink() or not target.is_file()
+                        or hashlib.sha256(target.read_bytes()).hexdigest() != digest):
+                    raise PivotSagaError("child protocol asset raced with unsafe or different bytes")
+    finally:
+        for temporary in staged.values():
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
+
 class V2PivotSaga:
     """Authorize and create a budget-bounded child without cross-file atomicity claims."""
 
@@ -276,6 +351,7 @@ class V2PivotSaga:
         child_spec: dict[str, Any] | str | ExplorationCampaignSpecV2 | OptimizationCampaignSpecV2,
         approval: PivotDecisionCommand | dict[str, Any] | None,
         parent_conn: sqlite3.Connection,
+        parent_published_root: Path,
     ) -> dict[str, Any]:
         if not _ID.fullmatch(idempotency_key):
             raise PivotSagaError("invalid pivot saga idempotency key")
@@ -378,6 +454,7 @@ class V2PivotSaga:
                     version=child.evaluation.version,
                     protocol_digest=child.evaluation.content_sha256,
                     approval_digest=child.evaluation.approval_digest,
+                    published_artifact_root=parent_published_root,
                 )
                 if protocol_handoff["payload"]["source_snapshot_id"] != child.base_commit:
                     raise PivotSagaError("approved evaluator source snapshot differs from the Optimization child")
@@ -574,6 +651,7 @@ class V2PivotSaga:
             plan = self._prepare(
                 idempotency_key=idempotency_key, proposal=proposal,
                 child_spec=child_spec, approval=approval, parent_conn=conn,
+                parent_published_root=parent_dir / "rpdi05" / "published",
             )
             self._record_intent(conn, plan)
             while True:
@@ -660,6 +738,7 @@ class V2PivotSaga:
                                         child_dir / "campaign.sqlite3", plan["child_spec"],
                                         parent_conn=conn, child_campaign_id=row["child_id"],
                                         protocol_handoff=plan["protocol_handoff"],
+                                        parent_published_root=parent_dir / "rpdi05" / "published",
                                     )
                                 elif control["state"] in {"ACTIVATING", "ACTIVE"}:
                                     # Another same-key caller already initialized
@@ -730,6 +809,7 @@ class V2PivotSaga:
             plan = self._prepare(
                 idempotency_key=idempotency_key, proposal=proposal,
                 child_spec=child_spec, approval=approval, parent_conn=conn,
+                parent_published_root=parent_dir / "rpdi05" / "published",
             )
             saga = conn.execute(
                 "SELECT * FROM v2_pivot_sagas WHERE idempotency_key=?",
@@ -1298,6 +1378,7 @@ class V2PivotSaga:
         db_path: Path, child_spec: Any, *, parent_conn: sqlite3.Connection | None = None,
         child_campaign_id: str | None = None,
         protocol_handoff: dict[str, Any] | None = None,
+        parent_published_root: Path | None = None,
     ) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         assert_safe_campaign_db(db_path)
@@ -1319,6 +1400,10 @@ class V2PivotSaga:
                                 child_spec.evaluation.protocol_id, child_spec.evaluation.version,
                                 child_spec.evaluation.content_sha256, child_spec.evaluation.approval_digest,
                                 campaign_id=child_campaign_id, spec_hash=expected_hash,
+                            )
+                            _install_handoff_assets(
+                                protocol_handoff,
+                                db_path.parent / "rpdi05" / "published",
                             )
                         except Exception as exc:
                             raise PivotSagaError("existing child DB lacks the exact approved protocol handoff") from exc
@@ -1376,6 +1461,7 @@ class V2PivotSaga:
                         protocol_id=reference.protocol_id, version=reference.version,
                         protocol_digest=reference.content_sha256,
                         approval_digest=reference.approval_digest,
+                        published_artifact_root=parent_published_root,
                     )
                     if verified_handoff["handoff_digest"] != protocol_handoff.get("handoff_digest"):
                         raise PivotSagaError("parent protocol approval changed before child initialization")
@@ -1383,6 +1469,10 @@ class V2PivotSaga:
                     authority.install_child_handoff(
                         verified_handoff, child_campaign_id=child_campaign_id,
                         child_spec=child_spec,
+                    )
+                    _install_handoff_assets(
+                        verified_handoff,
+                        db_path.parent / "rpdi05" / "published",
                     )
                 except PivotSagaError:
                     raise

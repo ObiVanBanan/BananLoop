@@ -687,7 +687,8 @@ class EvaluatorProtocolAuthority:
 
     def prepare_child_handoff(self, *, parent_campaign_id: str, parent_spec_hash: str,
                               allocation_id: str, protocol_id: str, version: int,
-                              protocol_digest: str, approval_digest: str) -> dict[str, Any]:
+                              protocol_digest: str, approval_digest: str,
+                              published_artifact_root: str | Path | None = None) -> dict[str, Any]:
         """Validate the parent's frozen approval and return its immutable transfer proof."""
         receipt = self.require_frozen_reference(
             protocol_id, version, protocol_digest, approval_digest,
@@ -697,17 +698,19 @@ class EvaluatorProtocolAuthority:
         if (stored_receipt.receipt_digest != receipt.receipt_digest
                 or proposal.protocol.source_snapshot_id != proposal.source_snapshot_id):
             raise EvaluatorVerificationError("parent protocol approval is stale or inconsistent")
+        assets = _protocol_handoff_assets(proposal, published_artifact_root)
         payload = {
-            "schema_version": 1, "parent_campaign_id": parent_campaign_id,
+            "schema_version": 2, "parent_campaign_id": parent_campaign_id,
             "parent_spec_hash": parent_spec_hash, "allocation_id": allocation_id,
             "proposal_digest": proposal.proposal_digest,
             "receipt_digest": receipt.receipt_digest, "approval_digest": approval_digest,
             "protocol_id": protocol_id, "protocol_version": version,
             "protocol_digest": protocol_digest,
             "source_snapshot_id": proposal.source_snapshot_id,
+            "assets": [{"sha256": digest, "size": len(assets[digest])} for digest in sorted(assets)],
         }
         return {"handoff_digest": _digest(payload), "payload": payload,
-                "proposal": proposal, "receipt": receipt}
+                "proposal": proposal, "receipt": receipt, "assets": assets}
 
     def install_child_handoff(self, handoff: dict[str, Any], *,
                               child_campaign_id: str, child_spec: Any) -> None:
@@ -1033,10 +1036,53 @@ def _read_published_blob(published_root: str | Path | None, digest: str,
     if (target.is_symlink() or not target.is_file()
             or not target.resolve().is_relative_to(resolved_root)):
         raise EvaluatorVerificationError("pinned protocol artifact is missing or escaped its store")
+    if target.stat().st_size > 25 * 1024 * 1024:
+        raise EvaluatorVerificationError("pinned protocol artifact exceeds the handoff size bound")
     content = target.read_bytes()
     if hashlib.sha256(content).hexdigest() != digest:
         raise EvaluatorVerificationError("published protocol artifact bytes do not match their digest")
     return content
+
+
+def _protocol_handoff_assets(proposal: MetricDiscoveryProposalV1,
+                             published_root: str | Path | None) -> dict[str, bytes]:
+    """Read the exact bounded immutable asset closure needed by the evaluator."""
+    from .contracts import ProtocolManifest
+    from .trusted_evaluator import _case_protocol_digest
+
+    protocol = proposal.protocol
+    digests = {protocol.evaluator_bundle_sha256, *(tier.manifest_sha256 for tier in protocol.tiers)}
+    # The approved protocol itself names each manifest. Manifest inputs are the
+    # only additional assets allowed into a child evaluator store.
+    for tier in protocol.tiers:
+        # Read manifests by digest from the store, then extend the exact set.
+        root = Path(published_root) if published_root is not None else None
+        if root is None or root.is_symlink() or not root.is_dir():
+            raise EvaluatorVerificationError("protocol handoff requires a safe parent published-artifact store")
+        target = root / tier.manifest_sha256
+        if target.is_symlink() or not target.is_file() or not target.resolve().is_relative_to(root.resolve()):
+            raise EvaluatorVerificationError("approved evaluator manifest is missing or escaped its store")
+        raw = target.read_bytes()
+        if len(raw) > 25 * 1024 * 1024 or hashlib.sha256(raw).hexdigest() != tier.manifest_sha256:
+            raise EvaluatorVerificationError("approved evaluator manifest is oversized or has invalid bytes")
+        try:
+            manifest = ProtocolManifest.model_validate_json(raw)
+        except Exception as exc:
+            raise EvaluatorVerificationError("approved evaluator manifest is invalid") from exc
+        if manifest.protocol_sha256 != _case_protocol_digest(protocol) or len(manifest.cases) != tier.case_count:
+            raise EvaluatorVerificationError("approved evaluator manifest does not match protocol identity")
+        digests.update(case.input_sha256 for case in manifest.cases)
+    if len(digests) > 30004:
+        raise EvaluatorVerificationError("approved evaluator asset count exceeds the handoff bound")
+    assets: dict[str, bytes] = {}
+    total = 0
+    for digest in sorted(digests):
+        data = _read_published_blob(published_root, digest, digests)
+        total += len(data)
+        if total > 25 * 1024 * 1024:
+            raise EvaluatorVerificationError("approved evaluator assets exceed the handoff size bound")
+        assets[digest] = data
+    return assets
 
 
 def _build_protocol_review_material(
