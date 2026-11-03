@@ -21,18 +21,20 @@ RECEIPT = "6" * 64
 class _TrustedAuthority:
     """Test double for the already-tested durable integration authority boundary."""
 
-    def __init__(self, *, accept: bool = True):
+    def __init__(self, *, accept: bool = True, variants=None):
         self.accept = accept
+        self.variants = variants or {RECEIPT: CANDIDATE}
         self.calls = []
 
     def require_integration_decision(self, receipt_digest, **bindings):
         self.calls.append((receipt_digest, bindings))
+        candidate = self.variants.get(receipt_digest)
         expected = {
             "decision": "PASS", "campaign_id": CAMPAIGN, "approval_digest": APPROVAL,
             "spec_hash": SPEC, "source_snapshot_id": SOURCE,
-            "protocol_digest": PROTOCOL, "candidate_snapshot_id": CANDIDATE,
+            "protocol_digest": PROTOCOL, "candidate_snapshot_id": candidate,
         }
-        if not self.accept or receipt_digest != RECEIPT or bindings != expected:
+        if not self.accept or candidate is None or bindings != expected:
             raise EvaluatorVerificationError("no exact trusted PASS receipt")
 
 
@@ -137,6 +139,53 @@ def test_concurrent_promotions_have_one_cas_winner(tmp_path):
     finally:
         final_conn.close()
 
+
+
+def test_distinct_candidate_promotions_race_with_one_cas_winner(tmp_path):
+    path = tmp_path / "campaign.sqlite3"
+    second_candidate = "7" * 40
+    second_receipt = "8" * 64
+    authority = _TrustedAuthority(variants={
+        RECEIPT: CANDIDATE, second_receipt: second_candidate,
+    })
+    conn, service = _service(path, authority)
+    service.initialize(campaign_id=CAMPAIGN, source_snapshot_id=SOURCE)
+    conn.close()
+    barrier = threading.Barrier(2)
+    outcomes = []
+
+    def attempt(candidate, receipt):
+        worker_conn, worker = _service(path, authority)
+        try:
+            barrier.wait(timeout=5)
+            result = _promote(
+                worker, candidate_snapshot_id=candidate,
+                integration_receipt_digest=receipt,
+            )
+            outcomes.append(("won", result))
+        except ChampionPromotionError as exc:
+            outcomes.append(("conflict", str(exc)))
+        finally:
+            worker_conn.close()
+
+    threads = [
+        threading.Thread(target=attempt, args=(CANDIDATE, RECEIPT)),
+        threading.Thread(target=attempt, args=(second_candidate, second_receipt)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert all(not thread.is_alive() for thread in threads)
+    assert [kind for kind, _ in outcomes].count("won") == 1
+    assert [kind for kind, _ in outcomes].count("conflict") == 1
+    final_conn, final = _service(path, authority)
+    try:
+        assert final.current()["snapshot_id"] in {CANDIDATE, second_candidate}
+        assert final.current()["revision"] == 1
+        assert final_conn.execute("SELECT COUNT(*) FROM champion_promotion_history").fetchone()[0] == 1
+    finally:
+        final_conn.close()
 
 def test_candidate_graph_success_does_not_promote_champion_implicitly(tmp_path):
     conn, service = _service(tmp_path / "campaign.sqlite3")
