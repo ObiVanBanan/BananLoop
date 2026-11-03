@@ -174,6 +174,20 @@ def _setup(tmp_path: Path, *, mode="FULL_AUTO", max_child_campaigns=2):
     }
 
 
+def _replace_parent_budget(setup, updates):
+    payload = setup["parent_spec"].model_dump(mode="json")
+    payload["budget"].update(updates)
+    parent = _parse_v2_spec(payload)
+    with sqlite3.connect(setup["parent_db"]) as conn:
+        conn.execute(
+            "UPDATE campaigns SET spec_json=?,spec_hash=? WHERE id=1",
+            (json.dumps(parent.model_dump(mode="json"), sort_keys=True, separators=(",", ":")),
+             parent.approved_hash()),
+        )
+    setup["parent_spec"] = parent
+    return parent
+
+
 def _saga(setup, fault_hook=None):
     return V2PivotSaga(
         repo=setup["repo"], state_root=setup["state_root"],
@@ -722,6 +736,34 @@ def test_full_auto_denies_the_same_explicit_scope_expansion_before_escrow(tmp_pa
     ledger.close()
 
 
+@pytest.mark.parametrize(("field", "parent_cap", "child_cap", "paired_updates"), [
+    ("max_model_tokens", 1000, 2000, {}),
+    ("max_evaluation_units", 10, 20, {"evaluation_units_per_call": 2}),
+])
+def test_full_auto_rejects_optional_budget_dimension_expansion_before_escrow(
+    tmp_path, field, parent_cap, child_cap, paired_updates,
+):
+    setup = _setup(tmp_path, mode="FULL_AUTO")
+    parent = _replace_parent_budget(setup, {field: parent_cap, **paired_updates})
+    child = dict(setup["child_spec"])
+    child_budget = dict(child["budget"])
+    child_budget.update({field: child_cap, **paired_updates})
+    child["budget"] = child_budget
+    proposal = _proposal_for_child(setup, child)
+
+    with pytest.raises(PivotSagaError, match=f"child budget expands the parent {field} envelope"):
+        _saga(setup).create_child(
+            idempotency_key=f"optional-budget-expansion-{field}",
+            proposal=proposal, child_spec=child,
+        )
+    ledger = setup["registry"].budget_ledger()
+    try:
+        assert ledger.conn.execute("SELECT COUNT(*) FROM child_allocations").fetchone()[0] == 0
+    finally:
+        ledger.close()
+    assert setup["parent_spec"].approved_hash() == parent.approved_hash()
+
+
 def test_supervised_plan_cannot_exceed_live_budget_envelope(tmp_path):
     setup = _setup(tmp_path, mode="SUPERVISED")
     ledger = setup["registry"].budget_ledger()
@@ -1025,6 +1067,31 @@ def test_supervised_expansion_executes_from_the_approved_plan_through_cli(tmp_pa
         idempotency_key="expanded-cli-execution",
     )) == 0
     receipt = json.loads(capsys.readouterr().out)
+    assert receipt["state"] == "ACTIVE"
+    child_dir, _ = setup["registry"].resolve(receipt["child_campaign_id"], activate=False)
+    with sqlite3.connect(child_dir / "campaign.sqlite3") as conn:
+        child = _parse_v2_spec(conn.execute(
+            "SELECT spec_json FROM campaigns WHERE id=1",
+        ).fetchone()[0])
+    assert child.autonomy.scope.allowed_paths == ("src/new-area",)
+    assert child.autonomy.capability_policy.write_paths == ("src/new-area/**",)
+    assert child.budget.max_agent_calls == 30
+    child_projection = child.model_dump(mode="json")
+    child_projection["parent"] = None
+    assert _parse_v2_spec(expanded).approved_hash() == _parse_v2_spec(child_projection).approved_hash()
+
+
+def test_supervised_expansion_executes_from_the_approved_plan_through_application(tmp_path):
+    setup = _setup(tmp_path, mode="SUPERVISED")
+    expanded, proposal, approval = _supervised_expansion_plan(
+        setup, approval_request_id="expanded-app-approval",
+    )
+    app = CampaignApplication(setup["repo"], campaign_id=setup["parent_id"])
+    app.v2_record_pivot_proposal(proposal)
+    app.v2_pivot_decision(approval)
+    receipt = CampaignApplication(
+        setup["repo"], campaign_id=setup["parent_id"],
+    ).v2_execute_pivot(proposal.proposal_id, proposal.digest, "expanded-app-execution")
     assert receipt["state"] == "ACTIVE"
     child_dir, _ = setup["registry"].resolve(receipt["child_campaign_id"], activate=False)
     with sqlite3.connect(child_dir / "campaign.sqlite3") as conn:
