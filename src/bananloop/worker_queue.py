@@ -232,6 +232,13 @@ class DurableWorkerQueue:
                 raise WorkerQueueError("primary resource and upper_bound must match resource_bounds")
         now = utc_now()
         with self._transaction():
+            binding = self.conn.execute(
+                "SELECT g.state FROM child_allocations a "
+                "JOIN child_allocation_gates g USING(allocation_id) WHERE a.child_id=?",
+                (campaign_id,),
+            ).fetchone()
+            if binding is not None and binding["state"] != "ACTIVE":
+                raise WorkerQueueError("child allocation admission gate is not active")
             replay = self.conn.execute("SELECT * FROM worker_jobs WHERE enqueue_key=?", (enqueue_key,)).fetchone()
             if replay:
                 expected = (job_id, campaign_id, action_id, resource, upper_bound, request_hash)
@@ -273,13 +280,6 @@ class DurableWorkerQueue:
                     if actual_token != wanted_token:
                         raise WorkerQueueError("replayed role-bound job has a different token allocation")
                 return self._job_view(replay)
-            binding = self.conn.execute(
-                "SELECT g.state FROM child_allocations a "
-                "JOIN child_allocation_gates g USING(allocation_id) WHERE a.child_id=?",
-                (campaign_id,),
-            ).fetchone()
-            if binding is not None and binding["state"] != "ACTIVE":
-                raise WorkerQueueError("child allocation admission gate is not active")
             if role_allocation is not None:
                 pinned = self.conn.execute(
                     "SELECT calls_limit FROM team_role_call_allocations WHERE campaign_id=? AND manifest_digest=? AND role_instance_id=? AND role_id=?",
