@@ -406,7 +406,8 @@ def test_pivot_child_saga_reserves_before_create_and_resumes_once(tmp_path, cras
     }[crash_at]
     assert state == expected_state
 
-    ledger = setup["registry"].budget_ledger()
+    raw_ledger_conn = sqlite3.connect(setup["registry"].path, isolation_level=None)
+    ledger = BudgetLedger.attach(raw_ledger_conn)
     allocations = ledger.conn.execute(
         "SELECT allocation_id,child_id,state FROM child_allocations"
     ).fetchall()
@@ -434,7 +435,7 @@ def test_pivot_child_saga_reserves_before_create_and_resumes_once(tmp_path, cras
                 idempotency_key="reserve:during-activation",
                 allocation_id=allocations[0]["allocation_id"],
             )
-    ledger.close()
+    raw_ledger_conn.close()
 
     result = _saga(setup).create_child(
         idempotency_key="pivot-request-1", proposal=setup["proposal"],

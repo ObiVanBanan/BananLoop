@@ -152,11 +152,19 @@ class BudgetLedger:
                     (utc_now(), allocation["allocation_id"]),
                 )
 
+    @staticmethod
+    def _assert_safe_path_chain(path: Path, label: str) -> None:
+        """Reject symlink/reparse points in every component, not just the leaf."""
+        from .registry import assert_safe_local_path
+        absolute = path.absolute()
+        for component in reversed((absolute, *absolute.parents)):
+            assert_safe_local_path(component, label)
+
     def _durable_parent_activation(self, allocation: sqlite3.Row) -> str | None:
         """Return the activation proof only when the registered parent saga is ACTIVE."""
         if self.path is None:
             return None
-        from .registry import RegistryError, assert_safe_campaign_db, assert_safe_local_path
+        from .registry import RegistryError, assert_safe_campaign_db
         try:
             tables = {r[0] for r in self.conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
@@ -171,10 +179,8 @@ class BudgetLedger:
                     or parent["state_path"] != f"campaigns/{allocation['parent_id']}"):
                 return None
             parent_db = self.path.parent / parent["state_path"] / "campaign.sqlite3"
-            assert_safe_local_path(self.path, "campaign registry")
-            assert_safe_local_path(self.path.parent, "campaign state root")
-            assert_safe_local_path(self.path.parent / "campaigns", "managed campaigns directory")
-            assert_safe_local_path(self.path.parent / parent["state_path"], "managed parent campaign directory")
+            self._assert_safe_path_chain(self.path, "campaign registry path")
+            self._assert_safe_path_chain(parent_db, "managed parent database path")
             assert_safe_campaign_db(parent_db)
             if not parent_db.is_file():
                 return None
