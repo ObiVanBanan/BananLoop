@@ -1105,6 +1105,58 @@ def test_application_execute_requires_persisted_approval_and_reloads_for_replay(
     assert first["allocation_id"] == replay["allocation_id"]
 
 
+@pytest.mark.parametrize("crash_at", [
+    "AFTER_LEDGER_RESERVE",
+    "AFTER_REGISTRY_RESERVE",
+    "AFTER_ALLOCATION_BIND",
+    "AFTER_CHILD_INITIALIZE",
+    "AFTER_PARENT_ACTIVE",
+])
+def test_application_execute_resumes_each_saga_boundary_after_restart(tmp_path, monkeypatch, crash_at):
+    setup = _setup(tmp_path, mode="SUPERVISED")
+    app = CampaignApplication(setup["repo"], campaign_id=setup["parent_id"])
+    app.v2_record_pivot_proposal(setup["proposal"])
+    approval = PivotDecisionCommand(
+        campaign_id=setup["parent_id"], request_id=f"restart-{crash_at}",
+        proposal_id=setup["proposal"].proposal_id,
+        digest=setup["proposal"].digest, decision="approve",
+    )
+    app.v2_pivot_decision(approval)
+    key = f"recover-{crash_at}"
+    fired = False
+
+    original_checkpoint = V2PivotSaga._checkpoint
+
+    def interrupt_once(saga, step):
+        nonlocal fired
+        if step == crash_at and not fired:
+            fired = True
+            raise RuntimeError("simulated process interruption")
+        return original_checkpoint(saga, step)
+
+    monkeypatch.setattr(V2PivotSaga, "_checkpoint", interrupt_once)
+    with pytest.raises(RuntimeError, match="simulated process interruption"):
+        app.v2_execute_pivot(
+            setup["proposal"].proposal_id, setup["proposal"].digest, key,
+        )
+
+    restarted_app = CampaignApplication(setup["repo"], campaign_id=setup["parent_id"])
+    receipt = restarted_app.v2_execute_pivot(
+        setup["proposal"].proposal_id, setup["proposal"].digest, key,
+    )
+    assert receipt["state"] == "ACTIVE"
+    ledger = setup["registry"].budget_ledger()
+    try:
+        allocations = ledger.conn.execute(
+            "SELECT allocation_id,state FROM child_allocations",
+        ).fetchall()
+        assert len(allocations) == 1
+        assert allocations[0]["state"] == "ACTIVE"
+        assert allocations[0]["allocation_id"] == receipt["allocation_id"]
+    finally:
+        ledger.close()
+
+
 def test_application_rejected_or_stale_approval_and_wrong_digest_fail_before_escrow(tmp_path):
     setup = _setup(tmp_path, mode="SUPERVISED")
     app = CampaignApplication(setup["repo"], campaign_id=setup["parent_id"])
@@ -1342,6 +1394,84 @@ def test_supervised_api_fails_closed_without_approval_and_replays_concurrently(t
         server.shutdown()
         thread.join(timeout=3)
         server.server_close()
+
+
+def test_api_retry_recovers_interrupted_persisted_pivot_execution(tmp_path, monkeypatch):
+    from urllib.error import HTTPError
+
+    setup = _setup(tmp_path, mode="SUPERVISED")
+    approval = PivotDecisionCommand(
+        campaign_id=setup["parent_id"], request_id="api-recovery-approval",
+        proposal_id=setup["proposal"].proposal_id,
+        digest=setup["proposal"].digest, decision="approve",
+    )
+    server = create_server(str(setup["repo"]), port=0, token="api-recovery-token")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}/v1/campaigns/{setup['parent_id']}"
+
+    def post(path, payload, key):
+        request = urllib.request.Request(
+            base + path, data=json.dumps(payload).encode(),
+            headers={
+                "Authorization": "Bearer api-recovery-token",
+                "Content-Type": "application/json",
+                "Idempotency-Key": key,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return json.loads(response.read())
+
+    try:
+        post("/v2/pivot-proposals", setup["proposal"].model_dump(mode="json"), setup["proposal"].proposal_id)
+        post("/v2/pivot-decisions", approval.model_dump(mode="json"), approval.request_id)
+        original_checkpoint = V2PivotSaga._checkpoint
+        interrupted = False
+
+        def interrupt_once(saga, step):
+            nonlocal interrupted
+            if step == "AFTER_CHILD_INITIALIZE" and not interrupted:
+                interrupted = True
+                raise RuntimeError("simulated API process interruption")
+            return original_checkpoint(saga, step)
+
+        monkeypatch.setattr(V2PivotSaga, "_checkpoint", interrupt_once)
+        execution = {
+            "proposal_id": setup["proposal"].proposal_id,
+            "digest": setup["proposal"].digest,
+        }
+        with pytest.raises(HTTPError) as failed:
+            post("/v2/pivot-executions", execution, "api-recovery-key")
+        assert failed.value.code == 500
+        assert interrupted
+        resumed = post("/v2/pivot-executions", execution, "api-recovery-key")
+        assert resumed["state"] == "ACTIVE"
+        ledger = setup["registry"].budget_ledger()
+        try:
+            assert ledger.conn.execute("SELECT COUNT(*) FROM child_allocations").fetchone()[0] == 1
+        finally:
+            ledger.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=3)
+        server.server_close()
+
+
+def test_saga_replay_normalizes_equivalent_child_spec_json(tmp_path):
+    setup = _setup(tmp_path)
+    first = _saga(setup).create_child(
+        idempotency_key="normalized-plan-replay", proposal=setup["proposal"],
+        child_spec=setup["child_spec"],
+    )
+    normalized = _parse_v2_spec(setup["child_spec"]).model_dump(mode="json")
+    replay = _saga(setup).create_child(
+        idempotency_key="normalized-plan-replay", proposal=setup["proposal"],
+        child_spec=normalized,
+    )
+    assert replay["replayed"] is True
+    assert replay["child_campaign_id"] == first["child_campaign_id"]
+    assert replay["allocation_id"] == first["allocation_id"]
 
 
 def test_saga_idempotency_key_cannot_be_reused_for_different_child_spec(tmp_path):

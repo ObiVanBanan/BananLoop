@@ -408,7 +408,10 @@ class V2PivotSaga:
             "parent_spec_hash": self.parent_spec_hash,
             "idempotency_key": idempotency_key,
             "proposal": proposal.model_dump(mode="json"),
-            "child_input": child_input,
+            # Hash the canonical approved plan, not the caller's JSON shape.
+            # A semantically identical spec may omit model defaults such as
+            # parent=None on an initial call and include them on a replay.
+            "child_input": json.loads(proposal.execution_plan.child_spec_json),
             "approval": approval.model_dump(mode="json") if approval is not None else None,
             "budget_caps": caps,
         })
@@ -944,13 +947,21 @@ class V2PivotSaga:
                 (saga["allocation_id"],),
             ).fetchone()
             gate = ledger.conn.execute(
-                "SELECT state FROM child_allocation_gates WHERE allocation_id=?",
+                "SELECT state,activation_digest FROM child_allocation_gates WHERE allocation_id=?",
                 (saga["allocation_id"],),
             ).fetchone()
-            expected_gate = {"ACTIVE", "CLOSED"} if require_active_event else {"BOUND"}
+            expected_gate = {"ACTIVE", "CLOSED"} if require_active_event else {"BOUND", "ACTIVE"}
+            activation_digest = _digest({
+                "key": saga["idempotency_key"],
+                "request_hash": saga["request_hash"],
+                "allocation_id": saga["allocation_id"],
+                "child_id": saga["child_id"],
+            })
             if (
                 allocation is None
                 or gate is None or gate["state"] not in expected_gate
+                or (gate["state"] in {"ACTIVE", "CLOSED"} and gate["activation_digest"] != activation_digest)
+                or (gate["state"] == "BOUND" and gate["activation_digest"] is not None)
                 or allocation["state"] not in (
                     {"ACTIVE", "CLOSED"} if require_active_event else {"ACTIVE"}
                 )
