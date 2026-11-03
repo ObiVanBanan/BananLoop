@@ -143,7 +143,10 @@ use/redistribution rights.
   output digests, and scores. It excludes action receipts, accounting
   summaries, artifact paths, failure reasons, and unblinding data. The scorer
   request contains output bytes and nonsensitive outcome status; a verified
-  anonymization pass is still required before any real run. The host joins
+  anonymization pass is still required before any real run. The current adapter
+  rejects literal pinned arm/provider/model fingerprints, but does not remove
+  semantic or compressed identity leaks. An independent review and task/output
+  specific transform are required. The host joins
   separately verified accounting after scoring. The operator's
   unblinding attestation binds the final package digest.
 - The evaluator pin freezes its in-bundle executable argv plus scorer timeout,

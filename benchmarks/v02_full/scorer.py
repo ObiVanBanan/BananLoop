@@ -213,6 +213,22 @@ def verify_evaluator_constituents(root: str | Path, pin) -> None:
             raise ScorerError(f"pinned evaluator constituent digest differs: {relative_name}")
 
 
+def verify_no_pinned_arm_identifiers(content: bytes, manifest: TrackManifest) -> None:
+    """Reject literal arm/model/provider fingerprints in scorer-visible output bytes."""
+    lowered = content.lower()
+    identifiers = {"BANANLOOP_V02_FULL", "CODEX_DIRECT", "BananLoop v0.2 Full", "Codex Direct"}
+    for arm in manifest.arms:
+        identifiers.update((arm.arm, arm.provider, arm.model, arm.model_version,
+                            arm.worker_bundle_sha256, arm.tool_policy_sha256,
+                            arm.reasoning_settings_sha256))
+        if arm.role_roster_sha256 is not None:
+            identifiers.add(arm.role_roster_sha256)
+    for identifier in identifiers:
+        needle = identifier.strip().lower().encode("utf-8")
+        if needle and needle in lowered:
+            raise ScorerError("output artifact contains a pinned arm/provider/model identifier")
+
+
 def scorer_runtime_fingerprint(
     *, sandbox_binary: str | Path, interpreter: str | Path | None = None,
     launcher: str | Path | None = None,
@@ -521,6 +537,7 @@ def build_blind_scorer_input(
                         raise ScorerError("anonymous outputs exceed the aggregate scorer input limit")
                 except EvidenceError as exc:
                     raise ScorerError(f"scorer output artifact failed verification: {exc}") from exc
+                verify_no_pinned_arm_identifiers(outputs[label], manifest)
         input_pairs.append(ScorerInputPair(
             pair_id_sha256=pair.pair_id_sha256, status=pair.status,
             arm_a_output_sha256=_sha(outputs["arm_a"]) if outputs["arm_a"] is not None else None,
