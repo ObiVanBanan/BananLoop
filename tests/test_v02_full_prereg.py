@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -7,7 +8,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from bananloop.contracts import FeatureFlagsV2, V2_FULL_FEATURES
 from benchmarks.v02_full.evidence import (
-    EvidenceArtifactRef, EvidenceError, TrustPolicy, TrustedSigner, sign_evidence,
+    EvidenceArtifactRef, EvidenceError, SignedEvidence, TrustPolicy, TrustedSigner,
+    load_trust_policy, sign_evidence,
 )
 from benchmarks.v02_full.accounting import (
     AccountingResult, ResourceUsage, make_receipt, validate_accounting_chain,
@@ -29,6 +31,10 @@ from benchmarks.v02_full.prereg import (
 from benchmarks.v02_full.report import (
     BlindedPairScore, BlindedScorePackage, ReportError, aggregate_blinded_scores,
     pair_score_digest, report_digest, score_package_digest,
+)
+from benchmarks.v02_full.execution import (
+    RunStartAuthorization, RunStartError, authorize_run_start,
+    gate_evidence_sha256, track_pair_sha256, verify_run_start_authorization,
 )
 
 
@@ -157,6 +163,7 @@ def _valid_evidence(manifest, evidence_dir, *, duplicate_independent_principal=F
         "BENCHMARK_OPERATOR": "principal-operator",
         "INDEPENDENT_OPERATOR": "principal-ledger-reviewer",
         "INDEPENDENT_SCORER": "principal-scorer",
+        "RUN_START_AUTHORIZER": "principal-run-authorizer",
         "RIGHTS_AUTHORIZER": "principal-rights",
         "SPEND_AUTHORIZER": "principal-spend",
         "OWNER_APPROVER": "principal-owner",
@@ -188,7 +195,8 @@ def _valid_evidence(manifest, evidence_dir, *, duplicate_independent_principal=F
                              "issuer_role": role, "payload": payload or {}},
                             key_id=signer.key_id, principal_id=signer.principal_id,
                             private_key=private_key)
-        path = f"{name}.json"
+        path = f"{manifest.track.lower()}-{manifest.protocol_id}/{name}.json"
+        (evidence_dir / f"{manifest.track.lower()}-{manifest.protocol_id}").mkdir(parents=True, exist_ok=True)
         (evidence_dir / path).write_bytes(raw)
         ref = EvidenceArtifactRef(path=path, artifact_sha256=hashlib.sha256(raw).hexdigest())
         refs.append(ref)
@@ -257,6 +265,24 @@ def _valid_evidence(manifest, evidence_dir, *, duplicate_independent_principal=F
         evidence_artifacts=tuple(refs),
     )
     return evidence, policy
+
+
+def _write_trust_policy(path, policy):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.chmod(0o700)
+    value = {
+        "schema_version": 1,
+        "independent_principal_exclusions": sorted(policy.independent_principal_exclusions),
+        "signers": [
+            {"key_id": signer.key_id, "principal_id": signer.principal_id,
+             "public_key_ed25519": signer.public_key.hex(),
+             "permitted_roles": sorted(signer.permitted_roles), "revoked": signer.revoked}
+            for signer in sorted(policy.signers.values(), key=lambda item: item.key_id)
+        ],
+    }
+    path.write_bytes(canonical_bytes(value))
+    path.chmod(0o600)
+    return path
 
 
 def test_frozen_manifest_is_canonical_and_all_execution_inputs_are_bound():
@@ -363,6 +389,114 @@ def test_track_pair_requires_disjoint_tasks_and_distinct_outcomes_and_rubrics():
     overlap = freeze_manifest(_raw_manifest("EXPLORATION", task_id="task-opt", suffix="explore"))
     with pytest.raises(PreregError, match="disjoint"):
         validate_track_pair(optimization, overlap)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="protected run-start trust root currently requires POSIX openat")
+def test_run_start_authorization_requires_both_track_gates_and_signs_exact_inputs(tmp_path):
+    optimization = freeze_manifest(_raw_manifest("OPTIMIZATION", suffix="opt"))
+    exploration = freeze_manifest(_raw_manifest("EXPLORATION", task_id="task-explore", suffix="explore"))
+    evidence_root = tmp_path / "evidence"
+    optimization_gate, policy = _valid_evidence(optimization, evidence_root)
+    exploration_gate, _ = _valid_evidence(exploration, evidence_root)
+    policy_path = _write_trust_policy(tmp_path / "protected" / "trust-policy.json", policy)
+    authorizer = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(_sha("secret-RUN_START_AUTHORIZER")))
+
+    authorization = authorize_run_start(
+        optimization, exploration, optimization_gate, exploration_gate,
+        evidence_root=str(evidence_root), trust_policy_path=str(policy_path),
+        authorization_key_id="key-run_start_authorizer",
+        authorization_private_key=authorizer,
+    )
+    verify_run_start_authorization(
+        authorization, optimization=optimization, exploration=exploration,
+        optimization_evidence=optimization_gate, exploration_evidence=exploration_gate,
+        trust_policy_path=str(policy_path),
+    )
+    assert authorization.document.payload["optimization_manifest_sha256"] == optimization.manifest_sha256
+    assert authorization.document.payload["exploration_manifest_sha256"] == exploration.manifest_sha256
+
+    bad_optimization_gate = optimization_gate.model_copy(update={
+        "technical_review": VerificationPin(
+            artifact_sha256=_sha("missing-review"), subject_sha=optimization.source_sha,
+            conclusion="PASS", reviewer_role="INDEPENDENT_TECHNICAL_REVIEWER",
+        ),
+    })
+    with pytest.raises(RunStartError, match="TECHNICAL_REVIEW"):
+        authorize_run_start(
+            optimization, exploration, bad_optimization_gate, exploration_gate,
+            evidence_root=str(evidence_root), trust_policy_path=str(policy_path),
+            authorization_key_id="key-run_start_authorizer",
+            authorization_private_key=authorizer,
+        )
+    with pytest.raises(RunStartError, match="Optimization and Exploration"):
+        verify_run_start_authorization(
+            authorization, optimization=optimization, exploration=optimization,
+            optimization_evidence=optimization_gate, exploration_evidence=exploration_gate,
+            trust_policy_path=str(policy_path),
+        )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="protected run-start trust root currently requires POSIX openat")
+@pytest.mark.parametrize("authorizer_principal", ["principal-arm-author", "principal-technical"])
+def test_run_start_verifier_rejects_author_and_reviewer_signers(tmp_path, authorizer_principal):
+    optimization = freeze_manifest(_raw_manifest("OPTIMIZATION", suffix="opt"))
+    exploration = freeze_manifest(_raw_manifest("EXPLORATION", task_id="task-explore", suffix="explore"))
+    evidence_root = tmp_path / "evidence"
+    optimization_gate, base_policy = _valid_evidence(optimization, evidence_root)
+    exploration_gate, _ = _valid_evidence(exploration, evidence_root)
+    original = base_policy.signers["key-run_start_authorizer"]
+    altered = TrustedSigner(
+        key_id=original.key_id, principal_id=authorizer_principal,
+        public_key=original.public_key, permitted_roles=original.permitted_roles,
+    )
+    signers = dict(base_policy.signers)
+    signers[original.key_id] = altered
+    malicious_policy = TrustPolicy(signers=signers,
+                                   independent_principal_exclusions=base_policy.independent_principal_exclusions)
+    policy_path = _write_trust_policy(tmp_path / "protected" / "trust-policy.json", malicious_policy)
+    private_key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(_sha("secret-RUN_START_AUTHORIZER")))
+    pair_sha = track_pair_sha256(optimization, exploration)
+    _, policy_sha = load_trust_policy(policy_path)
+    payload = {
+        "optimization_manifest_sha256": optimization.manifest_sha256,
+        "exploration_manifest_sha256": exploration.manifest_sha256,
+        "optimization_gate_evidence_sha256": gate_evidence_sha256(optimization_gate),
+        "exploration_gate_evidence_sha256": gate_evidence_sha256(exploration_gate),
+        "track_pair_sha256": pair_sha,
+        "trust_policy_sha256": policy_sha,
+    }
+    raw = sign_evidence({
+        "schema_version": 1, "evidence_type": "RUN_AUTHORIZATION",
+        "subject_sha": pair_sha, "conclusion": "ACCEPTED",
+        "issuer_role": "RUN_START_AUTHORIZER", "payload": payload,
+    }, key_id=original.key_id, principal_id=authorizer_principal, private_key=private_key)
+    authorization = RunStartAuthorization(
+        document=SignedEvidence.model_validate_json(raw, strict=True), raw_bytes=raw,
+        artifact_sha256=hashlib.sha256(raw).hexdigest(), pair_sha256=pair_sha,
+        trust_policy_sha256=policy_sha,
+    )
+    with pytest.raises(RunStartError, match="run-start authorizer"):
+        verify_run_start_authorization(
+            authorization, optimization=optimization, exploration=exploration,
+            optimization_evidence=optimization_gate, exploration_evidence=exploration_gate,
+            trust_policy_path=str(policy_path),
+        )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="protected run-start trust root currently requires POSIX openat")
+def test_trust_policy_loader_rejects_symlink_ancestor(tmp_path):
+    signer = TrustedSigner(
+        key_id="key", principal_id="principal",
+        public_key=Ed25519PrivateKey.generate().public_key().public_bytes(
+            encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw),
+        permitted_roles=frozenset({"RUN_START_AUTHORIZER"}),
+    )
+    policy = TrustPolicy(signers={"key": signer}, independent_principal_exclusions=frozenset({"excluded"}))
+    protected = _write_trust_policy(tmp_path / "protected" / "trust-policy.json", policy)
+    alias = tmp_path / "alias"
+    alias.symlink_to(protected.parent, target_is_directory=True)
+    with pytest.raises(EvidenceError):
+        load_trust_policy(alias / protected.name)
 
 
 def test_run_gate_requires_exact_head_e2e_ci_review_and_independent_attestations(tmp_path):
