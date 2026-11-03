@@ -42,6 +42,16 @@ bananloop report --repo /tmp/bananloop-fixture
 
 The original fixture repository remains unchanged. BananLoop uses its managed workspace. See the [full CLI guide](reference/cli-and-campaigns.md) for Windows equivalents and advanced options.
 
+### Pause, resume and final report smoke
+
+To exercise a real local CLI process while an agent subprocess is active, cancel it with pause, resume the durable campaign, and capture its final report:
+
+```bash
+python examples/fixture/run_lifecycle_e2e.py --output-dir /tmp/bananloop-lifecycle-run
+```
+
+This uses only a deterministic local fixture (no model calls) and writes a disposable project, campaign state, result JSON and command logs under a new output directory. The final report is DEV-only; it does not configure validation or holdout.
+
 ## Option B — independent Luna smoke evidence
 
 A QA agent tested the opt-in semantic selector on `examples/calibration/mini_matcher` on October 29, 2026. This was one fresh CPU-only campaign:
