@@ -7,7 +7,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from benchmarks.v02_full.evidence import (
     EvidenceArtifactRef, EvidenceError, TrustPolicy, TrustedSigner, sign_evidence,
-    verify_evidence_artifact,
+    verify_content_artifact, verify_evidence_artifact,
 )
 
 
@@ -121,3 +121,19 @@ def test_evidence_verifier_rejects_unknown_revoked_and_symlinked_signers(tmp_pat
             evidence_type="TECHNICAL_REVIEW", subject_sha="a" * 64, conclusion="PASS",
             issuer_role="INDEPENDENT_TECHNICAL_REVIEWER",
         )
+
+
+def test_content_artifact_verification_checks_bytes_paths_and_size(tmp_path):
+    content = b"sealed evaluator output\n"
+    digest = hashlib.sha256(content).hexdigest()
+    (tmp_path / "output.bin").write_bytes(content)
+    reference = EvidenceArtifactRef(path="output.bin", artifact_sha256=digest)
+    assert verify_content_artifact(root=tmp_path, reference=reference, expected_sha256=digest) == digest
+    with pytest.raises(EvidenceError, match="pinned SHA-256"):
+        verify_content_artifact(root=tmp_path, reference=reference, expected_sha256="0" * 64)
+    with pytest.raises(EvidenceError, match="byte limit"):
+        verify_content_artifact(root=tmp_path, reference=reference, expected_sha256=digest, max_bytes=4)
+    with pytest.raises(EvidenceError, match="traverses"):
+        verify_content_artifact(root=tmp_path, reference=EvidenceArtifactRef(
+            path="../output.bin", artifact_sha256=digest,
+        ), expected_sha256=digest)

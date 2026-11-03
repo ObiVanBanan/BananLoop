@@ -13,7 +13,10 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .accounting import ActionReceipt, AccountingResult, validate_accounting_chain
-from .evidence import EvidenceArtifactRef, EvidenceError, TrustPolicy, verify_evidence_artifact
+from .evidence import (
+    EvidenceArtifactRef, EvidenceError, TrustPolicy, verify_content_artifact,
+    verify_evidence_artifact,
+)
 from .prereg import (
     InferencePlan, PreregError, ResourceCaps, TrackManifest, _normal_critical,
     _student_t_critical_approx, canonical_bytes, verify_frozen_manifest,
@@ -34,6 +37,8 @@ class BlindedPairScore(ReportModel):
     arm_b_score: float | None = None
     arm_a_output_sha256: Digest | None = None
     arm_b_output_sha256: Digest | None = None
+    arm_a_output_ref: EvidenceArtifactRef | None = None
+    arm_b_output_ref: EvidenceArtifactRef | None = None
     arm_a_receipts: tuple[ActionReceipt, ...] = ()
     arm_b_receipts: tuple[ActionReceipt, ...] = ()
     arm_a_ledger_attestation: EvidenceArtifactRef | None = None
@@ -49,6 +54,8 @@ class BlindedPairScore(ReportModel):
             if any(value is None for value in (self.arm_a_score, self.arm_b_score,
                                                self.arm_a_output_sha256, self.arm_b_output_sha256)):
                 raise ValueError("scored pair requires both anonymized outputs and scores")
+            if self.arm_a_output_ref is None or self.arm_b_output_ref is None:
+                raise ValueError("scored pair requires content-addressed output artifact refs")
             if self.reason is not None:
                 raise ValueError("scored pair cannot have a failure/exclusion reason")
         else:
@@ -56,6 +63,15 @@ class BlindedPairScore(ReportModel):
                 raise ValueError("unscored pair must not contain a score")
             if self.reason is None or not self.reason.strip():
                 raise ValueError("failed, excluded, and missing pairs require a reason")
+        if ((self.arm_a_output_sha256 is None) != (self.arm_a_output_ref is None)
+                or (self.arm_b_output_sha256 is None) != (self.arm_b_output_ref is None)):
+            raise ValueError("each output digest must be paired with its artifact reference")
+        if (self.arm_a_output_ref is not None
+                and self.arm_a_output_ref.artifact_sha256 != self.arm_a_output_sha256):
+            raise ValueError("arm A output ref must match its output digest")
+        if (self.arm_b_output_ref is not None
+                and self.arm_b_output_ref.artifact_sha256 != self.arm_b_output_sha256):
+            raise ValueError("arm B output ref must match its output digest")
         if self.pair_result_sha256 != pair_score_digest(self):
             raise ValueError("pair result digest does not match its canonical score record")
         return self
@@ -276,6 +292,17 @@ def aggregate_blinded_scores(
     deltas: list[float] = []
     wins = ties = losses = 0
     for item in package.pairs:
+        for label, reference, digest in (
+            ("A", item.arm_a_output_ref, item.arm_a_output_sha256),
+            ("B", item.arm_b_output_ref, item.arm_b_output_sha256),
+        ):
+            if reference is not None and digest is not None:
+                try:
+                    verify_content_artifact(
+                        root=evidence_root, reference=reference, expected_sha256=digest,
+                    )
+                except EvidenceError as exc:
+                    raise ReportError(f"arm {label} output artifact verification failed: {exc}") from exc
         caps_a, caps_b = manifest.arms[0].caps, manifest.arms[1].caps
         accounting_a, eligible_a = _verified_accounting(
             item.arm_a_receipts, pair_id=item.pair_id_sha256, arm_label="A",

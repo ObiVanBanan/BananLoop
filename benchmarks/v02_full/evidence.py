@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 _KEY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 MAX_EVIDENCE_BYTES = 1_000_000
+MAX_SCORE_OUTPUT_BYTES = 16_000_000
 
 
 class EvidenceError(ValueError):
@@ -108,7 +109,7 @@ def sign_evidence(document: dict, *, key_id: str, principal_id: str,
     return canonical_bytes({**unsigned, "signature_ed25519": signature})
 
 
-def _read_evidence_bounded(root: Path, relative: PurePosixPath) -> bytes:
+def _read_evidence_bounded(root: Path, relative: PurePosixPath, *, max_bytes: int = MAX_EVIDENCE_BYTES) -> bytes:
     """Open without following symlinks and cap bytes actually read."""
     directory_flag = getattr(os, "O_DIRECTORY", 0)
     nofollow_flag = getattr(os, "O_NOFOLLOW", 0)
@@ -130,19 +131,48 @@ def _read_evidence_bounded(root: Path, relative: PurePosixPath) -> bytes:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise EvidenceError("evidence artifact is not a regular file")
         content = bytearray()
-        while len(content) <= MAX_EVIDENCE_BYTES:
-            chunk = os.read(fd, min(65536, MAX_EVIDENCE_BYTES + 1 - len(content)))
+        while len(content) <= max_bytes:
+            chunk = os.read(fd, min(65536, max_bytes + 1 - len(content)))
             if not chunk:
                 break
             content.extend(chunk)
-        if len(content) > MAX_EVIDENCE_BYTES:
-            raise EvidenceError("evidence artifact exceeds the 1 MB limit")
+        if len(content) > max_bytes:
+            raise EvidenceError("artifact exceeds its configured byte limit")
         return bytes(content)
     except OSError as exc:
         raise EvidenceError("evidence artifact is missing, symlinked, or unreadable") from exc
     finally:
         for descriptor in reversed(descriptors):
             os.close(descriptor)
+
+
+def verify_content_artifact(
+    *, root: str | Path, reference: EvidenceArtifactRef, expected_sha256: str,
+    max_bytes: int = MAX_SCORE_OUTPUT_BYTES,
+) -> str:
+    """Verify bounded regular-file bytes under a trusted root without following symlinks."""
+    raw_path = reference.path
+    if "\\" in raw_path or "\x00" in raw_path:
+        raise EvidenceError("content artifact path must be canonical relative POSIX")
+    relative = PurePosixPath(raw_path)
+    if relative.is_absolute() or relative.as_posix() != raw_path or any(
+        part in {"", ".", ".."} for part in raw_path.split("/")
+    ):
+        raise EvidenceError("content artifact path is absolute or traverses outside its root")
+    trusted_root = Path(root).resolve()
+    path = trusted_root.joinpath(*relative.parts)
+    cursor = trusted_root
+    contains_symlink = False
+    for part in relative.parts:
+        cursor = cursor / part
+        contains_symlink = contains_symlink or cursor.is_symlink()
+    if contains_symlink or not path.is_file() or not path.resolve().is_relative_to(trusted_root):
+        raise EvidenceError("content artifact is missing, symlinked, or outside the trusted root")
+    content = _read_evidence_bounded(trusted_root, relative, max_bytes=max_bytes)
+    digest = hashlib.sha256(content).hexdigest()
+    if digest != reference.artifact_sha256 or digest != expected_sha256:
+        raise EvidenceError("content artifact bytes do not match the pinned SHA-256")
+    return digest
 
 
 def verify_evidence_artifact(

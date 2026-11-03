@@ -525,12 +525,25 @@ def _report_package(manifest, evidence_root, *, unknown_pair_id=None,
                      "final_receipt_sha256": receipts_b[-1].receipt_sha256},
         )
         failed = pair_id == failed_pair_id
+        output_a = None if failed else f"anonymized output A for {pair_id}\n".encode()
+        output_b = None if failed else f"anonymized output B for {pair_id}\n".encode()
+        if output_a is not None:
+            (evidence_root / f"output-{pair_id}-A.bin").write_bytes(output_a)
+            (evidence_root / f"output-{pair_id}-B.bin").write_bytes(output_b)
+        output_a_sha = hashlib.sha256(output_a).hexdigest() if output_a is not None else None
+        output_b_sha = hashlib.sha256(output_b).hexdigest() if output_b is not None else None
         raw_pair = {
             "pair_id_sha256": pair_id, "status": "FAILED" if failed else "SCORED",
             "arm_a_score": None if failed else 2.0 + index / 100,
             "arm_b_score": None if failed else 1.0,
-            "arm_a_output_sha256": None if failed else _sha(f"output-a-{index}"),
-            "arm_b_output_sha256": None if failed else _sha(f"output-b-{index}"),
+            "arm_a_output_sha256": output_a_sha,
+            "arm_b_output_sha256": output_b_sha,
+            "arm_a_output_ref": (EvidenceArtifactRef(
+                path=f"output-{pair_id}-A.bin", artifact_sha256=output_a_sha,
+            ).model_dump() if output_a_sha else None),
+            "arm_b_output_ref": (EvidenceArtifactRef(
+                path=f"output-{pair_id}-B.bin", artifact_sha256=output_b_sha,
+            ).model_dump() if output_b_sha else None),
             "arm_a_receipts": tuple(item.model_dump(mode="json") for item in receipts_a),
             "arm_b_receipts": tuple(item.model_dump(mode="json") for item in receipts_b),
             "arm_a_ledger_attestation": ledger_a.model_dump() if ledger_a else None,
@@ -713,6 +726,21 @@ def test_missing_signed_ledger_head_makes_scored_pair_accounting_unknown(tmp_pat
     assert pair.status == "INELIGIBLE_ACCOUNTING"
     assert pair.accounting_status == "UNKNOWN"
     assert report.usable_pairs == 11
+
+
+def test_scored_output_bytes_must_match_the_frozen_digest(tmp_path):
+    manifest = freeze_manifest(_raw_manifest())
+    package = _report_package(manifest, tmp_path)
+    scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
+    _, trust_policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
+    first_ref = package.pairs[0].arm_a_output_ref
+    (tmp_path / first_ref.path).write_bytes(b"changed after scorer sealed the package")
+    with pytest.raises(ReportError, match="output artifact verification failed"):
+        aggregate_blinded_scores(
+            manifest, package, scoring_attestation=scoring_ref,
+            unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
+            trust_policy=trust_policy,
+        )
 
 
 def test_arm_author_cannot_unblind(tmp_path):
