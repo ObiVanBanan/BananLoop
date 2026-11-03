@@ -269,6 +269,12 @@ def aggregate_blinded_scores(
         ).document
     except (EvidenceError, PreregError) as exc:
         raise ReportError(str(exc)) from exc
+    if set(scorer.payload) != {"score_package_sha256", "evaluator_pin_sha256"}:
+        raise ReportError("scorer attestation must not contain unblinding or unrelated payload fields")
+    if set(unblinder.payload) != {
+        "score_package_sha256", "bananloop_arm_label", "codex_direct_arm_label",
+    }:
+        raise ReportError("unblinding attestation must contain only the frozen package and label mapping")
     if scorer.issuer_principal_id in trust_policy.independent_principal_exclusions:
         raise ReportError("an arm author/operator cannot serve as the independent scorer")
     if unblinder.issuer_principal_id in trust_policy.independent_principal_exclusions:

@@ -576,13 +576,14 @@ def _write_report_attestation(root, *, name, evidence_type, subject_sha, role, p
     return EvidenceArtifactRef(path=path, artifact_sha256=hashlib.sha256(raw).hexdigest())
 
 
-def _attest_score_package(root, manifest, package):
+def _attest_score_package(root, manifest, package, *, scorer_extra=None):
     scorer_ref = _write_report_attestation(
         root, name="blinded-score", evidence_type="BLINDED_SCORE_PACKAGE",
         subject_sha=manifest.manifest_sha256, role="INDEPENDENT_SCORER",
         principal="principal-scorer",
         payload={"score_package_sha256": package.package_sha256,
-                 "evaluator_pin_sha256": package.evaluator_pin_sha256},
+                 "evaluator_pin_sha256": package.evaluator_pin_sha256,
+                 **(scorer_extra or {})},
     )
     operator_ref = _write_report_attestation(
         root, name="unblinding", evidence_type="UNBLINDING",
@@ -792,4 +793,19 @@ def test_scorer_and_unblinder_cannot_share_signing_key(tmp_path):
             manifest, package, scoring_attestation=scoring_ref,
             unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
             trust_policy=shared_key_policy,
+        )
+
+
+def test_scorer_attestation_cannot_include_unblinding_mapping(tmp_path):
+    manifest = freeze_manifest(_raw_manifest())
+    package = _report_package(manifest, tmp_path)
+    scoring_ref, unblinding_ref = _attest_score_package(
+        tmp_path, manifest, package, scorer_extra={"bananloop_arm_label": "A"},
+    )
+    _, trust_policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
+    with pytest.raises(ReportError, match="must not contain unblinding"):
+        aggregate_blinded_scores(
+            manifest, package, scoring_attestation=scoring_ref,
+            unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
+            trust_policy=trust_policy,
         )
