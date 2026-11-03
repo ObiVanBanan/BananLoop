@@ -70,6 +70,14 @@ benchmarks/agent_capability_v0.2/
 - A capability or security-policy violation makes the trial ineligible; it is not averaged away.
 - Do not run scored trials until the gates in [pilot-plan.md](pilot-plan.md) are met.
 
+## Codex Plus usage limits
+
+The default workflow is **offline-first** and spends **zero Codex subscription requests** during design, schema validation, fixture execution, and report validation.
+
+A later, explicitly approved first live pilot starts with **at most two** short Codex invocations; its total ceiling is **eight** invocations, **two per batch**, with one seed per case and no automatic retries, speculation, or parallel fanout. Count all underlying agent/model requests, including bootstrap and retries; if a hard pre-dispatch count cannot be enforced, stop rather than guessing. Plus subscription quota is variable and cannot be inferred from token counts. No automatic quota-renewal retries.
+
+Large confirmatory suites require a new budget/capacity decision. See [pilot-plan.md](pilot-plan.md). Roles not live-tested remain `NOT_TESTED`, without scores.
+
 ## Current deliverable
 
 This PR establishes the benchmark contract, provisional role map, schemas, source register, and execution gates. It intentionally does **not** download or vendor third-party datasets, create hidden gold labels, run models, or claim benchmark results.
