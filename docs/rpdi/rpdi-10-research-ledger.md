@@ -39,9 +39,10 @@ digests.
 causal memory, structural intervention memory, and contradiction links.
 Typed evaluator diagnostics from RPDI-52 are deferred until RPDI-11 provides a
 trusted evaluator protocol; this stage does not treat worker-authored summaries
-as trusted diagnostics. Multiple campaigns can be exported
-together only under the same exact source snapshot and role protocol. Hidden
-classes cannot be serialized by this schema. The RPDI-09 researcher receives causal and structural intervention
+as trusted diagnostics. The current projection API revalidates evidence
+through one graph database per call, so multi-campaign export is deferred until
+a graph resolver and explicit cross-campaign bridge contract are defined.
+Hidden classes cannot be serialized by this schema. The RPDI-09 researcher receives causal and structural intervention
 summaries plus evidence IDs only through the corresponding role-allowlisted
 `dev_summary` / `evidence_refs` fields, with a content-addressed
 `research://ledger/...` provenance reference.
