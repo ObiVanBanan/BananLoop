@@ -17,6 +17,7 @@ def _bind_child(ledger: BudgetLedger, *, allocation: str, parent: str, child: st
         caps=caps,
     )
     ledger.bind_child(allocation, child, spec_hash)
+    ledger.activate_child(allocation, child, spec_hash, "c" * 64)
 
 
 def _reserve_from_process(path, index: int, start_event, result_queue) -> None:
@@ -150,3 +151,29 @@ def test_concurrent_child_escrow_cannot_exceed_root_cap(tmp_path):
     check = BudgetLedger(path)
     assert check.snapshot("root")["agent_calls"]["reserved"] == 6
     check.close()
+
+
+def test_bound_child_rejects_actions_until_activation_gate_opens(tmp_path):
+    ledger = BudgetLedger(tmp_path / "campaign-registry.sqlite3")
+    ledger.create_root("root", {"agent_calls": 5})
+    ledger.reserve_child(allocation_id="alloc-bound", idempotency_key="allocate:bound",
+                         parent_id="root", spec_hash="a" * 64,
+                         caps={"agent_calls": 4})
+    ledger.bind_child("alloc-bound", "child-bound", "a" * 64)
+    with pytest.raises(BudgetLedgerError, match="admission gate"):
+        ledger.reserve_action(
+            reservation_id="res-bound", campaign_id="child-bound", action_id="act-bound",
+            resource="agent_calls", amount=1, idempotency_key="reserve:bound",
+            allocation_id="alloc-bound",
+        )
+    ledger.activate_child("alloc-bound", "child-bound", "a" * 64, "d" * 64)
+    ledger.activate_child("alloc-bound", "child-bound", "a" * 64, "d" * 64)
+    ledger.reserve_action(
+        reservation_id="res-active", campaign_id="child-bound", action_id="act-active",
+        resource="agent_calls", amount=1, idempotency_key="reserve:active",
+        allocation_id="alloc-bound",
+    )
+    assert ledger.conn.execute(
+        "SELECT state FROM child_allocation_gates WHERE allocation_id='alloc-bound'",
+    ).fetchone()[0] == "ACTIVE"
+    ledger.close()

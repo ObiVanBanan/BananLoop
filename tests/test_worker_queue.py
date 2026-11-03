@@ -109,6 +109,7 @@ def test_child_worker_claim_charges_its_parent_allocation(tmp_path):
                          parent_id="root", spec_hash="a" * 64,
                          caps={"agent_calls": 6})
     ledger.bind_child("alloc-child", "child", "a" * 64)
+    ledger.activate_child("alloc-child", "child", "a" * 64, "c" * 64)
     ledger.close()
     queue.enqueue(job_id="job-child", enqueue_key="enqueue:child", campaign_id="child",
                   action_id="action:child", resource="agent_calls", upper_bound=4,
@@ -464,3 +465,30 @@ def test_vector_child_allocation_settles_each_independent_resource(tmp_path):
     assert snapshot["evaluation_units"]["reserved"] == 0
     ledger.close()
     queue.close()
+
+
+def test_child_worker_claim_rolls_back_while_allocation_gate_is_bound(tmp_path):
+    path, queue = _queue(tmp_path, cap=10)
+    ledger = BudgetLedger(path)
+    ledger.reserve_child(allocation_id="alloc-bound", idempotency_key="allocate:bound",
+                         parent_id="root", spec_hash="a" * 64,
+                         caps={"agent_calls": 6})
+    ledger.bind_child("alloc-bound", "child-bound", "a" * 64)
+    ledger.close()
+    queue.enqueue(job_id="job-bound", enqueue_key="enqueue:bound", campaign_id="child-bound",
+                  action_id="action:bound", resource="agent_calls", upper_bound=4,
+                  request={"operation": "agent"})
+    with pytest.raises(WorkerQueueError):
+        queue.claim("job-bound", "worker-bound", lease_seconds=30, now=100)
+    assert queue.get_job("job-bound")["state"] == "READY"
+    ledger = BudgetLedger(path)
+    try:
+        assert ledger.conn.execute(
+            "SELECT state FROM child_allocation_gates WHERE allocation_id='alloc-bound'",
+        ).fetchone()[0] == "BOUND"
+        assert ledger.conn.execute(
+            "SELECT COUNT(*) FROM budget_reservations WHERE allocation_id='alloc-bound'",
+        ).fetchone()[0] == 0
+    finally:
+        ledger.close()
+        queue.close()

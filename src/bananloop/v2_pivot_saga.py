@@ -143,6 +143,19 @@ def _create_parent_saga_schema(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         )"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS v2_pivot_saga_control (
+            idempotency_key TEXT PRIMARY KEY REFERENCES v2_pivot_sagas(idempotency_key),
+            state TEXT NOT NULL CHECK(state IN ('OPEN','ACTIVATING','ACTIVE','CANCEL_REQUESTED','CANCELLED')),
+            control_digest TEXT,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO v2_pivot_saga_control(idempotency_key,state,updated_at) "
+        "SELECT idempotency_key,CASE WHEN state='ACTIVE' THEN 'ACTIVE' ELSE 'OPEN' END,updated_at "
+        "FROM v2_pivot_sagas"
+    )
 
 
 def _append_event(conn: sqlite3.Connection, event_type: str, payload: dict[str, Any]) -> None:
@@ -522,6 +535,10 @@ class V2PivotSaga:
                 ).fetchone()
                 state = row["state"]
                 if state == "ACTIVE":
+                    activation_digest = _digest({"key": idempotency_key, "request_hash": plan["request_hash"],
+                                                 "allocation_id": plan["allocation_id"], "child_id": row["child_id"]})
+                    ledger.activate_child(plan["allocation_id"], row["child_id"], plan["child_spec_hash"], activation_digest)
+                    self._set_control_active(conn, idempotency_key, activation_digest)
                     self._verify_active_saga(
                         conn, row, plan, ledger, require_active_event=True,
                     )
@@ -567,10 +584,16 @@ class V2PivotSaga:
                     self._checkpoint("AFTER_CHILD_INITIALIZE")
                     self._transition(conn, idempotency_key, "CHILD_INITIALIZED")
                 elif state == "CHILD_INITIALIZED":
+                    activation_digest = _digest({"key": idempotency_key, "request_hash": plan["request_hash"],
+                                                 "allocation_id": plan["allocation_id"], "child_id": row["child_id"]})
+                    self._begin_activation(conn, idempotency_key, activation_digest)
                     self._verify_active_saga(
                         conn, row, plan, ledger, require_active_event=False,
                     )
                     self._transition(conn, idempotency_key, "ACTIVE")
+                    self._checkpoint("AFTER_PARENT_ACTIVE")
+                    ledger.activate_child(plan["allocation_id"], row["child_id"], plan["child_spec_hash"], activation_digest)
+                    self._set_control_active(conn, idempotency_key, activation_digest)
                 else:
                     raise PivotSagaError(f"unknown pivot saga state: {state}")
         except (BudgetLedgerError, RegistryError, sqlite3.DatabaseError) as exc:
@@ -609,8 +632,14 @@ class V2PivotSaga:
                 "SELECT * FROM child_allocations WHERE allocation_id=?",
                 (saga["allocation_id"],),
             ).fetchone()
+            gate = ledger.conn.execute(
+                "SELECT state FROM child_allocation_gates WHERE allocation_id=?",
+                (saga["allocation_id"],),
+            ).fetchone()
+            expected_gate = {"ACTIVE", "CLOSED"} if require_active_event else {"BOUND"}
             if (
                 allocation is None
+                or gate is None or gate["state"] not in expected_gate
                 or allocation["state"] not in (
                     {"ACTIVE", "CLOSED"} if require_active_event else {"ACTIVE"}
                 )
@@ -804,6 +833,10 @@ class V2PivotSaga:
                     _canonical(plan["budget_caps"]), now, now,
                 ),
             )
+            conn.execute(
+                "INSERT OR IGNORE INTO v2_pivot_saga_control(idempotency_key,state,updated_at) VALUES(?,'OPEN',?)",
+                (plan["idempotency_key"], now),
+            )
             _append_event(conn, "PIVOT_CHILD_INTENT", {
                 "campaign_id": self.parent_campaign_id,
                 "proposal_id": plan["proposal"].proposal_id,
@@ -816,6 +849,48 @@ class V2PivotSaga:
         except Exception:
             if conn.in_transaction:
                 conn.rollback()
+            raise
+
+    @staticmethod
+    def _begin_activation(conn: sqlite3.Connection, key: str, digest: str) -> None:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute("SELECT * FROM v2_pivot_saga_control WHERE idempotency_key=?", (key,)).fetchone()
+            if row is None:
+                raise PivotSagaError("pivot saga activation control is missing")
+            if row["state"] == "OPEN":
+                changed = conn.execute(
+                    "UPDATE v2_pivot_saga_control SET state='ACTIVATING',control_digest=?,updated_at=? "
+                    "WHERE idempotency_key=? AND state='OPEN'",
+                    (digest, utc_now(), key),
+                ).rowcount
+                if changed != 1:
+                    raise PivotSagaError("pivot activation lost its control CAS")
+            elif row["state"] == "ACTIVATING":
+                if row["control_digest"] != digest:
+                    raise PivotSagaError("pivot activation replay digest mismatch")
+            elif row["state"] != "ACTIVE" or row["control_digest"] != digest:
+                raise PivotSagaError("pivot activation is blocked by cancellation or conflicting control")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    @staticmethod
+    def _set_control_active(conn: sqlite3.Connection, key: str, digest: str) -> None:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            changed = conn.execute(
+                "UPDATE v2_pivot_saga_control SET state='ACTIVE',control_digest=?,updated_at=? "
+                "WHERE idempotency_key=? AND state IN ('ACTIVATING','ACTIVE') "
+                "AND (control_digest IS NULL OR control_digest=?)",
+                (digest, utc_now(), key, digest),
+            ).rowcount
+            if changed != 1:
+                raise PivotSagaError("pivot activation control could not be finalized")
+            conn.commit()
+        except Exception:
+            conn.rollback()
             raise
 
     def _transition(

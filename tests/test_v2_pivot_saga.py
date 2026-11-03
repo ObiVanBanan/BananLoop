@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from bananloop.budget_ledger import BudgetLedger
+from bananloop.budget_ledger import BudgetLedger, BudgetLedgerError
 from bananloop.contracts import (
     AutonomyScopeV2,
     PivotDecisionCommand,
@@ -373,6 +373,7 @@ def test_optimization_child_without_valid_parent_protocol_approval_fails_closed(
     "AFTER_REGISTRY_RESERVE",
     "AFTER_ALLOCATION_BIND",
     "AFTER_CHILD_INITIALIZE",
+    "AFTER_PARENT_ACTIVE",
 ])
 def test_pivot_child_saga_reserves_before_create_and_resumes_once(tmp_path, crash_at):
     setup = _setup(tmp_path)
@@ -401,6 +402,7 @@ def test_pivot_child_saga_reserves_before_create_and_resumes_once(tmp_path, cras
         "AFTER_REGISTRY_RESERVE": "ESCROWED",
         "AFTER_ALLOCATION_BIND": "CHILD_RESERVED",
         "AFTER_CHILD_INITIALIZE": "ALLOCATION_BOUND",
+        "AFTER_PARENT_ACTIVE": "ACTIVE",
     }[crash_at]
     assert state == expected_state
 
@@ -419,6 +421,19 @@ def test_pivot_child_saga_reserves_before_create_and_resumes_once(tmp_path, cras
             ).fetchone()[0] == 1
         finally:
             registry_conn.close()
+    if crash_at == "AFTER_PARENT_ACTIVE":
+        assert allocations[0]["child_id"] is not None
+        assert ledger.conn.execute(
+            "SELECT state FROM child_allocation_gates WHERE allocation_id=?",
+            (allocations[0]["allocation_id"],),
+        ).fetchone()[0] == "BOUND"
+        with pytest.raises(BudgetLedgerError, match="admission gate"):
+            ledger.reserve_action(
+                reservation_id="during-activation", campaign_id=allocations[0]["child_id"],
+                action_id="act-during-activation", resource="agent_calls", amount=1,
+                idempotency_key="reserve:during-activation",
+                allocation_id=allocations[0]["allocation_id"],
+            )
     ledger.close()
 
     result = _saga(setup).create_child(
@@ -426,6 +441,15 @@ def test_pivot_child_saga_reserves_before_create_and_resumes_once(tmp_path, cras
         child_spec=setup["child_spec"],
     )
     assert result["state"] == "ACTIVE"
+    if crash_at == "AFTER_PARENT_ACTIVE":
+        ledger = setup["registry"].budget_ledger()
+        try:
+            assert ledger.conn.execute(
+                "SELECT state FROM child_allocation_gates WHERE allocation_id=?",
+                (result["allocation_id"],),
+            ).fetchone()[0] == "ACTIVE"
+        finally:
+            ledger.close()
     assert result["child_spec_hash"]
     assert setup["registry"].resolve()[1] == setup["parent_id"]
 

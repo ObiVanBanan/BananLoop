@@ -105,6 +105,32 @@ class BudgetLedger:
         # Registry-local schema changes are additive because this database is
         # shared with CampaignRegistry and may already contain RPDI-03 tables.
         self._ensure_dispatch_column()
+        self._ensure_allocation_gates()
+
+    def _ensure_allocation_gates(self) -> None:
+        """Add an admission gate without changing legacy allocation columns."""
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS child_allocation_gates (
+            allocation_id TEXT PRIMARY KEY REFERENCES child_allocations(allocation_id),
+            state TEXT NOT NULL CHECK(state IN ('RESERVED','BOUND','ACTIVE','CANCELLED','CLOSED')),
+            activation_digest TEXT,
+            cancellation_digest TEXT,
+            updated_at TEXT NOT NULL
+        )""")
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO child_allocation_gates "
+                "(allocation_id,state,activation_digest,cancellation_digest,updated_at) "
+                "SELECT allocation_id,CASE "
+                "WHEN state='RESERVED' AND child_id IS NULL THEN 'RESERVED' "
+                "WHEN state='RESERVED' AND child_id IS NOT NULL THEN 'BOUND' "
+                "WHEN state='ACTIVE' THEN 'ACTIVE' ELSE 'CLOSED' END,"
+                "NULL,NULL,created_at FROM child_allocations"
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def _ensure_dispatch_column(self) -> None:
         columns = {row[1] for row in self.conn.execute("PRAGMA table_info(budget_reservations)")}
@@ -199,15 +225,19 @@ class BudgetLedger:
                 if (replay["allocation_id"] != allocation_id or replay["parent_id"] != parent_id
                         or replay["spec_hash"] != spec_hash or old != vector):
                     raise BudgetLedgerError("child allocation idempotency key was reused with different content")
+                gate = self.conn.execute("SELECT state FROM child_allocation_gates WHERE allocation_id=?", (replay["allocation_id"],)).fetchone()
+                if gate is None or gate["state"] in {"CANCELLED", "CLOSED"}:
+                    raise BudgetLedgerError("cancelled or closed allocation cannot be replayed")
                 if owns_transaction:
                     self.conn.commit()
                 return dict(replay)
             if self.conn.execute("SELECT 1 FROM child_allocations WHERE allocation_id=?", (allocation_id,)).fetchone():
                 raise BudgetLedgerError("allocation_id is already in use")
             parent_binding = self.conn.execute(
-                "SELECT state FROM child_allocations WHERE child_id=?", (parent_id,)
+                "SELECT a.state,g.state AS gate_state FROM child_allocations a "
+                "JOIN child_allocation_gates g USING(allocation_id) WHERE a.child_id=?", (parent_id,)
             ).fetchone()
-            if parent_binding is not None and parent_binding["state"] != "ACTIVE":
+            if parent_binding is not None and (parent_binding["state"] != "ACTIVE" or parent_binding["gate_state"] != "ACTIVE"):
                 raise BudgetLedgerError("parent child campaign allocation is not active")
             is_root = self.conn.execute(
                 "SELECT 1 FROM budget_roots WHERE campaign_id=?", (parent_id,)
@@ -216,7 +246,8 @@ class BudgetLedger:
                 raise BudgetLedgerError("parent campaign has no active budget authority")
             parent = self._accounts(parent_id)
             parent_allocation = self.conn.execute(
-                "SELECT allocation_id FROM child_allocations WHERE child_id=? AND state='ACTIVE'",
+                "SELECT a.allocation_id FROM child_allocations a JOIN child_allocation_gates g USING(allocation_id) "
+                "WHERE a.child_id=? AND a.state='ACTIVE' AND g.state='ACTIVE'",
                 (parent_id,),
             ).fetchone()
             for resource, amount in vector.items():
@@ -236,6 +267,10 @@ class BudgetLedger:
             self.conn.execute(
                 "INSERT INTO child_allocations VALUES(?,?,?,?,?,'RESERVED',?,NULL)",
                 (allocation_id, idempotency_key, parent_id, None, spec_hash, now),
+            )
+            self.conn.execute(
+                "INSERT INTO child_allocation_gates(allocation_id,state,updated_at) VALUES(?,'RESERVED',?)",
+                (allocation_id, now),
             )
             for resource, amount in vector.items():
                 self.conn.execute(
@@ -271,7 +306,8 @@ class BudgetLedger:
                 raise BudgetLedgerError("allocation is missing or bound to a different child spec")
             if row["child_id"] not in (None, child_id):
                 raise BudgetLedgerError("allocation is already bound to another child")
-            if row["state"] == "CLOSED":
+            gate = self.conn.execute("SELECT state FROM child_allocation_gates WHERE allocation_id=?", (allocation_id,)).fetchone()
+            if row["state"] == "CLOSED" or gate is None or gate["state"] in {"CANCELLED", "CLOSED"}:
                 raise BudgetLedgerError("closed allocation cannot be rebound")
             if row["child_id"] is None and self.conn.execute(
                 "SELECT 1 FROM budget_roots WHERE campaign_id=?", (child_id,)
@@ -280,6 +316,11 @@ class BudgetLedger:
             self.conn.execute(
                 "UPDATE child_allocations SET child_id=?,state='ACTIVE' WHERE allocation_id=?",
                 (child_id, allocation_id),
+            )
+            self.conn.execute(
+                "UPDATE child_allocation_gates SET state='BOUND',updated_at=? "
+                "WHERE allocation_id=? AND state IN ('RESERVED','BOUND')",
+                (utc_now(), allocation_id),
             )
             caps = self.conn.execute(
                 "SELECT resource,cap FROM child_allocation_resources WHERE allocation_id=?", (allocation_id,)
@@ -295,6 +336,30 @@ class BudgetLedger:
                 ).fetchone()
                 if int(actual["cap"]) != int(item["cap"]):
                     raise BudgetLedgerError("child account exists with a different allocation cap")
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def activate_child(self, allocation_id: str, child_id: str, spec_hash: str, activation_digest: str) -> None:
+        """Open child action admission after the parent saga has durably activated."""
+        if not re.fullmatch(r"[0-9a-f]{64}", activation_digest):
+            raise BudgetLedgerError("activation_digest must be a lowercase SHA-256 digest")
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute("SELECT * FROM child_allocations WHERE allocation_id=?", (allocation_id,)).fetchone()
+            gate = self.conn.execute("SELECT * FROM child_allocation_gates WHERE allocation_id=?", (allocation_id,)).fetchone()
+            if row is None or gate is None or row["child_id"] != child_id or row["spec_hash"] != spec_hash:
+                raise BudgetLedgerError("activation does not match the bound child")
+            if gate["state"] == "ACTIVE":
+                if gate["activation_digest"] != activation_digest:
+                    raise BudgetLedgerError("activation replay digest mismatch")
+                self.conn.commit()
+                return
+            if gate["state"] != "BOUND":
+                raise BudgetLedgerError("only a bound allocation can be activated")
+            self.conn.execute("UPDATE child_allocation_gates SET state='ACTIVE',activation_digest=?,updated_at=? WHERE allocation_id=?",
+                              (activation_digest, utc_now(), allocation_id))
             self.conn.commit()
         except Exception:
             self.conn.rollback()
@@ -339,6 +404,12 @@ class BudgetLedger:
             ).fetchone()
             if child_binding is not None and child_binding["state"] != "ACTIVE":
                 raise BudgetLedgerError("child campaign allocation is not active")
+            gate = None
+            if child_binding is not None:
+                gate = self.conn.execute("SELECT state FROM child_allocation_gates WHERE allocation_id=?",
+                                         (child_binding["allocation_id"],)).fetchone()
+                if gate is None or gate["state"] != "ACTIVE":
+                    raise BudgetLedgerError("child allocation admission gate is not active")
             if child_binding is not None and allocation_id != child_binding["allocation_id"]:
                 raise BudgetLedgerError("child action must be charged to its active parent allocation")
             if child_binding is None and allocation_id is not None:
@@ -353,7 +424,8 @@ class BudgetLedger:
                 allocation = self.conn.execute(
                     "SELECT child_id,state FROM child_allocations WHERE allocation_id=?", (allocation_id,)
                 ).fetchone()
-                if allocation is None or allocation["child_id"] != campaign_id or allocation["state"] != "ACTIVE":
+                gate = self.conn.execute("SELECT state FROM child_allocation_gates WHERE allocation_id=?", (allocation_id,)).fetchone()
+                if allocation is None or allocation["child_id"] != campaign_id or allocation["state"] != "ACTIVE" or gate is None or gate["state"] != "ACTIVE":
                     raise BudgetLedgerError("child allocation is not active for this campaign")
                 child_resource = self.conn.execute(
                     "SELECT * FROM child_allocation_resources WHERE allocation_id=? AND resource=?",
@@ -606,6 +678,7 @@ class BudgetLedger:
                     (cap, used, allocation["parent_id"], item["resource"]),
                 )
             self.conn.execute("UPDATE child_allocations SET state='CLOSED',closed_at=? WHERE allocation_id=?", (utc_now(), allocation_id))
+            self.conn.execute("UPDATE child_allocation_gates SET state='CLOSED',updated_at=? WHERE allocation_id=?", (utc_now(), allocation_id))
             self.conn.commit()
         except Exception:
             self.conn.rollback()
