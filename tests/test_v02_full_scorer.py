@@ -271,3 +271,31 @@ def test_scorer_input_requires_matching_independent_anonymization_evidence(tmp_p
         build_blind_scorer_input(
             manifest, changed_package, evidence_root=str(tmp_path), trust_policy=trust_policy,
         )
+
+
+def test_report_aggregation_rechecks_anonymization_evidence_after_model_copy(tmp_path):
+    manifest = freeze_manifest(_helpers._raw_manifest())
+    package = _helpers._report_package(manifest, tmp_path)
+    pair = next(item for item in package.pairs if item.status == "SCORED")
+    changed = pair.model_copy(update={
+        "arm_a_anonymization_attestation": pair.arm_b_anonymization_attestation,
+    })
+    from benchmarks.v02_full.report import pair_score_digest, score_package_digest
+    changed = changed.model_copy(update={"pair_result_sha256": pair_score_digest(changed)})
+    pairs = tuple(changed if item.pair_id_sha256 == pair.pair_id_sha256 else item
+                  for item in package.pairs)
+    payload = package.model_dump(mode="json")
+    payload["pairs"] = [item.model_dump(mode="json") for item in pairs]
+    payload.pop("package_sha256")
+    payload["package_sha256"] = score_package_digest(payload)
+    tampered = package.model_copy(update={
+        "pairs": pairs, "package_sha256": payload["package_sha256"],
+    })
+    scorer_ref, unblinding_ref = _helpers._attest_score_package(tmp_path, manifest, tampered)
+    gate_evidence, trust_policy = _helpers._valid_evidence(manifest, tmp_path)
+    with pytest.raises(ReportError, match="output anonymization verification failed"):
+        aggregate_blinded_scores(
+            manifest, tampered, gate_evidence=gate_evidence, scoring_attestation=scorer_ref,
+            unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
+            trust_policy=trust_policy,
+        )
