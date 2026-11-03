@@ -47,7 +47,8 @@ def _record_parent_activation(ledger: BudgetLedger, *, parent: str, allocation: 
         CREATE TABLE IF NOT EXISTS events(event_type TEXT,payload_json TEXT,created_at TEXT);
         CREATE TABLE IF NOT EXISTS v2_pivot_sagas(
             idempotency_key TEXT PRIMARY KEY,request_hash TEXT,parent_campaign_id TEXT,
-            allocation_id TEXT,child_id TEXT,child_spec_hash TEXT,state TEXT,proposal_json TEXT
+            allocation_id TEXT,child_id TEXT,child_spec_hash TEXT,state TEXT,proposal_json TEXT,
+            child_spec_json TEXT,budget_caps_json TEXT
         );
         CREATE TABLE IF NOT EXISTS v2_pivot_saga_control(
             idempotency_key TEXT PRIMARY KEY,state TEXT,control_digest TEXT,updated_at TEXT
@@ -58,10 +59,25 @@ def _record_parent_activation(ledger: BudgetLedger, *, parent: str, allocation: 
         {"key": key, "request_hash": request_hash, "allocation_id": allocation, "child_id": child},
         sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     ).encode()).hexdigest()
+    caps = {r["resource"]: int(r["cap"]) for r in ledger.conn.execute(
+        "SELECT resource,cap FROM child_allocation_resources WHERE allocation_id=?",
+        (allocation,),
+    )}
+    budget = {
+        "max_agent_calls": caps.get("agent_calls"),
+        "max_evaluator_calls": caps.get("evaluator_calls"),
+        "max_experiments": caps.get("experiments"),
+        "max_attempts": caps.get("attempts"),
+        "max_model_tokens": caps.get("model_tokens"),
+        "max_evaluation_units": caps.get("evaluation_units"),
+    }
+    frozen_caps = {resource: cap for resource, cap in caps.items()}
     conn.execute(
-        "INSERT OR REPLACE INTO v2_pivot_sagas VALUES(?,?,?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO v2_pivot_sagas VALUES(?,?,?,?,?,?,?,?,?,?)",
         (key, request_hash, parent, allocation, child, spec_hash, "ACTIVE",
-         json.dumps({"digest": "f" * 64}, sort_keys=True, separators=(",", ":"))),
+         json.dumps({"digest": "f" * 64}, sort_keys=True, separators=(",", ":")),
+         json.dumps({"budget": budget}, sort_keys=True, separators=(",", ":")),
+         json.dumps(frozen_caps, sort_keys=True, separators=(",", ":"))),
     )
     if gate_state == "ACTIVE":
         conn.execute(
@@ -515,4 +531,62 @@ def test_cancel_blocks_open_nested_allocation(tmp_path):
     assert ledger.conn.execute(
         "SELECT state FROM child_allocation_gates WHERE allocation_id='parent-cancel'",
     ).fetchone()[0] == "BOUND"
+    ledger.close()
+
+
+@pytest.mark.parametrize("corruption", ["missing", "altered"])
+def test_cancel_fails_closed_when_allocation_resource_vector_differs_from_frozen_saga(tmp_path, corruption):
+    ledger = BudgetLedger(tmp_path / "campaign-registry.sqlite3")
+    ledger.create_root("root", {"agent_calls": 10, "evaluator_calls": 5})
+    _bind_child(ledger, allocation="vector-cancel", parent="root", child="vector-child",
+                caps={"agent_calls": 6, "evaluator_calls": 3})
+    digest = _record_parent_cancellation(
+        ledger, parent="root", allocation="vector-cancel", child="vector-child",
+        spec_hash="a" * 64,
+    )
+    if corruption == "missing":
+        ledger.conn.execute(
+            "DELETE FROM child_allocation_resources WHERE allocation_id='vector-cancel' AND resource='evaluator_calls'",
+        )
+    else:
+        ledger.conn.execute(
+            "UPDATE child_allocation_resources SET cap=cap-1 "
+            "WHERE allocation_id='vector-cancel' AND resource='evaluator_calls'",
+        )
+    with pytest.raises(BudgetLedgerError, match="frozen child budget"):
+        ledger.cancel_child("vector-cancel", cancellation_digest=digest)
+    assert ledger.snapshot("root")["agent_calls"]["reserved"] == 6
+    assert ledger.snapshot("root")["evaluator_calls"]["reserved"] == 3
+    assert ledger.conn.execute(
+        "SELECT state FROM child_allocation_gates WHERE allocation_id='vector-cancel'",
+    ).fetchone()[0] == "BOUND"
+    ledger.close()
+
+
+def test_nested_cancel_refunds_parent_and_root_once(tmp_path):
+    ledger = BudgetLedger(tmp_path / "campaign-registry.sqlite3")
+    ledger.create_root("root", {"agent_calls": 20})
+    _bind_child(ledger, allocation="nested-parent", parent="root", child="nested-parent-child",
+                caps={"agent_calls": 12})
+    ledger.reserve_child(allocation_id="nested-leaf", idempotency_key="allocate:nested-leaf",
+                         parent_id="nested-parent-child", spec_hash="b" * 64,
+                         caps={"agent_calls": 4})
+    ledger.bind_child("nested-leaf", "nested-leaf-child", "b" * 64)
+    _record_parent_activation(
+        ledger, parent="nested-parent-child", allocation="nested-leaf",
+        child="nested-leaf-child", spec_hash="b" * 64,
+    )
+    digest = _record_parent_cancellation(
+        ledger, parent="nested-parent-child", allocation="nested-leaf",
+        child="nested-leaf-child", spec_hash="b" * 64,
+    )
+    assert ledger.snapshot("root")["agent_calls"]["reserved"] == 12
+    assert ledger.snapshot("nested-parent-child")["agent_calls"]["reserved"] == 4
+    ledger.cancel_child("nested-leaf", cancellation_digest=digest)
+    ledger.cancel_child("nested-leaf", cancellation_digest=digest)
+    assert ledger.snapshot("root")["agent_calls"]["reserved"] == 12
+    assert ledger.snapshot("nested-parent-child")["agent_calls"]["reserved"] == 0
+    assert ledger.conn.execute(
+        "SELECT state FROM child_allocation_gates WHERE allocation_id='nested-leaf'",
+    ).fetchone()[0] == "CANCELLED"
     ledger.close()
