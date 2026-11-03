@@ -241,6 +241,54 @@ def test_approved_exploration_protocol_is_handed_off_to_immutable_optimization_c
     assert replay["replayed"] is True
 
 
+@pytest.mark.parametrize("corruption", ["missing", "tampered"])
+def test_active_optimization_child_fails_closed_on_corrupt_handoff_record(tmp_path, corruption):
+    setup = _setup(tmp_path)
+    protocol, _, receipt = _seed_parent_protocol_approval(setup)
+    child_spec = dict(setup["child_spec"])
+    child_spec["mode"] = "OPTIMIZATION"
+    child_spec["evaluation"] = {
+        "protocol_id": protocol.protocol_id, "version": protocol.version,
+        "content_sha256": protocol.content_digest(), "approval_digest": receipt.approval_digest,
+    }
+    result = _saga(setup).create_child(
+        idempotency_key="corrupt-protocol-handoff", proposal=setup["proposal"],
+        child_spec=child_spec,
+    )
+    child_dir, _ = setup["registry"].resolve(result["child_campaign_id"], activate=False)
+    child_conn = sqlite3.connect(child_dir / "campaign.sqlite3", isolation_level=None)
+    try:
+        if corruption == "missing":
+            child_conn.execute("DROP TRIGGER evaluator_protocol_handoffs_no_delete")
+            child_conn.execute(
+                "DELETE FROM evaluator_protocol_handoffs WHERE handoff_digest=?",
+                (parse_campaign_spec_document(
+                    child_conn.execute("SELECT spec_json FROM campaigns WHERE id=1").fetchone()[0],
+                ).parent.protocol_handoff_digest,),
+            )
+        else:
+            child_conn.execute("DROP TRIGGER evaluator_protocol_handoffs_no_update")
+            child_conn.execute("UPDATE evaluator_protocol_handoffs SET payload_json='{}'")
+    finally:
+        child_conn.close()
+
+    with pytest.raises(PivotSagaError, match="protocol handoff"):
+        _saga(setup).create_child(
+            idempotency_key="corrupt-protocol-handoff", proposal=setup["proposal"],
+            child_spec=child_spec,
+        )
+    parent_conn = sqlite3.connect(setup["parent_db"])
+    try:
+        assert parent_conn.execute(
+            "SELECT state FROM v2_pivot_sagas WHERE idempotency_key='corrupt-protocol-handoff'",
+        ).fetchone()[0] == "ACTIVE"
+        assert parent_conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type='PIVOT_CHILD_ACTIVE'",
+        ).fetchone()[0] == 1
+    finally:
+        parent_conn.close()
+
+
 def test_optimization_child_without_valid_parent_protocol_approval_fails_closed(tmp_path):
     setup = _setup(tmp_path)
     child_spec = dict(setup["child_spec"])
@@ -257,7 +305,7 @@ def test_optimization_child_without_valid_parent_protocol_approval_fails_closed(
     parent_conn = sqlite3.connect(setup["parent_db"])
     try:
         assert parent_conn.execute(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='v2_pivot_sagas'",
+            "SELECT COUNT(*) FROM v2_pivot_sagas",
         ).fetchone()[0] == 0
     finally:
         parent_conn.close()
