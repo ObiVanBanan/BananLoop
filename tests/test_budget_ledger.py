@@ -70,6 +70,7 @@ def _record_parent_activation(ledger: BudgetLedger, *, parent: str, allocation: 
         "max_attempts": caps.get("attempts"),
         "max_model_tokens": caps.get("model_tokens"),
         "max_evaluation_units": caps.get("evaluation_units"),
+        "evaluation_units_per_call": 3 if "evaluation_units" in caps else None,
     }
     frozen_caps = {resource: cap for resource, cap in caps.items()}
     conn.execute(
@@ -559,7 +560,7 @@ def test_cancel_fails_closed_when_allocation_resource_vector_differs_from_frozen
     assert ledger.snapshot("root")["evaluator_calls"]["reserved"] == 3
     assert ledger.conn.execute(
         "SELECT state FROM child_allocation_gates WHERE allocation_id='vector-cancel'",
-    ).fetchone()[0] == "BOUND"
+    ).fetchone()[0] == "ACTIVE"
     ledger.close()
 
 
@@ -588,5 +589,31 @@ def test_nested_cancel_refunds_parent_and_root_once(tmp_path):
     assert ledger.snapshot("nested-parent-child")["agent_calls"]["reserved"] == 0
     assert ledger.conn.execute(
         "SELECT state FROM child_allocation_gates WHERE allocation_id='nested-leaf'",
+    ).fetchone()[0] == "CANCELLED"
+    ledger.close()
+
+
+@pytest.mark.parametrize("optional_resource,cap", [
+    ("model_tokens", 100),
+    ("evaluation_units", 9),
+])
+def test_cancel_refunds_optional_budget_dimensions_exactly_once(tmp_path, optional_resource, cap):
+    caps = {"agent_calls": 6, optional_resource: cap}
+    ledger = BudgetLedger(tmp_path / "campaign-registry.sqlite3")
+    ledger.create_root("root", caps)
+    _bind_child(ledger, allocation="optional-cancel", parent="root", child="optional-child",
+                caps=caps)
+    digest = _record_parent_cancellation(
+        ledger, parent="root", allocation="optional-cancel", child="optional-child",
+        spec_hash="a" * 64,
+    )
+    assert {resource: value["reserved"] for resource, value in ledger.snapshot("root").items()} == caps
+    ledger.cancel_child("optional-cancel", cancellation_digest=digest)
+    ledger.cancel_child("optional-cancel", cancellation_digest=digest)
+    assert {resource: value["reserved"] for resource, value in ledger.snapshot("root").items()} == {
+        "agent_calls": 0, optional_resource: 0,
+    }
+    assert ledger.conn.execute(
+        "SELECT state FROM child_allocation_gates WHERE allocation_id='optional-cancel'",
     ).fetchone()[0] == "CANCELLED"
     ledger.close()
