@@ -254,7 +254,8 @@ def _verification_coordinator(*, state="READY", decision="PASS", integration_typ
     }
     queue = _Queue({"integration-1": state})
     receipt = SimpleNamespace(
-        receipt_digest="9" * 64, decision=decision,
+        receipt_digest="9" * 64, decision=decision, campaign_id="campaign-1",
+        spec_hash="d" * 64, approval_digest="e" * 64, protocol_digest="f" * 64,
         source_snapshot_id="a" * 40, candidate_snapshot_id="b" * 40,
     )
     graph._integration_receipt = receipt
