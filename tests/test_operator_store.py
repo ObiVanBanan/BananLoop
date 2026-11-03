@@ -32,7 +32,7 @@ def test_operator_requests_are_durable_and_idempotent(tmp_path):
     reopened = CampaignStore(path)
     try:
         assert reopened.control_request("request-1")["status"] == "COMPLETED"
-        assert reopened.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert reopened.conn.execute("PRAGMA user_version").fetchone()[0] == 5
     finally:
         reopened.close()
 
@@ -44,7 +44,7 @@ def test_legacy_database_backup_can_be_restored(tmp_path):
         conn.execute("INSERT INTO sentinel(value) VALUES('original')")
     migrated = CampaignStore(path)
     try:
-        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 5
         assert migrated.conn.execute("PRAGMA table_info(campaigns)").fetchall()
         assert migrated.conn.execute("SELECT value FROM sentinel").fetchone()[0] == "original"
     finally:
@@ -64,14 +64,14 @@ def test_legacy_database_backup_can_be_restored(tmp_path):
 def test_future_schema_is_rejected_without_modification(tmp_path):
     path = tmp_path / "future.sqlite3"
     with sqlite3.connect(path) as conn:
-        conn.execute("PRAGMA user_version=5")
+        conn.execute("PRAGMA user_version=6")
     with pytest.raises(StoreError, match="newer"):
         CampaignStore(path)
     with sqlite3.connect(path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
 
 
-def test_v1_database_migrates_to_v4_without_rewriting_campaign_data(tmp_path):
+def test_v1_database_migrates_to_v5_without_rewriting_campaign_data(tmp_path):
     path = tmp_path / "v1.sqlite3"
     store = CampaignStore(path)
     from bananloop.contracts import CampaignSpec, Direction, MetricSpec
@@ -104,7 +104,7 @@ def test_v1_database_migrates_to_v4_without_rewriting_campaign_data(tmp_path):
     migrated = CampaignStore(path)
     try:
         campaign = migrated.campaign()
-        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 5
         assert campaign["spec_hash"] == original_hash
         assert campaign["status"] == "PAUSED_INFRA"
         assert campaign["stop_reason"] == "AGENT_ERROR"
@@ -135,7 +135,7 @@ def test_v1_database_migrates_to_v4_without_rewriting_campaign_data(tmp_path):
         )
 
 
-def test_v2_to_v4_migration_preserves_campaign_and_uses_collision_safe_backup(tmp_path):
+def test_v2_to_v5_migration_preserves_campaign_and_uses_collision_safe_backup(tmp_path):
     from bananloop.contracts import CampaignSpec, Direction, MetricSpec
 
     path = tmp_path / "v2.sqlite3"
@@ -167,7 +167,7 @@ def test_v2_to_v4_migration_preserves_campaign_and_uses_collision_safe_backup(tm
     migrated = CampaignStore(path)
     try:
         campaign = migrated.campaign()
-        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 5
         assert campaign["spec_hash"] == original_hash
         assert campaign["status"] == "PAUSED_INFRA"
         assert campaign["stop_reason"] == "AGENT_ERROR"
@@ -200,7 +200,7 @@ def test_v2_to_v4_migration_preserves_campaign_and_uses_collision_safe_backup(tm
         )
 
 
-def test_v3_to_v4_migration_preserves_pending_pivot_and_backs_up_v3(tmp_path):
+def test_v3_to_v5_migration_preserves_pending_pivot_and_backs_up_v3(tmp_path):
     from bananloop.contracts import CampaignSpec, Direction, MetricSpec, PivotProposal, PivotResourceRequest
 
     path = tmp_path / "v3.sqlite3"
@@ -231,7 +231,7 @@ def test_v3_to_v4_migration_preserves_pending_pivot_and_backs_up_v3(tmp_path):
 
     migrated = CampaignStore(path)
     try:
-        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert migrated.conn.execute("PRAGMA user_version").fetchone()[0] == 5
         assert migrated.pivot_proposal(proposal.proposal_id)["digest"] == proposal.digest
         assert migrated.pending_pivot_proposal()["status"] == "PENDING"
         assert migrated.conn.execute("SELECT COUNT(*) FROM pivot_decisions").fetchone()[0] == 0

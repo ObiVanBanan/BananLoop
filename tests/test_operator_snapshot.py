@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import argparse
+import sqlite3
+import pytest
+from threading import Event, Thread
 
 from bananloop.cli import cmd_operator_events, cmd_operator_snapshot
 from bananloop.contracts import Hypothesis, PivotProposal, PivotResourceRequest
@@ -194,6 +197,155 @@ def test_campaign_state_change_advances_snapshot_and_event_revision(tmp_path):
         assert page["events"][-1]["payload"] == {}
     finally:
         store.close()
+
+
+def test_direct_campaign_row_update_advances_snapshot_cursor(tmp_path):
+    store = make_store(tmp_path)
+    try:
+        before = read_snapshot(store, "campaign-a")
+        store.conn.execute(
+            "UPDATE campaigns SET status=?,stop_reason=? WHERE id=1",
+            ("PAUSED_INFRA", "direct database update"),
+        )
+        store.conn.commit()
+
+        after = read_snapshot(store, "campaign-a")
+        page = read_events_after(store, before["revision"])
+
+        assert after["status"] == "PAUSED_INFRA"
+        assert after["revision"] > before["revision"]
+        assert page["cursor"] == after["revision"]
+        assert [event["type"] for event in page["events"]] == ["CAMPAIGN_STATE_UPDATED"]
+        assert page["events"][0]["payload"] == {}
+    finally:
+        store.close()
+
+
+def test_direct_campaign_delete_and_insert_advance_snapshot_cursor(tmp_path):
+    store = make_store(tmp_path)
+    try:
+        before = read_snapshot(store, "campaign-a")
+        original = store.campaign()
+        columns = tuple(original)
+        placeholders = ",".join("?" for _ in columns)
+        column_sql = ",".join(columns)
+
+        store.conn.execute("DELETE FROM campaigns WHERE id=1")
+        store.conn.commit()
+        store.conn.execute(
+            f"INSERT INTO campaigns({column_sql}) VALUES({placeholders})",
+            tuple(original[column] for column in columns),
+        )
+        store.conn.commit()
+
+        after = read_snapshot(store, "campaign-a")
+        page = read_events_after(store, before["revision"])
+
+        assert after["status"] == before["status"]
+        assert after["revision"] == before["revision"] + 2
+        assert page["cursor"] == after["revision"]
+        assert [event["type"] for event in page["events"]] == [
+            "CAMPAIGN_STATE_UPDATED",
+            "CAMPAIGN_STATE_UPDATED",
+        ]
+        assert [event["payload"] for event in page["events"]] == [{}, {}]
+    finally:
+        store.close()
+
+
+def test_unregistered_sqlite_writer_cannot_bypass_campaign_event_guard(tmp_path):
+    store = make_store(tmp_path)
+    path = store.path
+    store.close()
+
+    raw = sqlite3.connect(path)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            raw.execute("UPDATE campaigns SET status='PAUSED_INFRA' WHERE id=1")
+    finally:
+        raw.close()
+
+    store = CampaignStore(path)
+    try:
+        view = read_snapshot(store, "campaign-a")
+        assert view["status"] == "READY"
+        assert view["revision"] == 1
+    finally:
+        store.close()
+
+
+def test_v4_database_migration_installs_campaign_event_guard(tmp_path):
+    store = make_store(tmp_path)
+    path = store.path
+    store.close()
+    with sqlite3.connect(path) as raw:
+        raw.execute("DROP TRIGGER campaign_update_event_guard")
+        raw.execute("PRAGMA user_version=4")
+
+    store = CampaignStore(path)
+    try:
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 5
+        before = read_snapshot(store, "campaign-a")
+        store.conn.execute("UPDATE campaigns SET status='PAUSED_INFRA' WHERE id=1")
+        store.conn.commit()
+        after = read_snapshot(store, "campaign-a")
+        assert after["revision"] > before["revision"]
+        assert read_events_after(store, before["revision"])["events"][0]["type"] == "CAMPAIGN_STATE_UPDATED"
+    finally:
+        store.close()
+
+
+def test_snapshot_reader_sees_one_consistent_revision_during_concurrent_update(tmp_path):
+    store = make_store(tmp_path)
+    path = store.path
+    store.close()
+    writer = CampaignStore(path)
+    reader_paused = Event()
+    continue_reader = Event()
+    snapshots = []
+    failures = []
+
+    def read_in_thread():
+        reader = CampaignStore(path)
+        select_count = 0
+
+        def pause_between_snapshot_queries(statement):
+            nonlocal select_count
+            if statement.lstrip().upper().startswith("SELECT"):
+                select_count += 1
+                if select_count == 2:
+                    reader_paused.set()
+                    continue_reader.wait(timeout=5)
+
+        reader.conn.set_trace_callback(pause_between_snapshot_queries)
+        try:
+            snapshots.append(read_snapshot(reader, "campaign-a"))
+        except Exception as exc:
+            failures.append(exc)
+        finally:
+            reader.close()
+
+    thread = Thread(target=read_in_thread)
+    try:
+        thread.start()
+        assert reader_paused.wait(timeout=5)
+        writer.update_campaign(status="PAUSED_INFRA", stop_reason="concurrent writer")
+        continue_reader.set()
+        thread.join(timeout=5)
+
+        assert not thread.is_alive()
+        assert failures == []
+        assert len(snapshots) == 1
+        assert snapshots[0]["status"] == "READY"
+        assert snapshots[0]["revision"] == 1
+        latest = read_snapshot(writer, "campaign-a")
+        assert latest["status"] == "PAUSED_INFRA"
+        assert latest["revision"] == 2
+    finally:
+        continue_reader.set()
+        if thread.is_alive():
+            thread.join(timeout=5)
+        writer.close()
 
 
 def test_campaign_counter_change_advances_snapshot_and_event_revision(tmp_path):

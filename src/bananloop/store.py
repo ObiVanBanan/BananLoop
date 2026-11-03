@@ -156,8 +156,14 @@ class CampaignStore:
         existed = path.exists() and path.stat().st_size > 0
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
+        self._internal_campaign_write = False
+        self.conn.create_function(
+            "bananloop_internal_campaign_write",
+            0,
+            lambda: int(self._internal_campaign_write),
+        )
         version = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
-        if version > 4:
+        if version > 5:
             self.conn.close()
             raise StoreError(f"campaign database schema {version} is newer than this BananLoop version")
         if existed and version < 1:
@@ -340,8 +346,27 @@ class CampaignStore:
             )"""
         )
         self.conn.execute("CREATE INDEX IF NOT EXISTS pivot_decisions_proposal ON pivot_decisions(proposal_id, created_at)")
-        self.conn.execute("PRAGMA user_version=4")
+        self.conn.execute("DROP TRIGGER IF EXISTS campaign_update_event_guard")
+        for operation in ("INSERT", "UPDATE", "DELETE"):
+            self.conn.execute(
+                f"""CREATE TRIGGER IF NOT EXISTS campaign_{operation.lower()}_event_guard
+                AFTER {operation} ON campaigns
+                WHEN bananloop_internal_campaign_write() = 0
+                BEGIN
+                  INSERT INTO events(event_type,payload_json,created_at)
+                  VALUES('CAMPAIGN_STATE_UPDATED','{{}}',strftime('%Y-%m-%dT%H:%M:%f+00:00','now'));
+                END"""
+            )
+        self.conn.execute("PRAGMA user_version=5")
         self.conn.commit()
+
+    def _write_campaign_row(self, sql: str, parameters: tuple[Any, ...] = ()) -> sqlite3.Cursor:
+        """Mark a Store-owned write so the guard trigger does not duplicate its event."""
+        self._internal_campaign_write = True
+        try:
+            return self.conn.execute(sql, parameters)
+        finally:
+            self._internal_campaign_write = False
 
     def save_pivot_proposal(self, proposal: PivotProposal, pause_reason: str) -> dict[str, Any]:
         """Persist an immutable proposal; replay is idempotent by ID and digest."""
@@ -613,7 +638,7 @@ class CampaignStore:
         if self.conn.execute("SELECT 1 FROM campaigns WHERE id=1").fetchone():
             raise StoreError("campaign already exists for this state directory")
         now = utc_now()
-        self.conn.execute(
+        self._write_campaign_row(
             "INSERT INTO campaigns(id,spec_json,spec_hash,status,created_at,updated_at) VALUES(1,?,?,?,?,?)",
             (spec.model_dump_json(), spec.approved_hash(), "READY", now, now),
         )
@@ -646,7 +671,7 @@ class CampaignStore:
         fields["updated_at"] = utc_now()
         sql = ",".join(f"{key}=?" for key in fields)
         with self.conn:
-            self.conn.execute(f"UPDATE campaigns SET {sql} WHERE id=1", tuple(fields.values()))
+            self._write_campaign_row(f"UPDATE campaigns SET {sql} WHERE id=1", tuple(fields.values()))
             # A payload-free event advances the operator cursor with this
             # campaign-row update, without exposing private field values.
             self.event("CAMPAIGN_STATE_UPDATED", {})
@@ -654,7 +679,7 @@ class CampaignStore:
     def request_stop(self) -> bool:
         """Signal the owner; never overwrite a stage while its process is running."""
         with self.conn:
-            changed = self.conn.execute(
+            changed = self._write_campaign_row(
                 "UPDATE campaigns SET stop_requested=1,updated_at=? WHERE id=1 "
                 "AND status NOT IN ('STOPPED','GOAL_MET') AND stop_requested=0",
                 (utc_now(),),
@@ -666,7 +691,7 @@ class CampaignStore:
     def request_pause(self) -> bool:
         """Request a resumable halt without changing the live stage."""
         with self.conn:
-            changed = self.conn.execute(
+            changed = self._write_campaign_row(
                 "UPDATE campaigns SET pause_requested=1,updated_at=? WHERE id=1 "
                 "AND status IN ('READY','RUNNING') AND pause_requested=0 AND stop_requested=0",
                 (utc_now(),),
@@ -677,7 +702,7 @@ class CampaignStore:
 
     def clear_pause_request(self) -> None:
         with self.conn:
-            self.conn.execute(
+            self._write_campaign_row(
                 "UPDATE campaigns SET pause_requested=0,updated_at=? WHERE id=1",
                 (utc_now(),),
             )
@@ -688,7 +713,7 @@ class CampaignStore:
         if field not in allowed:
             raise StoreError(f"invalid counter: {field}")
         with self.conn:
-            self.conn.execute(f"UPDATE campaigns SET {field}={field}+?, updated_at=? WHERE id=1", (amount, utc_now()))
+            self._write_campaign_row(f"UPDATE campaigns SET {field}={field}+?, updated_at=? WHERE id=1", (amount, utc_now()))
             self.event("CAMPAIGN_STATE_UPDATED", {})
 
     def event(self, event_type: str, payload: dict[str, Any]) -> None:
@@ -712,7 +737,7 @@ class CampaignStore:
             (experiment_id, "PROPOSE", "ACTIVE", now, now),
         )
         attempt_id = int(cur.lastrowid)
-        self.conn.execute(
+        self._write_campaign_row(
             "UPDATE campaigns SET active_experiment_id=?,active_attempt_id=?,attempt_count=attempt_count+1,stage='PROPOSE',updated_at=? WHERE id=1",
             (experiment_id, attempt_id, now),
         )
@@ -752,7 +777,7 @@ class CampaignStore:
                 (experiment_id, "PROPOSE", "ACTIVE", now, now),
             )
             attempt_id = int(cur.lastrowid)
-            self.conn.execute(
+            self._write_campaign_row(
                 "UPDATE campaigns SET active_experiment_id=?,active_attempt_id=?,attempt_count=attempt_count+1,stage='PROPOSE',updated_at=? WHERE id=1",
                 (experiment_id, attempt_id, now),
             )
@@ -777,7 +802,7 @@ class CampaignStore:
     def set_stage(self, attempt_id: int, stage: str) -> None:
         now = utc_now()
         self.conn.execute("UPDATE attempts SET stage=?,updated_at=? WHERE id=?", (stage, now, attempt_id))
-        self.conn.execute("UPDATE campaigns SET stage=?,updated_at=? WHERE id=1", (stage, now))
+        self._write_campaign_row("UPDATE campaigns SET stage=?,updated_at=? WHERE id=1", (stage, now))
         self.event("STAGE_ENTERED", {"attempt_id": attempt_id, "stage": stage})
         self.conn.commit()
 
@@ -805,12 +830,12 @@ class CampaignStore:
         self.conn.execute("UPDATE attempts SET status='COMPLETED',updated_at=? WHERE id=?", (now, attempt_id))
         self.conn.execute("UPDATE experiments SET status=?,updated_at=? WHERE id=?", (status, now, experiment_id))
         if scientific:
-            self.conn.execute("UPDATE campaigns SET experiment_count=experiment_count+1 WHERE id=1")
+            self._write_campaign_row("UPDATE campaigns SET experiment_count=experiment_count+1 WHERE id=1")
             if improved or dev_progress:
-                self.conn.execute("UPDATE campaigns SET non_improve_streak=0 WHERE id=1")
+                self._write_campaign_row("UPDATE campaigns SET non_improve_streak=0 WHERE id=1")
             else:
-                self.conn.execute("UPDATE campaigns SET non_improve_streak=non_improve_streak+1 WHERE id=1")
-        self.conn.execute("UPDATE campaigns SET active_experiment_id=NULL,active_attempt_id=NULL,stage=NULL,updated_at=? WHERE id=1", (now,))
+                self._write_campaign_row("UPDATE campaigns SET non_improve_streak=non_improve_streak+1 WHERE id=1")
+        self._write_campaign_row("UPDATE campaigns SET active_experiment_id=NULL,active_attempt_id=NULL,stage=NULL,updated_at=? WHERE id=1", (now,))
         self.event("ATTEMPT_COMPLETED", {"attempt_id": attempt_id, "experiment_id": experiment_id, "status": status})
         self.conn.commit()
 
@@ -1019,7 +1044,7 @@ class CampaignStore:
             raise StoreError("champion changed before promotion")
         now = utc_now()
         with self.conn:
-            self.conn.execute(
+            self._write_campaign_row(
                 "UPDATE campaigns SET champion_snapshot=?,champion_json=?,stage='RECORD',updated_at=? WHERE id=1",
                 (experiment["candidate_snapshot"], experiment["evaluation_json"], now),
             )
@@ -1041,7 +1066,7 @@ class CampaignStore:
                 "UPDATE experiments SET status='CANCELLED',failure_category=?,lesson=?,updated_at=? WHERE id=?",
                 (reason, "Campaign ended before this attempt completed", now, campaign["active_experiment_id"]),
             )
-            self.conn.execute("UPDATE campaigns SET active_attempt_id=NULL,active_experiment_id=NULL WHERE id=1")
+            self._write_campaign_row("UPDATE campaigns SET active_attempt_id=NULL,active_experiment_id=NULL WHERE id=1")
             self.event("ATTEMPT_CANCELLED", {"attempt_id": campaign["active_attempt_id"], "reason": reason})
 
     def action(self, action_id: str) -> dict[str, Any] | None:
@@ -1166,7 +1191,7 @@ class CampaignStore:
             )
             counter = "agent_calls" if kind == "agent" else "evaluator_calls"
             self._reserve_action(action_id, kind, now)
-            self.conn.execute(f"UPDATE campaigns SET {counter}={counter}+1,updated_at=? WHERE id=1", (now,))
+            self._write_campaign_row(f"UPDATE campaigns SET {counter}={counter}+1,updated_at=? WHERE id=1", (now,))
             self.event("ACTION_STARTED", {"action_id": action_id, "kind": kind, "stage": stage})
 
     def finish_action(self, action_id: str, response: dict[str, Any]) -> None:
@@ -1259,7 +1284,7 @@ class CampaignStore:
                 (now, action_id),
             )
             self._reserve_action(action_id, action["kind"], now)
-            self.conn.execute(f"UPDATE campaigns SET {counter}={counter}+1,updated_at=? WHERE id=1", (now,))
+            self._write_campaign_row(f"UPDATE campaigns SET {counter}={counter}+1,updated_at=? WHERE id=1", (now,))
             self.event("ACTION_RETRIED", {"action_id": action_id, "kind": action["kind"], "stage": action["stage"]})
 
     def record_evaluation(
