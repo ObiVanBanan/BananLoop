@@ -130,8 +130,12 @@ def validate_accounting_chain(
             "RETRY": "retries",
             "EXPERIMENT": "experiments",
         }.get(receipt.action_kind)
-        if required_dimension is not None and getattr(receipt.usage, required_dimension) == 0:
-            raise ValueError(f"{receipt.action_kind} receipt must account for {required_dimension}")
+        if required_dimension is not None:
+            action_count = getattr(receipt.usage, required_dimension)
+            if action_count is not None and action_count != 1:
+                raise ValueError(
+                    f"{receipt.action_kind} receipt must account for exactly one {required_dimension}"
+                )
         previous = receipt.receipt_sha256
     if previous != expected_final_receipt_sha256:
         raise ValueError("accounting chain head does not match the frozen final receipt pin")

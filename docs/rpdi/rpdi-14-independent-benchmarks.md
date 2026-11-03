@@ -81,8 +81,11 @@ evaluator identity sealed until both arms have frozen their final artifacts.
   delegated cgroup v2 (`memory.max`, `pids.max`, `memory.oom.group`, and
   `cgroup.kill`). Refuse to launch if those controllers cannot be delegated.
   Per-process `RLIMIT_AS` alone is not an aggregate memory bound. Record a
-  resource receipt for every action. Action kinds must reconcile with their corresponding call, retry, or
-  experiment counters. Missing spend/token data is `UNKNOWN`, never zero or free.
+  resource receipt for every action. Action kinds must reconcile with their
+  corresponding call, retry, or experiment counters; each typed action receipt
+  accounts for exactly one corresponding action, with aggregate counts
+  represented by separate chained receipts. Missing spend/token data is
+  `UNKNOWN`, never zero or free.
 - Per-track estimand and primary outcome, score direction, deterministic
   seeds, permitted DEV feedback, stopping rule, tie rule, minimum usable pairs,
   and exclusion criteria. Freeze the inference method too: paired estimator,

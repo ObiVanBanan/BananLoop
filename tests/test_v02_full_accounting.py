@@ -21,7 +21,7 @@ def _caps(**overrides):
     })
 
 
-def _chain(*, unknown=(), agent_calls=2, pair_id=None, label="A"):
+def _chain(*, unknown=(), agent_calls=1, pair_id=None, label="A"):
     pair_id = pair_id or _sha("pair")
     first_usage = {name: 0 for name in ResourceCaps.model_fields}
     first_usage.update({"agent_calls": agent_calls, "input_tokens": 200,
@@ -52,7 +52,7 @@ def test_hash_chained_receipts_reconcile_every_dimension_with_blinded_arm_caps()
     )
     assert result.status == "ELIGIBLE"
     assert result.action_count == 2
-    assert result.totals["agent_calls"] == 3
+    assert result.totals["agent_calls"] == 2
     assert result.totals["input_tokens"] == 300
     assert result.totals["spend_microusd"] == 600
 
@@ -65,14 +65,14 @@ def test_unknown_accounting_is_not_zero_and_makes_pair_ineligible():
     )
     assert result.status == "INELIGIBLE_UNKNOWN_ACCOUNTING"
     assert result.totals["spend_microusd"] is None
-    assert result.totals["agent_calls"] == 3
+    assert result.totals["agent_calls"] == 2
     assert result.unknown_dimensions == ("spend_microusd",)
 
 
 def test_any_cap_exceedance_makes_pair_ineligible():
-    first, second = _chain(agent_calls=11)
+    first, second = _chain()
     result = validate_accounting_chain(
-        [first, second], pair_id=first.pair_id, arm_label="A", caps=_caps(agent_calls=10),
+        [first, second], pair_id=first.pair_id, arm_label="A", caps=_caps(agent_calls=1),
         expected_final_receipt_sha256=second.receipt_sha256,
     )
     assert result.status == "INELIGIBLE_OVER_CAP"
@@ -81,10 +81,32 @@ def test_any_cap_exceedance_makes_pair_ineligible():
 
 def test_action_kind_must_be_reflected_in_resource_usage():
     first, second = _chain(agent_calls=0)
-    with pytest.raises(ValueError, match="MODEL_CALL receipt must account for agent_calls"):
+    with pytest.raises(ValueError, match="MODEL_CALL receipt must account for exactly one agent_calls"):
         validate_accounting_chain(
             [first, second], pair_id=first.pair_id, arm_label="A", caps=_caps(),
             expected_final_receipt_sha256=second.receipt_sha256,
+        )
+
+
+@pytest.mark.parametrize(("action_kind", "dimension"), [
+    ("MODEL_CALL", "agent_calls"),
+    ("TOOL_CALL", "agent_calls"),
+    ("EVALUATOR_CALL", "evaluator_calls"),
+    ("RETRY", "retries"),
+    ("EXPERIMENT", "experiments"),
+])
+def test_typed_receipt_cannot_claim_multiple_actions(action_kind, dimension):
+    usage = {name: 0 for name in ResourceCaps.model_fields}
+    usage[dimension] = 2
+    receipt = make_receipt(
+        pair_id=_sha("pair"), arm_label="A", sequence=1, action_id=_sha(f"{action_kind}-action"),
+        action_kind=action_kind, actor_id_digest=_sha("actor"), usage=usage,
+        previous_receipt_sha256=None,
+    )
+    with pytest.raises(ValueError, match=f"{action_kind} receipt must account for exactly one {dimension}"):
+        validate_accounting_chain(
+            [receipt], pair_id=receipt.pair_id, arm_label="A", caps=_caps(),
+            expected_final_receipt_sha256=receipt.receipt_sha256,
         )
 
 
