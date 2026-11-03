@@ -156,6 +156,7 @@ def _valid_evidence(manifest, evidence_dir, *, duplicate_independent_principal=F
         "INDEPENDENT_EVALUATOR_ISOLATION_AUDITOR": "principal-isolation",
         "EXPLORATION_GATE_VERIFIER": "principal-exploration-gate",
         "BENCHMARK_OPERATOR": "principal-operator",
+        "INDEPENDENT_OPERATOR": "principal-ledger-reviewer",
         "INDEPENDENT_SCORER": "principal-scorer",
         "RIGHTS_AUTHORIZER": "principal-rights",
         "SPEND_AUTHORIZER": "principal-spend",
@@ -486,7 +487,9 @@ def _receipt_chain(pair_id, arm_label, *, unknown_spend=False):
     return (receipt,)
 
 
-def _report_package(manifest, *, unknown_pair_id=None, forged_eligible_pair_id=None, failed_pair_id=None):
+def _report_package(manifest, evidence_root, *, unknown_pair_id=None,
+                    forged_eligible_pair_id=None, failed_pair_id=None,
+                    missing_head_pair_id=None):
     pair_scores = []
     for index, task in enumerate(manifest.task_pins):
         pair_id = task.blinded_pair_id_sha256
@@ -505,6 +508,22 @@ def _report_package(manifest, *, unknown_pair_id=None, forged_eligible_pair_id=N
                 "totals": {**pair_a.totals, "spend_microusd": None},
                 "unknown_dimensions": ("spend_microusd",),
             })
+        ledger_a = None if pair_id == missing_head_pair_id else _write_report_attestation(
+            evidence_root, name=f"ledger-{pair_id}-A", evidence_type="RESOURCE_LEDGER_HEAD",
+            subject_sha=manifest.manifest_sha256, role="INDEPENDENT_OPERATOR",
+            principal="principal-ledger-reviewer",
+            payload={"pair_id_sha256": pair_id, "arm_label": "A",
+                     "action_count": str(len(receipts_a)),
+                     "final_receipt_sha256": receipts_a[-1].receipt_sha256},
+        )
+        ledger_b = None if pair_id == missing_head_pair_id else _write_report_attestation(
+            evidence_root, name=f"ledger-{pair_id}-B", evidence_type="RESOURCE_LEDGER_HEAD",
+            subject_sha=manifest.manifest_sha256, role="INDEPENDENT_OPERATOR",
+            principal="principal-ledger-reviewer",
+            payload={"pair_id_sha256": pair_id, "arm_label": "B",
+                     "action_count": str(len(receipts_b)),
+                     "final_receipt_sha256": receipts_b[-1].receipt_sha256},
+        )
         failed = pair_id == failed_pair_id
         raw_pair = {
             "pair_id_sha256": pair_id, "status": "FAILED" if failed else "SCORED",
@@ -514,6 +533,8 @@ def _report_package(manifest, *, unknown_pair_id=None, forged_eligible_pair_id=N
             "arm_b_output_sha256": None if failed else _sha(f"output-b-{index}"),
             "arm_a_receipts": tuple(item.model_dump(mode="json") for item in receipts_a),
             "arm_b_receipts": tuple(item.model_dump(mode="json") for item in receipts_b),
+            "arm_a_ledger_attestation": ledger_a.model_dump() if ledger_a else None,
+            "arm_b_ledger_attestation": ledger_b.model_dump() if ledger_b else None,
             "arm_a_accounting": pair_a.model_dump(),
             "arm_b_accounting": pair_b.model_dump(),
             "reason": "recorded arm failure" if failed else None,
@@ -562,7 +583,7 @@ def _attest_score_package(root, manifest, package):
 
 def test_blind_score_aggregation_requires_complete_package_and_separate_signed_unblinding(tmp_path):
     manifest = freeze_manifest(_raw_manifest())
-    package = _report_package(manifest)
+    package = _report_package(manifest, tmp_path)
     scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
     _, trust_policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
     report = aggregate_blinded_scores(
@@ -576,7 +597,7 @@ def test_blind_score_aggregation_requires_complete_package_and_separate_signed_u
     assert report.report_sha256 == report_digest(report)
     assert report.pair_results[0].pair_id_sha256 in {task.blinded_pair_id_sha256 for task in manifest.task_pins}
 
-    incomplete_payload = _report_package(manifest).model_dump()
+    incomplete_payload = _report_package(manifest, tmp_path).model_dump()
     incomplete_payload["pairs"] = incomplete_payload["pairs"][:-1]
     incomplete_payload.pop("package_sha256")
     incomplete = BlindedScorePackage(
@@ -594,7 +615,7 @@ def test_blind_score_aggregation_requires_complete_package_and_separate_signed_u
 def test_unknown_accounting_pair_is_retained_but_not_scored_as_eligible(tmp_path):
     manifest = freeze_manifest(_raw_manifest())
     bad_pair_id = manifest.task_pins[0].blinded_pair_id_sha256
-    package = _report_package(manifest, unknown_pair_id=bad_pair_id)
+    package = _report_package(manifest, tmp_path, unknown_pair_id=bad_pair_id)
     scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
     _, trust_policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
     report = aggregate_blinded_scores(
@@ -613,7 +634,7 @@ def test_unknown_accounting_pair_is_retained_but_not_scored_as_eligible(tmp_path
 def test_forged_eligible_accounting_summary_is_not_scored(tmp_path):
     manifest = freeze_manifest(_raw_manifest())
     bad_pair_id = manifest.task_pins[0].blinded_pair_id_sha256
-    package = _report_package(manifest, forged_eligible_pair_id=bad_pair_id)
+    package = _report_package(manifest, tmp_path, forged_eligible_pair_id=bad_pair_id)
     scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
     _, trust_policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
     report = aggregate_blinded_scores(
@@ -627,7 +648,7 @@ def test_forged_eligible_accounting_summary_is_not_scored(tmp_path):
 
 def test_broken_receipt_chain_is_not_scored(tmp_path):
     manifest = freeze_manifest(_raw_manifest())
-    package = _report_package(manifest)
+    package = _report_package(manifest, tmp_path)
     pair = package.pairs[0]
     second_receipt = make_receipt(
         pair_id=pair.pair_id_sha256, arm_label="A", sequence=2,
@@ -662,7 +683,7 @@ def test_broken_receipt_chain_is_not_scored(tmp_path):
 def test_failed_pair_retains_verified_resource_accounting(tmp_path):
     manifest = freeze_manifest(_raw_manifest())
     failed_pair_id = manifest.task_pins[0].blinded_pair_id_sha256
-    package = _report_package(manifest, failed_pair_id=failed_pair_id)
+    package = _report_package(manifest, tmp_path, failed_pair_id=failed_pair_id)
     scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
     _, trust_policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
     report = aggregate_blinded_scores(
@@ -677,9 +698,26 @@ def test_failed_pair_retains_verified_resource_accounting(tmp_path):
     assert failed.codex_direct_accounting is not None
 
 
+def test_missing_signed_ledger_head_makes_scored_pair_accounting_unknown(tmp_path):
+    manifest = freeze_manifest(_raw_manifest())
+    missing_head_pair_id = manifest.task_pins[0].blinded_pair_id_sha256
+    package = _report_package(manifest, tmp_path, missing_head_pair_id=missing_head_pair_id)
+    scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
+    _, trust_policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
+    report = aggregate_blinded_scores(
+        manifest, package, scoring_attestation=scoring_ref,
+        unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
+        trust_policy=trust_policy,
+    )
+    pair = next(item for item in report.pair_results if item.pair_id_sha256 == missing_head_pair_id)
+    assert pair.status == "INELIGIBLE_ACCOUNTING"
+    assert pair.accounting_status == "UNKNOWN"
+    assert report.usable_pairs == 11
+
+
 def test_arm_author_cannot_unblind(tmp_path):
     manifest = freeze_manifest(_raw_manifest())
-    package = _report_package(manifest)
+    package = _report_package(manifest, tmp_path)
     scoring_ref, _ = _attest_score_package(tmp_path, manifest, package)
     _, policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
     operator_key = "key-benchmark_operator"
@@ -704,7 +742,7 @@ def test_arm_author_cannot_unblind(tmp_path):
 
 def test_scorer_and_unblinder_cannot_share_signing_key(tmp_path):
     manifest = freeze_manifest(_raw_manifest())
-    package = _report_package(manifest)
+    package = _report_package(manifest, tmp_path)
     scoring_ref, _ = _attest_score_package(tmp_path, manifest, package)
     _, policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
     signers = dict(policy.signers)

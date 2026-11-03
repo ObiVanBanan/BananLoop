@@ -36,6 +36,8 @@ class BlindedPairScore(ReportModel):
     arm_b_output_sha256: Digest | None = None
     arm_a_receipts: tuple[ActionReceipt, ...] = ()
     arm_b_receipts: tuple[ActionReceipt, ...] = ()
+    arm_a_ledger_attestation: EvidenceArtifactRef | None = None
+    arm_b_ledger_attestation: EvidenceArtifactRef | None = None
     arm_a_accounting: AccountingResult | None = None
     arm_b_accounting: AccountingResult | None = None
     reason: str | None = None
@@ -154,16 +156,30 @@ def _accounting_summary_is_eligible(result: AccountingResult | None, caps) -> bo
 
 
 def _verified_accounting(receipts, *, pair_id: str, arm_label: Literal["A", "B"], caps,
-                         claimed: AccountingResult | None) -> tuple[AccountingResult | None, bool]:
-    """Recompute a signed summary from its hash-linked arm receipt chain."""
-    if not receipts:
+                         claimed: AccountingResult | None, attestation: EvidenceArtifactRef | None,
+                         manifest: TrackManifest, evidence_root: str,
+                         trust_policy: TrustPolicy) -> tuple[AccountingResult | None, bool]:
+    """Recompute accounting from receipts pinned by a trusted ledger-head signer."""
+    if not receipts or attestation is None:
         return None, False
     try:
+        head = receipts[-1].receipt_sha256
+        verified_head = verify_evidence_artifact(
+            root=evidence_root, reference=attestation, policy=trust_policy,
+            evidence_type="RESOURCE_LEDGER_HEAD", subject_sha=manifest.manifest_sha256,
+            conclusion="ACCEPTED", issuer_role="INDEPENDENT_OPERATOR",
+            expected_payload={
+                "pair_id_sha256": pair_id, "arm_label": arm_label,
+                "action_count": str(len(receipts)), "final_receipt_sha256": head,
+            },
+        ).document
+        if verified_head.issuer_principal_id in trust_policy.independent_principal_exclusions:
+            return None, False
         actual = validate_accounting_chain(
             receipts, pair_id=pair_id, arm_label=arm_label, caps=caps,
-            expected_final_receipt_sha256=receipts[-1].receipt_sha256,
+            expected_final_receipt_sha256=verified_head.payload["final_receipt_sha256"],
         )
-    except (ValueError, IndexError):
+    except (EvidenceError, ValueError, IndexError):
         return None, False
     return actual, (
         claimed is not None
@@ -264,10 +280,14 @@ def aggregate_blinded_scores(
         accounting_a, eligible_a = _verified_accounting(
             item.arm_a_receipts, pair_id=item.pair_id_sha256, arm_label="A",
             caps=caps_a, claimed=item.arm_a_accounting,
+            attestation=item.arm_a_ledger_attestation, manifest=manifest,
+            evidence_root=evidence_root, trust_policy=trust_policy,
         )
         accounting_b, eligible_b = _verified_accounting(
             item.arm_b_receipts, pair_id=item.pair_id_sha256, arm_label="B",
             caps=caps_b, claimed=item.arm_b_accounting,
+            attestation=item.arm_b_ledger_attestation, manifest=manifest,
+            evidence_root=evidence_root, trust_policy=trust_policy,
         )
         accounting_ok = eligible_a and eligible_b
         accounting_unknown = (
