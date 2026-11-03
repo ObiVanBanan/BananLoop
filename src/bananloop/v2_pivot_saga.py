@@ -658,11 +658,23 @@ class V2PivotSaga:
                                         parent_conn=conn, child_campaign_id=row["child_id"],
                                         protocol_handoff=plan["protocol_handoff"],
                                     )
-                                else:
+                                elif control["state"] in {"ACTIVATING", "ACTIVE"}:
                                     # Another same-key caller already initialized
                                     # the child and moved the one-way activation
                                     # control forward. Reload the saga state.
+                                    durable_state = conn.execute(
+                                        "SELECT state FROM v2_pivot_sagas WHERE idempotency_key=?",
+                                        (idempotency_key,),
+                                    ).fetchone()
+                                    if durable_state is None or durable_state["state"] not in {
+                                        "CHILD_INITIALIZED", "ACTIVE",
+                                    }:
+                                        raise PivotSagaError(
+                                            "pivot activation control advanced before child initialization"
+                                        )
                                     already_initialized = True
+                                else:
+                                    raise PivotSagaError("pivot child saga has an invalid control state")
                             break
                         except CampaignLockError as exc:
                             if time.monotonic() >= lock_deadline:

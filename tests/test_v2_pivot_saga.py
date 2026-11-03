@@ -1066,6 +1066,35 @@ def test_application_concurrent_execute_replay_creates_one_child(tmp_path):
         ledger.close()
 
 
+def test_pivot_rejects_activation_control_ahead_of_durable_child_state(tmp_path):
+    setup = _setup(tmp_path)
+
+    def interrupt_after_child_init(step):
+        if step == "AFTER_CHILD_INITIALIZE":
+            raise RuntimeError("simulated interruption")
+
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        _saga(setup, interrupt_after_child_init).create_child(
+            idempotency_key="corrupt-control-state",
+            proposal=setup["proposal"], child_spec=setup["child_spec"],
+        )
+
+    conn = sqlite3.connect(setup["parent_db"])
+    conn.execute(
+        "UPDATE v2_pivot_saga_control SET state='ACTIVATING', control_digest=? "
+        "WHERE idempotency_key=?",
+        ("0" * 64, "corrupt-control-state"),
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(PivotSagaError, match="advanced before child initialization"):
+        _saga(setup).create_child(
+            idempotency_key="corrupt-control-state",
+            proposal=setup["proposal"], child_spec=setup["child_spec"],
+        )
+
+
 def test_full_auto_api_executes_persisted_plan_without_approval_body(tmp_path):
     setup = _setup(tmp_path, mode="FULL_AUTO")
     server = create_server(str(setup["repo"]), port=0, token="full-auto-api-token")
