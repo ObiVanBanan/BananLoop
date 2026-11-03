@@ -88,10 +88,16 @@ def test_stale_expected_champion_conflicts_without_overwriting_winner(tmp_path):
     conn, service = _service(tmp_path / "campaign.sqlite3")
     try:
         service.initialize(campaign_id=CAMPAIGN, source_snapshot_id=SOURCE)
-        _promote(service)
         with pytest.raises(ChampionPromotionError, match="stale champion expectation"):
-            _promote(service)
-        assert service.current()["snapshot_id"] == CANDIDATE
+            _promote(service, expected_snapshot_id="9" * 40)
+        assert service.current()["snapshot_id"] == SOURCE
+        winner = _promote(service)
+        assert winner["snapshot_id"] == CANDIDATE
+        replay = _promote(service)
+        assert replay == {
+            "campaign_id": CAMPAIGN, "snapshot_id": CANDIDATE,
+            "revision": 1, "replayed": True,
+        }
         assert service.current()["revision"] == 1
     finally:
         conn.close()
@@ -109,7 +115,8 @@ def test_concurrent_promotions_have_one_cas_winner(tmp_path):
         worker_conn, worker = _service(path)
         try:
             barrier.wait(timeout=5)
-            outcomes.append(("won", _promote(worker)))
+            result = _promote(worker)
+            outcomes.append(("replayed" if result.get("replayed") else "won", result))
         except ChampionPromotionError as exc:
             outcomes.append(("conflict", str(exc)))
         finally:
@@ -122,7 +129,7 @@ def test_concurrent_promotions_have_one_cas_winner(tmp_path):
         thread.join(timeout=10)
     assert all(not thread.is_alive() for thread in threads)
     assert [kind for kind, _ in outcomes].count("won") == 1
-    assert [kind for kind, _ in outcomes].count("conflict") == 1
+    assert [kind for kind, _ in outcomes].count("replayed") == 1
     final_conn, final = _service(path)
     try:
         assert final.current()["revision"] == 1
