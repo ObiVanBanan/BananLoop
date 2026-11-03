@@ -19,7 +19,7 @@ from .evidence import (
 )
 from .prereg import (
     GateEvidence, InferencePlan, PreregError, ResourceCaps, TrackManifest, _normal_critical,
-    _student_t_critical_approx, canonical_bytes, validate_run_gate,
+    _student_t_critical_approx, blind_label_assignment_digest, canonical_bytes, validate_run_gate,
 )
 
 
@@ -379,6 +379,7 @@ def aggregate_blinded_scores(
         raise ReportError("scorer attestation must not contain unblinding or unrelated payload fields")
     if set(unblinder.payload) != {
         "score_package_sha256", "bananloop_arm_label", "codex_direct_arm_label",
+        "blinding_assignment_sha256",
     }:
         raise ReportError("unblinding attestation must contain only the frozen package and label mapping")
     if scorer.issuer_principal_id in trust_policy.independent_principal_exclusions:
@@ -397,6 +398,16 @@ def aggregate_blinded_scores(
             or unblinder.payload.get("codex_direct_arm_label") not in {"A", "B"}
             or unblinder.payload["bananloop_arm_label"] == unblinder.payload["codex_direct_arm_label"]):
         raise ReportError("unblinding artifact must map the two distinct anonymized labels")
+    try:
+        assignment_sha = blind_label_assignment_digest(
+            unblinder.payload["bananloop_arm_label"],
+            unblinder.payload["codex_direct_arm_label"],
+        )
+    except (TypeError, ValueError) as exc:
+        raise ReportError("unblinding mapping is invalid") from exc
+    if (assignment_sha != manifest.blinding_assignment_sha256
+            or unblinder.payload["blinding_assignment_sha256"] != manifest.blinding_assignment_sha256):
+        raise ReportError("post-run unblinding differs from the pre-run blinded label assignment")
     bananloop_label = unblinder.payload["bananloop_arm_label"]
     inference: InferencePlan = manifest.inference
 

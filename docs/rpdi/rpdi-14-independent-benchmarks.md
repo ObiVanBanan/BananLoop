@@ -57,6 +57,12 @@ evaluator identity sealed until both arms have frozen their final artifacts.
 - Track, protocol version, task IDs and task-data hashes, rights/consent
   evidence, initial repository/tree hashes, allowed task statement, and task
   inclusion/exclusion criteria.
+- A single A/B arm-label mapping chosen with the operator's cryptographic
+  random number generator before either track is frozen. Bind its canonical
+  digest into both track manifests and the signed run-gate evidence; keep the
+  mapping sealed from the arms and scorer. The final signed unblinding must
+  reveal that same mapping and bind the frozen score-package digest. A changed
+  or missing mapping invalidates the report.
 - Exact BananLoop source SHA, complete Full feature-flag set/hash, approved
   campaign spec/hash, pinned role/model/provider/version roster, reasoning
   settings, tool permissions, evaluator image/binary/source hashes, and

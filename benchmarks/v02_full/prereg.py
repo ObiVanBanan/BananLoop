@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import secrets
 from statistics import NormalDist
 from typing import Annotated, Literal
 
@@ -257,6 +258,7 @@ class TrackManifest(FrozenModel):
     full_feature_flags: tuple[str, ...]
     full_flag_hash: Digest
     campaign_spec_sha256: Digest
+    blinding_assignment_sha256: Digest
     task_pins: tuple[TaskPin, ...] = Field(min_length=1)
     arms: tuple[ArmConfig, ArmConfig]
     common_caps: ResourceCaps
@@ -348,6 +350,23 @@ class VerificationPin(FrozenModel):
     ]
 
 
+class BlindLabelAssignment(FrozenModel):
+    schema_version: Literal[1] = 1
+    bananloop_arm_label: Literal["A", "B"]
+    codex_direct_arm_label: Literal["A", "B"]
+    randomization_method: Literal["CSPRNG_ONE_BIT_V1"] = "CSPRNG_ONE_BIT_V1"
+    assignment_sha256: Digest
+
+    @model_validator(mode="after")
+    def assignment_is_canonical(self) -> "BlindLabelAssignment":
+        expected = blind_label_assignment_digest(
+            self.bananloop_arm_label, self.codex_direct_arm_label,
+        )
+        if self.bananloop_arm_label == self.codex_direct_arm_label or self.assignment_sha256 != expected:
+            raise ValueError("blind label assignment does not match its canonical digest")
+        return self
+
+
 class GateEvidence(FrozenModel):
     source_sha: Digest
     full_flag_hash: Digest
@@ -359,6 +378,7 @@ class GateEvidence(FrozenModel):
     technical_review: VerificationPin
     statistical_review: VerificationPin
     evaluator_isolation: VerificationPin
+    blinding_assignment: VerificationPin
     exploration_verification: VerificationPin | None = None
     rights_register_sha256: Digest
     spend_authorization_sha256: Digest
@@ -384,6 +404,27 @@ def canonical_bytes(value: BaseModel | dict) -> bytes:
     raw = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
     return json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
                       allow_nan=False).encode("utf-8")
+
+
+def blind_label_assignment_digest(bananloop_arm_label: str, codex_direct_arm_label: str) -> str:
+    if (bananloop_arm_label not in {"A", "B"} or codex_direct_arm_label not in {"A", "B"}
+            or bananloop_arm_label == codex_direct_arm_label):
+        raise ValueError("blind assignment must map the two distinct labels A and B")
+    return hashlib.sha256(canonical_bytes({
+        "schema_version": 1,
+        "bananloop_arm_label": bananloop_arm_label,
+        "codex_direct_arm_label": codex_direct_arm_label,
+    })).hexdigest()
+
+
+def create_blind_label_assignment() -> BlindLabelAssignment:
+    """Choose the Full arm's A/B label with one CSPRNG bit before freezing the manifests."""
+    full_label = "A" if secrets.randbits(1) == 0 else "B"
+    direct_label = "B" if full_label == "A" else "A"
+    return BlindLabelAssignment(
+        bananloop_arm_label=full_label, codex_direct_arm_label=direct_label,
+        assignment_sha256=blind_label_assignment_digest(full_label, direct_label),
+    )
 
 
 def _arm_control_hashes(arms: tuple[ArmConfig, ArmConfig],
@@ -460,6 +501,8 @@ def validate_run_gate(
         ("source_sha", manifest.source_sha, evidence.source_sha),
         ("full_flag_hash", manifest.full_flag_hash, evidence.full_flag_hash),
         ("campaign_spec_sha256", manifest.campaign_spec_sha256, evidence.campaign_spec_sha256),
+        ("blinding_assignment_sha256", manifest.blinding_assignment_sha256,
+         evidence.blinding_assignment.subject_sha),
         ("rights_register_sha256", manifest.rights_register_sha256, evidence.rights_register_sha256),
         ("spend_authorization_sha256", manifest.spend_authorization_sha256, evidence.spend_authorization_sha256),
         ("operator_acceptance_sha256", manifest.operator_acceptance_sha256, evidence.operator_acceptance_sha256),
@@ -497,6 +540,9 @@ def validate_run_gate(
         raise PreregError("evaluator isolation was not verified")
     if evidence.evaluator_isolation.reviewer_role != "INDEPENDENT_EVALUATOR_ISOLATION_AUDITOR":
         raise PreregError("evaluator isolation review must be independent")
+    if (evidence.blinding_assignment.reviewer_role != "BENCHMARK_OPERATOR"
+            or evidence.blinding_assignment.conclusion != "ACCEPTED"):
+        raise PreregError("blind arm-label assignment must be frozen by the benchmark operator before run start")
     if evidence.browser_ci.name != "dashboard-browser" or evidence.browser_ci.head_sha != manifest.source_sha:
         raise PreregError("browser CI is missing or for a different source SHA")
     if len({item.path for item in evidence.evidence_artifacts}) != len(evidence.evidence_artifacts):
@@ -528,6 +574,20 @@ def validate_run_gate(
         verify_pin(evidence.evaluator_isolation, "EVALUATOR_ISOLATION"),
         verify_pin(evidence.independent_operator, "INDEPENDENT_OPERATOR"),
     ]
+    blinding_document = verify_pin(evidence.blinding_assignment, "BLINDING_ASSIGNMENT")
+    expected_blinding_payload = {
+        "assignment_sha256": manifest.blinding_assignment_sha256,
+        "bananloop_arm_label": "A" if blinding_document.payload.get("bananloop_arm_label") == "A" else "B",
+        "codex_direct_arm_label": "B" if blinding_document.payload.get("bananloop_arm_label") == "A" else "A",
+        "randomization_method": "CSPRNG_ONE_BIT_V1",
+    }
+    if (set(blinding_document.payload) != set(expected_blinding_payload)
+            or blinding_document.payload != expected_blinding_payload
+            or blind_label_assignment_digest(
+                blinding_document.payload["bananloop_arm_label"],
+                blinding_document.payload["codex_direct_arm_label"],
+            ) != manifest.blinding_assignment_sha256):
+        raise PreregError("signed blind label assignment differs from its pre-run commitment")
     if manifest.track == "OPTIMIZATION":
         if evidence.exploration_verification is None or manifest.exploration_anchor is None:
             raise PreregError("Optimization run gate requires verified Full Exploration campaign evidence")
@@ -642,4 +702,6 @@ def validate_track_pair(optimization: TrackManifest, exploration: TrackManifest)
     if (optimization.arm_author_principal_ids != exploration.arm_author_principal_ids
             or optimization.arm_operator_principal_ids != exploration.arm_operator_principal_ids):
         raise PreregError("paired tracks must bind the same excluded authors and operators")
+    if optimization.blinding_assignment_sha256 != exploration.blinding_assignment_sha256:
+        raise PreregError("paired tracks must bind the same pre-run blind arm-label assignment")
 

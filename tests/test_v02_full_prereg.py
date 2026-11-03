@@ -24,6 +24,8 @@ from benchmarks.v02_full.prereg import (
     freeze_manifest,
     manifest_digest,
     canonical_bytes,
+    blind_label_assignment_digest,
+    create_blind_label_assignment,
     validate_run_gate,
     validate_track_pair,
     verify_frozen_manifest,
@@ -41,6 +43,15 @@ from benchmarks.v02_full.execution import (
 
 def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def test_blind_label_assignment_is_randomized_and_canonically_committed():
+    assignment = create_blind_label_assignment()
+    assert assignment.randomization_method == "CSPRNG_ONE_BIT_V1"
+    assert {assignment.bananloop_arm_label, assignment.codex_direct_arm_label} == {"A", "B"}
+    assert assignment.assignment_sha256 == blind_label_assignment_digest(
+        assignment.bananloop_arm_label, assignment.codex_direct_arm_label,
+    )
 
 
 def _raw_manifest(track="OPTIMIZATION", *, task_id="task-opt", suffix="opt"):
@@ -67,6 +78,7 @@ def _raw_manifest(track="OPTIMIZATION", *, task_id="task-opt", suffix="opt"):
         "full_feature_flags": list(V2_FULL_FEATURES),
         "full_flag_hash": FeatureFlagsV2(profile="FULL").flag_hash(),
         "campaign_spec_sha256": _sha(f"spec-{suffix}"),
+        "blinding_assignment_sha256": blind_label_assignment_digest("A", "B"),
         "task_pins": [{"task_id": f"{task_id}-{index}",
                        "blinded_pair_id_sha256": _sha(f"blind-pair-{task_id}-{index}"),
                        "task_data_sha256": _sha(f"data-{task_id}-{index}"),
@@ -245,6 +257,13 @@ def _valid_evidence(manifest, evidence_dir, *, duplicate_independent_principal=F
     operator_acceptance_ref = artifact("operator-acceptance", "OPERATOR_ACCEPTANCE",
                                        manifest.manifest_sha256, "ACCEPTED", "BENCHMARK_OPERATOR",
                                        {"acceptance_sha256": manifest.operator_acceptance_sha256})
+    blinding_assignment_ref = artifact(
+        "blinding-assignment", "BLINDING_ASSIGNMENT", manifest.blinding_assignment_sha256,
+        "ACCEPTED", "BENCHMARK_OPERATOR",
+        {"assignment_sha256": manifest.blinding_assignment_sha256,
+         "bananloop_arm_label": "A", "codex_direct_arm_label": "B",
+         "randomization_method": "CSPRNG_ONE_BIT_V1"},
+    )
     owner_ref = artifact("owner-approval", "OWNER_APPROVAL", manifest.manifest_sha256,
                          "ACCEPTED", "OWNER_APPROVER",
                          {"approval_sha256": manifest.owner_approval_sha256})
@@ -272,6 +291,11 @@ def _valid_evidence(manifest, evidence_dir, *, duplicate_independent_principal=F
         evaluator_isolation=pin("evaluator-isolation", "EVALUATOR_ISOLATION",
                                 hashlib.sha256(canonical_bytes(manifest.evaluator)).hexdigest(),
                                 "PASS", "INDEPENDENT_EVALUATOR_ISOLATION_AUDITOR"),
+        blinding_assignment=VerificationPin(
+            artifact_sha256=blinding_assignment_ref.artifact_sha256,
+            subject_sha=manifest.blinding_assignment_sha256,
+            conclusion="ACCEPTED", reviewer_role="BENCHMARK_OPERATOR",
+        ),
         exploration_verification=exploration_verification,
         rights_register_sha256=manifest.rights_register_sha256,
         spend_authorization_sha256=manifest.spend_authorization_sha256,
@@ -965,7 +989,8 @@ def _attest_score_package(root, manifest, package, *, scorer_extra=None):
         subject_sha=package.package_sha256, role="BENCHMARK_OPERATOR",
         principal="principal-operator",
         payload={"score_package_sha256": package.package_sha256,
-                 "bananloop_arm_label": "A", "codex_direct_arm_label": "B"},
+                 "bananloop_arm_label": "A", "codex_direct_arm_label": "B",
+                 "blinding_assignment_sha256": manifest.blinding_assignment_sha256},
     )
     return scorer_ref, operator_ref
 
@@ -986,6 +1011,27 @@ def test_blind_score_aggregation_requires_complete_package_and_separate_signed_u
     assert report.report_sha256 == report_digest(report)
     assert report.gate_evidence_sha256 == hashlib.sha256(canonical_bytes(gate_evidence)).hexdigest()
     assert report.pair_results[0].pair_id_sha256 in {task.blinded_pair_id_sha256 for task in manifest.task_pins}
+
+
+def test_blind_score_aggregation_rejects_post_run_mapping_change(tmp_path):
+    manifest = freeze_manifest(_raw_manifest())
+    package = _report_package(manifest, tmp_path)
+    scoring_ref, _ = _attest_score_package(tmp_path, manifest, package)
+    unblinding_ref = _write_report_attestation(
+        tmp_path, name="changed-unblinding", evidence_type="UNBLINDING",
+        subject_sha=package.package_sha256, role="BENCHMARK_OPERATOR",
+        principal="principal-operator",
+        payload={"score_package_sha256": package.package_sha256,
+                 "bananloop_arm_label": "B", "codex_direct_arm_label": "A",
+                 "blinding_assignment_sha256": manifest.blinding_assignment_sha256},
+    )
+    gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
+    with pytest.raises(ReportError, match="post-run unblinding differs from the pre-run"):
+        aggregate_blinded_scores(
+            manifest, package, gate_evidence=gate_evidence, scoring_attestation=scoring_ref,
+            unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
+            trust_policy=trust_policy,
+        )
 
     incomplete_payload = _report_package(manifest, tmp_path).model_dump()
     incomplete_payload["pairs"] = incomplete_payload["pairs"][:-1]
@@ -1201,7 +1247,8 @@ def test_unattested_action_receipt_makes_scored_pair_accounting_unknown(tmp_path
         tmp_path, name="unblinding-after-accounting-change", evidence_type="UNBLINDING",
         subject_sha=package.package_sha256, role="BENCHMARK_OPERATOR", principal="principal-operator",
         payload={"score_package_sha256": package.package_sha256,
-                 "bananloop_arm_label": "A", "codex_direct_arm_label": "B"},
+                 "bananloop_arm_label": "A", "codex_direct_arm_label": "B",
+                 "blinding_assignment_sha256": manifest.blinding_assignment_sha256},
     )
     gate_evidence, trust_policy = _valid_evidence(manifest, tmp_path)
     report = aggregate_blinded_scores(
@@ -1294,7 +1341,8 @@ def test_arm_author_cannot_unblind(tmp_path):
         principal="principal-arm-author", signing_role="BENCHMARK_OPERATOR",
             key_id=operator_key, key_secret="secret-untrusted-author-operator",
         payload={"score_package_sha256": package.package_sha256,
-                 "bananloop_arm_label": "A", "codex_direct_arm_label": "B"},
+                 "bananloop_arm_label": "A", "codex_direct_arm_label": "B",
+                 "blinding_assignment_sha256": manifest.blinding_assignment_sha256},
     )
     with pytest.raises(ReportError, match="arm author/operator cannot serve as the unblinding"):
         aggregate_blinded_scores(
@@ -1328,7 +1376,8 @@ def test_scorer_and_unblinder_cannot_share_signing_key(tmp_path):
         principal="principal-operator", signing_role="INDEPENDENT_SCORER",
         key_id=operator_key,
         payload={"score_package_sha256": package.package_sha256,
-                 "bananloop_arm_label": "A", "codex_direct_arm_label": "B"},
+                 "bananloop_arm_label": "A", "codex_direct_arm_label": "B",
+                 "blinding_assignment_sha256": manifest.blinding_assignment_sha256},
     )
     with pytest.raises(ReportError, match="distinct signing keys"):
         aggregate_blinded_scores(
