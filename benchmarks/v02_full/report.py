@@ -12,7 +12,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .accounting import AccountingResult
+from .accounting import ActionReceipt, AccountingResult, validate_accounting_chain
 from .evidence import EvidenceArtifactRef, EvidenceError, TrustPolicy, verify_evidence_artifact
 from .prereg import (
     InferencePlan, PreregError, ResourceCaps, TrackManifest, _normal_critical,
@@ -34,6 +34,8 @@ class BlindedPairScore(ReportModel):
     arm_b_score: float | None = None
     arm_a_output_sha256: Digest | None = None
     arm_b_output_sha256: Digest | None = None
+    arm_a_receipts: tuple[ActionReceipt, ...] = ()
+    arm_b_receipts: tuple[ActionReceipt, ...] = ()
     arm_a_accounting: AccountingResult | None = None
     arm_b_accounting: AccountingResult | None = None
     reason: str | None = None
@@ -88,6 +90,7 @@ class BlindedScorePackage(ReportModel):
 class ReportPair(ReportModel):
     pair_id_sha256: Digest
     status: Literal["ELIGIBLE", "INELIGIBLE_ACCOUNTING", "FAILED", "EXCLUDED", "MISSING"]
+    accounting_status: Literal["ELIGIBLE", "INELIGIBLE", "UNKNOWN"]
     bananloop_score: float | None
     codex_direct_score: float | None
     oriented_benefit_delta: float | None
@@ -148,6 +151,25 @@ def _accounting_summary_is_eligible(result: AccountingResult | None, caps) -> bo
         if type(value) is not int or value < 0 or value > getattr(caps, name):
             return False
     return True
+
+
+def _verified_accounting(receipts, *, pair_id: str, arm_label: Literal["A", "B"], caps,
+                         claimed: AccountingResult | None) -> tuple[AccountingResult | None, bool]:
+    """Recompute a signed summary from its hash-linked arm receipt chain."""
+    if not receipts:
+        return None, False
+    try:
+        actual = validate_accounting_chain(
+            receipts, pair_id=pair_id, arm_label=arm_label, caps=caps,
+            expected_final_receipt_sha256=receipts[-1].receipt_sha256,
+        )
+    except (ValueError, IndexError):
+        return None, False
+    return actual, (
+        claimed is not None
+        and claimed.model_dump(mode="json") == actual.model_dump(mode="json")
+        and _accounting_summary_is_eligible(actual, caps)
+    )
 
 
 def _digest(value: BaseModel | dict) -> str:
@@ -238,12 +260,33 @@ def aggregate_blinded_scores(
     deltas: list[float] = []
     wins = ties = losses = 0
     for item in package.pairs:
+        caps_a, caps_b = manifest.arms[0].caps, manifest.arms[1].caps
+        accounting_a, eligible_a = _verified_accounting(
+            item.arm_a_receipts, pair_id=item.pair_id_sha256, arm_label="A",
+            caps=caps_a, claimed=item.arm_a_accounting,
+        )
+        accounting_b, eligible_b = _verified_accounting(
+            item.arm_b_receipts, pair_id=item.pair_id_sha256, arm_label="B",
+            caps=caps_b, claimed=item.arm_b_accounting,
+        )
+        accounting_ok = eligible_a and eligible_b
+        accounting_unknown = (
+            accounting_a is None or accounting_b is None
+            or accounting_a.status == "INELIGIBLE_UNKNOWN_ACCOUNTING"
+            or accounting_b.status == "INELIGIBLE_UNKNOWN_ACCOUNTING"
+        )
+        accounting_status = "ELIGIBLE" if accounting_ok else (
+            "UNKNOWN" if accounting_unknown else "INELIGIBLE"
+        )
         if item.status != "SCORED":
             pair_reports.append(ReportPair(
                 pair_id_sha256=item.pair_id_sha256, status=item.status,
+                accounting_status=accounting_status,
                 bananloop_score=None, codex_direct_score=None,
-                oriented_benefit_delta=None, bananloop_accounting=None,
-                codex_direct_accounting=None, reason=item.reason,
+                oriented_benefit_delta=None,
+                bananloop_accounting=(accounting_a if bananloop_label == "A" else accounting_b),
+                codex_direct_accounting=(accounting_b if bananloop_label == "A" else accounting_a),
+                reason=item.reason,
             ))
             continue
         assert item.arm_a_score is not None and item.arm_b_score is not None
@@ -252,19 +295,15 @@ def aggregate_blinded_scores(
         delta = bl_score - codex_score
         if inference.direction == "LOWER_IS_BETTER":
             delta = -delta
-        caps_a, caps_b = manifest.arms[0].caps, manifest.arms[1].caps
-        accounting_ok = (
-            _accounting_summary_is_eligible(item.arm_a_accounting, caps_a)
-            and _accounting_summary_is_eligible(item.arm_b_accounting, caps_b)
-        )
         if not accounting_ok:
             pair_reports.append(ReportPair(
                 pair_id_sha256=item.pair_id_sha256, status="INELIGIBLE_ACCOUNTING",
+                accounting_status=accounting_status,
                 bananloop_score=bl_score, codex_direct_score=codex_score,
                 oriented_benefit_delta=None,
-                bananloop_accounting=(item.arm_a_accounting if bananloop_label == "A" else item.arm_b_accounting),
-                codex_direct_accounting=(item.arm_b_accounting if bananloop_label == "A" else item.arm_a_accounting),
-                reason="one or both action-accounting chains are missing, unknown, or over cap",
+                bananloop_accounting=(accounting_a if bananloop_label == "A" else accounting_b),
+                codex_direct_accounting=(accounting_b if bananloop_label == "A" else accounting_a),
+                reason="one or both action-accounting chains are missing, invalid, unknown, inconsistent, or over cap",
             ))
             continue
         deltas.append(delta)
@@ -276,10 +315,11 @@ def aggregate_blinded_scores(
             ties += 1
         pair_reports.append(ReportPair(
             pair_id_sha256=item.pair_id_sha256, status="ELIGIBLE",
+            accounting_status=accounting_status,
             bananloop_score=bl_score, codex_direct_score=codex_score,
             oriented_benefit_delta=delta,
-            bananloop_accounting=(item.arm_a_accounting if bananloop_label == "A" else item.arm_b_accounting),
-            codex_direct_accounting=(item.arm_b_accounting if bananloop_label == "A" else item.arm_a_accounting),
+            bananloop_accounting=(accounting_a if bananloop_label == "A" else accounting_b),
+            codex_direct_accounting=(accounting_b if bananloop_label == "A" else accounting_a),
             reason=None,
         ))
     usable = len(deltas)

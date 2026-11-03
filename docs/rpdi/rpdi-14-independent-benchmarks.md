@@ -71,7 +71,8 @@ evaluator identity sealed until both arms have frozen their final artifacts.
   shared by both arms; the `APPROVED_DEV_ONLY` policy label alone is insufficient.
 - Per-arm ceilings for calls, input/output/cached tokens, wall time, evaluator
   calls, experiments, retries, and spend. Record a resource receipt for every
-  action. Missing spend/token data is `UNKNOWN`, never zero or free.
+  action. Action kinds must reconcile with their corresponding call, retry, or
+  experiment counters. Missing spend/token data is `UNKNOWN`, never zero or free.
 - Per-track estimand and primary outcome, score direction, deterministic
   seeds, permitted DEV feedback, stopping rule, tie rule, minimum usable pairs,
   and exclusion criteria. Freeze the inference method too: paired estimator,

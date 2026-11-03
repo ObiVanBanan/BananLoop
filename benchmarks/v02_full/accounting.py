@@ -123,6 +123,15 @@ def validate_accounting_chain(
                 unknown.add(dimension)
             elif dimension not in unknown:
                 totals[dimension] += value
+        required_dimension = {
+            "MODEL_CALL": "agent_calls",
+            "TOOL_CALL": "agent_calls",
+            "EVALUATOR_CALL": "evaluator_calls",
+            "RETRY": "retries",
+            "EXPERIMENT": "experiments",
+        }.get(receipt.action_kind)
+        if required_dimension is not None and getattr(receipt.usage, required_dimension) == 0:
+            raise ValueError(f"{receipt.action_kind} receipt must account for {required_dimension}")
         previous = receipt.receipt_sha256
     if previous != expected_final_receipt_sha256:
         raise ValueError("accounting chain head does not match the frozen final receipt pin")

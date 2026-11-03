@@ -10,7 +10,9 @@ from bananloop.contracts import FeatureFlagsV2, V2_FULL_FEATURES
 from benchmarks.v02_full.evidence import (
     EvidenceArtifactRef, EvidenceError, TrustPolicy, TrustedSigner, sign_evidence,
 )
-from benchmarks.v02_full.accounting import AccountingResult
+from benchmarks.v02_full.accounting import (
+    AccountingResult, ResourceUsage, make_receipt, validate_accounting_chain,
+)
 from benchmarks.v02_full.prereg import (
     CIJob,
     EvaluatorPin,
@@ -470,42 +472,51 @@ def test_independent_roles_require_distinct_trusted_principals(tmp_path):
         validate_run_gate(manifest, evidence, evidence_root=str(tmp_path / "bundle"), trust_policy=policy)
 
 
-def _accounting_result(status="ELIGIBLE", suffix="ok"):
-    totals = {
-        "agent_calls": 4, "evaluator_calls": 2, "experiments": 1, "retries": 0,
-        "input_tokens": 100, "output_tokens": 50, "cached_tokens": 20,
-        "wall_seconds": 15, "spend_microusd": 100,
-    }
-    unknown = ("spend_microusd",) if status == "INELIGIBLE_UNKNOWN_ACCOUNTING" else ()
-    if unknown:
-        totals[unknown[0]] = None
-    over_cap = ("agent_calls",) if status == "INELIGIBLE_OVER_CAP" else ()
-    return AccountingResult(
-        status=status, action_count=2, final_receipt_sha256=_sha(f"accounting-{suffix}"),
-        totals=totals, unknown_dimensions=unknown, over_cap_dimensions=over_cap,
+def _receipt_chain(pair_id, arm_label, *, unknown_spend=False):
+    receipt = make_receipt(
+        pair_id=pair_id, arm_label=arm_label, sequence=1,
+        action_id=_sha(f"action-{pair_id}-{arm_label}"), action_kind="MODEL_CALL",
+        actor_id_digest=_sha(f"actor-{arm_label}"),
+        usage=ResourceUsage(
+            agent_calls=1, evaluator_calls=1, experiments=0, retries=0,
+            input_tokens=10, output_tokens=5, cached_tokens=0,
+            wall_seconds=1, spend_microusd=None if unknown_spend else 2,
+        ).model_dump(mode="json"), previous_receipt_sha256=None,
     )
+    return (receipt,)
 
 
-def _report_package(manifest, *, unknown_pair_id=None, forged_eligible_pair_id=None):
+def _report_package(manifest, *, unknown_pair_id=None, forged_eligible_pair_id=None, failed_pair_id=None):
     pair_scores = []
     for index, task in enumerate(manifest.task_pins):
         pair_id = task.blinded_pair_id_sha256
-        pair_a = _accounting_result("INELIGIBLE_UNKNOWN_ACCOUNTING" if pair_id == unknown_pair_id else "ELIGIBLE",
-                                    f"a-{index}")
+        receipts_a = _receipt_chain(pair_id, "A", unknown_spend=pair_id == unknown_pair_id)
+        receipts_b = _receipt_chain(pair_id, "B")
+        pair_a = validate_accounting_chain(
+            receipts_a, pair_id=pair_id, arm_label="A", caps=manifest.arms[0].caps,
+            expected_final_receipt_sha256=receipts_a[-1].receipt_sha256,
+        )
+        pair_b = validate_accounting_chain(
+            receipts_b, pair_id=pair_id, arm_label="B", caps=manifest.arms[1].caps,
+            expected_final_receipt_sha256=receipts_b[-1].receipt_sha256,
+        )
         if pair_id == forged_eligible_pair_id:
             pair_a = pair_a.model_copy(update={
                 "totals": {**pair_a.totals, "spend_microusd": None},
                 "unknown_dimensions": ("spend_microusd",),
             })
-        pair_b = _accounting_result("ELIGIBLE", f"b-{index}")
+        failed = pair_id == failed_pair_id
         raw_pair = {
-            "pair_id_sha256": pair_id, "status": "SCORED",
-            "arm_a_score": 2.0 + index / 100, "arm_b_score": 1.0,
-            "arm_a_output_sha256": _sha(f"output-a-{index}"),
-            "arm_b_output_sha256": _sha(f"output-b-{index}"),
+            "pair_id_sha256": pair_id, "status": "FAILED" if failed else "SCORED",
+            "arm_a_score": None if failed else 2.0 + index / 100,
+            "arm_b_score": None if failed else 1.0,
+            "arm_a_output_sha256": None if failed else _sha(f"output-a-{index}"),
+            "arm_b_output_sha256": None if failed else _sha(f"output-b-{index}"),
+            "arm_a_receipts": tuple(item.model_dump(mode="json") for item in receipts_a),
+            "arm_b_receipts": tuple(item.model_dump(mode="json") for item in receipts_b),
             "arm_a_accounting": pair_a.model_dump(),
             "arm_b_accounting": pair_b.model_dump(),
-            "reason": None,
+            "reason": "recorded arm failure" if failed else None,
         }
         pair_scores.append(BlindedPairScore(**raw_pair, pair_result_sha256=pair_score_digest(raw_pair)))
     pair_scores.sort(key=lambda item: item.pair_id_sha256)
@@ -595,6 +606,7 @@ def test_unknown_accounting_pair_is_retained_but_not_scored_as_eligible(tmp_path
     assert report.usable_pairs == 11
     excluded = next(item for item in report.pair_results if item.pair_id_sha256 == bad_pair_id)
     assert excluded.status == "INELIGIBLE_ACCOUNTING"
+    assert excluded.accounting_status == "UNKNOWN"
     assert excluded.oriented_benefit_delta is None
 
 
@@ -611,6 +623,58 @@ def test_forged_eligible_accounting_summary_is_not_scored(tmp_path):
     )
     assert report.usable_pairs == 11
     assert next(item for item in report.pair_results if item.pair_id_sha256 == bad_pair_id).status == "INELIGIBLE_ACCOUNTING"
+
+
+def test_broken_receipt_chain_is_not_scored(tmp_path):
+    manifest = freeze_manifest(_raw_manifest())
+    package = _report_package(manifest)
+    pair = package.pairs[0]
+    second_receipt = make_receipt(
+        pair_id=pair.pair_id_sha256, arm_label="A", sequence=2,
+        action_id=_sha(f"action-2-{pair.pair_id_sha256}"), action_kind="MODEL_CALL",
+        actor_id_digest=_sha("actor-A"),
+        usage=ResourceUsage(
+            agent_calls=1, evaluator_calls=1, experiments=0, retries=0,
+            input_tokens=10, output_tokens=5, cached_tokens=0,
+            wall_seconds=1, spend_microusd=2,
+        ).model_dump(mode="json"),
+        previous_receipt_sha256=_sha("wrong-parent"),
+    )
+    changed_pair = pair.model_copy(update={"arm_a_receipts": (*pair.arm_a_receipts, second_receipt)})
+    changed_pair = changed_pair.model_copy(update={"pair_result_sha256": pair_score_digest(changed_pair)})
+    changed_pairs = tuple(changed_pair if item.pair_id_sha256 == pair.pair_id_sha256 else item for item in package.pairs)
+    changed_payload = package.model_dump(mode="json")
+    changed_payload["pairs"] = [item.model_dump(mode="json") for item in changed_pairs]
+    changed_payload.pop("package_sha256")
+    changed_payload["package_sha256"] = score_package_digest(changed_payload)
+    package = BlindedScorePackage.model_validate_json(json.dumps(changed_payload), strict=True)
+    scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
+    _, trust_policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
+    report = aggregate_blinded_scores(
+        manifest, package, scoring_attestation=scoring_ref,
+        unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
+        trust_policy=trust_policy,
+    )
+    assert report.usable_pairs == 11
+    assert next(item for item in report.pair_results if item.pair_id_sha256 == pair.pair_id_sha256).status == "INELIGIBLE_ACCOUNTING"
+
+
+def test_failed_pair_retains_verified_resource_accounting(tmp_path):
+    manifest = freeze_manifest(_raw_manifest())
+    failed_pair_id = manifest.task_pins[0].blinded_pair_id_sha256
+    package = _report_package(manifest, failed_pair_id=failed_pair_id)
+    scoring_ref, unblinding_ref = _attest_score_package(tmp_path, manifest, package)
+    _, trust_policy = _valid_evidence(manifest, tmp_path / "gate-bundle")
+    report = aggregate_blinded_scores(
+        manifest, package, scoring_attestation=scoring_ref,
+        unblinding_attestation=unblinding_ref, evidence_root=str(tmp_path),
+        trust_policy=trust_policy,
+    )
+    failed = next(item for item in report.pair_results if item.pair_id_sha256 == failed_pair_id)
+    assert failed.status == "FAILED"
+    assert failed.accounting_status == "ELIGIBLE"
+    assert failed.bananloop_accounting is not None
+    assert failed.codex_direct_accounting is not None
 
 
 def test_arm_author_cannot_unblind(tmp_path):

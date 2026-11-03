@@ -27,7 +27,7 @@ def _chain(*, unknown=(), agent_calls=2, pair_id=None, label="A"):
     first_usage.update({"agent_calls": agent_calls, "input_tokens": 200,
                        "output_tokens": 100, "wall_seconds": 10, "spend_microusd": 500})
     second_usage = {name: 0 for name in ResourceCaps.model_fields}
-    second_usage.update({"input_tokens": 100, "cached_tokens": 50,
+    second_usage.update({"agent_calls": 1, "input_tokens": 100, "cached_tokens": 50,
                          "wall_seconds": 5, "spend_microusd": 100})
     for name in unknown:
         first_usage[name] = None
@@ -52,7 +52,7 @@ def test_hash_chained_receipts_reconcile_every_dimension_with_blinded_arm_caps()
     )
     assert result.status == "ELIGIBLE"
     assert result.action_count == 2
-    assert result.totals["agent_calls"] == 2
+    assert result.totals["agent_calls"] == 3
     assert result.totals["input_tokens"] == 300
     assert result.totals["spend_microusd"] == 600
 
@@ -65,7 +65,7 @@ def test_unknown_accounting_is_not_zero_and_makes_pair_ineligible():
     )
     assert result.status == "INELIGIBLE_UNKNOWN_ACCOUNTING"
     assert result.totals["spend_microusd"] is None
-    assert result.totals["agent_calls"] == 2
+    assert result.totals["agent_calls"] == 3
     assert result.unknown_dimensions == ("spend_microusd",)
 
 
@@ -77,6 +77,15 @@ def test_any_cap_exceedance_makes_pair_ineligible():
     )
     assert result.status == "INELIGIBLE_OVER_CAP"
     assert result.over_cap_dimensions == ("agent_calls",)
+
+
+def test_action_kind_must_be_reflected_in_resource_usage():
+    first, second = _chain(agent_calls=0)
+    with pytest.raises(ValueError, match="MODEL_CALL receipt must account for agent_calls"):
+        validate_accounting_chain(
+            [first, second], pair_id=first.pair_id, arm_label="A", caps=_caps(),
+            expected_final_receipt_sha256=second.receipt_sha256,
+        )
 
 
 def test_chain_rejects_tampering_reordering_duplicate_actions_and_wrong_pair():
