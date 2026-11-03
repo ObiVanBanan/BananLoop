@@ -156,9 +156,11 @@ use/redistribution rights.
   and `holdout-set.bin`; each file is checked against its individual manifest
   digest, and the full tree is copied to a private snapshot and rehashed before
   launch. The scorer input is bounded to 500 pairs and 45 MB of output bytes.
-  The host-provided system libraries and bubblewrap binary are still
-  environment dependencies; they need an independent runtime pin before a
-  reproducibility claim or benchmark run.
+  The manifest also pins hashes for the host read-only runtime trees, launcher
+  interpreter, launcher code, and bubblewrap binary; the runner verifies them
+  before and after scoring. These hashes bind the environment, but the host
+  runtime is not yet delivered as a portable immutable image, so cross-host
+  replay is not established.
 - Optimization scoring uses the frozen protocol and identical evaluator
   version for both arms. Exploration scoring uses a separate rubric and task
   set fixed before the run. Do not let Research Intelligence findings count as

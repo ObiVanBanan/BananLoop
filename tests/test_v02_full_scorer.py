@@ -15,7 +15,8 @@ from benchmarks.v02_full.scorer import (
     EVALUATOR_CONSTITUENT_FILES, BlindScorerOutput, BubblewrapBlindScorer,
     ScorerError, ScorerOutputPair,
     apply_blind_scorer_output, build_blind_scorer_input, evaluator_bundle_fingerprint,
-    scorer_output_digest, validate_blind_scorer_output, verify_evaluator_constituents,
+    scorer_output_digest, scorer_runtime_fingerprint, validate_blind_scorer_output,
+    verify_evaluator_constituents,
 )
 
 _spec = __import__("importlib.util", fromlist=["spec_from_file_location"]).spec_from_file_location(
@@ -207,3 +208,27 @@ def test_evaluator_constituents_are_checked_against_individual_pins(tmp_path):
     (tmp_path / "holdout-set.bin").write_bytes(b"changed holdout")
     with pytest.raises(ScorerError, match="constituent digest differs"):
         verify_evaluator_constituents(tmp_path, pin)
+
+
+def test_scorer_runtime_fingerprint_binds_runtime_and_sandbox(tmp_path):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "library.so").write_bytes(b"runtime-v1")
+    sandbox = tmp_path / "bwrap"
+    sandbox.write_bytes(b"sandbox-v1")
+    sandbox.chmod(0o700)
+    interpreter = tmp_path / "python"
+    interpreter.write_bytes(b"python-v1")
+    launcher = tmp_path / "launcher.py"
+    launcher.write_bytes(b"launcher-v1")
+    first = scorer_runtime_fingerprint(
+        sandbox_binary=sandbox, interpreter=interpreter, launcher=launcher,
+        system_roots=(runtime,),
+    )
+    (runtime / "library.so").write_bytes(b"runtime-v2")
+    second = scorer_runtime_fingerprint(
+        sandbox_binary=sandbox, interpreter=interpreter, launcher=launcher,
+        system_roots=(runtime,),
+    )
+    assert first[0] != second[0]
+    assert first[1] == second[1]

@@ -94,6 +94,8 @@ class EvaluatorPin(FrozenModel):
     scorer_memory_bytes: Annotated[int, Field(strict=True, ge=128 * 1024 * 1024,
                                                le=2 * 1024 * 1024 * 1024)]
     scorer_process_limit: Annotated[int, Field(strict=True, ge=1, le=128)]
+    scorer_runtime_sha256: Digest
+    scorer_sandbox_sha256: Digest
 
 
 class ExplorationCampaignAnchor(FrozenModel):

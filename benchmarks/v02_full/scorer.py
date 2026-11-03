@@ -42,6 +42,8 @@ MAX_EVALUATOR_FILE_BYTES = 50_000_000
 MAX_SCORER_LOG_BYTES = 1_000_000
 MAX_SCORER_PAIRS = 500
 MAX_TOTAL_OUTPUT_BYTES = 45_000_000
+MAX_RUNTIME_FILES = 1_000_000
+MAX_RUNTIME_BYTES = 10_000_000_000
 EVALUATOR_CONSTITUENT_FILES = {
     "protocol_sha256": "protocol.json",
     "rubric_sha256": "rubric.json",
@@ -211,6 +213,86 @@ def verify_evaluator_constituents(root: str | Path, pin) -> None:
             raise ScorerError(f"pinned evaluator constituent digest differs: {relative_name}")
 
 
+def scorer_runtime_fingerprint(
+    *, sandbox_binary: str | Path, interpreter: str | Path | None = None,
+    launcher: str | Path | None = None,
+    system_roots: tuple[str | Path, ...] = ("/usr", "/bin", "/lib", "/lib64"),
+) -> tuple[str, str]:
+    """Pin every read-only host tree exposed to bwrap and its launcher binaries."""
+    sandbox = Path(sandbox_binary).absolute()
+    if sandbox.is_symlink() or not sandbox.is_file() or not os.access(sandbox, os.X_OK):
+        raise ScorerError("bubblewrap must be a trusted regular executable")
+    interpreter_path = Path(interpreter or sys.executable).absolute()
+    launcher_path = Path(launcher or Path(__file__).with_name("worker_launcher.py")).absolute()
+    for path in (interpreter_path, launcher_path):
+        if path.is_symlink() or not path.is_file():
+            raise ScorerError("scorer launcher runtime file is not a trusted regular file")
+    roots = []
+    entries = []
+    total_bytes = 0
+    total_files = 0
+    for raw_root in system_roots:
+        root = Path(raw_root).absolute()
+        if not root.exists():
+            continue
+        roots.append(str(root))
+        root_info = root.lstat()
+        if stat.S_ISLNK(root_info.st_mode):
+            entries.append({"root": str(root), "path": ".", "kind": "symlink",
+                            "target": os.readlink(root), "mode": stat.S_IMODE(root_info.st_mode)})
+            continue
+        if not stat.S_ISDIR(root_info.st_mode):
+            raise ScorerError("scorer runtime root is not a regular directory")
+        entries.append({"root": str(root), "path": ".", "kind": "directory",
+                        "mode": stat.S_IMODE(root_info.st_mode)})
+        for current, dirs, files in os.walk(root, followlinks=False):
+            dirs.sort()
+            base = Path(current)
+            for name in tuple(dirs):
+                path = base / name
+                info = path.lstat()
+                relative = path.relative_to(root).as_posix()
+                if stat.S_ISLNK(info.st_mode):
+                    entries.append({"root": str(root), "path": relative, "kind": "symlink",
+                                    "target": os.readlink(path), "mode": stat.S_IMODE(info.st_mode)})
+                    dirs.remove(name)
+                elif stat.S_ISDIR(info.st_mode):
+                    entries.append({"root": str(root), "path": relative, "kind": "directory",
+                                    "mode": stat.S_IMODE(info.st_mode)})
+                else:
+                    raise ScorerError("scorer runtime contains a special filesystem entry")
+            for name in sorted(files):
+                path = base / name
+                info = path.lstat()
+                relative = path.relative_to(root).as_posix()
+                if stat.S_ISLNK(info.st_mode):
+                    entries.append({"root": str(root), "path": relative, "kind": "symlink",
+                                    "target": os.readlink(path), "mode": stat.S_IMODE(info.st_mode)})
+                elif stat.S_ISREG(info.st_mode):
+                    total_bytes += info.st_size
+                    total_files += 1
+                    if total_bytes > MAX_RUNTIME_BYTES or total_files > MAX_RUNTIME_FILES:
+                        raise ScorerError("scorer host runtime exceeds its fingerprinting limits")
+                    entries.append({"root": str(root), "path": relative, "kind": "file",
+                                    "size": info.st_size, "mode": stat.S_IMODE(info.st_mode),
+                                    "sha256": _sha(path.read_bytes())})
+                else:
+                    raise ScorerError("scorer runtime contains a special filesystem entry")
+    sandbox_sha = _sha(sandbox.read_bytes())
+    runtime_sha = _sha(canonical_bytes({
+        "system_roots": roots,
+        "entries": entries,
+        "sandbox_path": str(sandbox),
+        "sandbox_sha256": sandbox_sha,
+        "interpreter_path": str(interpreter_path),
+        "interpreter_sha256": _sha(interpreter_path.read_bytes()),
+        "interpreter_version": sys.version,
+        "launcher_path": str(launcher_path),
+        "launcher_sha256": _sha(launcher_path.read_bytes()),
+    }))
+    return runtime_sha, sandbox_sha
+
+
 def _snapshot_evaluator(source: Path, destination: Path) -> None:
     """Copy only regular tree entries into a private temporary snapshot."""
     directory_modes = []
@@ -267,6 +349,10 @@ class BubblewrapBlindScorer:
             raise ScorerError("blind scorer request differs from the frozen evaluator pins")
         if not self.available():
             raise ScorerError("bubblewrap or delegated cgroup v2 is unavailable; refusing scorer fallback")
+        runtime_sha, sandbox_sha = scorer_runtime_fingerprint(sandbox_binary=self.bwrap_binary)
+        if (runtime_sha != pin.scorer_runtime_sha256
+                or sandbox_sha != pin.scorer_sandbox_sha256):
+            raise ScorerError("scorer host runtime or bubblewrap differs from the frozen pin")
         try:
             root = _safe_workspace(evaluator_root)
             if evaluator_bundle_fingerprint(root) != pin.bundle_sha256:
@@ -364,6 +450,11 @@ class BubblewrapBlindScorer:
                 raise ScorerError("isolated scorer result is missing or oversized")
             raw_result = result_path.read_bytes()
             validated = validate_blind_scorer_output(raw_result, request=request)
+            final_runtime_sha, final_sandbox_sha = scorer_runtime_fingerprint(
+                sandbox_binary=self.bwrap_binary,
+            )
+            if (final_runtime_sha != runtime_sha or final_sandbox_sha != sandbox_sha):
+                raise ScorerError("scorer host runtime changed during the isolated evaluator run")
             return canonical_bytes(validated)
 
 
