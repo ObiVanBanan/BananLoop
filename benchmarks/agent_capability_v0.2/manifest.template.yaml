@@ -71,14 +71,24 @@ resources:
   max_output_tokens: null
   max_total_tokens: null
   max_cost_usd: null
+  subscription_quota_policy: "OWNER_APPROVED_SMALL_BATCH_ONLY"
+  # Hard dispatch limits must count every underlying model request, including retries
+  # and automatic bootstrap. If metering is unavailable, fail closed.
+  max_codex_model_invocations_whole_pilot: 8
+  max_codex_model_invocations_per_batch: 2
+  hard_pre_dispatch_invocation_counter_required: true
+  subscription_quota_remaining_check_before_batch: true
+  on_unknown_or_low_quota: "DO_NOT_DISPATCH"
+  parallel_codex_invocations: 1
+  automatic_codex_retries: 0
   cost_meter: null
   unknown_cost_policy: "UNKNOWN_NOT_ZERO"
 
 execution:
-  repetitions_per_case: 3
+  repetitions_per_case: 1 # Plus-safe live smoke only; confirmatory runs need a separately frozen protocol
   arm_order_seed: null
   randomized_arm_order: true
-  retry_policy: "record_all_attempts_no_silent_drop"
+  retry_policy: "no_automatic_retry_record_failure"
   evaluator_timeout_seconds: null
 
 analysis:
