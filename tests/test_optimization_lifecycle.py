@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
 
 from bananloop.budget_ledger import BudgetLedger
+from bananloop.champion_promotion import ChampionPromotionService
 from bananloop.worker_queue import DurableWorkerQueue
 from bananloop.graph_store import TransitionNodePhase, TransitionNodeStatus
 from bananloop.optimization_lifecycle import (
@@ -29,6 +31,7 @@ class _Graph:
     campaign_id = "campaign-1"
 
     def __init__(self):
+        self.conn = sqlite3.connect(':memory:', isolation_level=None)
         self.node = {
             "node_id": "candidate-1", "phase": "OPTIMIZATION", "status": "READY",
             "revision": 4, "payload": {
@@ -289,6 +292,28 @@ def test_integration_decision_projects_guarded_phase_and_replays(
     assert graph.node["phase"] == phase
     assert graph.node["status"] == status
     assert graph.mutations[0].changes[1].guard == guard
+    assert graph.conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='champion_state'"
+    ).fetchone() is None
+    if decision == "PASS":
+        champion = ChampionPromotionService(graph.conn, graph.evaluator_protocols)
+        assert champion.initialize(
+            campaign_id=graph.campaign_id, source_snapshot_id="a" * 40,
+        )["snapshot_id"] == "a" * 40
+        promoted = coordinator.promote_candidate(
+            node_id="candidate-1", expected_champion_snapshot_id="a" * 40,
+            expected_champion_revision=0,
+        )
+        assert promoted == {
+            "campaign_id": graph.campaign_id, "snapshot_id": "b" * 40, "revision": 1,
+        }
+        assert champion.current()["snapshot_id"] == "b" * 40
+    else:
+        with pytest.raises(OptimizationLifecycleError, match="COMPLETED CONSOLIDATION"):
+            coordinator.promote_candidate(
+                node_id="candidate-1", expected_champion_snapshot_id="a" * 40,
+                expected_champion_revision=0,
+            )
     assert graph.mutations[0].changes[1].actor == "VERIFIER"
     assert graph.mutations[0].changes[1].evidence_refs == (
         f"integration://receipt/{receipt.receipt_digest}",
