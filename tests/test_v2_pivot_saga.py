@@ -1159,6 +1159,7 @@ def test_activation_and_cancellation_share_one_way_control_cas(tmp_path):
             idempotency_key=idem, proposal=setup["proposal"], child_spec=setup["child_spec"],
         )
     conn = sqlite3.connect(setup["parent_db"], isolation_level=None)
+    conn.row_factory = sqlite3.Row
     saga_row = conn.execute(
         "SELECT request_hash,allocation_id,child_id FROM v2_pivot_sagas WHERE idempotency_key=?",
         (idem,),
@@ -1189,6 +1190,7 @@ def test_activation_and_cancellation_share_one_way_control_cas(tmp_path):
         idempotency_key=idem, proposal=setup["proposal"], child_spec=setup["child_spec"],
     )
     conn = sqlite3.connect(setup["parent_db"], isolation_level=None)
+    conn.row_factory = sqlite3.Row
     with pytest.raises(PivotSagaError, match="blocked by cancellation"):
         _saga(setup)._begin_activation(conn, idem, "f" * 64)
     conn.close()
