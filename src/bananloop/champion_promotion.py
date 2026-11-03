@@ -61,8 +61,8 @@ class ChampionPromotionService:
                     "INSERT INTO champion_state(id,campaign_id,snapshot_id,revision) VALUES(1,?,?,0)",
                     (campaign_id, source_snapshot_id),
                 )
-            elif row[0] != campaign_id or row[1] != source_snapshot_id:
-                raise ChampionPromotionError("champion is already initialized to a different campaign/source")
+            elif row[0] != campaign_id:
+                raise ChampionPromotionError("champion is already initialized to a different campaign")
             result = self.current()
             self.conn.commit()
             return result
