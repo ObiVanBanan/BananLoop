@@ -2516,6 +2516,7 @@ class Engine:
                 expected_effect=response.get("expected_effect"),
                 changed_scope=response.get("changed_scope"),
                 resources=resources,
+                execution_plan=response.get("execution_plan"),
             )
         except CampaignHalted:
             # The custom pre-call gate has already recorded why no action began.

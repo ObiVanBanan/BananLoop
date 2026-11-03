@@ -14,6 +14,7 @@ For Optimization handoff, verification completes against the frozen protocol fir
 
 - A versioned, immutable execution plan binds every execution-affecting child-spec field, exact normalized repository-relative changed paths, capabilities/autonomy policy, and the complete canonical resource vector, including optional resource dimensions.
 - Proposal digest and ID include the plan when present. Legacy proposals without a plan keep their existing serialized digest/ID bytes and remain readable for audit, but cannot be executed.
+- The execution plan's normalized changed paths must exactly equal the proposal's `changed_scope`. The proposal's human-readable resource estimate is non-authoritative; the complete child budget vector in the plan is authoritative and is exposed in proposal receipts.
 - Generated lineage fields are excluded from the plan to avoid a digest cycle. Core adds lineage deterministically from the persisted parent, proposal, decision, and allocation, then verifies the resulting child spec against the approved plan.
 - Execution accepts no child-spec or approval override. A retry with the same idempotency key and same persisted plan resumes the same saga; reuse with different content conflicts.
 - Requested changed paths are canonical, repository-relative, contained in the child allowed scope, and equal to the approved path set. Protected evaluator, validation, holdout, secret, credential, and other hard-banned paths remain forbidden.

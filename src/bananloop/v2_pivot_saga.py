@@ -55,6 +55,13 @@ def _spec_json(spec: Any) -> str:
     return _canonical(spec.model_dump(mode="json"))
 
 
+def _proposal_json(proposal: PivotProposal) -> str:
+    payload = proposal.model_dump(mode="json")
+    if proposal.execution_plan is None:
+        payload.pop("execution_plan", None)
+    return _canonical(payload)
+
+
 def _parse_v2_spec(value: dict[str, Any] | str):
     try:
         spec = parse_campaign_spec_document(value)
@@ -80,15 +87,28 @@ def _budget_caps(spec: Any) -> dict[str, int]:
     return caps
 
 
-def _validate_budget_inheritance(parent: Any, child: Any) -> None:
-    fields = (
+def _validate_budget_inheritance(parent: Any, child: Any, *, allow_funded_expansion: bool = False) -> None:
+    ledger_fields = {
         "max_experiments", "max_attempts", "max_agent_calls",
         "max_evaluator_calls", "max_model_tokens", "max_evaluation_units",
-    )
-    for name in fields:
+    }
+    for name in ledger_fields:
+        parent_cap, child_cap = getattr(parent.budget, name), getattr(child.budget, name)
+        if parent_cap is not None and child_cap is None:
+            raise PivotSagaError(f"child budget cannot remove the finite parent {name} envelope")
+        if (parent_cap is not None and child_cap is not None and child_cap > parent_cap
+                and (not allow_funded_expansion or name not in ledger_fields)):
+            raise PivotSagaError(f"child budget expands the parent {name} envelope")
+    for name in ("deadline_seconds", "plateau_experiments", "evaluation_units_per_call", "model_token_reserve"):
         parent_cap, child_cap = getattr(parent.budget, name), getattr(child.budget, name)
         if parent_cap is not None and (child_cap is None or child_cap > parent_cap):
             raise PivotSagaError(f"child budget expands the parent {name} envelope")
+    parent_stages = {item.stage: item.tokens for item in parent.budget.model_token_stage_reserves}
+    child_stages = {item.stage: item.tokens for item in child.budget.model_token_stage_reserves}
+    if any(child_stages.get(stage, 0) > amount for stage, amount in parent_stages.items()) or any(
+        stage not in parent_stages for stage in child_stages
+    ):
+        raise PivotSagaError("child model-token stage reserves exceed the parent envelope")
 
 
 def _create_parent_saga_schema(conn: sqlite3.Connection) -> None:
@@ -262,11 +282,23 @@ class V2PivotSaga:
             proposal = proposal if isinstance(proposal, PivotProposal) else PivotProposal.model_validate(proposal)
         except Exception as exc:
             raise PivotSagaError("pivot proposal is invalid") from exc
-        proposal_json = _canonical(proposal.model_dump(mode="json"))
+        if proposal.execution_plan is None:
+            raise PivotSagaError("legacy pivot proposals without a bound execution plan are audit-only")
+        proposal_json = _proposal_json(proposal)
         child_input = child_spec.model_dump(mode="json") if hasattr(child_spec, "model_dump") else child_spec
         child = _parse_v2_spec(child_input)
         if child.parent is not None:
             raise PivotSagaError("pivot child input cannot supply or override parent lineage")
+        plan = proposal.execution_plan
+        if tuple(proposal.changed_scope) != tuple(plan.changed_paths):
+            raise PivotSagaError("proposal changed_scope differs from its exact approved execution paths")
+        normalized_child = _spec_json(child)
+        if normalized_child != plan.child_spec_json:
+            raise PivotSagaError("pivot child spec differs from the immutable approved execution plan")
+        if _canonical(_budget_caps(child)) != plan.resource_vector_json:
+            raise PivotSagaError("pivot child resource vector differs from the immutable approved execution plan")
+        if child.autonomy.scope is None or not child.autonomy.scope.allows_changed_paths(plan.changed_paths):
+            raise PivotSagaError("pivot execution paths exceed the approved child autonomy scope")
         mode_handoff = self.parent_spec.mode == "EXPLORATION" and child.mode == "OPTIMIZATION"
         if child.mode != self.parent_spec.mode and not mode_handoff:
             raise PivotSagaError("only an approved Exploration-to-Optimization child handoff may change campaign mode")
@@ -280,9 +312,21 @@ class V2PivotSaga:
             raise PivotSagaError("pivot child cannot change the frozen evaluator binding")
         if mode_handoff and (child.evaluation is None or child.evaluation.approval_digest is None):
             raise PivotSagaError("Optimization child requires a verifier-approved evaluator handoff")
-        if not child.autonomy.is_narrower_child_of(self.parent_spec.autonomy):
-            raise PivotSagaError("pivot child autonomy exceeds or fails to inherit its parent scope")
-        _validate_budget_inheritance(self.parent_spec, child)
+        if child.autonomy.mode != self.parent_spec.autonomy.mode:
+            raise PivotSagaError("pivot child cannot change its parent's autonomy mode")
+        if self.parent_spec.autonomy.mode == "FULL_AUTO":
+            if not child.autonomy.is_narrower_child_of(self.parent_spec.autonomy):
+                raise PivotSagaError("Full Auto child autonomy exceeds its parent scope")
+            _validate_budget_inheritance(self.parent_spec, child)
+        elif child.autonomy.scope is None:
+            raise PivotSagaError("Supervised child requires an explicit immutable autonomy scope")
+        else:
+            _validate_budget_inheritance(
+                self.parent_spec, child, allow_funded_expansion=True,
+            )
+        # Supervised scope, capability, and budget changes are authorized only
+        # by this proposal-bound plan; reserve_child() later proves the expanded
+        # vector is funded by the live parent/ancestor envelope before escrow.
         if proposal.spec_hash != self.parent_spec_hash:
             raise PivotSagaError("pivot proposal is stale against the parent approved spec")
         try:
@@ -298,7 +342,7 @@ class V2PivotSaga:
             if approval is not None:
                 raise PivotSagaError("Full Auto pivot cannot be paired with an operator decision")
             decision = scope.authorize_pivot(
-                proposal.changed_scope,
+                proposal.execution_plan.changed_paths,
                 current_child_depth=self.parent_depth,
                 current_child_count=self.child_count,
             )
@@ -410,7 +454,7 @@ class V2PivotSaga:
                 "SELECT digest,proposal_json,spec_hash FROM v2_pivot_proposals WHERE proposal_id=?",
                 (proposal.proposal_id,),
             ).fetchone()
-            encoded = _canonical(proposal.model_dump(mode="json"))
+            encoded = _proposal_json(proposal)
             if old is not None:
                 if (old["digest"] != proposal.digest or old["proposal_json"] != encoded
                         or old["spec_hash"] != proposal.spec_hash):
@@ -1019,7 +1063,7 @@ class V2PivotSaga:
                 raise PivotSagaError("parent autonomy scope has no remaining child capacity")
             if scope.mode == "FULL_AUTO":
                 authorization = scope.authorize_pivot(
-                    plan["proposal"].changed_scope,
+                    plan["proposal"].execution_plan.changed_paths,
                     current_child_depth=self.parent_depth,
                     current_child_count=current_child_count,
                 )

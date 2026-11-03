@@ -11,13 +11,14 @@ from bananloop.budget_ledger import BudgetLedger, BudgetLedgerError
 from bananloop.contracts import (
     AutonomyScopeV2,
     PivotDecisionCommand,
+    PivotExecutionPlanV2,
     PivotProposal,
     RuntimePaths,
     parse_campaign_spec_document,
 )
 from bananloop.migrations import create_v5_graph_schema
 from bananloop.registry import CampaignRegistry, RegistryError
-from bananloop.v2_pivot_saga import PivotSagaError, V2PivotSaga
+from bananloop.v2_pivot_saga import PivotSagaError, V2PivotSaga, _budget_caps, _parse_v2_spec
 from bananloop.api import create_server
 from bananloop.application import CampaignApplication
 from bananloop.trusted_evaluator import TrustedEvaluatorAdapter
@@ -67,15 +68,37 @@ def _campaign_db(db_path: Path, spec) -> None:
         )
         conn.execute("BEGIN IMMEDIATE")
         create_v5_graph_schema(conn)
-        conn.execute("CREATE TABLE campaigns(id INTEGER PRIMARY KEY,spec_json TEXT NOT NULL,status TEXT NOT NULL)")
+        conn.execute("CREATE TABLE campaigns(id INTEGER PRIMARY KEY,spec_json TEXT NOT NULL,spec_hash TEXT NOT NULL,status TEXT NOT NULL)")
         conn.execute(
-            "INSERT INTO campaigns(id,spec_json,status) VALUES(1,?,'PAUSED_NEEDS_INPUT')",
-            (json.dumps(spec.model_dump(mode="json"), sort_keys=True, separators=(",", ":")),),
+            "INSERT INTO campaigns(id,spec_json,spec_hash,status) VALUES(1,?,?,'PAUSED_NEEDS_INPUT')",
+            (json.dumps(spec.model_dump(mode="json"), sort_keys=True, separators=(",", ":")), spec.approved_hash()),
         )
         conn.execute("PRAGMA user_version=5")
         conn.commit()
     finally:
         conn.close()
+
+
+def _execution_plan(child_payload, paths):
+    child = _parse_v2_spec(child_payload)
+    return PivotExecutionPlanV2.build(
+        child_spec=child.model_dump(mode="json"),
+        changed_paths=paths,
+        resource_vector=_budget_caps(child),
+    )
+
+
+def _proposal_for_child(setup, child_payload):
+    path = "src/optimizer/model/ranker.py"
+    return PivotProposal.build(
+        spec_hash=setup["parent_spec"].approved_hash(), trigger_experiment_ordinal=1,
+        current_architecture="baseline optimizer", proposed_architecture="model variant",
+        rationale="The current model limits search quality.",
+        expected_effect="Improve candidate ranking within the approved source scope.",
+        changed_scope=(path,),
+        resources={"additional_agent_calls": 2, "additional_evaluator_calls": 1},
+        execution_plan=_execution_plan(child_payload, (path,)),
+    )
 
 
 def _setup(tmp_path: Path, *, mode="FULL_AUTO", max_child_campaigns=2):
@@ -105,14 +128,7 @@ def _setup(tmp_path: Path, *, mode="FULL_AUTO", max_child_campaigns=2):
     child_spec = _spec_payload(
         repo, mode=mode, scope=child_scope, goal="Refine optimizer model",
     )
-    proposal = PivotProposal.build(
-        spec_hash=parent_spec.approved_hash(), trigger_experiment_ordinal=1,
-        current_architecture="baseline optimizer", proposed_architecture="model variant",
-        rationale="The current model limits search quality.",
-        expected_effect="Improve candidate ranking within the approved source scope.",
-        changed_scope=("src/optimizer/model/ranker.py",),
-        resources={"additional_agent_calls": 2, "additional_evaluator_calls": 1},
-    )
+    proposal = _proposal_for_child({"parent_spec": parent_spec}, child_spec)
     return {
         "repo": repo, "state_root": state_root, "registry": registry,
         "parent_id": parent_entry.campaign_id, "parent_db": parent_dir / "campaign.sqlite3",
@@ -190,9 +206,10 @@ def test_approved_exploration_protocol_is_handed_off_to_immutable_optimization_c
         "protocol_id": protocol.protocol_id, "version": protocol.version,
         "content_sha256": protocol.content_digest(), "approval_digest": receipt.approval_digest,
     }
+    proposal = _proposal_for_child(setup, child_spec)
     parent_hash = setup["parent_spec"].approved_hash()
     result = _saga(setup).create_child(
-        idempotency_key="approved-protocol-handoff", proposal=setup["proposal"],
+        idempotency_key="approved-protocol-handoff", proposal=proposal,
         child_spec=child_spec,
     )
     assert result["state"] == "ACTIVE"
@@ -238,7 +255,7 @@ def test_approved_exploration_protocol_is_handed_off_to_immutable_optimization_c
     finally:
         child_conn.close()
     replay = _saga(setup).create_child(
-        idempotency_key="approved-protocol-handoff", proposal=setup["proposal"],
+        idempotency_key="approved-protocol-handoff", proposal=proposal,
         child_spec=child_spec,
     )
     assert replay["replayed"] is True
@@ -254,8 +271,9 @@ def test_active_optimization_child_fails_closed_on_corrupt_handoff_record(tmp_pa
         "protocol_id": protocol.protocol_id, "version": protocol.version,
         "content_sha256": protocol.content_digest(), "approval_digest": receipt.approval_digest,
     }
+    proposal = _proposal_for_child(setup, child_spec)
     result = _saga(setup).create_child(
-        idempotency_key="corrupt-protocol-handoff", proposal=setup["proposal"],
+        idempotency_key="corrupt-protocol-handoff", proposal=proposal,
         child_spec=child_spec,
     )
     child_dir, _ = setup["registry"].resolve(result["child_campaign_id"], activate=False)
@@ -277,7 +295,7 @@ def test_active_optimization_child_fails_closed_on_corrupt_handoff_record(tmp_pa
 
     with pytest.raises(PivotSagaError, match="protocol handoff"):
         _saga(setup).create_child(
-            idempotency_key="corrupt-protocol-handoff", proposal=setup["proposal"],
+            idempotency_key="corrupt-protocol-handoff", proposal=proposal,
             child_spec=child_spec,
         )
     parent_conn = sqlite3.connect(setup["parent_db"])
@@ -303,8 +321,9 @@ def test_trusted_evaluator_accepts_adopted_child_protocol_and_rejects_missing_ha
         "protocol_id": protocol.protocol_id, "version": protocol.version,
         "content_sha256": protocol.content_digest(), "approval_digest": receipt.approval_digest,
     }
+    proposal = _proposal_for_child(setup, child_spec)
     result = _saga(setup).create_child(
-        idempotency_key="adapter-protocol-handoff", proposal=setup["proposal"],
+        idempotency_key="adapter-protocol-handoff", proposal=proposal,
         child_spec=child_spec,
     )
     child_dir, _ = setup["registry"].resolve(result["child_campaign_id"], activate=False)
@@ -355,9 +374,10 @@ def test_optimization_child_without_valid_parent_protocol_approval_fails_closed(
         "protocol_id": "pivot-quality", "version": 1,
         "content_sha256": "b" * 64, "approval_digest": "c" * 64,
     }
+    proposal = _proposal_for_child(setup, child_spec)
     with pytest.raises(PivotSagaError, match="valid parent protocol approval"):
         _saga(setup).create_child(
-            idempotency_key="missing-protocol-approval", proposal=setup["proposal"],
+            idempotency_key="missing-protocol-approval", proposal=proposal,
             child_spec=child_spec,
         )
     parent_conn = sqlite3.connect(setup["parent_db"])
@@ -506,6 +526,11 @@ def test_full_auto_child_quota_is_serialized_across_parallel_pivots(tmp_path):
     from threading import Barrier
 
     setup = _setup(tmp_path, max_child_campaigns=1)
+    child_specs = []
+    for i in (1, 2):
+        child = dict(setup["child_spec"])
+        child["goal"] = f"Refine optimizer model {i}"
+        child_specs.append(child)
     proposals = [
         PivotProposal.build(
             spec_hash=setup["parent_spec"].approved_hash(), trigger_experiment_ordinal=i,
@@ -513,14 +538,10 @@ def test_full_auto_child_quota_is_serialized_across_parallel_pivots(tmp_path):
             rationale=f"bounded in-scope proposal {i}", expected_effect="improve ranking",
             changed_scope=(f"src/optimizer/model/ranker{i}.py",),
             resources={"additional_agent_calls": 1},
+            execution_plan=_execution_plan(child_specs[i - 1], (f"src/optimizer/model/ranker{i}.py",)),
         )
         for i in (1, 2)
     ]
-    child_specs = []
-    for i in (1, 2):
-        child = dict(setup["child_spec"])
-        child["goal"] = f"Refine optimizer model {i}"
-        child_specs.append(child)
     barrier = Barrier(2)
 
     def run(index):
@@ -562,8 +583,9 @@ def test_out_of_scope_pivot_denies_before_budget_or_registry_mutation(tmp_path):
         rationale="outside the approved source scope",
         expected_effect="not permitted", changed_scope=("src/secrets/token.py",),
         resources={"additional_agent_calls": 1},
+        execution_plan=_execution_plan(setup["child_spec"], ("src/secrets/token.py",)),
     )
-    with pytest.raises(PivotSagaError, match="outside its versioned scope"):
+    with pytest.raises(PivotSagaError, match="execution paths exceed|outside its versioned scope"):
         _saga(setup).create_child(
             idempotency_key="out-of-scope-pivot", proposal=proposal,
             child_spec=setup["child_spec"],
@@ -614,6 +636,124 @@ def test_supervised_pivot_keeps_explicit_approval_requirement_and_receipt(tmp_pa
         conn.close()
 
 
+def test_supervised_approved_plan_can_expand_scope_capabilities_and_funded_budget(tmp_path):
+    from bananloop.contracts import CapabilityPolicyV2
+
+    setup = _setup(tmp_path, mode="SUPERVISED")
+    expanded = dict(setup["child_spec"])
+    expanded["goal"] = "Explore a separately approved subsystem"
+    expanded["budget"] = dict(expanded["budget"], max_agent_calls=30)
+    scope = AutonomyScopeV2(
+        version=2, allowed_paths=("src/new-area",),
+        max_child_depth=1, max_child_campaigns=1,
+    )
+    expanded["autonomy"] = {
+        "mode": "SUPERVISED", "scope_digest": scope.content_digest(),
+        "scope_version": scope.version, "scope": scope.model_dump(mode="json"),
+        "capability_policy": CapabilityPolicyV2(
+            tools=("read_file", "write_file"), read_paths=("src/new-area/**",),
+            write_paths=("src/new-area/**",), backend="ISOLATED",
+        ).model_dump(mode="json"),
+    }
+    path = "src/new-area/model.py"
+    proposal = PivotProposal.build(
+        spec_hash=setup["parent_spec"].approved_hash(), trigger_experiment_ordinal=2,
+        current_architecture="existing subsystem", proposed_architecture="new subsystem",
+        rationale="Supervised expansion is explicit in the plan.",
+        expected_effect="Evaluate a separate implementation path.", changed_scope=(path,),
+        resources={"additional_agent_calls": 10},
+        execution_plan=_execution_plan(expanded, (path,)),
+    )
+    approval = PivotDecisionCommand(
+        campaign_id=setup["parent_id"], request_id="expanded-approval",
+        proposal_id=proposal.proposal_id, digest=proposal.digest, decision="approve",
+    )
+    saga = _saga(setup)
+    saga.record_pivot_proposal(proposal)
+    saga.record_pivot_decision(approval)
+    created = saga.create_child(
+        idempotency_key="approved-expansion", proposal=proposal,
+        child_spec=expanded, approval=approval,
+    )
+    assert created["state"] == "ACTIVE"
+    child_spec = _parse_v2_spec(expanded)
+    assert child_spec.budget.max_agent_calls == 30
+    assert child_spec.autonomy.scope.allowed_paths == ("src/new-area",)
+    # The expanded vector is escrowed from the live root account; the parent's
+    # frozen spec remains unchanged by the child's supervised authorization.
+    assert setup["parent_spec"].budget.max_agent_calls == 20
+
+
+def test_full_auto_denies_the_same_explicit_scope_expansion_before_escrow(tmp_path):
+    setup = _setup(tmp_path, mode="FULL_AUTO")
+    expanded = dict(setup["child_spec"])
+    expanded["goal"] = "Unauthorized Full Auto expansion"
+    expanded["budget"] = dict(expanded["budget"], max_agent_calls=30)
+    scope = AutonomyScopeV2(
+        version=2, allowed_paths=("src/new-area",),
+        max_child_depth=1, max_child_campaigns=1,
+    )
+    expanded["autonomy"] = {
+        "mode": "FULL_AUTO", "scope_digest": scope.content_digest(),
+        "scope_version": scope.version, "scope": scope.model_dump(mode="json"),
+    }
+    path = "src/new-area/model.py"
+    proposal = PivotProposal.build(
+        spec_hash=setup["parent_spec"].approved_hash(), trigger_experiment_ordinal=2,
+        current_architecture="existing subsystem", proposed_architecture="expanded subsystem",
+        rationale="The proposal binds these broader changes but Full Auto cannot approve them.",
+        expected_effect="Evaluate a separate implementation path.", changed_scope=(path,),
+        resources={"additional_agent_calls": 10},
+        execution_plan=_execution_plan(expanded, (path,)),
+    )
+    with pytest.raises(PivotSagaError, match="Full Auto child autonomy exceeds"):
+        _saga(setup).create_child(
+            idempotency_key="auto-expansion-denied", proposal=proposal,
+            child_spec=expanded,
+        )
+    ledger = setup["registry"].budget_ledger()
+    assert ledger.conn.execute("SELECT COUNT(*) FROM child_allocations").fetchone()[0] == 0
+    ledger.close()
+
+
+def test_supervised_plan_cannot_exceed_live_budget_envelope(tmp_path):
+    setup = _setup(tmp_path, mode="SUPERVISED")
+    ledger = setup["registry"].budget_ledger()
+    ledger.reserve_action(
+        reservation_id="prior-parent-work", campaign_id=setup["parent_id"],
+        action_id="prior-parent-action", resource="agent_calls", amount=80,
+        idempotency_key="prior-parent-reservation",
+    )
+    ledger.settle_action(
+        "prior-parent-work", actual=80, quality="actual", receipt_digest="a" * 64,
+        fence=0,
+    )
+    ledger.close()
+    expanded = dict(setup["child_spec"])
+    expanded["budget"] = dict(expanded["budget"], max_agent_calls=30)
+    path = "src/optimizer/model/ranker.py"
+    proposal = PivotProposal.build(
+        spec_hash=setup["parent_spec"].approved_hash(), trigger_experiment_ordinal=2,
+        current_architecture="baseline", proposed_architecture="expanded budget",
+        rationale="Approval cannot create new budget.", expected_effect="bounded execution",
+        changed_scope=(path,), resources={"additional_agent_calls": 10},
+        execution_plan=_execution_plan(expanded, (path,)),
+    )
+    approval = PivotDecisionCommand(
+        campaign_id=setup["parent_id"], request_id="insufficient-budget-approval",
+        proposal_id=proposal.proposal_id, digest=proposal.digest, decision="approve",
+    )
+    saga = _saga(setup)
+    saga.record_pivot_proposal(proposal)
+    saga.record_pivot_decision(approval)
+    with pytest.raises(PivotSagaError, match="budget|cap|envelope"):
+        saga.create_child(
+            idempotency_key="insufficient-budget", proposal=proposal,
+            child_spec=expanded, approval=approval,
+        )
+    ledger = setup["registry"].budget_ledger()
+    assert ledger.conn.execute("SELECT COUNT(*) FROM child_allocations").fetchone()[0] == 0
+    ledger.close()
 def test_v2_human_steering_api_records_durable_proposal_and_decision(tmp_path):
     setup = _setup(tmp_path, mode="SUPERVISED")
     server = create_server(str(setup["repo"]), port=0, token="v2-api-token")
@@ -653,11 +793,21 @@ def test_v2_human_steering_api_records_durable_proposal_and_decision(tmp_path):
         with urllib.request.urlopen(request, timeout=5) as response:
             decision_receipt = json.loads(response.read())
         assert decision_receipt["status"] == "APPROVED"
-        child = _saga(setup).create_child(
-            idempotency_key="api-approved-pivot",
-            proposal=setup["proposal"], child_spec=setup["child_spec"],
-            approval=command,
+        request = urllib.request.Request(
+            base + "/v2/pivot-executions",
+            data=json.dumps({
+                "proposal_id": setup["proposal"].proposal_id,
+                "digest": setup["proposal"].digest,
+            }).encode(),
+            headers={
+                "Authorization": "Bearer v2-api-token",
+                "Content-Type": "application/json",
+                "Idempotency-Key": "api-approved-pivot",
+            },
+            method="POST",
         )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            child = json.loads(response.read())
         assert child["state"] == "ACTIVE"
     finally:
         server.shutdown()
@@ -667,7 +817,7 @@ def test_v2_human_steering_api_records_durable_proposal_and_decision(tmp_path):
 
 def test_v2_human_steering_cli_records_proposal_and_decision(tmp_path, capsys):
     import argparse
-    from bananloop.cli import cmd_v2_pivot_decision, cmd_v2_pivot_proposal
+    from bananloop.cli import cmd_v2_pivot_decision, cmd_v2_pivot_execute, cmd_v2_pivot_proposal
 
     setup = _setup(tmp_path, mode="SUPERVISED")
     proposal_file = tmp_path / "proposal.json"
@@ -685,6 +835,12 @@ def test_v2_human_steering_cli_records_proposal_and_decision(tmp_path, capsys):
         digest=setup["proposal"].digest, decision="approve", on_reject=None,
     )) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "APPROVED"
+    assert cmd_v2_pivot_execute(argparse.Namespace(
+        repo=str(setup["repo"]), campaign_id=setup["parent_id"],
+        proposal_id=setup["proposal"].proposal_id, digest=setup["proposal"].digest,
+        idempotency_key="cli-approved-pivot",
+    )) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "ACTIVE"
 
 
 def test_saga_idempotency_key_cannot_be_reused_for_different_child_spec(tmp_path):
@@ -695,11 +851,53 @@ def test_saga_idempotency_key_cannot_be_reused_for_different_child_spec(tmp_path
     )
     changed = dict(setup["child_spec"])
     changed["goal"] = "different child goal"
-    with pytest.raises(PivotSagaError, match="reused with different content"):
+    with pytest.raises(PivotSagaError, match="immutable approved execution plan"):
         _saga(setup).create_child(
             idempotency_key="same-pivot-key", proposal=setup["proposal"],
             child_spec=changed,
         )
+
+
+def test_tampered_child_execution_plan_fails_before_saga_or_escrow(tmp_path):
+    setup = _setup(tmp_path)
+    changed = dict(setup["child_spec"])
+    changed["goal"] = "Caller tries to replace the approved goal"
+    with pytest.raises(PivotSagaError, match="immutable approved execution plan"):
+        _saga(setup).create_child(
+            idempotency_key="tampered-plan", proposal=setup["proposal"],
+            child_spec=changed,
+        )
+    ledger = setup["registry"].budget_ledger()
+    assert ledger.conn.execute("SELECT COUNT(*) FROM child_allocations").fetchone()[0] == 0
+    ledger.close()
+    conn = sqlite3.connect(setup["parent_db"])
+    assert conn.execute("SELECT COUNT(*) FROM v2_pivot_sagas").fetchone()[0] == 0
+    conn.close()
+
+
+def test_legacy_pivot_proposal_digest_is_unchanged_but_cannot_execute(tmp_path):
+    setup = _setup(tmp_path)
+    legacy = PivotProposal.build(
+        spec_hash=setup["parent_spec"].approved_hash(), trigger_experiment_ordinal=2,
+        current_architecture="baseline", proposed_architecture="legacy proposal",
+        rationale="historical record", expected_effect="audit only",
+        changed_scope=("src/optimizer/model/legacy.py",),
+        resources={"additional_agent_calls": 1},
+    )
+    payload = legacy.model_dump(mode="json")
+    payload.pop("execution_plan")
+    payload.pop("proposal_id")
+    payload.pop("digest")
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    assert legacy.digest == hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    with pytest.raises(PivotSagaError, match="audit-only"):
+        _saga(setup).create_child(
+            idempotency_key="legacy-pivot", proposal=legacy,
+            child_spec=setup["child_spec"],
+        )
+    ledger = setup["registry"].budget_ledger()
+    assert ledger.conn.execute("SELECT COUNT(*) FROM child_allocations").fetchone()[0] == 0
+    ledger.close()
 
 
 @pytest.mark.parametrize("corruption", [

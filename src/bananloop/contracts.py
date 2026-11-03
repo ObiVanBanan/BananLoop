@@ -124,13 +124,17 @@ class BudgetSpec(BaseModel):
 
 def pivot_proposal_digest(payload: dict[str, Any]) -> str:
     """Hash the immutable, operator-reviewable body of a pivot proposal."""
+    # The optional execution plan was added after v2 proposals shipped. Keep
+    # legacy proposal identity byte-for-byte stable when it is absent.
+    if payload.get("execution_plan") is None:
+        payload = {key: value for key, value in payload.items() if key != "execution_plan"}
     body = {key: value for key, value in payload.items() if key not in {"proposal_id", "digest"}}
     encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 class PivotResourceRequest(BaseModel):
-    """Estimated extra resources needed if an operator approves a pivot."""
+    """Non-authoritative estimate; the bound execution plan carries real caps."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -138,6 +142,60 @@ class PivotResourceRequest(BaseModel):
     additional_evaluator_calls: int = Field(default=0, ge=0, le=1000)
     additional_evaluation_units: float | None = Field(default=None, ge=0, le=1_000_000)
     notes: str = Field(default="", max_length=1000)
+
+
+class PivotExecutionPlanV2(BaseModel):
+    """Immutable, digest-bound child plan for an executable pivot proposal.
+
+    JSON strings are used for nested data so a frozen model cannot be mutated
+    through a dict/list reference after approval.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    child_spec_json: str = Field(min_length=2, max_length=200_000)
+    changed_paths: tuple[str, ...] = Field(min_length=1, max_length=128)
+    resource_vector_json: str = Field(min_length=2, max_length=10_000)
+
+    @field_validator("child_spec_json", "resource_vector_json")
+    @classmethod
+    def canonical_json(cls, value: str) -> str:
+        try:
+            parsed = json.loads(value, parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)))
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("pivot execution plan contains invalid JSON") from exc
+        except ValueError as exc:
+            raise ValueError("pivot execution plan JSON cannot contain NaN or Infinity") from exc
+        canonical = json.dumps(parsed, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+        if canonical != value:
+            raise ValueError("pivot execution plan JSON must be canonical")
+        return value
+
+    @field_validator("changed_paths")
+    @classmethod
+    def canonical_changed_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        from pathlib import PurePosixPath, PureWindowsPath
+
+        if len(value) != len(set(value)):
+            raise ValueError("pivot execution plan paths must be unique")
+        for path in value:
+            posix = PurePosixPath(path)
+            windows = PureWindowsPath(path)
+            if (not path or "\\" in path or path.startswith("/") or windows.is_absolute() or windows.drive
+                    or any(part in {"", ".", ".."} for part in path.split("/"))
+                    or str(posix) != path):
+                raise ValueError("pivot execution plan paths must be canonical repository-relative paths")
+        return value
+
+    @classmethod
+    def build(cls, *, child_spec: dict[str, Any], changed_paths: list[str] | tuple[str, ...],
+              resource_vector: dict[str, Any]) -> "PivotExecutionPlanV2":
+        return cls(
+            child_spec_json=json.dumps(child_spec, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False),
+            changed_paths=tuple(changed_paths),
+            resource_vector_json=json.dumps(resource_vector, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False),
+        )
 
 
 class PivotProposal(BaseModel):
@@ -155,6 +213,7 @@ class PivotProposal(BaseModel):
     expected_effect: str = Field(min_length=1, max_length=1000)
     changed_scope: tuple[str, ...] = Field(min_length=1, max_length=32)
     resources: PivotResourceRequest
+    execution_plan: PivotExecutionPlanV2 | None = None
 
     @field_validator("changed_scope")
     @classmethod
@@ -177,6 +236,7 @@ class PivotProposal(BaseModel):
         current_architecture: str, proposed_architecture: str,
         rationale: str, expected_effect: str, changed_scope: list[str] | tuple[str, ...],
         resources: PivotResourceRequest | dict[str, Any],
+        execution_plan: PivotExecutionPlanV2 | dict[str, Any] | None = None,
     ) -> "PivotProposal":
         payload = {
             "spec_hash": spec_hash,
@@ -192,6 +252,12 @@ class PivotProposal(BaseModel):
                 else PivotResourceRequest.model_validate(resources).model_dump(mode="json")
             ),
         }
+        if execution_plan is not None:
+            payload["execution_plan"] = (
+                execution_plan.model_dump(mode="json")
+                if isinstance(execution_plan, PivotExecutionPlanV2)
+                else PivotExecutionPlanV2.model_validate(execution_plan).model_dump(mode="json")
+            )
         digest = pivot_proposal_digest(payload)
         return cls.model_validate({
             **payload,

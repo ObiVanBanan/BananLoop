@@ -603,6 +603,14 @@ def cmd_v2_pivot_decision(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_v2_pivot_execute(args: argparse.Namespace) -> int:
+    receipt = CampaignApplication(
+        args.repo, campaign_id=args.campaign_id,
+    ).v2_execute_pivot(args.proposal_id, args.digest, args.idempotency_key)
+    print(json.dumps(receipt, sort_keys=True))
+    return 0
+
+
 def cmd_stop(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     paths = _selected_paths(args)
@@ -1060,6 +1068,13 @@ def parser() -> argparse.ArgumentParser:
     decision_cmd.add_argument("--decision", choices=("approve", "reject"), required=True)
     decision_cmd.add_argument("--on-reject", choices=("continue_old_plan", "change_conditions", "end_campaign"))
     decision_cmd.set_defaults(func=cmd_v2_pivot_decision)
+    execute_cmd = v2_pivot_sub.add_parser("execute", help="execute or resume the exact persisted approved pivot plan")
+    execute_cmd.add_argument("--repo", default=".")
+    execute_cmd.add_argument("--campaign-id", required=True)
+    execute_cmd.add_argument("--proposal-id", required=True)
+    execute_cmd.add_argument("--digest", required=True)
+    execute_cmd.add_argument("--idempotency-key", required=True)
+    execute_cmd.set_defaults(func=cmd_v2_pivot_execute)
 
     serve = sub.add_parser("serve", help="serve the loopback-first REST, OpenAPI and SSE API")
     serve.add_argument("--repo", default=".")
