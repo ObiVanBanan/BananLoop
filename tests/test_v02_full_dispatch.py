@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import os
+import socket
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -84,6 +85,8 @@ def _bounds(**updates):
 
 @contextmanager
 def _test_provider_broker(boundary, intent):
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("host Python has no AF_UNIX socket support")
     from benchmarks.v02_full.provider_broker import OneShotProviderBroker
 
     class Adapter:
@@ -445,6 +448,42 @@ def test_worker_refuses_shell_commands_and_unsupported_sandbox_without_fallback(
     boundary.close()
 
 
+def test_provider_broker_fails_closed_without_unix_sockets(tmp_path, monkeypatch):
+    from benchmarks.v02_full.provider_broker import (
+        OneShotProviderBroker, ProviderBrokerError, request_one_provider_action,
+    )
+
+    boundary, _ = _setup(tmp_path)
+
+    class Adapter:
+        enforces_single_call = True
+        enforces_timeout = True
+        enforces_provider_ceilings = True
+        enforces_cancellation = True
+
+        def invoke_once(self, *args, **kwargs):
+            raise AssertionError("provider must not run without a private broker socket")
+
+        def cancel_action(self, action_id):
+            return None
+
+    broker = OneShotProviderBroker(
+        Adapter(), action_id=_helpers._sha("no-unix-socket"),
+        arm_config=boundary.arm_config, resource_bounds=_bounds(agent_calls=1),
+        timeout_seconds=1,
+    )
+    monkeypatch.delattr(socket, "AF_UNIX", raising=False)
+    try:
+        with pytest.raises(ProviderBrokerError, match="requires AF_UNIX socket support"):
+            broker.__enter__()
+        assert broker._temp is None
+        with pytest.raises(ProviderBrokerError, match="requires AF_UNIX socket support"):
+            request_one_provider_action("unused", action_id=_helpers._sha("action"),
+                                        prompt=b"prompt", timeout_seconds=1)
+    finally:
+        boundary.close()
+
+
 def test_worker_launch_permit_is_signed_and_single_use(tmp_path):
     import json
     from benchmarks.v02_full.evidence import EvidenceArtifactRef
@@ -759,6 +798,8 @@ def test_one_shot_broker_binds_action_and_calls_provider_once(tmp_path):
 
 
 def test_one_shot_broker_unix_socket_roundtrip_when_host_allows_it(tmp_path):
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("host Python has no AF_UNIX socket support")
     from benchmarks.v02_full.provider_broker import (
         OneShotProviderBroker, ProviderInvocation, request_one_provider_action,
     )

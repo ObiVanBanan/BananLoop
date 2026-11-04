@@ -64,6 +64,14 @@ def _canonical(value: object) -> bytes:
                       allow_nan=False).encode("utf-8")
 
 
+def _require_unix_domain_sockets() -> None:
+    # The worker receives a private Unix-domain endpoint. Do not silently
+    # substitute a TCP listener: loopback reachability does not preserve the
+    # same peer-identity boundary.
+    if not hasattr(socket, "AF_UNIX"):
+        raise ProviderBrokerError("provider broker requires AF_UNIX socket support")
+
+
 def _unique_object(pairs):
     result = {}
     for key, value in pairs:
@@ -146,6 +154,7 @@ class OneShotProviderBroker:
         self._calls = 0
 
     def __enter__(self) -> "OneShotProviderBroker":
+        _require_unix_domain_sockets()
         self._temp = tempfile.TemporaryDirectory(prefix="rpdi14-provider-broker-")
         directory = Path(self._temp.name)
         if os.name == "nt":
@@ -290,6 +299,7 @@ def request_one_provider_action(
     socket_path: str | Path, *, action_id: str, prompt: bytes, timeout_seconds: int,
 ) -> ProviderInvocation:
     """Worker-side RPC helper; returns model output and the host-verified receipt."""
+    _require_unix_domain_sockets()
     if not isinstance(prompt, bytes) or not prompt or len(prompt) > MAX_PROMPT_BYTES:
         raise ProviderBrokerError("prompt is empty or exceeds the broker limit")
     request = _canonical({
