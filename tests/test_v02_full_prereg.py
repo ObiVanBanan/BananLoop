@@ -7,6 +7,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+import benchmarks.v02_full.evidence as evidence_module
 from bananloop.contracts import FeatureFlagsV2, V2_FULL_FEATURES
 from benchmarks.v02_full.evidence import (
     EvidenceArtifactRef, EvidenceError, SignedEvidence, TrustPolicy, TrustedSigner,
@@ -76,6 +77,23 @@ def test_windows_owner_rights_is_trusted_only_after_owner_validation():
     assert _windows_sid_is_trusted_writer(owner_rights, current_user, owner_is_trusted=True)
     assert not _windows_sid_is_trusted_writer(owner_rights, current_user, owner_is_trusted=False)
     assert not _windows_sid_is_trusted_writer(unknown_writer, current_user, owner_is_trusted=True)
+
+
+def test_windows_protected_paths_reject_remote_and_unknown_drive_types(monkeypatch):
+    observed_roots = []
+
+    def remote_drive(root):
+        observed_roots.append(root)
+        return 4  # DRIVE_REMOTE, including mapped network drives.
+
+    monkeypatch.setattr(evidence_module, "_windows_drive_type", remote_drive)
+    with pytest.raises(EvidenceError, match="recognized local drive"):
+        evidence_module._require_local_windows_drive("Z:\\")
+    assert observed_roots == ["Z:\\"]
+
+    monkeypatch.setattr(evidence_module, "_windows_drive_type", lambda _root: 0)
+    with pytest.raises(EvidenceError, match="recognized local drive"):
+        evidence_module._require_local_windows_drive("Z:\\")
 
 
 def test_blind_label_assignment_is_randomized_and_canonically_committed():
@@ -576,10 +594,15 @@ def test_trust_policy_loader_rejects_symlink_ancestor(tmp_path):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL/reparse-point contract")
-def test_windows_acl_gate_accepts_service_private_root_and_rejects_world_write(tmp_path):
+def test_windows_acl_gate_accepts_service_private_root_and_rejects_world_write(tmp_path, monkeypatch):
     root = tmp_path / "protected"
     root.mkdir()
     verify_protected_directory(root)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(evidence_module, "_windows_drive_type", lambda _root: 4)
+        with pytest.raises(EvidenceError, match="recognized local drive"):
+            verify_protected_directory(root)
 
     policy = TrustPolicy(
         signers={"key": TrustedSigner(

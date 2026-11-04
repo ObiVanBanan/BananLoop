@@ -292,10 +292,31 @@ def _windows_protected_acl(path: Path) -> None:
             kernel.LocalFree(descriptor)
 
 
+def _windows_drive_type(root: str) -> int:
+    """Return the Win32 drive type for an absolute drive root."""
+    if os.name != "nt":
+        raise EvidenceError("Windows drive verification is unavailable on this platform")
+    kernel = ctypes.WinDLL("Kernel32", use_last_error=True)
+    get_drive_type = kernel.GetDriveTypeW
+    get_drive_type.argtypes = [ctypes.c_wchar_p]
+    get_drive_type.restype = ctypes.wintypes.UINT
+    return int(get_drive_type(root))
+
+
+def _require_local_windows_drive(root: str) -> None:
+    # GetDriveTypeW returns UNKNOWN (0), NO_ROOT_DIR (1), REMOTE (4), etc.
+    # Unknown roots fail closed; mapped SMB drives report DRIVE_REMOTE even
+    # though their Path.drive is just a drive letter such as ``Z:``.
+    drive_type = _windows_drive_type(root)
+    if drive_type not in {2, 3, 5, 6}:  # removable, fixed, CD-ROM, RAM disk
+        raise EvidenceError("protected Windows path must be on a recognized local drive")
+
+
 def _verify_windows_path(path: Path, *, final_is_directory: bool) -> None:
     """Verify local path components before reading a Windows trust root."""
     if not path.is_absolute() or ".." in path.parts or path.drive.startswith("\\\\"):
         raise EvidenceError("protected Windows path must be absolute, local, and traversal-free")
+    _require_local_windows_drive(path.anchor)
     current = Path(path.anchor)
     components = path.parts[1:]
     if not components:
