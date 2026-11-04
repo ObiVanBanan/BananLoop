@@ -28,10 +28,26 @@ _KEY_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 MAX_EVIDENCE_BYTES = 1_000_000
 MAX_SCORE_OUTPUT_BYTES = 16_000_000
 MAX_TRUST_POLICY_BYTES = 2_000_000
+_WINDOWS_SYSTEM_SID = b"\x01\x01\x00\x00\x00\x00\x00\x05\x12\x00\x00\x00"
+_WINDOWS_ADMINISTRATORS_SID = b"\x01\x02\x00\x00\x00\x00\x00\x05\x20\x00\x00\x00\x20\x02\x00\x00"
 
 
 class EvidenceError(ValueError):
     """A gate artifact is missing, malformed, unsigned, or out of scope."""
+
+
+def _sid_bytes_from_ace(ace_bytes: bytes, sid_offset: int) -> bytes:
+    """Copy one structurally valid SID wholly contained in a bounded ACE."""
+    if (not isinstance(ace_bytes, bytes) or type(sid_offset) is not int
+            or sid_offset < 0 or sid_offset + 8 > len(ace_bytes)):
+        raise EvidenceError("protected Windows ACL entry has a truncated SID")
+    revision, subauthority_count = ace_bytes[sid_offset:sid_offset + 2]
+    if revision != 1 or subauthority_count > 15:
+        raise EvidenceError("protected Windows ACL entry has an invalid SID header")
+    sid_size = 8 + 4 * subauthority_count
+    if sid_offset + sid_size > len(ace_bytes):
+        raise EvidenceError("protected Windows ACL entry has a truncated SID")
+    return ace_bytes[sid_offset:sid_offset + sid_size]
 
 
 class EvidenceArtifactRef(BaseModel):
@@ -179,10 +195,6 @@ def _windows_protected_acl(path: Path) -> None:
     get_ace = advapi.GetAce
     get_ace.argtypes = [ctypes.c_void_p, ctypes.wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p)]
     get_ace.restype = ctypes.wintypes.BOOL
-    is_well_known = advapi.IsWellKnownSid
-    is_well_known.argtypes = [ctypes.c_void_p, ctypes.c_int]
-    is_well_known.restype = ctypes.wintypes.BOOL
-
     owner, dacl, descriptor = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p()
     # OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION
     status = get_security(str(path), 1, 0x00000001 | 0x00000004,
@@ -195,16 +207,18 @@ def _windows_protected_acl(path: Path) -> None:
         if not owner.value or not dacl.value:
             raise EvidenceError("protected Windows path requires an explicit owner and DACL")
         owner_sid = ctypes.string_at(owner, advapi.GetLengthSid(owner))
-        trusted_owner = (
-            owner_sid == user_sid or bool(is_well_known(owner, 22))
-            or bool(is_well_known(owner, 26))
-        )
+        trusted_owner = owner_sid in {
+            user_sid, _WINDOWS_SYSTEM_SID, _WINDOWS_ADMINISTRATORS_SID,
+        }
         if not trusted_owner:
             raise EvidenceError("protected Windows path has an untrusted owner")
 
         info = AclSizeInformation()
         if not get_acl_info(dacl, ctypes.byref(info), ctypes.sizeof(info), 2):
             raise EvidenceError("cannot inspect the protected Windows DACL")
+        if (info.AclBytesInUse < 8
+                or info.AceCount > (info.AclBytesInUse - 8) // 4):
+            raise EvidenceError("protected Windows DACL has inconsistent bounds")
         write_mask = (
             0x00000002 | 0x00000004 | 0x00000010 | 0x00000040 | 0x00000100
             | 0x00010000 | 0x00040000 | 0x00080000
@@ -216,12 +230,17 @@ def _windows_protected_acl(path: Path) -> None:
                 raise EvidenceError("cannot inspect a protected Windows ACL entry")
             header = ctypes.cast(ace, ctypes.POINTER(ctypes.c_ubyte * 4)).contents
             ace_type = int(header[0])
+            ace_size = int(header[2]) | (int(header[3]) << 8)
+            ace_address = ace.value
+            acl_address = dacl.value
+            if (ace_size < 8 or ace_size % 4
+                    or ace_address < acl_address + 8
+                    or ace_address + ace_size > acl_address + info.AclBytesInUse):
+                raise EvidenceError("protected Windows ACL entry is malformed")
+            ace_bytes = ctypes.string_at(ace, ace_size)
             if int(header[1]) & 0x08:  # INHERIT_ONLY_ACE does not apply to this object.
                 continue
-            ace_size = int(header[2]) | (int(header[3]) << 8)
-            if ace_size < 8:
-                raise EvidenceError("protected Windows ACL entry is malformed")
-            mask = ctypes.cast(ace.value + 4, ctypes.POINTER(ctypes.wintypes.DWORD)).contents.value
+            mask = int.from_bytes(ace_bytes[4:8], "little")
             if ace_type in {1, 2, 6, 7, 10, 12, 13, 15, 17, 18, 19, 20, 21}:
                 continue
             if not mask & write_mask:
@@ -231,9 +250,7 @@ def _windows_protected_acl(path: Path) -> None:
             elif ace_type in {5, 11}:  # object ACEs have optional GUID fields
                 if ace_size < 12:
                     raise EvidenceError("protected Windows object ACE is malformed")
-                object_flags = ctypes.cast(
-                    ace.value + 8, ctypes.POINTER(ctypes.wintypes.DWORD),
-                ).contents.value
+                object_flags = int.from_bytes(ace_bytes[8:12], "little")
                 if object_flags & ~0x3:
                     raise EvidenceError("protected Windows object ACE has invalid flags")
                 sid_offset = 12 + (16 if object_flags & 0x1 else 0) + (16 if object_flags & 0x2 else 0)
@@ -241,14 +258,10 @@ def _windows_protected_acl(path: Path) -> None:
                 sid_offset = 8
             else:
                 raise EvidenceError("protected Windows path has an unsupported write ACL entry")
-            if ace_size < sid_offset + 8:
-                raise EvidenceError("protected Windows ACL entry has a truncated SID")
-            sid = ctypes.c_void_p(ace.value + sid_offset)
-            sid_bytes = ctypes.string_at(sid, advapi.GetLengthSid(sid))
-            trusted_writer = (
-                sid_bytes == user_sid or bool(is_well_known(sid, 22))
-                or bool(is_well_known(sid, 26))
-            )
+            sid_bytes = _sid_bytes_from_ace(ace_bytes, sid_offset)
+            trusted_writer = sid_bytes in {
+                user_sid, _WINDOWS_SYSTEM_SID, _WINDOWS_ADMINISTRATORS_SID,
+            }
             if not trusted_writer:
                 raise EvidenceError("protected Windows path is writable by an untrusted principal")
     finally:

@@ -10,7 +10,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from bananloop.contracts import FeatureFlagsV2, V2_FULL_FEATURES
 from benchmarks.v02_full.evidence import (
     EvidenceArtifactRef, EvidenceError, SignedEvidence, TrustPolicy, TrustedSigner,
-    load_trust_policy, read_content_artifact, sign_evidence, verify_protected_directory,
+    _sid_bytes_from_ace, load_trust_policy, read_content_artifact, sign_evidence,
+    verify_protected_directory,
 )
 from benchmarks.v02_full.accounting import (
     AccountingResult, ResourceUsage, make_receipt, validate_accounting_chain,
@@ -44,6 +45,17 @@ from benchmarks.v02_full.execution import (
 
 def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def test_sid_parser_never_reads_past_the_bounded_acl_entry():
+    sid = b"\x01\x01\x00\x00\x00\x00\x00\x05\x12\x00\x00\x00"
+    assert _sid_bytes_from_ace(b"\x00" * 8 + sid, 8) == sid
+    with pytest.raises(EvidenceError, match="truncated SID"):
+        _sid_bytes_from_ace(b"\x00" * 8 + sid[:8], 8)
+    with pytest.raises(EvidenceError, match="invalid SID header"):
+        _sid_bytes_from_ace(b"\x00" * 8 + b"\x02\x01\x00\x00\x00\x00\x00\x05\x12\x00\x00\x00", 8)
+    with pytest.raises(EvidenceError, match="invalid SID header"):
+        _sid_bytes_from_ace(b"\x00" * 8 + b"\x01\x10\x00\x00\x00\x00\x00\x05", 8)
 
 
 def test_blind_label_assignment_is_randomized_and_canonically_committed():
