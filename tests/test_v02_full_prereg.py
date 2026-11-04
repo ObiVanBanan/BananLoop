@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import subprocess
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -539,6 +540,42 @@ def test_trust_policy_loader_rejects_symlink_ancestor(tmp_path):
     with pytest.raises(EvidenceError):
         load_trust_policy(alias / protected.name)
     with pytest.raises(EvidenceError):
+        verify_protected_directory(alias)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL/reparse-point contract")
+def test_windows_acl_gate_accepts_service_private_root_and_rejects_world_write(tmp_path):
+    root = tmp_path / "protected"
+    root.mkdir()
+    verify_protected_directory(root)
+
+    policy = TrustPolicy(
+        signers={"key": TrustedSigner(
+            key_id="key", principal_id="principal",
+            public_key=Ed25519PrivateKey.generate().public_key().public_bytes(
+                encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw,
+            ),
+            permitted_roles=frozenset({"RUN_START_AUTHORIZER"}),
+        )},
+        independent_principal_exclusions=frozenset({"excluded"}),
+    )
+    policy_path = _write_trust_policy(root / "trust-policy.json", policy)
+    loaded, _ = load_trust_policy(policy_path)
+    assert loaded.signers["key"].principal_id == "principal"
+
+    subprocess.run(
+        ["icacls", str(root), "/grant", "*S-1-1-0:(M)"],
+        check=True, capture_output=True, text=True,
+    )
+    with pytest.raises(EvidenceError, match="writable by an untrusted principal"):
+        verify_protected_directory(root)
+
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(root, target_is_directory=True)
+    except OSError:
+        pytest.skip("Windows runner does not permit creating a test symlink")
+    with pytest.raises(EvidenceError, match="reparse point"):
         verify_protected_directory(alias)
 
 
