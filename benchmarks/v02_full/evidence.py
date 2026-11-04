@@ -275,7 +275,10 @@ def _windows_protected_acl(path: Path) -> None:
                 user_sid, _WINDOWS_SYSTEM_SID, _WINDOWS_ADMINISTRATORS_SID,
             }
             if not trusted_writer:
-                raise EvidenceError("protected Windows path is writable by an untrusted principal")
+                raise EvidenceError(
+                    "protected Windows path is writable by an untrusted principal "
+                    f"(SID {sid_bytes.hex()})"
+                )
     finally:
         if descriptor.value:
             kernel.LocalFree(descriptor)
