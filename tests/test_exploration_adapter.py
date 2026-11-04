@@ -171,6 +171,26 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
         )
         assert ledger.project(graph=graph, queue=queue, campaign_ids=("campaign-test",), source_snapshot_id=base,
                               protocol_digest=protocol_digest) == projection_before
+
+        event_row = graph.conn.execute(
+            "SELECT seq,payload_json FROM events WHERE event_type='EXPLORATION_COMPLETED'"
+        ).fetchone()
+        original_event = json.loads(event_row["payload_json"])
+        tampered_event = dict(original_event)
+        tampered_event["artifact_digests"] = [*original_event["artifact_digests"], "f" * 64]
+        graph.conn.execute("UPDATE events SET payload_json=? WHERE seq=?",
+                           (json.dumps(tampered_event, sort_keys=True, separators=(",", ":")), event_row["seq"]))
+        with pytest.raises(ResearchLedgerError, match="artifact digests differ"):
+            ledger.ingest_completed_job(graph, queue, job["job_id"])
+        tampered_event = dict(original_event)
+        tampered_event["evidence_refs"] = [*original_event["evidence_refs"], "observation:untrusted"]
+        graph.conn.execute("UPDATE events SET payload_json=? WHERE seq=?",
+                           (json.dumps(tampered_event, sort_keys=True, separators=(",", ":")), event_row["seq"]))
+        with pytest.raises(ResearchLedgerError, match="evidence refs differ"):
+            ledger.ingest_completed_job(graph, queue, job["job_id"])
+        graph.conn.execute("UPDATE events SET payload_json=? WHERE seq=?",
+                           (event_row["payload_json"], event_row["seq"]))
+
         with pytest.raises(ResearchLedgerError, match="source snapshot"):
             ledger.ingest_completed_job(graph, queue, job["job_id"],
                                         expected_source_snapshot_id="0" * 40)

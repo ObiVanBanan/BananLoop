@@ -437,7 +437,19 @@ class ResearchLedger:
                 or completion.get("output_digest") != durable["output_digest"]
                 or completion.get("spec_hash") != spec.approved_hash()):
             raise ResearchLedgerError("graph completion provenance does not match the durable worker result")
-        artifact_refs = {f"artifact://sha256/{digest}" for digest in completion.get("artifact_digests", ())}
+        worker_artifact_digests = tuple(sorted(item.sha256 for item in output.artifacts))
+        event_artifact_digests = completion.get("artifact_digests")
+        if (not isinstance(event_artifact_digests, (list, tuple))
+                or any(not isinstance(item, str) for item in event_artifact_digests)
+                or tuple(event_artifact_digests) != worker_artifact_digests):
+            raise ResearchLedgerError("graph completion artifact digests differ from the durable worker output")
+        artifact_refs = {f"artifact://sha256/{digest}" for digest in worker_artifact_digests}
+        worker_evidence_refs = tuple(sorted(set(output.evidence_refs) | artifact_refs))
+        event_evidence_refs = completion.get("evidence_refs")
+        if (not isinstance(event_evidence_refs, (list, tuple))
+                or any(not isinstance(item, str) for item in event_evidence_refs)
+                or tuple(event_evidence_refs) != worker_evidence_refs):
+            raise ResearchLedgerError("graph completion evidence refs differ from the durable worker output")
         if any(not set(finding.evidence_refs) <= artifact_refs for finding in output.research_findings):
             raise ResearchLedgerError("research finding must cite verified published artifact digests")
         if len({finding.claim_key for finding in output.research_findings}) != len(output.research_findings):
