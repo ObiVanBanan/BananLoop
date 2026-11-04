@@ -915,6 +915,50 @@ def test_independent_roles_require_distinct_trusted_principals(tmp_path):
         validate_run_gate(manifest, evidence, evidence_root=str(tmp_path / "bundle"), trust_policy=policy)
 
 
+@pytest.mark.parametrize(
+    ("reviewer_role", "conclusion", "message"),
+    [
+        ("SCREEN_READER_REVIEWER", "PASS", "requires an Exploration gate verifier"),
+        ("EXPLORATION_GATE_VERIFIER", "ACCEPTED", "requires a passing Exploration verification"),
+    ],
+)
+def test_optimization_gate_requires_exploration_verifier_pass(
+        tmp_path, reviewer_role, conclusion, message):
+    manifest = freeze_manifest(_raw_manifest(track="OPTIMIZATION"))
+    evidence_root = tmp_path / "bundle"
+    evidence, policy = _valid_evidence(manifest, evidence_root)
+    signer = policy.signers[f"key-{reviewer_role.lower()}"]
+    private_key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(_sha(f"secret-{reviewer_role}")))
+    raw = sign_evidence({
+        "schema_version": 1,
+        "evidence_type": "EXPLORATION_VERIFICATION",
+        "subject_sha": evidence.exploration_verification.subject_sha,
+        "conclusion": conclusion,
+        "issuer_role": reviewer_role,
+        "payload": {},
+    }, key_id=signer.key_id, principal_id=signer.principal_id, private_key=private_key)
+    path = f"{manifest.track.lower()}-{manifest.protocol_id}/replacement-exploration-verification.json"
+    target = evidence_root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(raw)
+    replacement_ref = EvidenceArtifactRef(path=path, artifact_sha256=hashlib.sha256(raw).hexdigest())
+    old_digest = evidence.exploration_verification.artifact_sha256
+    forged_gate = evidence.model_copy(update={
+        "exploration_verification": VerificationPin(
+            artifact_sha256=replacement_ref.artifact_sha256,
+            subject_sha=evidence.exploration_verification.subject_sha,
+            conclusion=conclusion,
+            reviewer_role=reviewer_role,
+        ),
+        "evidence_artifacts": tuple(
+            ref for ref in evidence.evidence_artifacts if ref.artifact_sha256 != old_digest
+        ) + (replacement_ref,),
+    })
+
+    with pytest.raises(PreregError, match=message):
+        validate_run_gate(manifest, forged_gate, evidence_root=str(evidence_root), trust_policy=policy)
+
+
 def _receipt_chain(pair_id, arm_label, *, unknown_spend=False):
     receipt = make_receipt(
         pair_id=pair_id, arm_label=arm_label, sequence=1,
