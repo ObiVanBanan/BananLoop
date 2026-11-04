@@ -604,6 +604,7 @@
     selectionGeneration += 1;
     selectedCampaignId = campaignId;
     hasSuccessfulRead = false;
+    setNotice("");
     eventCursor = 0;
     seenEventIds.clear();
     byId("event-list").replaceChildren();
@@ -657,6 +658,7 @@
     bearerToken = byId("token-input").value;
     byId("token-input").value = "";
     byId("auth-panel").hidden = true;
+    byId("overview-title").focus();
     byId("clear-token").hidden = !bearerToken;
     setNotice("");
     try {
@@ -664,11 +666,14 @@
       setConnection("Connected", "connected");
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = setInterval(refreshSelected, 5000);
+      const campaignSelect = byId("campaign-select");
+      (campaignSelect.disabled ? byId("overview-title") : campaignSelect).focus();
     } catch (error) {
       byId("auth-panel").hidden = false;
       bearerToken = "";
       setConnection(error.status === 401 ? "Authentication required" : "Unavailable", "error");
       setNotice(error.status === 401 ? "The token was not accepted." : error.message, "error");
+      byId("token-input").focus();
     }
   });
 
@@ -692,6 +697,7 @@
     if (pollTimer) clearInterval(pollTimer);
     byId("auth-panel").hidden = false;
     byId("clear-token").hidden = true;
+    byId("token-input").focus();
     byId("campaign-select").replaceChildren();
     byId("campaign-select").disabled = true;
     campaignSummaries.clear();

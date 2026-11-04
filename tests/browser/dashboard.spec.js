@@ -77,6 +77,9 @@ async function installApiMocks(page) {
   let releaseBlockedSnapshot = null;
   let blockedSnapshotEntered = null;
   let resolveSnapshotEntered = null;
+  let blockCampaignIndex = false;
+  let releaseBlockedCampaignIndex = null;
+  let resolveCampaignIndexEntered = null;
   const gatePromise = () => new Promise((resolve) => { releaseBlockedSnapshot = resolve; });
 
   await page.route("**/v1/**", async (route) => {
@@ -85,6 +88,11 @@ async function installApiMocks(page) {
     const path = url.pathname;
     const method = request.method();
     if (path === "/v1/campaigns" && method === "GET") {
+      if (blockCampaignIndex) {
+        blockCampaignIndex = false;
+        resolveCampaignIndexEntered();
+        await new Promise((resolve) => { releaseBlockedCampaignIndex = resolve; });
+      }
       return route.fulfill({ json: {
         campaigns: [makeSummary(fullId), makeSummary(legacyId)],
         next_cursor: null, as_of: now, source: "PERSISTED",
@@ -136,6 +144,13 @@ async function installApiMocks(page) {
     return route.fulfill({ status: 404, json: { error: "not_found" } });
   });
   return {
+    delayCampaignIndex() {
+      blockCampaignIndex = true;
+      return new Promise((resolve) => { resolveCampaignIndexEntered = resolve; });
+    },
+    releaseCampaignIndex() {
+      if (releaseBlockedCampaignIndex) releaseBlockedCampaignIndex();
+    },
     delayNextSnapshot(campaignId) {
       blockedSnapshot = campaignId;
       blockedSnapshotEntered = new Promise((resolve) => { resolveSnapshotEntered = resolve; });
@@ -168,8 +183,14 @@ test("keyboard, campaign switch, event recovery, controls, axe, and narrow viewp
   expect(await page.evaluate(() => getComputedStyle(document.activeElement).outlineWidth)).toBe("3px");
 
   await page.getByLabel("Bearer token").fill("browser-test-token");
-  await page.getByRole("button", { name: "Connect" }).click();
+  const campaignIndexEntered = mocks.delayCampaignIndex();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Enter");
+  await campaignIndexEntered;
+  await expect(page.locator("#overview-title")).toBeFocused();
+  mocks.releaseCampaignIndex();
   await expect(page.locator("#connection")).toHaveText("Connected");
+  await expect(page.locator("#campaign-select")).toBeFocused();
   await expect(page.locator("#notice")).toContainText("Some older events are outside retention");
   await expect(page.locator("#event-list")).toContainText("#6");
   await expect(page.locator("#summary-grid")).toContainText("FULL");
@@ -205,8 +226,12 @@ test("keyboard, campaign switch, event recovery, controls, axe, and narrow viewp
   mocks.release();
   await expect(page.locator("#summary-grid")).toContainText("PAUSED_NEEDS_INPUT");
   await expect(page.locator("#summary-grid")).not.toContainText("GOAL_MET");
+  await expect(page.locator("#notice")).not.toContainText("Some older events are outside retention");
   await page.getByRole("button", { name: "Request pause" }).click();
   await expect(page.locator("#control-result")).toContainText("Intent ACCEPTED");
 
   await expect(page.locator("#controls")).toBeVisible();
+  await page.getByRole("button", { name: "Clear token" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#token-input")).toBeFocused();
 });
