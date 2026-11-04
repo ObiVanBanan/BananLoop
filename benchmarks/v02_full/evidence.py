@@ -30,6 +30,9 @@ MAX_SCORE_OUTPUT_BYTES = 16_000_000
 MAX_TRUST_POLICY_BYTES = 2_000_000
 _WINDOWS_SYSTEM_SID = b"\x01\x01\x00\x00\x00\x00\x00\x05\x12\x00\x00\x00"
 _WINDOWS_ADMINISTRATORS_SID = b"\x01\x02\x00\x00\x00\x00\x00\x05\x20\x00\x00\x00\x20\x02\x00\x00"
+_WINDOWS_ALLOWED_ACE_TYPES = frozenset({0, 4, 5, 9, 11})
+_WINDOWS_NON_GRANT_ACE_TYPES = frozenset({1, 2, 3, 6, 7, 8, 10, 12, 13, 14, 15, 16, 17,
+                                         18, 19, 20, 21})
 
 
 class EvidenceError(ValueError):
@@ -48,6 +51,15 @@ def _sid_bytes_from_ace(ace_bytes: bytes, sid_offset: int) -> bytes:
     if sid_offset + sid_size > len(ace_bytes):
         raise EvidenceError("protected Windows ACL entry has a truncated SID")
     return ace_bytes[sid_offset:sid_offset + sid_size]
+
+
+def _windows_ace_is_allowing(ace_type: int) -> bool:
+    """Classify known ACE kinds; reject new/unknown types fail-closed."""
+    if ace_type in _WINDOWS_ALLOWED_ACE_TYPES:
+        return True
+    if ace_type in _WINDOWS_NON_GRANT_ACE_TYPES:
+        return False
+    raise EvidenceError("protected Windows DACL contains an unsupported ACE type")
 
 
 class EvidenceArtifactRef(BaseModel):
@@ -240,9 +252,9 @@ def _windows_protected_acl(path: Path) -> None:
             ace_bytes = ctypes.string_at(ace, ace_size)
             if int(header[1]) & 0x08:  # INHERIT_ONLY_ACE does not apply to this object.
                 continue
-            mask = int.from_bytes(ace_bytes[4:8], "little")
-            if ace_type in {1, 2, 6, 7, 10, 12, 13, 15, 17, 18, 19, 20, 21}:
+            if not _windows_ace_is_allowing(ace_type):
                 continue
+            mask = int.from_bytes(ace_bytes[4:8], "little")
             if not mask & write_mask:
                 continue
             if ace_type == 4:  # ACCESS_ALLOWED_COMPOUND_ACE

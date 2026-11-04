@@ -10,7 +10,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from bananloop.contracts import FeatureFlagsV2, V2_FULL_FEATURES
 from benchmarks.v02_full.evidence import (
     EvidenceArtifactRef, EvidenceError, SignedEvidence, TrustPolicy, TrustedSigner,
-    _sid_bytes_from_ace, load_trust_policy, read_content_artifact, sign_evidence,
+    _sid_bytes_from_ace, _windows_ace_is_allowing, load_trust_policy,
+    read_content_artifact, sign_evidence,
     verify_protected_directory,
 )
 from benchmarks.v02_full.accounting import (
@@ -56,6 +57,15 @@ def test_sid_parser_never_reads_past_the_bounded_acl_entry():
         _sid_bytes_from_ace(b"\x00" * 8 + b"\x02\x01\x00\x00\x00\x00\x00\x05\x12\x00\x00\x00", 8)
     with pytest.raises(EvidenceError, match="invalid SID header"):
         _sid_bytes_from_ace(b"\x00" * 8 + b"\x01\x10\x00\x00\x00\x00\x00\x05", 8)
+
+
+def test_windows_acl_parser_rejects_unknown_ace_types():
+    assert _windows_ace_is_allowing(0)
+    assert _windows_ace_is_allowing(5)
+    assert not _windows_ace_is_allowing(1)
+    assert not _windows_ace_is_allowing(17)
+    with pytest.raises(EvidenceError, match="unsupported ACE type"):
+        _windows_ace_is_allowing(255)
 
 
 def test_blind_label_assignment_is_randomized_and_canonically_committed():
