@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from bananloop.contracts import FeatureFlagsV2, V2_FULL_FEATURES
 from benchmarks.v02_full.evidence import (
     EvidenceArtifactRef, EvidenceError, SignedEvidence, TrustPolicy, TrustedSigner,
-    _sid_bytes_from_ace, _windows_ace_is_allowing, load_trust_policy,
+    _sid_bytes_from_ace, _windows_ace_is_allowing, _windows_sid_is_trusted_writer, load_trust_policy,
     read_content_artifact, sign_evidence,
     verify_protected_directory,
 )
@@ -66,6 +66,16 @@ def test_windows_acl_parser_rejects_unknown_ace_types():
     assert not _windows_ace_is_allowing(17)
     with pytest.raises(EvidenceError, match="unsupported ACE type"):
         _windows_ace_is_allowing(255)
+
+
+def test_windows_owner_rights_is_trusted_only_after_owner_validation():
+    owner_rights = bytes.fromhex("010100000000000304000000")  # S-1-3-4
+    current_user = bytes.fromhex("010100000000000512000000")
+    unknown_writer = bytes.fromhex("010100000000000500000000")
+    assert _windows_sid_is_trusted_writer(current_user, current_user, owner_is_trusted=True)
+    assert _windows_sid_is_trusted_writer(owner_rights, current_user, owner_is_trusted=True)
+    assert not _windows_sid_is_trusted_writer(owner_rights, current_user, owner_is_trusted=False)
+    assert not _windows_sid_is_trusted_writer(unknown_writer, current_user, owner_is_trusted=True)
 
 
 def test_blind_label_assignment_is_randomized_and_canonically_committed():

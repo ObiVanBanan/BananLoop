@@ -30,6 +30,7 @@ MAX_SCORE_OUTPUT_BYTES = 16_000_000
 MAX_TRUST_POLICY_BYTES = 2_000_000
 _WINDOWS_SYSTEM_SID = b"\x01\x01\x00\x00\x00\x00\x00\x05\x12\x00\x00\x00"
 _WINDOWS_ADMINISTRATORS_SID = b"\x01\x02\x00\x00\x00\x00\x00\x05\x20\x00\x00\x00\x20\x02\x00\x00"
+_WINDOWS_OWNER_RIGHTS_SID = b"\x01\x01\x00\x00\x00\x00\x00\x03\x04\x00\x00\x00"
 _WINDOWS_ALLOWED_ACE_TYPES = frozenset({0, 4, 5, 9, 11})
 _WINDOWS_NON_GRANT_ACE_TYPES = frozenset({1, 2, 3, 6, 7, 8, 10, 12, 13, 14, 15, 16, 17,
                                          18, 19, 20, 21})
@@ -60,6 +61,13 @@ def _windows_ace_is_allowing(ace_type: int) -> bool:
     if ace_type in _WINDOWS_NON_GRANT_ACE_TYPES:
         return False
     raise EvidenceError("protected Windows DACL contains an unsupported ACE type")
+
+
+def _windows_sid_is_trusted_writer(sid: bytes, user_sid: bytes, *, owner_is_trusted: bool) -> bool:
+    """Trust OWNER RIGHTS only after independently validating the object's owner."""
+    if sid in {user_sid, _WINDOWS_SYSTEM_SID, _WINDOWS_ADMINISTRATORS_SID}:
+        return True
+    return sid == _WINDOWS_OWNER_RIGHTS_SID and owner_is_trusted
 
 
 class EvidenceArtifactRef(BaseModel):
@@ -271,9 +279,9 @@ def _windows_protected_acl(path: Path) -> None:
             else:
                 raise EvidenceError("protected Windows path has an unsupported write ACL entry")
             sid_bytes = _sid_bytes_from_ace(ace_bytes, sid_offset)
-            trusted_writer = sid_bytes in {
-                user_sid, _WINDOWS_SYSTEM_SID, _WINDOWS_ADMINISTRATORS_SID,
-            }
+            trusted_writer = _windows_sid_is_trusted_writer(
+                sid_bytes, user_sid, owner_is_trusted=trusted_owner,
+            )
             if not trusted_writer:
                 raise EvidenceError(
                     "protected Windows path is writable by an untrusted principal "
