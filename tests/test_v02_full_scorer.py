@@ -204,6 +204,15 @@ def test_blind_scorer_does_not_report_available_without_isolation(tmp_path):
     assert not scorer.available()
 
 
+def test_blind_scorer_refuses_direct_run_without_signed_finalization(tmp_path):
+    manifest = freeze_manifest(_helpers._raw_manifest())
+    package = _helpers._report_package(manifest, tmp_path)
+    request = _blind_request(manifest, package, tmp_path)
+    scorer = BubblewrapBlindScorer(cgroup_root=tmp_path, bwrap_binary="/missing/bwrap")
+    with pytest.raises(ScorerError, match="signed run authorization and finalized scoring-request"):
+        scorer.run(manifest, request, evaluator_root=tmp_path, score_package=package)
+
+
 def test_evaluator_constituents_are_checked_against_individual_pins(tmp_path):
     from benchmarks.v02_full.prereg import freeze_manifest
 

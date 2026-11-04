@@ -36,7 +36,9 @@ from .execution import (
     verify_assignment_projection, verify_arm_run_authorization,
 )
 from .prereg import ArmConfig, GateEvidence, ResourceCaps, TrackManifest, canonical_bytes
-from .worker import ArmWorkerError, ArmWorkerResult, BubblewrapArmWorker
+from .worker import (
+    ArmWorkerError, ArmWorkerResult, BubblewrapArmWorker, _broker_socket_identity,
+)
 from .provider_broker import OneCallProviderAdapter, OneShotProviderBroker, ProviderBrokerError
 
 
@@ -275,6 +277,8 @@ class MeteredDispatchBoundary:
               bounds_json TEXT NOT NULL, previous_receipt_sha256 TEXT,
               arm_configuration_sha256 TEXT NOT NULL, bound_proof_sha256 TEXT NOT NULL,
               provider_receipt_sha256 TEXT,
+              worker_launch_state TEXT NOT NULL DEFAULT 'NOT_LAUNCHED'
+                CHECK(worker_launch_state IN ('NOT_LAUNCHED','LAUNCHED')),
               state TEXT NOT NULL CHECK(state IN ('PENDING','SEALED','UNKNOWN','OVER_BOUND')),
               receipt_json TEXT, evidence_path TEXT, evidence_sha256 TEXT,
               PRIMARY KEY(pair_id,arm_label,sequence),
@@ -286,6 +290,7 @@ class MeteredDispatchBoundary:
             "arm_configuration_sha256": "TEXT NOT NULL DEFAULT ''",
             "bound_proof_sha256": "TEXT NOT NULL DEFAULT ''",
             "provider_receipt_sha256": "TEXT",
+            "worker_launch_state": "TEXT NOT NULL DEFAULT 'NOT_LAUNCHED'",
         }
         for column, declaration in migrations.items():
             if column not in existing_columns:
@@ -404,6 +409,81 @@ class MeteredDispatchBoundary:
             self.authorization, self.manifest, self.gate_evidence, self.track,
             self.assignment, self.task_id, self.pair_id, self.arm_label, self.arm_config,
         )
+
+    def _worker_launch_permit(
+        self, intent: _PendingIntent, broker: OneShotProviderBroker,
+    ) -> EvidenceArtifactRef:
+        """Seal a signed launch permit only for a durable pending action."""
+        policy = self._ensure_authorized()
+        config_sha256 = _digest(canonical_bytes(self.arm_config))
+        row = self.conn.execute(
+            "SELECT * FROM meter_actions "
+            "WHERE pair_id=? AND arm_label=? AND sequence=?",
+            (self.pair_id, self.arm_label, intent.sequence),
+        ).fetchone()
+        if (row is None or row["state"] != "PENDING" or row["action_id"] != intent.action_id
+                or row["action_kind"] != "MODEL_CALL" or intent.action_kind != "MODEL_CALL"
+                or row["worker_launch_state"] != "NOT_LAUNCHED"
+                or row["arm_configuration_sha256"] != config_sha256
+                or intent.arm_configuration_sha256 != config_sha256):
+            raise DispatchBoundaryError("worker launch has no matching durable metered intent")
+        if (not isinstance(broker, OneShotProviderBroker)
+                or broker.action_id != intent.action_id
+                or broker.arm_config != self.arm_config
+                or broker.resource_bounds != intent.bounds
+                or broker.socket_path is None or broker._server is None
+                or broker._server.getsockname() != str(broker.socket_path)):
+            raise DispatchBoundaryError("worker launch requires the matching active one-shot provider broker")
+        try:
+            broker_identity = _broker_socket_identity(broker.socket_path)
+        except ArmWorkerError as exc:
+            raise DispatchBoundaryError(str(exc)) from exc
+        payload = {
+            "authorization_sha256": self.authorization.artifact_sha256,
+            "assignment_sha256": self.assignment.assignment_evidence.artifact_sha256,
+            "manifest_sha256": self.manifest.manifest_sha256,
+            "track": self.track,
+            "task_id": self.task_id,
+            "pair_id_sha256": self.pair_id,
+            "arm_label": self.arm_label,
+            "arm_configuration_sha256": config_sha256,
+            "sequence": str(intent.sequence),
+            "action_id_sha256": intent.action_id,
+            "action_kind": row["action_kind"],
+            "bounds_json_sha256": _digest(row["bounds_json"].encode("utf-8")),
+            "bound_proof_sha256": row["bound_proof_sha256"],
+            "meter_database_path_sha256": _digest(str(self.db_path.resolve()).encode("utf-8")),
+            **broker_identity,
+        }
+        raw = sign_evidence(
+            {"schema_version": 1, "evidence_type": "WORKER_LAUNCH",
+             "subject_sha": intent.action_id, "conclusion": "ACCEPTED",
+             "issuer_role": _ACTION_METER_ROLE, "payload": payload},
+            key_id=self.meter_key_id,
+            principal_id=policy.signers[self.meter_key_id].principal_id,
+            private_key=self.meter_private_key,
+        )
+        digest = _digest(raw)
+        relative = f"worker-launch-{digest}.json"
+        verify_protected_directory(self.evidence_root)
+        root_fd = os.open(self.evidence_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            try:
+                fd = os.open(relative, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=root_fd)
+            except FileExistsError:
+                from .evidence import _read_evidence_bounded
+                if _read_evidence_bounded(self.evidence_root, PurePosixPath(relative)) != raw:
+                    raise EvidenceError("existing worker-launch permit differs from its signed bytes")
+            else:
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(raw)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.fsync(root_fd)
+        finally:
+            os.close(root_fd)
+        return EvidenceArtifactRef(path=relative, artifact_sha256=digest)
 
     def _read_head(self) -> sqlite3.Row:
         row = self.conn.execute(
@@ -679,7 +759,7 @@ class MeteredDispatchBoundary:
                 or reserved["output_tokens"] < 1):
             raise DispatchBoundaryError("model actions require one call and positive input/output token ceilings")
 
-        def run_one_model_action() -> InvocationOutput:
+        def run_one_model_action(intent: _PendingIntent) -> InvocationOutput:
             try:
                 if self._dispatch_context_snapshot() != dispatch_context:
                     raise DispatchBoundaryError("authorized arm context changed before isolated worker launch")
@@ -688,12 +768,16 @@ class MeteredDispatchBoundary:
                     resource_bounds=bounds,
                     timeout_seconds=provider_timeout_seconds,
                 ) as broker:
+                    permit = self._worker_launch_permit(intent, broker)
                     result = worker.run(
                         argv=argv, workspace=workspace, projection=assignment,
                         manifest=manifest, arm_config=arm_config,
                         arm_label=arm_label, action_id=action_id,
                         timeout_seconds=timeout_seconds,
                         memory_bytes=memory_bytes, provider_broker_socket=broker.socket_path,
+                        _metered_permit=permit,
+                        evidence_root=self.evidence_root,
+                        trust_policy_path=self.trust_policy_path,
                     )
                     broker_receipt = broker.verify_complete()
                 if (not isinstance(result, ArmWorkerResult)
@@ -725,7 +809,8 @@ class MeteredDispatchBoundary:
 
         return self.dispatch_one(
             action_id=action_id, action_kind="MODEL_CALL", actor_id_digest=actor_id_digest,
-            bounds=bounds, bound_proof=bound_proof, operation=run_one_model_action,
+            bounds=bounds, bound_proof=bound_proof,
+            _operation_with_intent=run_one_model_action,
         )
 
     def dispatch_one(
@@ -736,10 +821,13 @@ class MeteredDispatchBoundary:
         actor_id_digest: str,
         bounds: ResourceUsage,
         bound_proof: bytes,
-        operation: Callable[[], InvocationOutput],
+        operation: Callable[[], InvocationOutput] | None = None,
+        _operation_with_intent: Callable[[_PendingIntent], InvocationOutput] | None = None,
     ) -> MeteredDispatch:
         """Reserve, invoke exactly once, authenticate usage and append signed evidence."""
-        if not callable(operation):
+        if ((operation is None) == (_operation_with_intent is None)
+                or operation is not None and not callable(operation)
+                or _operation_with_intent is not None and not callable(_operation_with_intent)):
             raise DispatchBoundaryError("one trusted single-invocation adapter is required")
         arm_config_snapshot = self.arm_config
         arm_label_snapshot = self.arm_label
@@ -751,7 +839,8 @@ class MeteredDispatchBoundary:
         )
         started = time.monotonic()
         try:
-            output = operation()
+            output = (_operation_with_intent(intent) if _operation_with_intent is not None
+                      else operation())
         except BaseException as exc:
             usage = ResourceUsage(**{name: None for name in _USAGE_FIELDS})
             receipt, ref = self._seal(intent, usage=usage, status="UNKNOWN")

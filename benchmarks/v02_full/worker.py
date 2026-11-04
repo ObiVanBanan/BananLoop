@@ -16,6 +16,7 @@ import shutil
 import signal
 import secrets
 import stat
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from .evidence import (EvidenceArtifactRef, EvidenceError, load_trust_policy,
+                       verify_evidence_artifact, verify_protected_directory)
 from .execution import ArmAssignmentProjection
 from .prereg import ArmConfig, TrackManifest, canonical_bytes
 
@@ -42,6 +45,123 @@ _SHELLS = {"sh", "bash", "dash", "zsh", "fish", "cmd", "powershell", "pwsh"}
 
 class ArmWorkerError(RuntimeError):
     """One arm task cannot be run in the required isolated worker process."""
+
+
+_WORKER_PERMIT_PAYLOAD_KEYS = frozenset({
+    "authorization_sha256", "assignment_sha256", "manifest_sha256", "track",
+    "task_id", "pair_id_sha256", "arm_label", "arm_configuration_sha256",
+    "sequence", "action_id_sha256", "action_kind", "bounds_json_sha256",
+    "bound_proof_sha256", "meter_database_path_sha256",
+    "broker_socket_path_sha256", "broker_socket_device", "broker_socket_inode",
+})
+
+
+def _broker_socket_identity(socket_path: str | Path | None) -> dict[str, str]:
+    if socket_path is None:
+        raise ArmWorkerError("metered worker launch requires its one-shot provider broker socket")
+    broker_directory, socket_name = _validate_broker_socket(socket_path)
+    path = broker_directory / socket_name
+    info = path.lstat()
+    return {
+        "broker_socket_path_sha256": hashlib.sha256(
+            str(path.absolute()).encode("utf-8")
+        ).hexdigest(),
+        "broker_socket_device": str(info.st_dev),
+        "broker_socket_inode": str(info.st_ino),
+    }
+
+
+def _verify_metered_arm_launch_permit(
+    permit: EvidenceArtifactRef | None, *, projection: ArmAssignmentProjection,
+    manifest: TrackManifest, arm_config: ArmConfig, arm_label: str, action_id: str,
+    evidence_root: str | Path, trust_policy_path: str | Path,
+    provider_broker_socket: str | Path | None,
+) -> dict[str, str]:
+    if not isinstance(permit, EvidenceArtifactRef):
+        raise ArmWorkerError("a signed metered-dispatch permit is required")
+    try:
+        verify_protected_directory(evidence_root)
+        policy, _ = load_trust_policy(trust_policy_path)
+        expected = {
+            "authorization_sha256": projection.authorization_sha256,
+            "assignment_sha256": projection.assignment_evidence.artifact_sha256,
+            "manifest_sha256": manifest.manifest_sha256,
+            "track": manifest.track,
+            "task_id": projection.task.task_id,
+            "pair_id_sha256": projection.task.blinded_pair_id_sha256,
+            "arm_label": arm_label,
+            "arm_configuration_sha256": hashlib.sha256(canonical_bytes(arm_config)).hexdigest(),
+            "action_id_sha256": action_id,
+            "action_kind": "MODEL_CALL",
+            "meter_database_path_sha256": hashlib.sha256(str(
+                (Path(evidence_root) / "rpdi14-action-meter.sqlite3").resolve(strict=True)
+            ).encode("utf-8")).hexdigest(),
+            **_broker_socket_identity(provider_broker_socket),
+        }
+        verified = verify_evidence_artifact(
+            root=evidence_root, reference=permit, policy=policy,
+            evidence_type="WORKER_LAUNCH", subject_sha=action_id,
+            conclusion="ACCEPTED", issuer_role="ACTION_METER_ATTESTOR",
+            expected_payload=expected,
+        ).document
+        if set(verified.payload) != _WORKER_PERMIT_PAYLOAD_KEYS:
+            raise EvidenceError("worker launch permit has an invalid payload shape")
+        return verified.payload
+    except (ArmWorkerError, EvidenceError, OSError, ValueError) as exc:
+        raise ArmWorkerError(f"worker launch permit does not verify: {exc}") from exc
+
+
+def _consume_metered_arm_launch_permit(
+    payload: dict[str, str], *, evidence_root: str | Path,
+) -> None:
+    """Atomically consume the sole launch for a still-pending meter intent."""
+    root = Path(evidence_root)
+    database = root / "rpdi14-action-meter.sqlite3"
+    if database.is_symlink() or not database.is_file():
+        raise ArmWorkerError("worker launch permit has no protected meter database")
+    info = database.stat()
+    if info.st_mode & 0o077:
+        raise ArmWorkerError("meter database permissions are too broad for worker launch")
+    database_path_sha256 = hashlib.sha256(
+        str(database.resolve(strict=True)).encode("utf-8")
+    ).hexdigest()
+    if payload["meter_database_path_sha256"] != database_path_sha256:
+        raise ArmWorkerError("worker launch permit is bound to a different meter database")
+    if payload.get("action_kind") != "MODEL_CALL":
+        raise ArmWorkerError("only a metered MODEL_CALL intent may launch an arm worker")
+    connection = sqlite3.connect(database, timeout=30, isolation_level=None)
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.execute("PRAGMA busy_timeout=30000")
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            "SELECT * FROM meter_actions WHERE pair_id=? AND arm_label=? AND sequence=?",
+            (payload["pair_id_sha256"], payload["arm_label"], int(payload["sequence"])),
+        ).fetchone()
+        if (row is None or row["state"] != "PENDING"
+                or row["action_id"] != payload["action_id_sha256"]
+                or payload["action_kind"] != "MODEL_CALL"
+                or row["action_kind"] != "MODEL_CALL"
+                or row["arm_configuration_sha256"] != payload["arm_configuration_sha256"]
+                or row["bound_proof_sha256"] != payload["bound_proof_sha256"]
+                or hashlib.sha256(row["bounds_json"].encode("utf-8")).hexdigest()
+                != payload["bounds_json_sha256"]):
+            raise ArmWorkerError("worker launch permit does not match a pending metered action")
+        changed = connection.execute(
+            "UPDATE meter_actions SET worker_launch_state='LAUNCHED' "
+            "WHERE pair_id=? AND arm_label=? AND sequence=? AND action_id=? "
+            "AND state='PENDING' AND worker_launch_state='NOT_LAUNCHED'",
+            (payload["pair_id_sha256"], payload["arm_label"], int(payload["sequence"]),
+             payload["action_id_sha256"]),
+        )
+        if changed.rowcount != 1:
+            raise ArmWorkerError("worker launch permit has already been consumed")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def _cgroup_controllers_available(root: Path) -> bool:
@@ -386,7 +506,18 @@ class BubblewrapArmWorker:
         timeout_seconds: int,
         memory_bytes: int,
         provider_broker_socket: str | Path | None = None,
+        _metered_permit: EvidenceArtifactRef | None = None,
+        evidence_root: str | Path | None = None,
+        trust_policy_path: str | Path | None = None,
     ) -> ArmWorkerResult:
+        if evidence_root is None or trust_policy_path is None:
+            raise ArmWorkerError("protected evidence and trust-policy roots are required")
+        permit_payload = _verify_metered_arm_launch_permit(
+            _metered_permit, projection=projection, manifest=manifest,
+            arm_config=arm_config, arm_label=arm_label, action_id=action_id,
+            evidence_root=evidence_root, trust_policy_path=trust_policy_path,
+            provider_broker_socket=provider_broker_socket,
+        )
         command_argv = _validate_command(argv)
         if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= manifest.common_caps.wall_seconds:
             raise ArmWorkerError("worker timeout is outside the frozen wall-time cap")
@@ -401,6 +532,12 @@ class BubblewrapArmWorker:
         if runtime_sha256 != arm_config.worker_bundle_sha256:
             raise ArmWorkerError("worker bundle does not match the frozen arm bundle digest")
         broker = _validate_broker_socket(provider_broker_socket)
+        if _broker_socket_identity(provider_broker_socket) != {
+            key: permit_payload[key] for key in (
+                "broker_socket_path_sha256", "broker_socket_device", "broker_socket_inode",
+            )
+        }:
+            raise ArmWorkerError("provider broker socket differs from the signed worker permit")
         if not self.available():
             raise ArmWorkerError("bubblewrap namespaces are unavailable; refusing local execution fallback")
         if not _DIGEST.fullmatch(action_id):
@@ -448,6 +585,13 @@ class BubblewrapArmWorker:
                     raise ArmWorkerError("a delegated cgroup v2 root is required for worker launch")
                 with _WorkerCgroup(self.cgroup_root, memory_bytes=memory_bytes,
                                    process_limit=arm_config.worker_process_limit) as cgroup_procs:
+                    _consume_metered_arm_launch_permit(permit_payload, evidence_root=evidence_root)
+                    if _broker_socket_identity(provider_broker_socket) != {
+                        key: permit_payload[key] for key in (
+                            "broker_socket_path_sha256", "broker_socket_device", "broker_socket_inode",
+                        )
+                    }:
+                        raise ArmWorkerError("provider broker socket changed before worker launch")
                     launcher = Path(__file__).with_name("worker_launcher.py")
                     launch_command = [sys.executable, str(launcher), cgroup_procs,
                                       str(timeout_seconds), str(memory_bytes), "--", *command]

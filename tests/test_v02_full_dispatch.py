@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,7 @@ from benchmarks.v02_full.execution import (
     TaskMaterial, assign_tasks_after_run_authorization, authorize_run_start,
     project_assignment_for_track,
 )
-from benchmarks.v02_full.prereg import freeze_manifest
+from benchmarks.v02_full.prereg import canonical_bytes, freeze_manifest
 
 _spec = importlib.util.spec_from_file_location("prereg_test_helpers", Path(__file__).with_name("test_v02_full_prereg.py"))
 _helpers = importlib.util.module_from_spec(_spec)
@@ -78,6 +79,36 @@ def _bounds(**updates):
     value = {name: 0 for name in ResourceUsage.model_fields}
     value.update(updates)
     return ResourceUsage(**value)
+
+
+@contextmanager
+def _test_provider_broker(boundary, intent):
+    from benchmarks.v02_full.provider_broker import OneShotProviderBroker
+
+    class Adapter:
+        enforces_single_call = True
+        enforces_timeout = True
+        enforces_provider_ceilings = True
+        enforces_cancellation = True
+
+        def invoke_once(self, *args, **kwargs):
+            raise AssertionError("test broker must not invoke a provider")
+
+        def cancel_action(self, action_id):
+            pass
+
+    broker = OneShotProviderBroker(
+        Adapter(), action_id=intent.action_id, arm_config=boundary.arm_config,
+        resource_bounds=intent.bounds, timeout_seconds=1,
+    )
+    try:
+        broker.__enter__()
+    except OSError as exc:
+        pytest.skip(f"host sandbox denies Unix socket bind: {exc}")
+    try:
+        yield broker
+    finally:
+        broker.__exit__(RuntimeError, RuntimeError("test cleanup"), None)
 
 
 def test_dispatch_rejects_same_role_arm_config_substitution(tmp_path):
@@ -372,24 +403,107 @@ def test_worker_refuses_shell_commands_and_unsupported_sandbox_without_fallback(
     sandbox.write_bytes(b"fake")
     sandbox.chmod(0o700)
     worker = BubblewrapArmWorker(bwrap_binary=str(sandbox))
-    with pytest.raises(ArmWorkerError, match="shell"):
-        worker.run(
-            argv=["/bin/sh", "-c", "echo unsafe"], workspace=tmp_path,
-            projection=boundary.assignment, manifest=boundary.manifest,
-            arm_config=boundary.arm_config, arm_label="A", action_id=_helpers._sha("unsafe"), timeout_seconds=2,
-            memory_bytes=128 * 1024 * 1024,
-        )
-    monkeypatch.setattr(worker_module, "worker_bundle_fingerprint",
-                        lambda *args, **kwargs: boundary.arm_config.worker_bundle_sha256)
-    monkeypatch.setattr(worker, "available", lambda: False)
-    with pytest.raises(ArmWorkerError, match="refusing local execution fallback"):
-        worker.run(
-            argv=["/usr/bin/python3", "/workspace/worker.py"], workspace=tmp_path,
-            projection=boundary.assignment, manifest=boundary.manifest,
-            arm_config=boundary.arm_config, arm_label="A", action_id=_helpers._sha("unsafe"), timeout_seconds=2,
-            memory_bytes=128 * 1024 * 1024,
-        )
+    action_id = _helpers._sha("action")
+    run_args = {
+        "argv": ["/bin/sh", "-c", "echo unsafe"], "workspace": tmp_path,
+        "projection": boundary.assignment, "manifest": boundary.manifest,
+        "arm_config": boundary.arm_config, "arm_label": "A", "action_id": action_id,
+        "timeout_seconds": 2, "memory_bytes": 128 * 1024 * 1024,
+        "evidence_root": boundary.evidence_root,
+        "trust_policy_path": boundary.trust_policy_path,
+    }
+    with pytest.raises(ArmWorkerError, match="metered-dispatch permit"):
+        worker.run(**run_args)
+    intent = boundary._reserve_intent(
+        action_id=action_id, action_kind="MODEL_CALL",
+        actor_id_digest=_helpers._sha("actor"), bounds=_bounds(agent_calls=1),
+        bound_proof=b"provider-ceiling-v1",
+    )
+    with _test_provider_broker(boundary, intent) as broker:
+        run_args["provider_broker_socket"] = broker.socket_path
+        run_args["_metered_permit"] = boundary._worker_launch_permit(intent, broker)
+        with pytest.raises(ArmWorkerError, match="shell"):
+            worker.run(**run_args)
+        monkeypatch.setattr(worker_module, "worker_bundle_fingerprint",
+                            lambda *args, **kwargs: boundary.arm_config.worker_bundle_sha256)
+        monkeypatch.setattr(worker, "available", lambda: False)
+        with pytest.raises(ArmWorkerError, match="refusing local execution fallback"):
+            worker.run(
+                **{**run_args, "argv": ["/usr/bin/python3", "/workspace/worker.py"]},
+            )
     boundary.close()
+
+
+def test_worker_launch_permit_is_signed_and_single_use(tmp_path):
+    import json
+    from benchmarks.v02_full.evidence import EvidenceArtifactRef
+    from benchmarks.v02_full.worker import (
+        ArmWorkerError, _consume_metered_arm_launch_permit,
+        _verify_metered_arm_launch_permit,
+    )
+
+    boundary, _ = _setup(tmp_path)
+    intent = boundary._reserve_intent(
+        action_id=_helpers._sha("action"), action_kind="MODEL_CALL",
+        actor_id_digest=_helpers._sha("actor"), bounds=_bounds(agent_calls=1),
+        bound_proof=b"provider-ceiling-v1",
+    )
+    try:
+        with _test_provider_broker(boundary, intent) as broker:
+            permit = boundary._worker_launch_permit(intent, broker)
+            verify_args = dict(
+                projection=boundary.assignment, manifest=boundary.manifest,
+                arm_config=boundary.arm_config, arm_label=boundary.arm_label,
+                action_id=intent.action_id, evidence_root=boundary.evidence_root,
+                trust_policy_path=boundary.trust_policy_path,
+                provider_broker_socket=broker.socket_path,
+            )
+            payload = _verify_metered_arm_launch_permit(permit, **verify_args)
+            with pytest.raises(ArmWorkerError, match="worker launch permit does not verify"):
+                _verify_metered_arm_launch_permit(
+                    permit, **{**verify_args, "provider_broker_socket": None},
+                )
+            with _test_provider_broker(boundary, intent) as other_broker:
+                with pytest.raises(ArmWorkerError, match="worker launch permit does not verify"):
+                    _verify_metered_arm_launch_permit(
+                        permit, **{**verify_args,
+                                   "provider_broker_socket": other_broker.socket_path},
+                    )
+            raw = (boundary.evidence_root / permit.path).read_bytes()
+            forged = json.loads(raw)
+            forged["payload"]["arm_configuration_sha256"] = "f" * 64
+            forged_raw = canonical_bytes(forged)
+            forged_path = "forged-worker-launch.json"
+            (boundary.evidence_root / forged_path).write_bytes(forged_raw)
+            forged_ref = EvidenceArtifactRef(
+                path=forged_path, artifact_sha256=hashlib.sha256(forged_raw).hexdigest(),
+            )
+            with pytest.raises(ArmWorkerError, match="worker launch permit does not verify"):
+                _verify_metered_arm_launch_permit(forged_ref, **verify_args)
+            _consume_metered_arm_launch_permit(payload, evidence_root=boundary.evidence_root)
+            assert boundary.conn.execute(
+                "SELECT worker_launch_state FROM meter_actions WHERE pair_id=? AND arm_label=? AND sequence=?",
+                (boundary.pair_id, boundary.arm_label, intent.sequence),
+            ).fetchone()[0] == "LAUNCHED"
+            with pytest.raises(ArmWorkerError, match="already been consumed"):
+                _consume_metered_arm_launch_permit(payload, evidence_root=boundary.evidence_root)
+    finally:
+        boundary.close()
+
+
+def test_non_model_meter_intent_cannot_issue_worker_launch_permit(tmp_path):
+    boundary, _ = _setup(tmp_path)
+    boundary.provider_bound_verifier = lambda *args, **kwargs: True
+    try:
+        intent = boundary._reserve_intent(
+            action_id=_helpers._sha("tool-action"), action_kind="TOOL_CALL",
+            actor_id_digest=_helpers._sha("actor"), bounds=_bounds(agent_calls=1),
+            bound_proof=b"tool-provider-ceiling-v1",
+        )
+        with pytest.raises(DispatchBoundaryError, match="matching durable metered intent"):
+            boundary._worker_launch_permit(intent, None)
+    finally:
+        boundary.close()
 
 
 @pytest.mark.parametrize("worker_output", ["valid", "wrong_identity", "duplicate_key", "noncanonical", "nonfinite"])
@@ -443,14 +557,24 @@ def test_metered_boundary_can_dispatch_one_isolated_model_action(tmp_path, monke
             return ArmWorkerResult(output, kwargs["projection"].task.task_id,
                                    result_track, pin.blinded_pair_id_sha256, 0.1)
 
-    class TestOnlyBroker:
+    from benchmarks.v02_full.provider_broker import OneShotProviderBroker
+
+    class TestOnlyBroker(OneShotProviderBroker):
         def __init__(self, adapter, **kwargs):
             assert isinstance(adapter, TestOnlyProvider)
             assert kwargs["action_id"] == action_id
             assert kwargs["arm_config"] == boundary.arm_config
             assert kwargs["resource_bounds"].input_tokens == 10
             assert kwargs["resource_bounds"].output_tokens == 10
+            self.action_id = kwargs["action_id"]
+            self.arm_config = kwargs["arm_config"]
+            self.resource_bounds = kwargs["resource_bounds"]
             self.socket_path = Path("/test-only/provider.sock")
+            class Server:
+                def getsockname(self):
+                    return str(self.socket_path)
+            self._server = Server()
+            self._server.socket_path = self.socket_path
 
         def __enter__(self):
             return self
@@ -462,6 +586,10 @@ def test_metered_boundary_can_dispatch_one_isolated_model_action(tmp_path, monke
             return b"authoritative-provider-receipt"
 
     monkeypatch.setattr(dispatch_module, "OneShotProviderBroker", TestOnlyBroker)
+    monkeypatch.setattr(dispatch_module, "_broker_socket_identity", lambda path: {
+        "broker_socket_path_sha256": _helpers._sha("fake-broker-path"),
+        "broker_socket_device": "1", "broker_socket_inode": "2",
+    })
 
     dispatch = lambda: boundary.dispatch_isolated_model_worker(
         worker=TestOnlyWorker(bwrap_binary="test-only"), argv=("/workspace/worker",),

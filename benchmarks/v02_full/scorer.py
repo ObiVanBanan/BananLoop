@@ -22,10 +22,13 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .evidence import EvidenceError, TrustPolicy, read_content_artifact, verify_output_anonymization
-from .prereg import TrackManifest, canonical_bytes
+from .evidence import (EvidenceArtifactRef, EvidenceError, TrustPolicy, load_trust_policy,
+                       read_content_artifact, verify_evidence_artifact,
+                       verify_output_anonymization)
+from .execution import RunStartAuthorization, RunStartError, verify_arm_run_authorization
+from .prereg import GateEvidence, PreregError, TrackManifest, canonical_bytes
 from .report import (
-    BlindedScorePackage, pair_score_digest, score_payload_digest,
+    BlindedScorePackage, pair_score_digest, score_package_digest, score_payload_digest,
 )
 from .worker import (
     ArmWorkerError, BubblewrapArmWorker, _WorkerCgroup, _check_worker_output,
@@ -353,8 +356,59 @@ class BubblewrapBlindScorer:
             bwrap_binary=self.bwrap_binary, cgroup_root=self.cgroup_root,
         ).available()
 
-    def run(self, manifest: TrackManifest, request: BlindScorerInput,
-            *, evaluator_root: str | Path) -> bytes:
+    def run(
+        self, manifest: TrackManifest, request: BlindScorerInput, *,
+        evaluator_root: str | Path,
+        authorization: RunStartAuthorization | None = None,
+        gate_evidence: GateEvidence | None = None,
+        trust_policy_path: str | Path | None = None,
+        evidence_root: str | Path | None = None,
+        score_package: BlindedScorePackage | None = None,
+        scoring_request_attestation: EvidenceArtifactRef | None = None,
+    ) -> bytes:
+        if (authorization is None or gate_evidence is None or trust_policy_path is None
+                or evidence_root is None or score_package is None
+                or scoring_request_attestation is None):
+            raise ScorerError(
+                "signed run authorization and finalized scoring-request evidence are required"
+            )
+        try:
+            policy, _ = load_trust_policy(trust_policy_path)
+            package_sha256 = score_package_digest(score_package)
+            if (score_package.package_sha256 != package_sha256
+                    or any(pair.arm_a_score is not None or pair.arm_b_score is not None
+                           for pair in score_package.pairs)):
+                raise EvidenceError("scoring requires the canonical, not-yet-scored package")
+            expected_request = build_blind_scorer_input(
+                manifest, score_package, evidence_root=str(evidence_root), trust_policy=policy,
+            )
+            if canonical_bytes(expected_request) != canonical_bytes(request):
+                raise EvidenceError("scorer request differs from the verified final score package")
+            verify_arm_run_authorization(
+                authorization, manifest=manifest, gate_evidence=gate_evidence,
+                trust_policy_path=str(trust_policy_path), evidence_root=str(evidence_root),
+            )
+            verified_request = verify_evidence_artifact(
+                root=evidence_root, reference=scoring_request_attestation, policy=policy,
+                evidence_type="SCORING_REQUEST", subject_sha=package_sha256,
+                conclusion="ACCEPTED", issuer_role="BENCHMARK_OPERATOR",
+                expected_payload={
+                    "authorization_sha256": authorization.artifact_sha256,
+                    "manifest_sha256": manifest.manifest_sha256,
+                    "track": manifest.track,
+                    "score_package_sha256": package_sha256,
+                    "scorer_request_sha256": _sha(canonical_bytes(request)),
+                },
+            ).document
+            if set(verified_request.payload) != {
+                "authorization_sha256", "manifest_sha256", "track",
+                "score_package_sha256", "scorer_request_sha256",
+            }:
+                raise EvidenceError("scoring-request attestation has an invalid payload shape")
+            if verified_request.issuer_principal_id in policy.independent_principal_exclusions:
+                raise EvidenceError("scoring-request operator is not independent of arm authors/operators")
+        except (EvidenceError, RunStartError, PreregError) as exc:
+            raise ScorerError(f"scoring prerequisites do not verify: {exc}") from exc
         pin = manifest.evaluator
         if (manifest.manifest_sha256 is None or request.manifest_sha256 != manifest.manifest_sha256
                 or request.track != manifest.track
