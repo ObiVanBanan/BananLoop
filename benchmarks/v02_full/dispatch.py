@@ -29,7 +29,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from .accounting import ActionReceipt, ResourceUsage, make_receipt
 from .evidence import (
     EvidenceArtifactRef, EvidenceError, TrustPolicy, _read_evidence_bounded, canonical_bytes,
-    create_protected_artifact, load_trust_policy, sign_evidence, verify_protected_directory,
+    _verify_windows_path, create_protected_artifact, load_trust_policy, sign_evidence,
+    verify_protected_directory,
 )
 from .execution import (
     ArmAssignmentProjection, RunStartAuthorization, RunStartError,
@@ -225,18 +226,19 @@ class MeteredDispatchBoundary:
         if self.db_path.is_symlink() or (self.db_path.exists() and not self.db_path.is_file()):
             raise DispatchBoundaryError("meter database must be a regular non-symlink file")
         if self.db_path.exists():
-            info = self.db_path.stat()
-            if ((hasattr(os, "geteuid") and info.st_uid not in {0, os.geteuid()})
-                    or info.st_mode & 0o077):
-                raise DispatchBoundaryError("existing meter database must be trusted and mode 0600")
+            try:
+                self._verify_private_sqlite_path(self.db_path)
+            except (OSError, EvidenceError) as exc:
+                raise DispatchBoundaryError("existing meter database is not privately protected") from exc
         self._validate_assignment(self._verify_authority())
         self.conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
-        try:
-            os.chmod(self.db_path, 0o600)
-        except OSError as exc:
-            self.conn.close()
-            raise DispatchBoundaryError("cannot protect action-meter database with mode 0600") from exc
+        if os.name != "nt":
+            try:
+                os.chmod(self.db_path, 0o600)
+            except OSError as exc:
+                self.conn.close()
+                raise DispatchBoundaryError("cannot protect action-meter database with mode 0600") from exc
         self.conn.execute("PRAGMA busy_timeout=30000")
         self.conn.execute("PRAGMA journal_mode=WAL")
         self._protect_sqlite_files()
@@ -293,12 +295,28 @@ class MeteredDispatchBoundary:
                     info = path.stat()
                     if not stat.S_ISREG(info.st_mode):
                         raise DispatchBoundaryError("SQLite files must be regular files")
-                    os.chmod(path, 0o600)
-                    if path.stat().st_mode & 0o077:
-                        raise DispatchBoundaryError("cannot protect SQLite files with mode 0600")
+                    if os.name == "nt":
+                        self._verify_private_sqlite_path(path)
+                    else:
+                        os.chmod(path, 0o600)
+                        if path.stat().st_mode & 0o077:
+                            raise DispatchBoundaryError("cannot protect SQLite files with mode 0600")
+                except EvidenceError as exc:
+                    self.conn.close()
+                    raise DispatchBoundaryError("cannot protect SQLite files with Windows ACLs") from exc
                 except OSError as exc:
                     self.conn.close()
                     raise DispatchBoundaryError("cannot protect SQLite files with mode 0600") from exc
+
+    @staticmethod
+    def _verify_private_sqlite_path(path: Path) -> None:
+        if os.name == "nt":
+            _verify_windows_path(path, final_is_directory=False)
+            return
+        info = path.stat()
+        if ((hasattr(os, "geteuid") and info.st_uid not in {0, os.geteuid()})
+                or info.st_mode & 0o077):
+            raise EvidenceError("SQLite file is not trusted and mode 0600")
 
     def close(self) -> None:
         self.conn.close()

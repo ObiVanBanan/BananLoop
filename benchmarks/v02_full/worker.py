@@ -25,8 +25,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from .evidence import (EvidenceArtifactRef, EvidenceError, load_trust_policy,
-                       verify_evidence_artifact, verify_protected_directory)
+from .evidence import (
+    EvidenceArtifactRef, EvidenceError, _verify_windows_path, _windows_protected_acl,
+    load_trust_policy, verify_evidence_artifact, verify_protected_directory,
+)
 from .execution import ArmAssignmentProjection
 from .prereg import ArmConfig, TrackManifest, canonical_bytes
 
@@ -374,9 +376,18 @@ def _validate_broker_socket(socket_path: str | Path | None) -> tuple[Path, str] 
         info = path.lstat()
     except OSError as exc:
         raise ArmWorkerError("provider broker socket is unavailable") from exc
-    if (not stat.S_ISDIR(parent.st_mode) or parent.st_mode & 0o077
-            or not stat.S_ISSOCK(info.st_mode) or info.st_mode & 0o077
-            or (hasattr(os, "geteuid") and parent.st_uid not in {0, os.geteuid()})):
+    if os.name == "nt":
+        try:
+            _verify_windows_path(path.parent, final_is_directory=True)
+            _windows_protected_acl(path)
+        except (EvidenceError, OSError) as exc:
+            raise ArmWorkerError("broker socket path is not protected by Windows ACLs") from exc
+        if (not stat.S_ISSOCK(info.st_mode)
+                or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)):
+            raise ArmWorkerError("broker socket must be a non-reparse Windows socket")
+    elif (not stat.S_ISDIR(parent.st_mode) or parent.st_mode & 0o077
+          or not stat.S_ISSOCK(info.st_mode) or info.st_mode & 0o077
+          or (hasattr(os, "geteuid") and parent.st_uid not in {0, os.geteuid()})):
         raise ArmWorkerError("broker socket must be private inside a mode-0700 directory")
     try:
         contents = list(path.parent.iterdir())
