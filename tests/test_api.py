@@ -542,7 +542,7 @@ def test_observability_is_campaign_scoped_and_reconciles_budget(api, tmp_path):
         queue.enqueue(job_id="obs-leased-1", enqueue_key="obs-leased-1", campaign_id=campaign_id,
                       action_id="obs-action-2", resource="agent_calls", upper_bound=2,
                       request={"private_output": "hidden"})
-        queue.claim("obs-leased-1", "worker-private-name", lease_seconds=60)
+        queue.claim("obs-leased-1", "worker-private-name", lease_seconds=3600)
         queue.enqueue(job_id="obs-expired-1", enqueue_key="obs-expired-1", campaign_id=campaign_id,
                       action_id="obs-expired-action", resource="agent_calls", upper_bound=1,
                       request={})
