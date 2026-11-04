@@ -263,8 +263,12 @@ def _verify_windows_path(path: Path, *, final_is_directory: bool) -> None:
         final = index == len(components) - 1
         info = current.lstat()
         is_directory = stat.S_ISDIR(info.st_mode)
+        is_regular_file = stat.S_ISREG(info.st_mode)
+        expected_type = (
+            is_directory if final_is_directory else is_regular_file
+        ) if final else is_directory
         if (getattr(info, "st_file_attributes", 0) & reparse
-                or is_directory != (final_is_directory if final else True)):
+                or not expected_type):
             raise EvidenceError("protected Windows path contains a reparse point or wrong object type")
         _windows_protected_acl(current)
 
