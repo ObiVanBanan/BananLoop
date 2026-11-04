@@ -100,12 +100,17 @@ it does not satisfy the RPDI-13 DoD or authorize a release.
   saga module also passed with temporary HOME and loopback access. Local
   Chromium/axe browser test passed again; `git diff --check` is clean. These are
   local results, not exact-head GitHub CI.
-- On the current RPDI-13 tree, the complete Python suite passed
-  with one skipped test. The two changed API projections and the older-schema
-  unavailable-state case passed individually; the Playwright/axe browser suite
-  passed with an assertion for evaluator totals. Dashboard JavaScript syntax,
-  OpenAPI serialization, and `git diff --check` passed. GitHub exact-head CI and
-  manual screen-reader evidence remain outstanding.
+- On exact RPDI-13 head `e4568df2668426366dbb4c65ecb3c06cb8173de7`, hosted
+  test run [41885087606](https://github.com/ObiVanBanan/BananLoop/actions/runs/41885087606)
+  passed on Ubuntu Python 3.11/3.12/3.13 and Windows Python 3.12. Windows
+  reported 757 passed, 1 skipped, and 7 subtests passed.
+- Exact-head browser run
+  [41885087550](https://github.com/ObiVanBanan/BananLoop/actions/runs/41885087550)
+  and critical rule mutation smoke
+  [41885087540](https://github.com/ObiVanBanan/BananLoop/actions/runs/41885087540)
+  passed. This head fixes the Windows-only timing failure where the observability
+  fixture's 60-second lease expired while it prepared 10,001 events; the fixture
+  now uses a one-hour lease. Manual screen-reader evidence remains outstanding.
 
 ## Accessibility observation
 
@@ -115,20 +120,19 @@ Tab order/focus visibility, interaction states, axe WCAG 2.1 A/AA, and a 320 px
 no-overflow layout. These checks do not constitute manual screen-reader
 sign-off.
 
-Playwright and axe-core are pinned in `package-lock.json`; the new browser job
-is not yet verified on GitHub. Manual screen-reader evidence remains
-outstanding.
+Playwright and axe-core are pinned in `package-lock.json`. Exact-head browser CI
+passed at `e4568df`. It also covers focus while Connect waits for the campaign
+API, focus moving to the loaded campaign selector, stale campaign warnings
+clearing after a switch, and focus returning to the token field after Clear
+token. These automated checks do not constitute manual screen-reader sign-off.
 
 ## Remaining DoD and release evidence
 
-- Repeat the full suite at the final RPDI-13 head and run exact-head CI on all
-  supported Linux/Windows Python versions.
-- Run exact-head browser CI and record manual screen-reader evidence.
-- Repeat the full suite at the final RPDI-13 head. Confirm evaluator lifecycle
-  aggregates cover the contract's required acceptance cases during technical
-  review; scheduler wait reasons and worker recovery counts now have
-  campaign-scoped projections with focused automated coverage.
-- Complete technical review, update the remaining acceptance rows, and create
-  the RPDI-13 PR only when the acceptance contract is ready for review.
+- Record the manual screen-reader walkthrough on exact head `e4568df` for
+  Connect, campaign selection, lifecycle status, live updates, controls,
+  accessible labels, and focus order. No manual result is recorded yet.
+- Exact-head Linux/Windows Python CI, browser CI, mutation smoke, and technical
+  review are recorded above; automated accessibility checks cannot replace the
+  pending human screen-reader evidence.
 
 Independent blind benchmarks and Closed Research Preview remain separate gates.
