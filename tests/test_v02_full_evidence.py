@@ -6,8 +6,8 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from benchmarks.v02_full.evidence import (
-    EvidenceArtifactRef, EvidenceError, TrustPolicy, TrustedSigner, sign_evidence,
-    verify_content_artifact, verify_evidence_artifact,
+    EvidenceArtifactRef, EvidenceError, TrustPolicy, TrustedSigner, create_protected_artifact,
+    sign_evidence, verify_content_artifact, verify_evidence_artifact,
 )
 
 
@@ -40,6 +40,17 @@ def _private_key():
 def _policy(*signers):
     return TrustPolicy({item.key_id: item for item in signers},
                        independent_principal_exclusions=frozenset({"arm-author", "arm-operator"}))
+
+
+def test_protected_artifact_creation_is_exclusive_and_rejects_paths(tmp_path):
+    create_protected_artifact(tmp_path, "receipt.json", b"sealed receipt")
+    assert (tmp_path / "receipt.json").read_bytes() == b"sealed receipt"
+    with pytest.raises(FileExistsError):
+        create_protected_artifact(tmp_path, "receipt.json", b"replacement")
+    assert (tmp_path / "receipt.json").read_bytes() == b"sealed receipt"
+    for filename in ("../escape", "nested/file", r"nested\file", ""):
+        with pytest.raises(EvidenceError, match="one canonical path component"):
+            create_protected_artifact(tmp_path, filename, b"x")
 
 
 def test_evidence_verifier_accepts_a_valid_canonical_authenticated_document(tmp_path):

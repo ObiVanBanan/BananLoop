@@ -365,6 +365,65 @@ def verify_protected_directory(path: str | Path) -> None:
             os.close(descriptor)
 
 
+def create_protected_artifact(root: str | Path, filename: str, content: bytes) -> None:
+    """Create one exclusive file below a protected evidence directory.
+
+    POSIX uses a directory descriptor and no-follow flags. Windows first
+    validates the protected ACL/reparse-point chain, then uses exclusive
+    creation; an untrusted process cannot replace the checked root or race a
+    second creator through its DACL.
+    """
+    if (not isinstance(filename, str) or not filename or filename in {".", ".."}
+            or "/" in filename or "\\" in filename or "\x00" in filename):
+        raise EvidenceError("protected artifact filename must be one canonical path component")
+    if not isinstance(content, bytes) or len(content) > MAX_EVIDENCE_BYTES:
+        raise EvidenceError("protected artifact content is invalid or exceeds its byte limit")
+    directory = Path(root)
+    verify_protected_directory(directory)
+    if os.name == "nt":
+        target = directory / filename
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        fd = os.open(target, flags, 0o600)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode)
+                    or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400)):
+                raise EvidenceError("new protected artifact is not a regular non-reparse file")
+            _verify_windows_path(target, final_is_directory=False)
+            view = memoryview(content)
+            while view:
+                written = os.write(fd, view)
+                view = view[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        return
+    if os.name != "posix" or os.open not in getattr(os, "supports_dir_fd", set()):
+        raise EvidenceError("protected artifact creation requires secure platform file operations")
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    nofollow_flag = getattr(os, "O_NOFOLLOW", 0)
+    if not directory_flag or not nofollow_flag:
+        raise EvidenceError("platform cannot securely create a protected artifact")
+    root_fd = os.open(directory, os.O_RDONLY | directory_flag | nofollow_flag)
+    try:
+        fd = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow_flag,
+                     0o600, dir_fd=root_fd)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise EvidenceError("new protected artifact is not a regular file")
+            view = memoryview(content)
+            while view:
+                written = os.write(fd, view)
+                view = view[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.fsync(root_fd)
+    finally:
+        os.close(root_fd)
+
+
 def _parse_trust_policy(raw: bytes) -> tuple[TrustPolicy, str]:
     def unique_object(pairs):
         result = {}

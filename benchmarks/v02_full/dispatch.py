@@ -28,8 +28,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .accounting import ActionReceipt, ResourceUsage, make_receipt
 from .evidence import (
-    EvidenceArtifactRef, EvidenceError, TrustPolicy, canonical_bytes, load_trust_policy,
-    sign_evidence, verify_protected_directory,
+    EvidenceArtifactRef, EvidenceError, TrustPolicy, _read_evidence_bounded, canonical_bytes,
+    create_protected_artifact, load_trust_policy, sign_evidence, verify_protected_directory,
 )
 from .execution import (
     ArmAssignmentProjection, RunStartAuthorization, RunStartError,
@@ -148,40 +148,17 @@ def _action_dimension(action_kind: str) -> tuple[str, int]:
 def _write_exclusive(path: Path, content: bytes) -> None:
     """Create one bounded canonical artifact beneath an already protected root."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    verify_protected_directory(path.parent)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     try:
-        fd = os.open(path, flags, 0o600)
+        create_protected_artifact(path.parent, path.name, content)
     except FileExistsError:
         # A crash can leave the exact signed artifact before its SQLite commit.
         # Accept only byte-identical replay; never replace a conflicting file.
-        read_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        existing_fd = os.open(path, read_flags)
         try:
-            info = os.fstat(existing_fd)
-            if not stat.S_ISREG(info.st_mode):
-                raise DispatchBoundaryError("existing receipt artifact is not a regular file")
-            chunks = []
-            total = 0
-            while total <= 1_000_000:
-                chunk = os.read(existing_fd, min(65536, 1_000_001 - total))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                total += len(chunk)
-            if total > 1_000_000 or b"".join(chunks) != content:
-                raise DispatchBoundaryError("existing receipt artifact conflicts with the sealed receipt")
-        finally:
-            os.close(existing_fd)
-        return
-    try:
-        view = memoryview(content)
-        while view:
-            written = os.write(fd, view)
-            view = view[written:]
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+            existing = _read_evidence_bounded(path.parent, PurePosixPath(path.name), max_bytes=1_000_000)
+        except EvidenceError as exc:
+            raise DispatchBoundaryError("existing receipt artifact is not a safe regular file") from exc
+        if existing != content:
+            raise DispatchBoundaryError("existing receipt artifact conflicts with the sealed receipt")
 
 
 class MeteredDispatchBoundary:
@@ -465,24 +442,11 @@ class MeteredDispatchBoundary:
         )
         digest = _digest(raw)
         relative = f"worker-launch-{digest}.json"
-        verify_protected_directory(self.evidence_root)
-        root_fd = os.open(self.evidence_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            try:
-                fd = os.open(relative, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                             0o600, dir_fd=root_fd)
-            except FileExistsError:
-                from .evidence import _read_evidence_bounded
-                if _read_evidence_bounded(self.evidence_root, PurePosixPath(relative)) != raw:
-                    raise EvidenceError("existing worker-launch permit differs from its signed bytes")
-            else:
-                with os.fdopen(fd, "wb") as stream:
-                    stream.write(raw)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.fsync(root_fd)
-        finally:
-            os.close(root_fd)
+            create_protected_artifact(self.evidence_root, relative, raw)
+        except FileExistsError:
+            if _read_evidence_bounded(self.evidence_root, PurePosixPath(relative)) != raw:
+                raise EvidenceError("existing worker-launch permit differs from its signed bytes")
         return EvidenceArtifactRef(path=relative, artifact_sha256=digest)
 
     def _read_head(self) -> sqlite3.Row:

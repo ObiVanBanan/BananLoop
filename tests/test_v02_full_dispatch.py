@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -372,7 +373,17 @@ def test_worker_envelope_contains_one_task_and_no_evaluator_material(tmp_path):
 
 
 def test_worker_runtime_fingerprint_binds_command_workspace_and_sandbox(tmp_path):
-    from benchmarks.v02_full.worker import worker_bundle_fingerprint
+    from benchmarks.v02_full.worker import ArmWorkerError, worker_bundle_fingerprint
+
+    if os.name == "nt":
+        workspace = tmp_path / "runtime"
+        workspace.mkdir()
+        sandbox = tmp_path / "bwrap"
+        sandbox.write_bytes(b"bubblewrap-fixture")
+        with pytest.raises(ArmWorkerError, match="requires a POSIX host"):
+            worker_bundle_fingerprint(workspace, ["/usr/bin/python3", "/workspace/worker.py"],
+                                      sandbox_binary=sandbox)
+        return
 
     workspace = tmp_path / "runtime"
     workspace.mkdir()

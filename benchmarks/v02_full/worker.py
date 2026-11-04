@@ -238,6 +238,8 @@ def worker_bundle_fingerprint(
     sandbox_binary: str | Path,
 ) -> str:
     """Bind command, workspace files, and bubblewrap executable to one SHA-256."""
+    if os.name == "nt":
+        raise ArmWorkerError("bubblewrap worker fingerprinting requires a POSIX host")
     root = _safe_workspace(workspace)
     command = _validate_command(argv)
     sandbox = Path(sandbox_binary).absolute()
