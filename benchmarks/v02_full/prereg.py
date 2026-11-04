@@ -711,4 +711,3 @@ def validate_track_pair(optimization: TrackManifest, exploration: TrackManifest)
         raise PreregError("paired tracks must bind the same excluded authors and operators")
     if optimization.blinding_assignment_sha256 != exploration.blinding_assignment_sha256:
         raise PreregError("paired tracks must bind the same pre-run blind arm-label assignment")
-
