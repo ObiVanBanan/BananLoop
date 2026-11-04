@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from bananloop.contracts import FeatureFlagsV2, V2_FULL_FEATURES
 from benchmarks.v02_full.evidence import (
     EvidenceArtifactRef, EvidenceError, SignedEvidence, TrustPolicy, TrustedSigner,
-    load_trust_policy, sign_evidence, verify_protected_directory,
+    load_trust_policy, read_content_artifact, sign_evidence, verify_protected_directory,
 )
 from benchmarks.v02_full.accounting import (
     AccountingResult, ResourceUsage, make_receipt, validate_accounting_chain,
@@ -562,6 +562,37 @@ def test_windows_acl_gate_accepts_service_private_root_and_rejects_world_write(t
     policy_path = _write_trust_policy(root / "trust-policy.json", policy)
     loaded, _ = load_trust_policy(policy_path)
     assert loaded.signers["key"].principal_id == "principal"
+
+    subprocess.run(
+        ["icacls", str(policy_path), "/grant", "*S-1-1-0:(M)"],
+        check=True, capture_output=True, text=True,
+    )
+    with pytest.raises(EvidenceError, match="writable by an untrusted principal"):
+        load_trust_policy(policy_path)
+
+    artifact = root / "evidence.json"
+    artifact_bytes = b"bounded public evidence"
+    artifact.write_bytes(artifact_bytes)
+    artifact_ref = EvidenceArtifactRef(
+        path=artifact.name, artifact_sha256=hashlib.sha256(artifact_bytes).hexdigest(),
+    )
+    assert read_content_artifact(
+        root=root, reference=artifact_ref, expected_sha256=artifact_ref.artifact_sha256,
+        max_bytes=len(artifact_bytes),
+    ) == artifact_bytes
+    with pytest.raises(EvidenceError, match="byte limit"):
+        read_content_artifact(
+            root=root, reference=artifact_ref, expected_sha256=artifact_ref.artifact_sha256,
+            max_bytes=len(artifact_bytes) - 1,
+        )
+    subprocess.run(
+        ["icacls", str(artifact), "/grant", "*S-1-1-0:(M)"],
+        check=True, capture_output=True, text=True,
+    )
+    with pytest.raises(EvidenceError, match="writable by an untrusted principal"):
+        read_content_artifact(
+            root=root, reference=artifact_ref, expected_sha256=artifact_ref.artifact_sha256,
+        )
 
     subprocess.run(
         ["icacls", str(root), "/grant", "*S-1-1-0:(M)"],

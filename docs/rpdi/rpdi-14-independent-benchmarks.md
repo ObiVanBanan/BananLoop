@@ -119,8 +119,12 @@ evaluator identity sealed until both arms have frozen their final artifacts.
   public keys only. The author/operator exclusion set is mandatory and independent
   reviewers/operators must use distinct principals and keys.
   On platforms without descriptor-relative no-follow file opens, the evidence
-  root must be protected by filesystem ACLs from modification throughout gate
-  verification.
+  root, every ancestor, trust-policy file, and evidence file must be protected
+  by filesystem ACLs from modification by untrusted principals throughout gate
+  verification. The verifier trusts only its service identity, LocalSystem,
+  and local Administrators to modify these paths; concurrent replacement by
+  one of those trusted OS principals is outside this threat model. Reparse
+  points and untrusted write-capable ACEs are rejected.
   Synthetic fixtures demonstrate the mechanics only and provide no real gate
   evidence. No run is eligible until actual artifact files are reviewed, signed,
   and verified for the exact immutable inputs.

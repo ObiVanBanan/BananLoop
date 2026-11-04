@@ -129,7 +129,7 @@ def _windows_current_user_sid() -> bytes:
         if not required.value:
             raise EvidenceError("cannot inspect the Windows service identity")
         buffer = ctypes.create_string_buffer(required.value)
-        if not advapi.GetTokenInformation(token, 1, buffer, required, ctypes.byref(required)):
+        if not advapi.GetTokenInformation(token, 1, buffer, required.value, ctypes.byref(required)):
             raise EvidenceError("cannot inspect the Windows service identity")
         sid = ctypes.cast(buffer, ctypes.POINTER(TokenUser)).contents.User.Sid
         length = advapi.GetLengthSid(sid)
@@ -141,7 +141,14 @@ def _windows_current_user_sid() -> bytes:
 
 
 def _windows_protected_acl(path: Path) -> None:
-    """Require trusted ownership and deny untrusted write-capable ACEs."""
+    """Require service, SYSTEM, or Administrators to own/change this ACL.
+
+    ACL checks are path-based because Python does not expose Windows
+    ``openat``. Every ancestor is checked before the leaf, so untrusted users
+    cannot replace a checked component. The service identity, SYSTEM, and
+    local Administrators are the trusted OS principals; protecting against a
+    concurrent replacement by one of those principals is out of scope.
+    """
     if os.name != "nt":
         raise EvidenceError("Windows ACL verification is unavailable on this platform")
     advapi = ctypes.WinDLL("Advapi32", use_last_error=True)
