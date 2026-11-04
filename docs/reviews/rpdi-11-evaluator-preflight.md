@@ -1,7 +1,10 @@
 # RPDI-11 evaluator verification implementation status
 
 **Base:** `main@21dfeb0c6f11dc96a3c2b3add9b46bee50bc0d1d` (RPDI-10)
-**Status:** implementation in progress; this document does not claim RPDI-11 DoD.
+**Status:** implementation and exact-head CI evidence are recorded; owner
+acceptance for the current PR head remains pending. This document does not
+represent a review submission, merge, or completion of the overall v0.2 Full
+objective.
 
 ## Owner-directed gate decision
 
@@ -108,21 +111,20 @@ does not waive RPDI-11 technical evidence, tests, CI, per-PR review, or DoD.
   Oversized/non-text source and tampered or unpinned published artifacts fail
   closed. The receipt binds the digest of the exact review context.
 
-## Remaining blockers before RPDI-11 is complete
+## Current acceptance state
 
-1. Exact-head CI must pass after the real protocol workflow test, including
-   Windows. Local Python lacks Pydantic and pytest, so behavior tests rely on
-   repository CI.
-2. `CampaignSpecV2.mode` is immutable. Protocol approval is campaign-local;
-   authorized handoff into a separate Optimization campaign is owned by
-   RPDI-12. The graph must not silently switch an Exploration campaign into
-   Optimization.
+- Exact head `e17374ce6b00f0cd638cf4c75aeba1ab20132fbb` passed hosted test run
+  #1501 on Ubuntu/Python 3.11, 3.12, 3.13 and Windows/Python 3.12.
+- As of 2026-11-04, GitHub records no formal review submission, inline review
+  thread, or issue comment on PR #129. The project owner waived an additional
+  independent reviewer; the owner-directed review/acceptance of this exact head
+  remains a separate gate.
+- `CampaignSpecV2.mode` remains immutable. Cross-campaign handoff into a
+  separate Optimization campaign is implemented by dependent RPDI-12 PR #130;
+  it is not an RPDI-11 implementation blocker. Preserve the stack order and do
+  not merge #130 before #129 is accepted under the project branch policy.
 
-These blockers keep this branch in draft. The owner waiver allows work to
-continue; it does not waive RPDI-11 technical evidence or convert role claims
-into verified integration evidence.
-
-## Required final evidence
+## RPDI-11 evidence checklist
 
 - Self-approval, unpinned verifier, forged/tampered receipt, stale source/spec,
   stale fence, cross-campaign receipt, and changed protocol bytes fail closed.
