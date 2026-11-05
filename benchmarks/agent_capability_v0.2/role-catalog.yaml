@@ -1,0 +1,101 @@
+schema_version: 1
+benchmark_version: "0.2-draft"
+status: "provisional_not_authoritative"
+authority: "RPDI-09 Versioned Role Registry"
+starting_repository_revision: "70f015bbd7390d9870f6498529f1e8c808e50611"
+
+# These benchmark IDs are proposed labels. RPDI-09 must supply the authoritative
+# role IDs, versions, permission profiles, model bindings, and result contracts.
+roles:
+  - role_id: campaign_bootstrapper
+    runtime_alias: bootstrap
+    lifecycle: legacy_adapter_alias
+    scope: "Create a measurable campaign contract from the approved goal and repository."
+    evaluator_family: bootstrap_contract
+    primary_metrics:
+      - schema_validity
+      - semantic_contract_accuracy
+      - scope_boundary_accuracy
+      - hidden_data_separation
+
+  - role_id: researcher
+    runtime_alias: null
+    lifecycle: planned_dynamic_role
+    scope: "Retrieve and synthesize evidence from explicitly allowed sources."
+    evaluator_family: evidence_retrieval
+    primary_metrics:
+      - claim_precision
+      - claim_recall
+      - citation_entailment
+      - unsupported_claim_rate
+
+  - role_id: proposer
+    runtime_alias: propose
+    lifecycle: legacy_adapter_alias
+    scope: "Generate bounded, evidence-grounded, falsifiable hypotheses."
+    evaluator_family: hypothesis_quality_and_realized_utility
+    primary_metrics:
+      - falsifiability
+      - mechanism_novelty
+      - evidence_grounding
+      - realized_candidate_utility
+
+  - role_id: selector
+    runtime_alias: select
+    lifecycle: legacy_adapter_alias
+    scope: "Choose among gate-approved candidates using only allowed evidence."
+    evaluator_family: portfolio_oracle_regret
+    primary_metrics:
+      - selection_regret
+      - top_1_accuracy
+      - invalid_choice_rate
+      - budget_aware_utility
+
+  - role_id: implementer
+    runtime_alias: implement
+    lifecycle: legacy_adapter_alias
+    scope: "Implement one approved candidate inside the granted task scope."
+    evaluator_family: code_execution_and_regression
+    primary_metrics:
+      - resolved_rate
+      - hidden_test_pass_rate
+      - regression_rate
+      - scope_violation_rate
+
+  - role_id: diagnostic
+    runtime_alias: analyze
+    lifecycle: legacy_adapter_alias
+    scope: "Classify failures from sanitized evidence and propose a discriminating next probe."
+    evaluator_family: fault_diagnosis
+    primary_metrics:
+      - root_cause_top_1
+      - evidence_precision
+      - false_falsification_rate
+      - next_probe_utility
+
+  - role_id: pivot_advisor
+    runtime_alias: pivot_advice
+    lifecycle: legacy_adapter_alias_supervised_only
+    scope: "Prepare a material alternative approach for human review; cannot authorize it."
+    evaluator_family: supervised_pivot_review
+    primary_metrics:
+      - materiality
+      - evidence_grounding
+      - risk_disclosure
+      - human_review_agreement
+
+control_plane_components:
+  - team_composer
+  - agent_factory
+  - model_router
+  - scheduler
+  - capability_gateway
+  - budget_ledger
+  - worker_supervisor
+  - evaluator_verifier
+  - resume_and_recovery
+
+control_plane_note: >
+  These components are tested with deterministic contract, permission,
+  concurrency, recovery, and fault-injection suites. They are not assigned
+  an LLM capability score.

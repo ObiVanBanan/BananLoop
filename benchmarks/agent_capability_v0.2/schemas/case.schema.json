@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ObiVanBanan/BananLoop/blob/main/benchmarks/agent_capability_v0.2/schemas/case.schema.json",
+  "title": "BananLoop Agent Capability Public Case",
+  "description": "Agent-visible case metadata and input only. Gold answers, hidden tests, validation labels, and holdout payloads are stored outside this public schema and outside the agent workspace.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "suite",
+    "role_id",
+    "task_family",
+    "split",
+    "agent_input",
+    "allowed_context",
+    "capability_profile_id",
+    "output_contract_id",
+    "evaluator_binding",
+    "provenance",
+    "resource_budget"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "case_id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9._-]+$"
+    },
+    "suite": {
+      "type": "string",
+      "enum": ["role_capability", "role_contribution", "team_system"]
+    },
+    "role_id": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "role_version": { "type": ["string", "null"] },
+    "task_family": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "domain": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "split": { "type": "string", "enum": ["DEV", "VALIDATION", "HOLDOUT"] },
+    "agent_input": {
+      "type": "object",
+      "description": "Only the data explicitly authorized for the evaluated role.",
+      "additionalProperties": true
+    },
+    "allowed_context": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "capability_profile_id": { "type": "string", "minLength": 1 },
+    "output_contract_id": { "type": "string", "minLength": 1 },
+    "evaluator_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evaluator_id", "version", "sha256", "method"],
+      "properties": {
+        "evaluator_id": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "method": {
+          "type": "string",
+          "enum": [
+            "deterministic",
+            "hidden_tests",
+            "oracle_regret",
+            "source_verification",
+            "human_rubric",
+            "paired_counterfactual"
+          ]
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "source_revision", "content_sha256", "license_status"],
+      "properties": {
+        "source_id": { "type": "string", "minLength": 1 },
+        "source_revision": { "type": "string", "minLength": 1 },
+        "content_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "license_status": {
+          "type": "string",
+          "enum": ["APPROVED", "RESTRICTED", "PENDING", "INTERNAL_SANITIZED"]
+        },
+        "upstream_case_id": { "type": ["string", "null"] }
+      }
+    },
+    "resource_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["wall_clock_seconds", "max_agent_calls", "max_tool_calls"],
+      "properties": {
+        "wall_clock_seconds": { "type": "integer", "minimum": 1 },
+        "max_agent_calls": { "type": "integer", "minimum": 1 },
+        "max_tool_calls": { "type": "integer", "minimum": 0 },
+        "max_input_tokens": { "type": ["integer", "null"], "minimum": 1 },
+        "max_output_tokens": { "type": ["integer", "null"], "minimum": 1 },
+        "max_total_tokens": { "type": ["integer", "null"], "minimum": 1 },
+        "max_cost_usd": { "type": ["number", "null"], "minimum": 0 }
+      }
+    },
+    "seed": { "type": ["integer", "null"] },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    }
+  }
+}
