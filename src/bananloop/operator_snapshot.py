@@ -11,6 +11,16 @@ from .contracts import PivotProposal
 from .store import CampaignStore, StoreError
 
 
+class EventCursorError(ValueError):
+    """A client event cursor requires a fresh snapshot or correction."""
+
+    def __init__(self, reason: str, cursor_floor: int, current_cursor: int):
+        super().__init__(reason)
+        self.reason = reason
+        self.cursor_floor = cursor_floor
+        self.current_cursor = current_cursor
+
+
 SCHEMA_VERSION = 1
 DISPLAY_STAGE = {
     "PROPOSE": "PROPOSE",
@@ -226,8 +236,12 @@ def read_events_after(store: CampaignStore, after_seq: int, *, limit: int = 100)
     store.conn.execute("SAVEPOINT operator_events")
     try:
         latest = int(store.conn.execute("SELECT COALESCE(MAX(seq),0) FROM events").fetchone()[0])
+        first = int(store.conn.execute("SELECT COALESCE(MIN(seq),0) FROM events").fetchone()[0])
+        cursor_floor = max(0, first - 1) if first else 0
+        if after_seq < cursor_floor:
+            raise EventCursorError("expired", cursor_floor, latest)
         if after_seq > latest:
-            raise ValueError("event cursor is beyond the latest committed event")
+            raise EventCursorError("ahead", cursor_floor, latest)
         rows = [dict(row) for row in store.conn.execute(
             "SELECT seq,event_type,payload_json,created_at FROM events WHERE seq>? AND seq<=? ORDER BY seq LIMIT ?",
             (after_seq, latest, limit),
@@ -241,4 +255,7 @@ def read_events_after(store: CampaignStore, after_seq: int, *, limit: int = 100)
         payload = {key: raw[key] for key in allowed if isinstance(raw, dict) and key in raw}
         events.append({"seq": row["seq"], "type": row["event_type"], "payload": payload, "created_at": row["created_at"]})
     cursor = events[-1]["seq"] if events else after_seq
-    return {"events": events, "cursor": cursor, "latest_seq": latest, "has_more": cursor < latest}
+    return {
+        "events": events, "cursor": cursor, "latest_seq": latest,
+        "cursor_floor": cursor_floor, "has_more": cursor < latest,
+    }

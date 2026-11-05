@@ -111,6 +111,75 @@ def _receipt(proposal, *, decision="APPROVE", verifier_instance="agent-" + "5" *
     )
 
 
+def build_full_optimization_runtime(
+    *, graph, queue, campaign_id, state_root, source_snapshot_id,
+    candidate_snapshot_id, protocol, manifest, registry,
+):
+    """Build the real evaluator/integration adapters used by lifecycle E2E tests."""
+    class DeterministicRunner(TrustedEvaluatorRunner):
+        def __init__(self):
+            super().__init__(bwrap_binary="not-used-in-test")
+            self.protocol_hash = manifest.protocol_sha256
+
+        def _sandbox_available(self):
+            return True
+
+        def _execute_isolated(
+            self, argv, *, readonly, output, candidate_snapshot_id, tier, timeout,
+        ):
+            private_map = json.loads(
+                (readonly / "tier" / "input-map.json").read_text(encoding="utf-8")
+            )
+            measured_cases = [{
+                "case_id": item["case_id"], "repetition": item["repetition"],
+                "input_sha256": item["input_sha256"], "metrics": {},
+            } for item in private_map]
+            score = 0.6 if candidate_snapshot_id == source_snapshot_id else 0.8
+            return json.dumps({
+                "status": "ok", "metrics": {"quality": score},
+                "protocol_sha256": self.protocol_hash, "cases": measured_cases,
+                "diagnostics": {},
+            })
+
+    trusted = TrustedEvaluatorAdapter(
+        graph=graph, queue=queue, campaign_id=campaign_id,
+        state_root=state_root, runner=DeterministicRunner(),
+    )
+    team = TeamFactoryV1.build(
+        registry,
+        TeamRequestV1(
+            campaign_id=campaign_id, spec_hash=graph.campaign_spec().approved_hash(),
+            requested_instances={"integration_verifier": 1}, specializations=(),
+            available_agent_calls=10, available_model_tokens=1000,
+        ),
+        expected_registry_digest=registry.digest(),
+    )
+    manifest_authority = TeamManifestAuthority(queue.path)
+    manifest_authority.pin(team)
+    manifest_authority.close()
+    member = team.members[0]
+
+    def invoke(request, _gateway, **_pinned):
+        return IntegrationVerifierOutputV1(
+            candidate_snapshot_id=request["candidate_snapshot_id"],
+            protocol_digest=request["protocol_digest"], decision="PASS",
+            checks=(
+                "candidate_identity", "protocol_identity", "evaluation_receipt",
+                "budget_receipt", "artifact_integrity", "regression_policy",
+            ),
+        ).model_dump(mode="json")
+
+    executor = PinnedRoleExecutorV1.from_manifest(team, member.instance_id, invoke)
+    integration = IntegrationVerificationAdapter(
+        graph=graph, queue=queue, campaign_id=campaign_id,
+        trusted_evaluator=trusted,
+    )
+    coordinator = OptimizationAttemptCoordinator(
+        graph=graph, trusted_evaluator=trusted, integration_verifier=integration,
+    )
+    return coordinator, trusted, executor
+
+
 def test_protocol_digest_is_canonical_and_protected_tiers_have_manifest_identity():
     protocol = _protocol()
     assert protocol.content_digest() == _protocol().content_digest()
@@ -817,67 +886,10 @@ def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
     protocol_authority._append_proposal(proposal)
     protocol_authority._append_verified_receipt(approval)
 
-    class DeterministicRunner(TrustedEvaluatorRunner):
-        def __init__(self):
-            super().__init__(bwrap_binary="not-used-in-test")
-            self.protocol_hash = manifest.protocol_sha256
-
-        def _sandbox_available(self):
-            return True
-
-        def _execute_isolated(
-            self, argv, *, readonly, output, candidate_snapshot_id, tier, timeout,
-        ):
-            private_map = json.loads(
-                (readonly / "tier" / "input-map.json").read_text(encoding="utf-8")
-            )
-            measured_cases = [{
-                "case_id": item["case_id"], "repetition": item["repetition"],
-                "input_sha256": item["input_sha256"], "metrics": {},
-            } for item in private_map]
-            score = 0.6 if candidate_snapshot_id == source_snapshot_id else 0.8
-            return json.dumps({
-                "status": "ok", "metrics": {"quality": score},
-                "protocol_sha256": self.protocol_hash, "cases": measured_cases,
-                "diagnostics": {},
-            })
-
-    runner = DeterministicRunner()
-    trusted = TrustedEvaluatorAdapter(
-        graph=graph, queue=queue, campaign_id=campaign_id,
-        state_root=state_root, runner=runner,
-    )
-    team = TeamFactoryV1.build(
-        registry,
-        TeamRequestV1(
-            campaign_id=campaign_id, spec_hash=spec_hash,
-            requested_instances={"integration_verifier": 1}, specializations=(),
-            available_agent_calls=10, available_model_tokens=1000,
-        ),
-        expected_registry_digest=registry.digest(),
-    )
-    manifest_authority = TeamManifestAuthority(db_path)
-    manifest_authority.pin(team)
-    manifest_authority.close()
-    member = team.members[0]
-
-    def invoke(request, _gateway, **_pinned):
-        return IntegrationVerifierOutputV1(
-            candidate_snapshot_id=request["candidate_snapshot_id"],
-            protocol_digest=request["protocol_digest"], decision="PASS",
-            checks=(
-                "candidate_identity", "protocol_identity", "evaluation_receipt",
-                "budget_receipt", "artifact_integrity", "regression_policy",
-            ),
-        ).model_dump(mode="json")
-
-    executor = PinnedRoleExecutorV1.from_manifest(team, member.instance_id, invoke)
-    integration = IntegrationVerificationAdapter(
-        graph=graph, queue=queue, campaign_id=campaign_id,
-        trusted_evaluator=trusted,
-    )
-    coordinator = OptimizationAttemptCoordinator(
-        graph=graph, trusted_evaluator=trusted, integration_verifier=integration,
+    coordinator, trusted, executor = build_full_optimization_runtime(
+        graph=graph, queue=queue, campaign_id=campaign_id, state_root=state_root,
+        source_snapshot_id=source_snapshot_id, candidate_snapshot_id=candidate_snapshot_id,
+        protocol=protocol, manifest=manifest, registry=registry,
     )
     try:
         graph.mutate(MutateGraph(

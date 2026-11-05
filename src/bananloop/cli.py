@@ -327,6 +327,55 @@ def cmd_campaigns_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_campaign_inspect(args: argparse.Namespace) -> int:
+    """Print safe, application-backed read models for one selected campaign."""
+    app = CampaignApplication(args.repo, campaign_id=args.campaign_id)
+    snapshot = app.snapshot()
+    campaign_id = snapshot["campaign_id"]
+    project = CampaignApplication(args.repo)
+    cursor = None
+    campaign_summary = None
+    for _ in range(1000):
+        page = project.list_campaigns(limit=100, cursor=cursor)
+        campaign_summary = next(
+            (item for item in page["campaigns"] if item["campaign_id"] == campaign_id), None,
+        )
+        if campaign_summary is not None or page["next_cursor"] is None:
+            break
+        cursor = page["next_cursor"]
+    if campaign_summary is None:
+        raise StoreError("campaign is not present in the safe project index")
+    result = {
+        "campaign_id": campaign_id,
+        "campaign": campaign_summary,
+        "snapshot": snapshot,
+        "observability": app.observability(),
+        "lifecycle": app.lifecycle_projection(),
+    }
+    if snapshot.get("schema_version") == 2:
+        result["graph"] = app.graph_snapshot()
+        result["research_scopes"] = app.research_scopes(limit=50)
+    else:
+        result["graph"] = None
+        result["research_scopes"] = {
+            "campaign_id": campaign_id, "scopes": [], "next_cursor": None,
+            "as_of": snapshot.get("as_of"), "source": "PERSISTED",
+        }
+    if args.json:
+        print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+    else:
+        print(f"campaign_id: {campaign_id}")
+        print(f"mode: {campaign_summary['mode'] or 'Unavailable'}")
+        print(f"profile: {campaign_summary['profile'] or 'Unavailable'}")
+        print(f"status: {snapshot.get('status', 'UNKNOWN')}")
+        if result["graph"] is not None:
+            print(f"graph_revision: {result['graph']['graph_revision']}")
+            print(f"research_scopes: {len(result['research_scopes']['scopes'])}")
+        print(f"scheduler: {result['observability']['scheduler']['reason'] or 'Unavailable'}")
+        print(f"lifecycle: {result['lifecycle']['source']}")
+    return 0
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     discovery = discover_project(repo)
@@ -1038,6 +1087,11 @@ def parser() -> argparse.ArgumentParser:
     list_cmd.add_argument("--repo", default=".")
     list_cmd.add_argument("--json", action="store_true")
     list_cmd.set_defaults(func=cmd_campaigns_list)
+    inspect_cmd = campaign_sub.add_parser("inspect", help="show safe persisted read models for one campaign")
+    inspect_cmd.add_argument("--repo", default=".")
+    inspect_cmd.add_argument("--campaign-id", required=True)
+    inspect_cmd.add_argument("--json", action="store_true")
+    inspect_cmd.set_defaults(func=cmd_campaign_inspect)
 
     graph = sub.add_parser("graph", help="inspect or mutate a v2 research graph")
     graph_sub = graph.add_subparsers(dest="graph_command", required=True)

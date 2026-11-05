@@ -32,3 +32,6 @@ report = "console"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+bananloop = ["dashboard/*.html", "dashboard/*.js", "dashboard/*.css"]

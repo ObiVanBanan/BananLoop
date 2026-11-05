@@ -9,6 +9,7 @@ import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.resources import files
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -17,11 +18,12 @@ from pydantic import ValidationError
 from .application import CampaignApplication
 from .contracts import PivotDecisionCommand, PivotProposal
 from .graph_store import GraphStoreError
+from .operator_snapshot import EventCursorError
 from .registry import RegistryError
 from .store import StoreError
 
 MAX_BODY_BYTES = 64 * 1024
-_CAMPAIGN_PATH = re.compile(r"^/v1/campaigns/([^/]+)(?:/(snapshot|events|events/stream|graph|graph/commands|commands/(pause|resume|stop)|pivot-decisions|v2/pivot-proposals|v2/pivot-decisions|v2/pivot-executions))?$")
+_CAMPAIGN_PATH = re.compile(r"^/v1/campaigns/([^/]+)(?:/(snapshot|events|events/stream|graph|graph/commands|research|observability|lifecycle|commands/(pause|resume|stop)|pivot-decisions|v2/pivot-proposals|v2/pivot-decisions|v2/pivot-executions))?$")
 
 
 def _openapi() -> dict[str, Any]:
@@ -30,11 +32,22 @@ def _openapi() -> dict[str, Any]:
         "info": {"title": "BananLoop Local API", "version": "0.2.0"},
         "paths": {
             "/healthz": {"get": {"operationId": "health", "responses": {"200": {"description": "Healthy"}}}},
+            "/v1/campaigns": {"get": {
+                "operationId": "listCampaigns",
+                "parameters": [
+                    {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
+                    {"name": "cursor", "in": "query", "schema": {"type": "string", "maxLength": 512}},
+                ],
+                "responses": {"200": {"description": "Safe paginated campaign summaries", "content": {"application/json": {"schema": {"type": "object", "required": ["campaigns", "next_cursor", "as_of", "source"], "properties": {"campaigns": {"type": "array", "items": {"$ref": "#/components/schemas/CampaignSummary"}}, "next_cursor": {"type": ["string", "null"]}, "as_of": {"type": "string", "format": "date-time"}, "source": {"const": "PERSISTED"}}}}}}},
+            }},
             "/v1/campaigns/{campaign_id}/snapshot": {"get": {"operationId": "campaignSnapshot", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "Redacted campaign snapshot"}}}},
-            "/v1/campaigns/{campaign_id}/graph": {"get": {"operationId": "researchGraphSnapshot", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "Redacted v2 graph scheduling snapshot"}}}},
+            "/v1/campaigns/{campaign_id}/graph": {"get": {"operationId": "researchGraphSnapshot", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "Redacted v2 DAG snapshot with all dependency edge types and AND/OR groups", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GraphSnapshotV2"}}}}}}},
+            "/v1/campaigns/{campaign_id}/research": {"get": {"operationId": "getPublicResearchKnowledge", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}, {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 50}}, {"name": "cursor", "in": "query", "schema": {"type": "string", "maxLength": 512}}, {"name": "source_snapshot_id", "in": "query", "schema": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"}}, {"name": "protocol_digest", "in": "query", "schema": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}], "responses": {"200": {"description": "Bounded PUBLIC_DEV scopes or a redacted unverified projection", "content": {"application/json": {"schema": {"oneOf": [{"$ref": "#/components/schemas/ResearchScopeIndex"}, {"$ref": "#/components/schemas/ResearchKnowledgeView"}]}}}}, "400": {"description": "Invalid scope or cursor"}, "413": {"description": "Knowledge scope exceeds the bounded export size"}}}},
+            "/v1/campaigns/{campaign_id}/observability": {"get": {"operationId": "campaignObservability", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "Campaign-scoped persisted queue and budget projections", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CampaignObservability"}}}}}}},
+            "/v1/campaigns/{campaign_id}/lifecycle": {"get": {"operationId": "campaignResearchLifecycle", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "Bounded pivot, child campaign, optimization, evaluator verification, and protocol handoff receipts", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CampaignLifecycle"}}}}}}},
             "/v1/campaigns/{campaign_id}/graph/commands": {"post": {"operationId": "mutateResearchGraph", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}, {"name": "Idempotency-Key", "in": "header", "required": True, "schema": {"type": "string"}}], "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GraphMutation"}}}}, "responses": {"200": {"description": "Canonical graph mutation receipt"}}}},
-            "/v1/campaigns/{campaign_id}/events": {"get": {"operationId": "campaignEvents", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}, {"name": "after", "in": "query", "schema": {"type": "integer", "minimum": 0}}, {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 1000}}], "responses": {"200": {"description": "Redacted cursor page"}}}},
-            "/v1/campaigns/{campaign_id}/events/stream": {"get": {"operationId": "campaignEventStream", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}, {"name": "after", "in": "query", "schema": {"type": "integer", "minimum": 0}}], "responses": {"200": {"description": "Server-sent event stream", "content": {"text/event-stream": {"schema": {"type": "string"}}}}}}},
+            "/v1/campaigns/{campaign_id}/events": {"get": {"operationId": "campaignEvents", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}, {"name": "after", "in": "query", "schema": {"type": "integer", "minimum": 0}}, {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 1000}}], "responses": {"200": {"description": "Redacted cursor page with the retained range"}, "409": {"description": "Cursor is ahead of the current event sequence; use current_cursor"}, "410": {"description": "Cursor predates retained events; fetch a fresh snapshot"}}}},
+            "/v1/campaigns/{campaign_id}/events/stream": {"get": {"operationId": "campaignEventStream", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}, {"name": "after", "in": "query", "schema": {"type": "integer", "minimum": 0}}], "responses": {"200": {"description": "Server-sent event stream; a runtime cursor expiration emits resync_required", "content": {"text/event-stream": {"schema": {"type": "string"}}}}, "409": {"description": "Cursor is ahead of the current event sequence"}, "410": {"description": "Cursor predates retained events; fetch a fresh snapshot"}}}},
             "/v1/campaigns/{campaign_id}/commands/{command}": {"post": {"operationId": "submitControlCommand", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}, {"name": "command", "in": "path", "required": True, "schema": {"type": "string", "enum": ["pause", "resume", "stop"]}}, {"name": "Idempotency-Key", "in": "header", "required": True, "schema": {"type": "string"}}], "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ControlRequest"}}}}, "responses": {"200": {"description": "Durable command receipt"}}}},
             "/v1/campaigns/{campaign_id}/pivot-decisions": {"post": {"operationId": "recordPivotDecision", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}, {"name": "Idempotency-Key", "in": "header", "required": True, "schema": {"type": "string"}}], "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PivotDecision"}}}}, "responses": {"200": {"description": "Decision receipt"}}}},
             "/v1/campaigns/{campaign_id}/v2/pivot-proposals": {"post": {"operationId": "recordV2PivotProposal", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}, {"name": "Idempotency-Key", "in": "header", "required": True, "schema": {"type": "string"}}], "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/V2PivotProposal"}}}}, "responses": {"200": {"description": "Durable v2 proposal receipt"}}}},
@@ -43,6 +56,27 @@ def _openapi() -> dict[str, Any]:
         },
         "security": [{}, {"BearerToken": []}],
         "components": {"securitySchemes": {"BearerToken": {"type": "http", "scheme": "bearer"}}, "schemas": {
+            "CampaignSummary": {"type": "object", "additionalProperties": False, "required": ["campaign_id", "origin", "active", "status", "schema_version", "mode", "profile", "flag_hash", "approved_spec_hash", "integrity_valid", "updated_at"], "properties": {"campaign_id": {"type": "string"}, "origin": {"type": "string", "enum": ["legacy", "managed"]}, "active": {"type": "boolean"}, "status": {"type": "string"}, "schema_version": {"type": ["integer", "null"]}, "mode": {"type": ["string", "null"]}, "profile": {"type": ["string", "null"], "enum": ["FULL", "DIAGNOSTIC", None]}, "flag_hash": {"type": ["string", "null"]}, "approved_spec_hash": {"type": ["string", "null"]}, "integrity_valid": {"type": ["boolean", "null"]}, "updated_at": {"type": "string", "format": "date-time"}}},
+            "GraphSnapshotV2": {
+                "type": "object", "additionalProperties": False,
+                "required": ["schema_version", "campaign_id", "status", "graph_revision", "nodes", "edges", "groups", "as_of", "source"],
+                "properties": {
+                    "schema_version": {"const": 2}, "campaign_id": {"type": "string"},
+                    "status": {"type": "string"}, "graph_revision": {"type": "integer"},
+                    "nodes": {"type": "array", "items": {"$ref": "#/components/schemas/ResearchNodeSummary"}},
+                    "edges": {"type": "array", "items": {"$ref": "#/components/schemas/ResearchEdgeSummary"}},
+                    "groups": {"type": "array", "items": {"$ref": "#/components/schemas/ResearchGroupSummary"}},
+                    "as_of": {"type": "string", "format": "date-time"},
+                    "source": {"const": "PERSISTED"},
+                },
+            },
+            "ResearchNodeSummary": {"type": "object", "additionalProperties": False, "required": ["node_id", "phase", "status", "revision", "ready", "blockers", "completion_evidence_refs"], "properties": {"node_id": {"type": "string"}, "phase": {"type": "string"}, "status": {"type": "string"}, "revision": {"type": "integer"}, "ready": {"type": "boolean"}, "blockers": {"type": "array", "items": {"type": "string"}}, "completion_evidence_refs": {"type": "array", "items": {"type": "string"}}}},
+            "ResearchEdgeSummary": {"type": "object", "additionalProperties": False, "required": ["source_id", "target_id", "type"], "properties": {"source_id": {"type": "string"}, "target_id": {"type": "string"}, "type": {"type": "string", "enum": ["REQUIRES", "DERIVED_FROM", "RELATED_TO"]}}},
+            "ResearchGroupSummary": {"type": "object", "additionalProperties": False, "required": ["group_id", "owner_node_id", "kind", "member_node_ids"], "properties": {"group_id": {"type": "string"}, "owner_node_id": {"type": "string"}, "kind": {"type": "string", "enum": ["AND", "OR"]}, "member_node_ids": {"type": "array", "items": {"type": "string"}}}},
+            "ResearchScopeIndex": {"type": "object", "additionalProperties": False, "required": ["campaign_id", "scopes", "next_cursor", "as_of", "source"], "properties": {"campaign_id": {"type": "string"}, "scopes": {"type": "array", "items": {"type": "object", "additionalProperties": False, "required": ["source_snapshot_id", "protocol_digest", "event_cursor"], "properties": {"source_snapshot_id": {"type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"}, "protocol_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "event_cursor": {"type": "integer", "minimum": 1}}}}, "next_cursor": {"type": ["string", "null"]}, "as_of": {"type": "string", "format": "date-time"}, "source": {"const": "PERSISTED"}}},
+            "CampaignObservability": {"type": "object", "additionalProperties": False, "required": ["campaign_id", "queue", "budget", "scheduler", "source", "as_of", "event_cursor"], "properties": {"campaign_id": {"type": "string"}, "queue": {"type": "object", "required": ["available", "states", "leases", "transitions", "source", "as_of", "event_cursor", "worker_event_cursor"], "properties": {"available": {"type": "boolean"}, "states": {"type": ["object", "null"]}, "leases": {"type": ["object", "null"]}, "transitions": {"type": ["object", "null"]}, "transition_window": {"type": "string"}, "source": {"const": "PERSISTED"}, "as_of": {"type": "string", "format": "date-time"}, "event_cursor": {"type": ["integer", "null"]}, "worker_event_cursor": {"type": ["integer", "null"]}}}, "budget": {"type": "object", "required": ["available", "dimensions", "source", "as_of", "event_cursor"], "properties": {"available": {"type": "boolean"}, "dimensions": {"type": ["object", "null"]}, "source": {"const": "PERSISTED"}, "as_of": {"type": "string", "format": "date-time"}, "event_cursor": {"type": ["integer", "null"]}}}, "scheduler": {"type": "object", "additionalProperties": False, "required": ["available", "reason", "candidate_count", "blocked_node_count", "source", "as_of", "event_cursor", "worker_event_cursor"], "properties": {"available": {"type": "boolean"}, "reason": {"type": ["string", "null"], "enum": ["CONTINUE", "WAITING_FOR_WORKERS", "ALL_NODES_COMPLETE", "BUDGET_EXHAUSTED", "DEPENDENCIES_BLOCKED", "NO_REMAINING_WORK", "STOP_REQUESTED", None]}, "candidate_count": {"type": ["integer", "null"], "minimum": 0}, "blocked_node_count": {"type": ["integer", "null"], "minimum": 0}, "source": {"const": "PERSISTED"}, "as_of": {"type": "string", "format": "date-time"}, "event_cursor": {"type": ["integer", "null"]}, "worker_event_cursor": {"type": ["integer", "null"]}}}, "source": {"const": "PERSISTED"}, "as_of": {"type": "string", "format": "date-time"}, "event_cursor": {"type": ["integer", "null"]}}},
+            "CampaignLifecycle": {"type": "object", "additionalProperties": False, "required": ["campaign_id", "available", "proposals", "decisions", "children", "verifier_receipts", "integration_receipts", "protocol_handoffs", "phase_state", "evaluator_run_receipt_count", "evaluator_state", "source", "as_of", "event_cursor"], "properties": {"campaign_id": {"type": "string"}, "available": {"type": "boolean"}, "proposals": {"type": "array", "maxItems": 100, "items": {"type": "object"}}, "decisions": {"type": "array", "maxItems": 100, "items": {"type": "object"}}, "children": {"type": "array", "maxItems": 100, "items": {"type": "object"}}, "verifier_receipts": {"type": "array", "maxItems": 100, "items": {"type": "object"}}, "integration_receipts": {"type": "array", "maxItems": 100, "items": {"type": "object"}}, "protocol_handoffs": {"type": "array", "maxItems": 100, "items": {"type": "object"}}, "phase_state": {"type": ["object", "null"]}, "evaluator_run_receipt_count": {"type": ["integer", "null"]}, "evaluator_state": {"type": ["object", "null"], "additionalProperties": False, "required": ["verifier", "integration", "run_receipts"], "properties": {"verifier": {"type": "object", "additionalProperties": False, "properties": {"APPROVE": {"type": "integer", "minimum": 0}, "REJECT": {"type": "integer", "minimum": 0}}}, "integration": {"type": "object", "additionalProperties": False, "properties": {"PASS": {"type": "integer", "minimum": 0}, "FAIL": {"type": "integer", "minimum": 0}}}, "run_receipts": {"type": "integer", "minimum": 0}}}, "truncated": {"type": "object"}, "source": {"const": "PERSISTED"}, "as_of": {"type": "string", "format": "date-time"}, "event_cursor": {"type": ["integer", "null"]}}},
+            "ResearchKnowledgeView": {"type": "object", "additionalProperties": False, "required": ["campaign_id", "source_snapshot_id", "protocol_digest", "canonical_projection_digest", "evidence", "contradictions", "causal_memory", "structural_memory", "source", "as_of"], "properties": {"campaign_id": {"type": "string"}, "source_snapshot_id": {"type": "string"}, "protocol_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "canonical_projection_digest": {"type": "string", "description": "Digest of the canonical full ResearchLedger projection before API redaction", "pattern": "^[0-9a-f]{64}$"}, "evidence": {"type": "array", "maxItems": 200, "items": {"type": "object", "additionalProperties": False, "required": ["evidence_id", "campaign_id", "node_id", "node_revision", "source_snapshot_id", "protocol_digest", "event_cursor", "claim_key", "statement", "stance", "kind", "evidence_refs", "confidence", "intervention_type", "algorithmic_layer", "classification", "verification_status", "causal_status"], "properties": {"evidence_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "campaign_id": {"type": "string"}, "node_id": {"type": "string"}, "node_revision": {"type": "integer"}, "source_snapshot_id": {"type": "string"}, "protocol_digest": {"type": "string"}, "event_cursor": {"type": "integer"}, "claim_key": {"type": "string"}, "statement": {"type": "string", "maxLength": 2000}, "stance": {"type": "string", "enum": ["SUPPORTS", "REFUTES", "UNCERTAIN"]}, "kind": {"type": "string", "enum": ["OBSERVATION", "CAUSAL_INFERENCE"]}, "evidence_refs": {"type": "array", "items": {"type": "string", "pattern": "^evidence:sha256:[0-9a-f]{64}$"}}, "confidence": {"type": "number", "minimum": 0, "maximum": 1}, "intervention_type": {"type": ["string", "null"]}, "algorithmic_layer": {"type": ["string", "null"]}, "classification": {"const": "PUBLIC_DEV"}, "verification_status": {"const": "UNVERIFIED_ROLE_FINDING"}, "causal_status": {"type": "string", "enum": ["NOT_CAUSAL", "UNVERIFIED_INFERENCE"]}}}}, "contradictions": {"type": "array", "items": {"type": "object"}}, "causal_memory": {"type": "array", "items": {"type": "object"}}, "structural_memory": {"type": "array", "items": {"type": "object"}}, "source": {"const": "PERSISTED"}, "as_of": {"type": "string", "format": "date-time"}}},
             "ControlRequest": {"type": "object", "additionalProperties": False, "properties": {"request_id": {"type": "string", "minLength": 1, "maxLength": 200}}, "required": ["request_id"]},
             "PivotDecision": {"type": "object", "additionalProperties": False, "properties": {"campaign_id": {"type": "string"}, "request_id": {"type": "string"}, "proposal_id": {"type": "string"}, "digest": {"type": "string"}, "decision": {"type": "string", "enum": ["approve", "reject"]}, "rejection_action": {"type": ["string", "null"], "enum": ["continue_old_plan", "change_conditions", "end_campaign", None]}}, "required": ["campaign_id", "request_id", "proposal_id", "digest", "decision"]},
             "V2PivotProposal": {"type": "object", "additionalProperties": False, "properties": {"proposal_id": {"type": "string"}, "digest": {"type": "string"}, "spec_hash": {"type": "string"}, "trigger_experiment_ordinal": {"type": "integer"}, "current_architecture": {"type": "string"}, "proposed_architecture": {"type": "string"}, "rationale": {"type": "string"}, "expected_effect": {"type": "string"}, "changed_scope": {"type": "array", "items": {"type": "string"}}, "resources": {"type": "object"}, "execution_plan": {"type": ["object", "null"], "properties": {"schema_version": {"type": "integer", "const": 1}, "child_spec_json": {"type": "string"}, "changed_paths": {"type": "array", "items": {"type": "string"}}, "resource_vector_json": {"type": "string"}}, "required": ["schema_version", "child_spec_json", "changed_paths", "resource_vector_json"]}}, "required": ["proposal_id", "digest", "spec_hash", "trigger_experiment_ordinal", "current_architecture", "proposed_architecture", "rationale", "expected_effect", "changed_scope", "resources"]},
@@ -86,6 +120,42 @@ def create_server(
             prefix = "Bearer "
             return supplied.startswith(prefix) and hmac.compare_digest(supplied[len(prefix):], token)
 
+        def _valid_host(self) -> bool:
+            raw = self.headers.get("Host", "")
+            try:
+                parsed = urlsplit("//" + raw)
+                return (
+                    parsed.hostname is not None
+                    and parsed.hostname.lower() in {"127.0.0.1", "localhost"}
+                    and parsed.port == self.server.server_port
+                    and not parsed.username and not parsed.password
+                    and not parsed.path and not parsed.query and not parsed.fragment
+                )
+            except ValueError:
+                return False
+
+        def _dashboard_asset(self, name: str) -> None:
+            mime = {"index.html": "text/html; charset=utf-8",
+                    "dashboard.js": "text/javascript; charset=utf-8",
+                    "dashboard.css": "text/css; charset=utf-8"}[name]
+            body = files("bananloop").joinpath("dashboard", name).read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+                "img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'none'; "
+                "form-action 'self'; frame-ancestors 'none'",
+            )
+            self.end_headers()
+            self.wfile.write(body)
+
         def _json(self, status: int, payload: dict[str, Any]) -> None:
             body = _safe_json(payload)
             self.send_response(status)
@@ -114,15 +184,41 @@ def create_server(
             return self._application(campaign_id).events(after, 100)
 
         def do_GET(self) -> None:  # noqa: N802
+            parsed = urlsplit(self.path)
+            if not self._valid_host():
+                self._json(HTTPStatus.MISDIRECTED_REQUEST, {"error": "invalid_host"})
+                return
+            if parsed.path in {"/", "/dashboard.js", "/dashboard.css"}:
+                asset = {"/": "index.html", "/dashboard.js": "dashboard.js",
+                         "/dashboard.css": "dashboard.css"}[parsed.path]
+                self._dashboard_asset(asset)
+                return
             if not self._authorized():
                 self._json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
                 return
-            parsed = urlsplit(self.path)
             if parsed.path == "/healthz":
                 self._json(HTTPStatus.OK, {"status": "ok"})
                 return
             if parsed.path == "/openapi.json":
                 self._json(HTTPStatus.OK, _openapi())
+                return
+            if parsed.path == "/v1/campaigns":
+                query = parse_qs(parsed.query, strict_parsing=False)
+                try:
+                    if set(query) - {"limit", "cursor"} or any(len(values) != 1 for values in query.values()):
+                        raise ValueError
+                    limit = int(query.get("limit", ["50"])[0])
+                    cursor = query.get("cursor", [None])[0]
+                    if cursor is not None and len(cursor) > 512:
+                        raise ValueError
+                    result = CampaignApplication(repo).list_campaigns(limit=limit, cursor=cursor)
+                    self._json(HTTPStatus.OK, result)
+                except (ValueError, TypeError, OverflowError):
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid_request"})
+                except (RegistryError, StoreError):
+                    self._json(HTTPStatus.CONFLICT, {"error": "campaign_index_unavailable"})
+                except Exception:
+                    self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal_error"})
                 return
             match = _CAMPAIGN_PATH.fullmatch(parsed.path)
             if not match:
@@ -132,7 +228,40 @@ def create_server(
             app = self._application(campaign_id)
             query = parse_qs(parsed.query, strict_parsing=False)
             try:
-                if endpoint == "snapshot":
+                if endpoint == "research":
+                    if set(query) - {"limit", "cursor", "source_snapshot_id", "protocol_digest"} or any(
+                        len(values) != 1 for values in query.values()
+                    ):
+                        raise ValueError
+                    source_snapshot_id = query.get("source_snapshot_id", [None])[0]
+                    protocol_digest = query.get("protocol_digest", [None])[0]
+                    if source_snapshot_id is None and protocol_digest is None:
+                        cursor = query.get("cursor", [None])[0]
+                        if cursor is not None and len(cursor) > 512:
+                            raise ValueError
+                        result = app.research_scopes(
+                            limit=int(query.get("limit", ["50"])[0]),
+                            cursor=cursor,
+                        )
+                    elif source_snapshot_id is not None and protocol_digest is not None:
+                        if "limit" in query or "cursor" in query:
+                            raise ValueError
+                        result = app.export_research_knowledge(
+                            source_snapshot_id=source_snapshot_id,
+                            protocol_digest=protocol_digest,
+                        )
+                    else:
+                        raise ValueError
+                    self._json(HTTPStatus.OK, result)
+                elif endpoint == "observability":
+                    if query:
+                        raise ValueError
+                    self._json(HTTPStatus.OK, app.observability())
+                elif endpoint == "lifecycle":
+                    if query:
+                        raise ValueError
+                    self._json(HTTPStatus.OK, app.lifecycle_projection())
+                elif endpoint == "snapshot":
                     self._json(HTTPStatus.OK, app.snapshot())
                 elif endpoint == "graph":
                     self._json(HTTPStatus.OK, app.graph_snapshot())
@@ -157,6 +286,14 @@ def create_server(
                     while not self.server.shutdown_requested.is_set():
                         try:
                             page = self._events(campaign_id, after)
+                        except EventCursorError as exc:
+                            frame = ("event: resync_required\ndata: " + _safe_json({
+                                "cursor_floor": exc.cursor_floor,
+                                "current_cursor": exc.current_cursor,
+                            }).decode("utf-8") + "\n\n").encode("utf-8")
+                            self.wfile.write(frame)
+                            self.wfile.flush()
+                            return
                         except (RegistryError, StoreError, ValueError):
                             return
                         if page["events"]:
@@ -176,8 +313,20 @@ def create_server(
                         time.sleep(poll_seconds)
                 else:
                     self._json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
+            except EventCursorError as exc:
+                expired = exc.reason == "expired"
+                self._json(
+                    HTTPStatus.GONE if expired else HTTPStatus.CONFLICT,
+                    {
+                        "error": "event_cursor_expired" if expired else "event_cursor_ahead",
+                        "cursor_floor": exc.cursor_floor,
+                        "current_cursor": exc.current_cursor,
+                    },
+                )
             except (RegistryError, StoreError):
                 self._json(HTTPStatus.NOT_FOUND, {"error": "campaign_unavailable"})
+            except OverflowError:
+                self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "knowledge_scope_too_large"})
             except (ValueError, TypeError, OverflowError):
                 self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid_request"})
             except (BrokenPipeError, ConnectionResetError):
@@ -186,6 +335,16 @@ def create_server(
                 self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal_error"})
 
         def do_POST(self) -> None:  # noqa: N802
+            if not self._valid_host():
+                self._json(HTTPStatus.MISDIRECTED_REQUEST, {"error": "invalid_host"})
+                return
+            origin = self.headers.get("Origin")
+            if origin is not None:
+                host = urlsplit("//" + self.headers.get("Host", ""))
+                expected_origin = f"http://{host.hostname.lower()}:{host.port}"
+                if origin != expected_origin or self.headers.get("X-BananLoop-CSRF") != "1":
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "cross_origin_request_rejected"})
+                    return
             if not self._authorized():
                 self._json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
                 return

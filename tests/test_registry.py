@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from bananloop.cli import _selected_paths, cmd_campaigns_list, cmd_doctor, cmd_start, parser
+from bananloop.application import CampaignApplication
 from bananloop.contracts import CampaignSpec, Direction, MetricSpec, RuntimePaths
 from bananloop.lock import CampaignLock, CampaignLockError
 from bananloop.registry import CampaignRegistry, RegistryError, goal_fingerprint
@@ -33,6 +34,25 @@ def test_goal_reservation_is_canonical_and_distinct_goals_get_distinct_directori
     assert all(ch in "0123456789abcdef-" for ch in first.campaign_id)
     assert repeated.goal_fingerprint == goal_fingerprint("improve quality safely")
     assert registry.resolve()[1] == second.campaign_id
+
+
+def test_readonly_resolution_and_observability_do_not_bootstrap_legacy_registry(tmp_path):
+    repo = tmp_path / "legacy-repo"
+    repo.mkdir()
+    paths = RuntimePaths.for_repo(repo)
+    store = CampaignStore(paths.db)
+    store.initialize(_spec(repo, "legacy fixture"))
+    store.close()
+    registry = CampaignRegistry(repo)
+    assert not registry.path.exists()
+
+    resolved, campaign_id = registry.resolve_readonly("legacy")
+    assert resolved == paths.db.parent and campaign_id == "legacy"
+    result = CampaignApplication(repo, campaign_id="legacy").observability()
+    assert result["campaign_id"] == "legacy"
+    assert result["queue"]["available"] is False
+    assert result["budget"]["available"] is False
+    assert not registry.path.exists()
 
 
 def test_child_slot_reservation_can_preserve_active_campaign_until_activation(tmp_path):
