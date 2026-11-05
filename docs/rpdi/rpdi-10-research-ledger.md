@@ -22,8 +22,13 @@ unverified. Causal findings remain `UNVERIFIED_INFERENCE`; agent confidence is
 stored as the agent's estimate and never becomes verifier approval. A causal
 claim is an inference attached to evidence, not a causal conclusion.
 
-`ResearchLedger.project` is a pure deterministic rebuild from immutable
-records. Its scope requires an exact source commit and role-protocol digest;
+`ResearchLedger.project` is a deterministic rebuild from immutable
+source records. For every stored source job, it re-derives expected findings
+from the durable worker result and graph completion in an isolated in-memory
+ledger, rejecting self-hashed rows that do not match the worker-authored
+finding. Persisted evidence is a cache, not an authority. Projection requires
+the graph repository and durable worker queue used to verify its provenance.
+Its scope requires an exact source commit and role-protocol digest;
 records from stale snapshots or another protocol are excluded. Opposite
 `SUPPORTS` and `REFUTES` findings for one claim key become an explicit
 contradiction projection while every source record remains independently
@@ -34,11 +39,13 @@ digests.
 causal memory, structural intervention memory, and contradiction links.
 Typed evaluator diagnostics from RPDI-52 are deferred until RPDI-11 provides a
 trusted evaluator protocol; this stage does not treat worker-authored summaries
-as trusted diagnostics. Multiple campaigns can be exported
-together only under the same exact source snapshot and role protocol. Hidden
-classes cannot be serialized by this schema. The RPDI-09 researcher receives
-the aggregate only through role-allowlisted `dev_summary` / `evidence_refs`
-fields with a content-addressed `research://ledger/...` provenance reference.
+as trusted diagnostics. The current projection API revalidates evidence
+through one graph database per call, so multi-campaign export is deferred until
+a graph resolver and explicit cross-campaign bridge contract are defined.
+Hidden classes cannot be serialized by this schema. The RPDI-09 researcher receives causal and structural intervention
+summaries plus evidence IDs only through the corresponding role-allowlisted
+`dev_summary` / `evidence_refs` fields, with a content-addressed
+`research://ledger/...` provenance reference.
 
 ## Compatibility and recovery
 

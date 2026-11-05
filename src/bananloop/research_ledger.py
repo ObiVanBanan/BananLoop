@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import posixpath
 import re
 import sqlite3
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Literal, TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -42,13 +42,18 @@ def _normalize_intervention_paths(values: tuple[str, ...]) -> tuple[str, ...]:
         head, sep, locator = value.rpartition(":")
         if sep and head and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.<>-]*|[0-9]+", locator):
             value = head
-        normalized = posixpath.normpath(value).strip("/")
-        parts = normalized.split("/")
-        if (value.startswith("/") or normalized in {"", "."} or ".." in parts
-                or any(part.lower() in {"validation", "holdout", "secret", "secrets", "evaluator"}
-                       for part in parts)):
+        path = PurePosixPath(value)
+        parts = value.split("/")
+        lower = [part.lower() for part in parts]
+        protected = {".git", ".bananloop_eval", "validation", "holdout", "evaluator",
+                     "evaluation", "secret", "secrets", "credential", "credentials"}
+        if (path.is_absolute() or PureWindowsPath(value).drive or path.as_posix() != value
+                or not parts or any(part in {"", ".", ".."} for part in parts)
+                or any(part in protected or part.startswith(".env")
+                       or re.search(r"(evaluator|evaluation|validation|holdout|secret|credential)", part)
+                       for part in lower)):
             raise ValueError("intervention path is unsafe or belongs to protected evaluation material")
-        paths.add(normalized)
+        paths.add(value)
     if not paths:
         raise ValueError("structural intervention requires at least one affected path")
     return tuple(sorted(paths))
@@ -432,7 +437,19 @@ class ResearchLedger:
                 or completion.get("output_digest") != durable["output_digest"]
                 or completion.get("spec_hash") != spec.approved_hash()):
             raise ResearchLedgerError("graph completion provenance does not match the durable worker result")
-        artifact_refs = {f"artifact://sha256/{digest}" for digest in completion.get("artifact_digests", ())}
+        worker_artifact_digests = tuple(sorted(item.sha256 for item in output.artifacts))
+        event_artifact_digests = completion.get("artifact_digests")
+        if (not isinstance(event_artifact_digests, (list, tuple))
+                or any(not isinstance(item, str) for item in event_artifact_digests)
+                or tuple(event_artifact_digests) != worker_artifact_digests):
+            raise ResearchLedgerError("graph completion artifact digests differ from the durable worker output")
+        artifact_refs = {f"artifact://sha256/{digest}" for digest in worker_artifact_digests}
+        worker_evidence_refs = tuple(sorted(set(output.evidence_refs) | artifact_refs))
+        event_evidence_refs = completion.get("evidence_refs")
+        if (not isinstance(event_evidence_refs, (list, tuple))
+                or any(not isinstance(item, str) for item in event_evidence_refs)
+                or tuple(event_evidence_refs) != worker_evidence_refs):
+            raise ResearchLedgerError("graph completion evidence refs differ from the durable worker output")
         if any(not set(finding.evidence_refs) <= artifact_refs for finding in output.research_findings):
             raise ResearchLedgerError("research finding must cite verified published artifact digests")
         if len({finding.claim_key for finding in output.research_findings}) != len(output.research_findings):
@@ -537,6 +554,8 @@ class ResearchLedger:
         campaign_ids: tuple[str, ...] | list[str],
         source_snapshot_id: str,
         protocol_digest: str,
+        graph: "GraphRepository",
+        queue: "DurableWorkerQueue",
     ) -> tuple[ResearchEvidenceV1, ...]:
         campaigns = tuple(sorted(set(campaign_ids)))
         if not campaigns or any(not item for item in campaigns):
@@ -552,7 +571,40 @@ class ResearchLedger:
             "ORDER BY evidence_id",
             (*campaigns, source_snapshot_id, protocol_digest),
         ).fetchall()
-        return tuple(self._record_from_row(row) for row in rows)
+        records = tuple(self._record_from_row(row) for row in rows)
+        grouped: dict[str, list[ResearchEvidenceV1]] = {}
+        for record in records:
+            grouped.setdefault(record.source_job_id, []).append(record)
+        for job_id, stored_records in grouped.items():
+            # The persisted table is only an append-only cache; it is not an
+            # authority for worker-authored claims, even when a row self-hashes.
+            scratch_conn = sqlite3.connect(":memory:")
+            try:
+                scratch_conn.execute("PRAGMA user_version=5")
+                scratch = ResearchLedger(scratch_conn)
+                scratch.ingest_completed_job(
+                    graph, queue, job_id,
+                    expected_source_snapshot_id=source_snapshot_id,
+                    expected_protocol_digest=protocol_digest,
+                )
+                expected_rows = scratch_conn.execute(
+                    "SELECT * FROM research_evidence WHERE source_job_id=? ORDER BY evidence_id",
+                    (job_id,),
+                ).fetchall()
+                expected_records = tuple(scratch._record_from_row(row) for row in expected_rows)
+            except ResearchLedgerError:
+                raise
+            except Exception as exc:
+                raise ResearchLedgerError(
+                    "ledger source cannot be revalidated against durable worker evidence"
+                ) from exc
+            finally:
+                scratch_conn.close()
+            if tuple(sorted(stored_records, key=lambda item: item.evidence_id)) != expected_records:
+                raise ResearchLedgerError(
+                    "ledger rows differ from findings derived from the durable worker result"
+                )
+        return records
 
     def project(
         self,
@@ -560,10 +612,12 @@ class ResearchLedger:
         campaign_ids: tuple[str, ...] | list[str],
         source_snapshot_id: str,
         protocol_digest: str,
+        graph: "GraphRepository",
+        queue: "DurableWorkerQueue",
     ) -> ResearchProjectionV1:
         campaigns = tuple(sorted(set(campaign_ids)))
         evidence = self.records(campaign_ids=campaigns, source_snapshot_id=source_snapshot_id,
-                                protocol_digest=protocol_digest)
+                                protocol_digest=protocol_digest, graph=graph, queue=queue)
         contradictions = _contradictions(evidence)
         causal_memory = _causal_memory(evidence, contradictions)
         structural_memory = _structural_memory(evidence)
@@ -583,10 +637,12 @@ class ResearchLedger:
         campaign_ids: tuple[str, ...] | list[str],
         source_snapshot_id: str,
         protocol_digest: str,
+        graph: "GraphRepository",
+        queue: "DurableWorkerQueue",
     ) -> KnowledgePackageV1:
         """Export reproducible public DEV knowledge; hidden classes are unrepresentable."""
         projection = self.project(campaign_ids=campaign_ids, source_snapshot_id=source_snapshot_id,
-                                  protocol_digest=protocol_digest)
+                                  protocol_digest=protocol_digest, graph=graph, queue=queue)
         payload = {"schema_version": 1, "projection": projection.model_dump(mode="json")}
         return KnowledgePackageV1(projection=projection, package_digest=_digest(payload))
 
