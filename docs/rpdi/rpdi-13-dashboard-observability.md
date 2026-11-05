@@ -129,9 +129,22 @@ register is not a substitute for the acceptance rows below.
 | Controls | Pause/resume/stop use idempotency keys and durable receipts; UI distinguishes recorded intent from supervisor execution; conflicts and authorization failures are visible and safe |
 | Observability | Tests reconcile displayed queue, phase, recovery, evaluator, and per-dimension budget values against authoritative source records and verify source, cursor, timestamps, and staleness |
 | Privacy and security | Negative tests cover prompts, raw outputs, diffs, paths, secrets, evaluator source, validation/holdout, hidden case IDs, artifact paths, XSS, URL/persistent-token leakage, CORS/Host/Origin/CSRF, unauthorized reads, and remote telemetry |
-| Compatibility and accessibility | Legacy/v2 API fixtures, CLI smoke, automated axe/keyboard checks, manual screen-reader evidence, and narrow viewport checks pass |
+| Compatibility and accessibility | Legacy/v2 API fixtures, CLI smoke, automated axe/keyboard checks, and narrow viewport checks pass. A manual screen-reader walkthrough is explicitly not required for RPDI-13 under the 2026-11-05 owner-approved scope decision below |
 | Integrated acceptance | E2E demonstrates Exploration → Research Intelligence → Optimization/Verification → pivot child in Full profile, with API/Dashboard/CLI views agreeing on durable state |
 | DoD | Exact-head CI on supported Linux/Windows Python versions, technical review, and updated evidence register |
+
+## Owner-approved accessibility scope adjustment (2026-11-05)
+
+For this local Research Preview dashboard, the project owner waived the *manual*
+screen-reader walkthrough as an RPDI-13 acceptance gate. This is a deliberate
+acceptance-scope reduction, **not** a passing manual accessibility test and
+not a claim that assistive-technology compatibility was verified. Retain the
+existing screen-reader labels, keyboard navigation, focus management, automated
+Playwright/axe WCAG A/AA checks, and responsive viewport tests. No accessibility
+code or tests are to be removed as part of this waiver. Record the residual risk:
+real screen-reader behavior (including live announcements and navigation) is
+unverified, and revisit it before making public accessibility claims or when
+shipping a broadly available user-facing dashboard.
 
 The independent blind Optimization and Exploration benchmarks and Closed
 Research Preview approval remain separate release gates. Dashboard readiness

@@ -110,29 +110,40 @@ it does not satisfy the RPDI-13 DoD or authorize a release.
   [41885087540](https://github.com/ObiVanBanan/BananLoop/actions/runs/41885087540)
   passed. This head fixes the Windows-only timing failure where the observability
   fixture's 60-second lease expired while it prepared 10,001 events; the fixture
-  now uses a one-hour lease. Manual screen-reader evidence remains outstanding.
+  now uses a one-hour lease. The manual screen-reader test was not performed;
+  the owner waived it as a blocking acceptance gate on 2026-11-05, without
+  claiming that the test passed.
 
 ## Accessibility observation
 
 A local browser smoke check at a 400 px viewport showed a single-column layout
 with vertical scrolling. The automated Chromium suite additionally verifies
 Tab order/focus visibility, interaction states, axe WCAG 2.1 A/AA, and a 320 px
-no-overflow layout. These checks do not constitute manual screen-reader
-sign-off.
+no-overflow layout. No manual screen-reader test was performed; automated
+checks cannot establish actual screen-reader compatibility.
 
 Playwright and axe-core are pinned in `package-lock.json`. Exact-head browser CI
 passed at `e4568df`. It also covers focus while Connect waits for the campaign
 API, focus moving to the loaded campaign selector, stale campaign warnings
 clearing after a switch, and focus returning to the token field after Clear
-token. These automated checks do not constitute manual screen-reader sign-off.
+token. These automated checks do not establish manual screen-reader compatibility.
 
-## Remaining DoD and release evidence
+## Owner waiver and remaining DoD (2026-11-05)
 
-- Record the manual screen-reader walkthrough on exact head `e4568df` for
-  Connect, campaign selection, lifecycle status, live updates, controls,
-  accessible labels, and focus order. No manual result is recorded yet.
+- **CLOSED BY OWNER SCOPE WAIVER — not a test pass:** Manual screen-reader
+  walkthrough is removed from the RPDI-13 acceptance gate for the local Research
+  Preview. The owner explicitly accepted the unverified assistive-technology
+  behavior as residual risk; no screen-reader result or certification is claimed.
+  Keep screen-reader labels, keyboard/focus behavior, automated axe and browser
+  regressions, and narrow-viewport checks in scope.
+- **OPEN — upstream code integration:** RPDI-10 ledger hardening merged via
+  PR #131 changed `ResearchLedger.export_knowledge` to require `graph` and
+  `queue` provenance sources. The Dashboard's `CampaignApplication.export_research_knowledge`
+  still calls the previous signature. Adapt the API read path without weakening
+  durable evidence verification, and rerun Python/browser/integrated acceptance
+  CI on the exact merged branch head before marking RPDI-13 complete.
 - Exact-head Linux/Windows Python CI, browser CI, mutation smoke, and technical
-  review are recorded above; automated accessibility checks cannot replace the
-  pending human screen-reader evidence.
+  review are recorded above for the older RPDI-13 head only. Passing those runs
+  is not proof that the rebased integration passes.
 
 Independent blind benchmarks and Closed Research Preview remain separate gates.
