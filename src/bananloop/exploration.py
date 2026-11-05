@@ -231,21 +231,31 @@ class EvidenceOnlyAttemptAdapter:
                 )
             )
             projection = ResearchLedger(self.graph.conn).project(
+                graph=self.graph, queue=self.queue,
                 campaign_ids=(self.campaign_id,), source_snapshot_id=resolved_commit,
                 protocol_digest=protocol_digest,
             )
             if projection.evidence:
                 source_ref = f"research://ledger/{projection.projection_digest}"
+                context_updated = False
                 if "evidence_refs" in researcher.role.context_fields:
                     context_fields["evidence_refs"] = {
                         "value": tuple(item.evidence_id for item in projection.evidence),
                         "classification": "DEV_AGGREGATE", "source_ref": source_ref,
                     }
+                    context_updated = True
                 if "dev_summary" in researcher.role.context_fields:
                     summary_lines = [
                         f"{item.claim_key} [{item.status}]: " + " | ".join(item.statements)
                         for item in projection.causal_memory
                     ]
+                    summary_lines.extend(
+                        f"{item.signature} [{item.status}]: {item.intervention_type}/"
+                        f"{item.algorithmic_layer}; paths={', '.join(item.affected_paths)}; "
+                        f"support={item.support_count}; refutation={item.refutation_count}; "
+                        f"evidence_ids={','.join(item.evidence_ids)}"
+                        for item in projection.structural_memory
+                    )
                     if projection.contradictions:
                         summary_lines.append(
                             f"{len(projection.contradictions)} conflicting public DEV finding(s) are retained separately."
@@ -254,10 +264,8 @@ class EvidenceOnlyAttemptAdapter:
                         "value": "\n".join(summary_lines)[:12000],
                         "classification": "DEV_AGGREGATE", "source_ref": source_ref,
                     }
-                    context_fields["evidence_refs"] = {
-                        "value": tuple(item.evidence_id for item in projection.evidence),
-                        "classification": "DEV_AGGREGATE", "source_ref": source_ref,
-                    }
+                    context_updated = True
+                if context_updated:
                     role_context = build_role_context(
                         researcher, RoleContextSourceV1(campaign_goal=role_context_source.campaign_goal,
                                                         fields=context_fields),

@@ -49,7 +49,7 @@ def _graph(path, spec):
     return graph
 
 
-def _role_registry():
+def _role_registry(context_fields=("campaign_goal", "node_id", "node_phase", "public_task", "evidence_refs", "dev_summary")):
     return RoleRegistryV1(
         registry_id="test-exploration",
         version=1,
@@ -61,7 +61,7 @@ def _role_registry():
                 "tools": ["read_file", "list_files", "write_artifact", "commit_candidate"],
                 "read_paths": ["README.md"], "write_paths": ["**"], "backend": "LOCAL",
             },
-            context_fields=("campaign_goal", "node_id", "node_phase", "public_task", "evidence_refs", "dev_summary"),
+            context_fields=context_fields,
             min_instances=1, max_instances=1, calls_per_instance=2, tokens_per_instance=200,
         ),),
     )
@@ -158,7 +158,7 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
 
         ledger = ResearchLedger(graph.conn)
         protocol_digest = ledger.protocol_digest_for_binding(job["request"]["role_binding"])
-        projection_before = ledger.project(campaign_ids=("campaign-test",), source_snapshot_id=base,
+        projection_before = ledger.project(graph=graph, queue=queue, campaign_ids=("campaign-test",), source_snapshot_id=base,
                                            protocol_digest=protocol_digest)
         assert len(projection_before.evidence) == 1
         assert projection_before.causal_memory[0].status == "UNVERIFIED"
@@ -169,8 +169,28 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
         assert ledger.ingest_completed_job(graph, queue, job["job_id"]) == (
             projection_before.evidence[0].evidence_id,
         )
-        assert ledger.project(campaign_ids=("campaign-test",), source_snapshot_id=base,
+        assert ledger.project(graph=graph, queue=queue, campaign_ids=("campaign-test",), source_snapshot_id=base,
                               protocol_digest=protocol_digest) == projection_before
+
+        event_row = graph.conn.execute(
+            "SELECT seq,payload_json FROM events WHERE event_type='EXPLORATION_COMPLETED'"
+        ).fetchone()
+        original_event = json.loads(event_row["payload_json"])
+        tampered_event = dict(original_event)
+        tampered_event["artifact_digests"] = [*original_event["artifact_digests"], "f" * 64]
+        graph.conn.execute("UPDATE events SET payload_json=? WHERE seq=?",
+                           (json.dumps(tampered_event, sort_keys=True, separators=(",", ":")), event_row["seq"]))
+        with pytest.raises(ResearchLedgerError, match="artifact digests differ"):
+            ledger.ingest_completed_job(graph, queue, job["job_id"])
+        tampered_event = dict(original_event)
+        tampered_event["evidence_refs"] = [*original_event["evidence_refs"], "observation:untrusted"]
+        graph.conn.execute("UPDATE events SET payload_json=? WHERE seq=?",
+                           (json.dumps(tampered_event, sort_keys=True, separators=(",", ":")), event_row["seq"]))
+        with pytest.raises(ResearchLedgerError, match="evidence refs differ"):
+            ledger.ingest_completed_job(graph, queue, job["job_id"])
+        graph.conn.execute("UPDATE events SET payload_json=? WHERE seq=?",
+                           (event_row["payload_json"], event_row["seq"]))
+
         with pytest.raises(ResearchLedgerError, match="source snapshot"):
             ledger.ingest_completed_job(graph, queue, job["job_id"],
                                         expected_source_snapshot_id="0" * 40)
@@ -183,7 +203,7 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
         adapter = EvidenceOnlyAttemptAdapter(graph=graph, queue=queue, campaign_id="campaign-test",
                                              state_root=tmp_path, role_registry=roles)
         ledger = ResearchLedger(graph.conn)
-        assert ledger.project(campaign_ids=("campaign-test",), source_snapshot_id=base,
+        assert ledger.project(graph=graph, queue=queue, campaign_ids=("campaign-test",), source_snapshot_id=base,
                               protocol_digest=protocol_digest) == projection_before
 
         graph.mutate({"command_id": "add-second", "idempotency_key": "add-second",
@@ -191,6 +211,7 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
                       "changes": [{"type": "AddNode", "node_id": "explore-second", "phase": "EXPLORATION"}]})
         second_job = adapter.enqueue(node_id="explore-second", visible_paths=["README.md"])
         assert "effect:retrieval" in second_job["request"]["role_context"]["dev_summary"]
+        assert "intervention:" in second_job["request"]["role_context"]["dev_summary"]
 
         def contradict(_request, gateway, **_pin):
             content = b"counterevidence\n"
@@ -207,19 +228,95 @@ def test_evidence_adapter_snapshots_allowlist_and_replays_completion(tmp_path):
         _, _, second_executor = _pinned_executor(queue, graph, "campaign-test", roles, second_job, contradict)
         adapter.run_one(job_id=second_job["job_id"], worker_id="worker-test", executor=second_executor)
         adapter.publish_completed(second_job["job_id"])
-        projection = ledger.project(campaign_ids=("campaign-test",), source_snapshot_id=base,
+        projection = ledger.project(graph=graph, queue=queue, campaign_ids=("campaign-test",), source_snapshot_id=base,
                                     protocol_digest=protocol_digest)
         assert len(projection.evidence) == 2
         assert len(projection.contradictions) == 1
         assert len(projection.contradictions[0].supporting_evidence_ids) == 1
         assert len(projection.contradictions[0].refuting_evidence_ids) == 1
         assert projection.causal_memory[0].status == "CONTRADICTED"
-        package = ledger.export_knowledge(campaign_ids=("campaign-test",), source_snapshot_id=base,
+        package = ledger.export_knowledge(graph=graph, queue=queue, campaign_ids=("campaign-test",), source_snapshot_id=base,
                                           protocol_digest=protocol_digest)
-        assert ledger.export_knowledge(campaign_ids=("campaign-test",), source_snapshot_id=base,
+        assert ledger.export_knowledge(graph=graph, queue=queue, campaign_ids=("campaign-test",), source_snapshot_id=base,
                                        protocol_digest=protocol_digest) == package
         assert "validation" not in package.model_dump_json().lower()
         assert "holdout" not in package.model_dump_json().lower()
+
+        # A forged append-only row can self-hash, so projections must derive
+        # the canonical finding again from the durable worker result.
+        forged_payload = projection.evidence[0].content_payload()
+        forged_payload["statement"] = "Forged statement with copied provenance."
+        forged_id = hashlib.sha256(json.dumps(
+            forged_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
+        ).encode("utf-8")).hexdigest()
+        from bananloop.research_ledger import ResearchEvidenceV1
+        forged = ResearchEvidenceV1(evidence_id=forged_id, **forged_payload)
+        ledger.conn.execute(
+            "INSERT INTO research_evidence VALUES(" + ",".join("?" for _ in ledger._row_values(forged)) + ")",
+            ledger._row_values(forged),
+        )
+        with pytest.raises(ResearchLedgerError, match="differ from findings"):
+            ledger.project(graph=graph, queue=queue, campaign_ids=("campaign-test",),
+                           source_snapshot_id=base, protocol_digest=protocol_digest)
+    finally:
+        queue.close()
+        graph.close()
+
+
+@pytest.mark.parametrize("research_field", ["evidence_refs", "dev_summary"])
+def test_research_projection_respects_independent_role_context_allowlists(tmp_path, research_field):
+    source = tmp_path / "source"
+    _source_repo(source)
+    fields = ("campaign_goal", "node_id", "node_phase", "public_task", research_field)
+    roles = _role_registry(context_fields=fields)
+    spec = ExplorationCampaignSpecV2.model_validate({
+        "schema_version": 2, "mode": "EXPLORATION", "goal": "map evidence",
+        "source_repo": str(source), "base_commit": "HEAD",
+        "autonomy": {"mode": "SUPERVISED", "scope_digest": "a" * 64, "scope_version": 1,
+                      "capability_policy": {"policy_version": 1,
+                                            "tools": ["read_file", "list_files", "write_artifact", "commit_candidate"],
+                                            "read_paths": ["README.md"], "write_paths": ["**"],
+                                            "backend": "LOCAL"}},
+        "budget": {}, "role_registry_digest": roles.digest(), "evaluation": None,
+    })
+    graph = _graph(tmp_path / "campaign.sqlite3", spec)
+    registry_path = tmp_path / "registry.sqlite3"
+    budget = BudgetLedger(registry_path)
+    budget.create_root("campaign-test", {"agent_calls": 2})
+    budget.close()
+    queue = DurableWorkerQueue(registry_path)
+    adapter = EvidenceOnlyAttemptAdapter(graph=graph, queue=queue, campaign_id="campaign-test",
+                                         state_root=tmp_path, role_registry=roles)
+    try:
+        first = adapter.enqueue(node_id="explore", visible_paths=["README.md"])
+
+        def produce_evidence(_request, gateway, **_pin):
+            content = b"research evidence"
+            digest = hashlib.sha256(content).hexdigest()
+            gateway.write_artifact("evidence.txt", content)
+            return {"node_id": "explore", "evidence_refs": ["observation:1"],
+                    "artifacts": [{"path": "evidence.txt", "sha256": digest}],
+                    "limitations": [], "next_experiment": "replicate",
+                    "research_findings": [{"claim_key": "effect:feature", "statement": "Observed effect.",
+                        "stance": "SUPPORTS", "kind": "CAUSAL_INFERENCE", "confidence": 0.4,
+                        "evidence_refs": [f"artifact://sha256/{digest}"]}]}
+
+        _, _, executor = _pinned_executor(queue, graph, "campaign-test", roles, first, produce_evidence)
+        adapter.run_one(job_id=first["job_id"], worker_id="worker-test", executor=executor)
+        adapter.publish_completed(first["job_id"])
+        graph.mutate({"command_id": "add-second", "idempotency_key": "add-second",
+                      "expected_graph_revision": graph.graph_revision(),
+                      "changes": [{"type": "AddNode", "node_id": "explore-second", "phase": "EXPLORATION"}]})
+
+        second = adapter.enqueue(node_id="explore-second", visible_paths=["README.md"])
+        context = second["request"]["role_context"]
+        assert research_field in context
+        other = "dev_summary" if research_field == "evidence_refs" else "evidence_refs"
+        assert other not in context
+        if research_field == "dev_summary":
+            assert "effect:feature" in context[research_field]
+        else:
+            assert context[research_field]
     finally:
         queue.close()
         graph.close()
@@ -285,6 +382,21 @@ def test_evidence_only_output_rejects_optimization_scores():
             "claim_key": "hidden", "statement": "must not enter the ledger",
             "stance": "SUPPORTS", "kind": "OBSERVATION", "evidence_refs": ["artifact://sha256/x"],
             "classification": "HOLDOUT",
+        })
+
+
+@pytest.mark.parametrize("path", [
+    "src/validation/../features.py", ".git/config", "src/my_holdout_notes.py",
+    ".env.local", "C:/private/token.py",
+])
+def test_research_finding_rejects_protected_or_noncanonical_intervention_paths(path):
+    with pytest.raises(ValidationError):
+        ResearchFindingV1.model_validate({
+            "claim_key": "safe:path", "statement": "bounded source change",
+            "stance": "SUPPORTS", "kind": "OBSERVATION",
+            "evidence_refs": ["artifact://sha256/" + "a" * 64],
+            "intervention_type": "feature_representation", "algorithmic_layer": "features",
+            "affected_paths": [path],
         })
 
 
