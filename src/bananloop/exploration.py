@@ -29,6 +29,7 @@ from .roles import (
     RoleContractError, RoleContextV1, RoleRegistryV1, TeamFactoryV1,
     TeamManifestAuthority, TeamRequestV1, build_role_context,
 )
+from .evaluator_verification import EvaluatorProtocolAuthority, EvaluatorProtocolDraftV1
 from .research_ledger import ResearchFindingV1, ResearchLedger, ResearchLedgerError
 from .worker_queue import DurableWorkerQueue, WorkerQueueError
 from .scheduler import HybridScheduler
@@ -53,6 +54,7 @@ class EvidenceOnlyOutputV2(BaseModel):
     limitations: tuple[str, ...] = ()
     next_experiment: str = Field(min_length=1, max_length=4000)
     research_findings: tuple[ResearchFindingV1, ...] = Field(default=(), max_length=64)
+    protocol_draft: EvaluatorProtocolDraftV1 | None = None
 
     @field_validator("evidence_refs", "limitations")
     @classmethod
@@ -130,6 +132,7 @@ class EvidenceOnlyAttemptAdapter:
         self.graph = graph
         self.queue = queue
         self.campaign_id = campaign_id
+        self.graph.bind_campaign_id(campaign_id)
         self.state_root = Path(state_root).resolve()
         self.role_registry = role_registry
 
@@ -564,6 +567,10 @@ class EvidenceOnlyAttemptAdapter:
             if self.graph.command_response(payload["idempotency_key"]) is not None:
                 replay = self.graph.complete_exploration(completion)
                 ResearchLedger(self.graph.conn).ingest_completed_job(self.graph, self.queue, job_id)
+                if result.protocol_draft is not None:
+                    EvaluatorProtocolAuthority(self.graph.conn).record_completed_proposal(
+                        self.graph, self.queue, job_id,
+                    )
                 return replay
             grant = CapabilityGrantV1.model_validate(request["capability_grant"])
             authority = CapabilityAuthority(self.queue.path)
@@ -576,6 +583,10 @@ class EvidenceOnlyAttemptAdapter:
                 def commit_completion_and_ledger():
                     response = self.graph.complete_exploration(completion)
                     ResearchLedger(self.graph.conn).ingest_completed_job(self.graph, self.queue, job_id)
+                    if result.protocol_draft is not None:
+                        EvaluatorProtocolAuthority(self.graph.conn).record_completed_proposal(
+                            self.graph, self.queue, job_id,
+                        )
                     return response
 
                 return gateway.commit_evidence(commit_completion_and_ledger)

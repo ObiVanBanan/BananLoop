@@ -268,3 +268,199 @@ def test_nested_child_overrun_propagates_to_root_before_next_allocation(tmp_path
                              spec_hash="5" * 64, caps={"agent_calls": 4})
     ledger.close()
     queue.close()
+
+
+def _vector_queue(tmp_path, *, evaluator_calls=10, evaluation_units=100):
+    path = tmp_path / "vector-registry.sqlite3"
+    ledger = BudgetLedger(path)
+    ledger.create_root("root", {
+        "evaluator_calls": evaluator_calls,
+        "evaluation_units": evaluation_units,
+    })
+    ledger.close()
+    return path, DurableWorkerQueue(path)
+
+
+def _enqueue_vector(queue, job_id, *, calls=1, units=10, campaign_id="root", action_id=None):
+    return queue.enqueue(
+        job_id=job_id, enqueue_key=f"enqueue:{job_id}", campaign_id=campaign_id,
+        action_id=action_id or f"action:{job_id}", resource="evaluator_calls",
+        upper_bound=calls, resource_bounds={"evaluator_calls": calls, "evaluation_units": units},
+        request={"operation": "evaluate", "job": job_id},
+    )
+
+
+def test_vector_claim_is_atomic_when_one_dimension_exceeds_its_cap(tmp_path):
+    path, queue = _vector_queue(tmp_path, evaluator_calls=5, evaluation_units=2)
+    _enqueue_vector(queue, "job-vector-limit", calls=1, units=3)
+    with pytest.raises(WorkerBudgetError):
+        queue.claim("job-vector-limit", "worker-vector", lease_seconds=30, now=100)
+    assert queue.get_job("job-vector-limit")["state"] == "READY"
+    assert queue.conn.execute(
+        "SELECT COUNT(*) FROM worker_job_reservations WHERE job_id='job-vector-limit'"
+    ).fetchone()[0] == 0
+    ledger = BudgetLedger(path)
+    snapshot = ledger.snapshot("root")
+    assert snapshot["evaluator_calls"]["reserved"] == 0
+    assert snapshot["evaluation_units"]["reserved"] == 0
+    ledger.close()
+    queue.close()
+
+
+def test_vector_enqueue_replay_and_complete_bind_all_resource_amounts(tmp_path):
+    path, queue = _vector_queue(tmp_path)
+    _enqueue_vector(queue, "job-vector-complete", calls=1, units=20)
+    replay = _enqueue_vector(queue, "job-vector-complete", calls=1, units=20)
+    assert replay["resource_bounds"] == {"evaluator_calls": 1, "evaluation_units": 20}
+    with pytest.raises(WorkerQueueError, match="different resource bounds"):
+        _enqueue_vector(queue, "job-vector-complete", calls=1, units=21)
+    claim = queue.claim("job-vector-complete", "worker-vector", lease_seconds=30, now=100)
+    assert claim["reservations"] == {
+        "evaluator_calls": claim["reservation_id"],
+        "evaluation_units": "job:job-vector-complete:f1:evaluation_units",
+    }
+    queue.mark_dispatched("job-vector-complete", "worker-vector", claim["fence"], now=101)
+    with pytest.raises(WorkerQueueError, match="every reserved resource"):
+        queue.complete(
+            "job-vector-complete", "worker-vector", claim["fence"], output_digest="a" * 64,
+            actual_usage={"evaluator_calls": 1}, receipt_digest="b" * 64, now=101,
+        )
+    ledger = BudgetLedger(path)
+    snapshot = ledger.snapshot("root")
+    assert snapshot["evaluator_calls"]["reserved"] == 1
+    assert snapshot["evaluation_units"]["reserved"] == 20
+    reservations = ledger.conn.execute(
+        "SELECT resource,dispatch_state FROM budget_reservations WHERE action_id='action:job-vector-complete:1' ORDER BY resource"
+    ).fetchall()
+    assert [(row["resource"], row["dispatch_state"]) for row in reservations] == [
+        ("evaluation_units", "DISPATCHED"), ("evaluator_calls", "DISPATCHED"),
+    ]
+    ledger.close()
+    with pytest.raises(RuntimeError, match="injected failure"):
+        queue.complete(
+            "job-vector-complete", "worker-vector", claim["fence"], output_digest="a" * 64,
+            actual_usage={"evaluator_calls": 1, "evaluation_units": 7},
+            receipt_digest="b" * 64, now=102, fail_before_commit=True,
+        )
+    assert queue.get_job("job-vector-complete")["state"] == "DISPATCHED"
+    ledger = BudgetLedger(path)
+    snapshot = ledger.snapshot("root")
+    assert snapshot["evaluator_calls"]["reserved"] == 1
+    assert snapshot["evaluation_units"]["reserved"] == 20
+    assert snapshot["evaluator_calls"]["spent"] == 0
+    assert snapshot["evaluation_units"]["spent"] == 0
+    ledger.close()
+    result = queue.complete(
+        "job-vector-complete", "worker-vector", claim["fence"], output_digest="a" * 64,
+        actual_usage={"evaluator_calls": 1, "evaluation_units": 7},
+        receipt_digest="b" * 64, now=102,
+    )
+    assert result["actual_amount"] == 1
+    assert result["actual_usage"] == {"evaluator_calls": 1, "evaluation_units": 7}
+    ledger = BudgetLedger(path)
+    snapshot = ledger.snapshot("root")
+    assert snapshot["evaluator_calls"]["spent"] == 1
+    assert snapshot["evaluation_units"]["spent"] == 7
+    assert snapshot["evaluation_units"]["reserved"] == 0
+    rows = ledger.conn.execute(
+        "SELECT resource,receipt_digest FROM budget_reservations WHERE action_id='action:job-vector-complete:1' ORDER BY resource"
+    ).fetchall()
+    assert [(row["resource"], row["receipt_digest"]) for row in rows] == [
+        ("evaluation_units", "b" * 64), ("evaluator_calls", "b" * 64),
+    ]
+    ledger.close()
+    with pytest.raises(WorkerQueueError, match="different committed result"):
+        queue.complete(
+            "job-vector-complete", "worker-vector", claim["fence"], output_digest="a" * 64,
+            actual_usage={"evaluator_calls": 1, "evaluation_units": 8},
+            receipt_digest="b" * 64, now=103,
+        )
+    queue.close()
+
+
+def test_vector_cancel_expiry_and_unknown_reconciliation_cover_every_dimension(tmp_path):
+    path, queue = _vector_queue(tmp_path, evaluator_calls=5, evaluation_units=50)
+    _enqueue_vector(queue, "job-vector-expire", calls=2, units=20)
+    first = queue.claim("job-vector-expire", "worker-one", lease_seconds=5, now=100)
+    assert queue.expire(now=106) == {"released": 1, "unknown": 0}
+    ledger = BudgetLedger(path)
+    snapshot = ledger.snapshot("root")
+    assert snapshot["evaluator_calls"]["reserved"] == 0
+    assert snapshot["evaluation_units"]["reserved"] == 0
+    ledger.close()
+
+    second = queue.claim("job-vector-expire", "worker-two", lease_seconds=30, now=110)
+    assert second["fence"] == first["fence"] + 1
+    assert queue.cancel("job-vector-expire", reason="cancel before dispatch") == "CANCELLED"
+    ledger = BudgetLedger(path)
+    snapshot = ledger.snapshot("root")
+    assert snapshot["evaluator_calls"]["reserved"] == 0
+    assert snapshot["evaluation_units"]["reserved"] == 0
+    ledger.close()
+    _enqueue_vector(queue, "job-vector-unknown", calls=2, units=20)
+    third = queue.claim("job-vector-unknown", "worker-three", lease_seconds=30, now=120)
+    queue.mark_dispatched("job-vector-unknown", "worker-three", third["fence"], now=121)
+    assert queue.cancel("job-vector-unknown", reason="test ambiguous dispatch") == "UNKNOWN"
+    ledger = BudgetLedger(path)
+    snapshot = ledger.snapshot("root")
+    assert snapshot["evaluator_calls"]["unknown"] == 2
+    assert snapshot["evaluation_units"]["unknown"] == 20
+    ledger.close()
+
+    result = queue.reconcile_unknown(
+        "job-vector-unknown", actual_usage={"evaluator_calls": 1, "evaluation_units": 6},
+        receipt_digest="c" * 64, output_digest="d" * 64,
+    )
+    assert result["actual_usage"] == {"evaluator_calls": 1, "evaluation_units": 6}
+    assert queue.reconcile_unknown(
+        "job-vector-unknown", actual_usage={"evaluator_calls": 1, "evaluation_units": 6},
+        receipt_digest="c" * 64, output_digest="d" * 64,
+    ) == result
+    ledger = BudgetLedger(path)
+    snapshot = ledger.snapshot("root")
+    assert snapshot["evaluator_calls"]["spent"] == 1
+    assert snapshot["evaluation_units"]["spent"] == 6
+    assert snapshot["evaluator_calls"]["unknown"] == 0
+    assert snapshot["evaluation_units"]["unknown"] == 0
+    ledger.close()
+
+    _enqueue_vector(queue, "job-vector-expired-unknown", calls=1, units=5)
+    fourth = queue.claim("job-vector-expired-unknown", "worker-four", lease_seconds=5, now=200)
+    queue.mark_dispatched("job-vector-expired-unknown", "worker-four", fourth["fence"], now=201)
+    assert queue.expire(now=206) == {"released": 0, "unknown": 1}
+    ledger = BudgetLedger(path)
+    snapshot = ledger.snapshot("root")
+    assert snapshot["evaluator_calls"]["unknown"] == 1
+    assert snapshot["evaluation_units"]["unknown"] == 5
+    ledger.close()
+    queue.close()
+
+
+def test_vector_child_allocation_settles_each_independent_resource(tmp_path):
+    path, queue = _vector_queue(tmp_path, evaluator_calls=10, evaluation_units=100)
+    ledger = BudgetLedger(path)
+    ledger.reserve_child(
+        allocation_id="alloc-vector-child", idempotency_key="allocate:vector-child",
+        parent_id="root", spec_hash="a" * 64,
+        caps={"evaluator_calls": 4, "evaluation_units": 40},
+    )
+    ledger.bind_child("alloc-vector-child", "child-vector", "a" * 64)
+    ledger.close()
+    _enqueue_vector(queue, "job-child-vector", calls=2, units=20,
+                    campaign_id="child-vector", action_id="evaluate:child")
+    claim = queue.claim("job-child-vector", "worker-child", lease_seconds=30, now=100)
+    queue.mark_dispatched("job-child-vector", "worker-child", claim["fence"], now=101)
+    queue.complete(
+        "job-child-vector", "worker-child", claim["fence"], output_digest="e" * 64,
+        actual_usage={"evaluator_calls": 1, "evaluation_units": 8},
+        receipt_digest="f" * 64, now=102,
+    )
+    ledger = BudgetLedger(path)
+    ledger.close_child("alloc-vector-child", terminal_status="GOAL_MET")
+    snapshot = ledger.snapshot("root")
+    assert snapshot["evaluator_calls"]["spent"] == 1
+    assert snapshot["evaluation_units"]["spent"] == 8
+    assert snapshot["evaluator_calls"]["reserved"] == 0
+    assert snapshot["evaluation_units"]["reserved"] == 0
+    ledger.close()
+    queue.close()

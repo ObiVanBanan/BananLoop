@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -75,12 +76,7 @@ def test_node_phase_transition_matrix_and_status_are_orthogonal():
     ("from_phase", "to_phase", "guard", "actor", "expected_status"),
     [
         ("EXPLORATION", "METRIC_DISCOVERY", "METRIC_PROPOSAL", "CORE", "PENDING"),
-        ("METRIC_DISCOVERY", "OPTIMIZATION", "PROTOCOL_FROZEN", "VERIFIER", "PENDING"),
-        ("METRIC_DISCOVERY", "EXPLORATION", "PROTOCOL_REJECTED", "VERIFIER", "PENDING"),
-        ("OPTIMIZATION", "VERIFICATION", "CANDIDATE_READY", "CORE", "PENDING"),
         ("OPTIMIZATION", "EXPLORATION", "REFRAME", "CORE", "PENDING"),
-        ("VERIFICATION", "OPTIMIZATION", "REGRESSION_FAILED", "VERIFIER", "PENDING"),
-        ("VERIFICATION", "CONSOLIDATION", "VERIFIED_RESULT", "VERIFIER", "COMPLETED"),
     ],
 )
 def test_every_declared_phase_transition_is_revision_guarded(from_phase, to_phase, guard, actor, expected_status):
@@ -199,5 +195,141 @@ def test_scheduler_fails_closed_on_corrupt_persisted_node_status():
         conn.execute("UPDATE research_nodes SET status='MYSTERY' WHERE node_id='n'")
         with pytest.raises(GraphStoreError, match="unknown status"):
             HybridScheduler(graph).plan(budget=_budget())
+    finally:
+        graph.close()
+
+
+def test_protocol_freeze_and_integration_phase_guards_require_durable_verifier_receipts():
+    _, graph = _repo()
+    try:
+        _command(graph, "add-metric", _node("metric", "METRIC_DISCOVERY"))
+        _command(graph, "ready-metric", _status(graph, "metric", "PENDING", "READY", "SCHEDULER_READY", "CORE"))
+        _command(graph, "done-metric", _status(graph, "metric", "READY", "COMPLETED", "VERIFIED_COMPLETION", "CORE", ["evidence:proposal"]))
+        request = {"type": "TransitionNodePhase", "node_id": "metric", "expected_node_revision": 2,
+                   "from_phase": "METRIC_DISCOVERY", "to_phase": "OPTIMIZATION",
+                   "guard": "PROTOCOL_FROZEN", "actor": "VERIFIER",
+                   "evidence_refs": ["verifier://approval/" + "a" * 64]}
+        with pytest.raises(GraphStoreError, match="Optimization spec pinned to verifier approval"):
+            _command(graph, "fake-freeze", request)
+        row = graph.conn.execute("SELECT phase,status,revision FROM research_nodes WHERE node_id='metric'").fetchone()
+        assert tuple(row) == ("METRIC_DISCOVERY", "COMPLETED", 2)
+
+        _command(graph, "add-verification", _node("verify", "VERIFICATION"))
+        _command(graph, "ready-verification", _status(graph, "verify", "PENDING", "READY", "SCHEDULER_READY", "CORE"))
+        _command(graph, "done-verification", _status(graph, "verify", "READY", "COMPLETED", "VERIFIED_COMPLETION", "CORE", ["evidence:candidate"]))
+        integration = {"type": "TransitionNodePhase", "node_id": "verify", "expected_node_revision": 2,
+                       "from_phase": "VERIFICATION", "to_phase": "CONSOLIDATION",
+                       "guard": "VERIFIED_RESULT", "actor": "VERIFIER",
+                       "evidence_refs": ["integration://receipt/" + "b" * 64]}
+        with pytest.raises(GraphStoreError, match="pinned Optimization evaluator"):
+            _command(graph, "fake-integration-pass", integration)
+    finally:
+        graph.close()
+
+
+def test_graph_campaign_identity_is_explicit_and_immutable():
+    conn, graph = _repo()
+    try:
+        assert graph.campaign_id is None
+        graph.bind_campaign_id("campaign-one")
+        assert graph.campaign_id == "campaign-one"
+        with pytest.raises(GraphStoreError, match="different campaign"):
+            graph.bind_campaign_id("campaign-two")
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            conn.execute("UPDATE graph_campaign_identity SET campaign_id='campaign-two'")
+    finally:
+        graph.close()
+def test_candidate_ready_transition_requires_exact_durable_evaluator_receipt():
+    from bananloop.contracts import OptimizationCampaignSpecV2
+
+    conn, graph = _repo()
+    graph.bind_campaign_id("campaign-1")
+    spec = OptimizationCampaignSpecV2.model_validate({
+        "schema_version": 2, "mode": "OPTIMIZATION", "goal": "optimize",
+        "source_repo": "/tmp/source", "base_commit": "0123456789abcdef",
+        "autonomy": {"mode": "SUPERVISED", "scope_digest": "a" * 64, "scope_version": 1},
+        "budget": {}, "role_registry_digest": "b" * 64,
+        "evaluation": {"protocol_id": "quality", "version": 1, "content_sha256": "c" * 64,
+                       "approval_digest": "d" * 64},
+    })
+    conn.execute("CREATE TABLE campaigns(id INTEGER PRIMARY KEY,spec_json TEXT NOT NULL)")
+    conn.execute("INSERT INTO campaigns VALUES(1,?)", (json.dumps(spec.model_dump(mode="json")),))
+    try:
+        _command(graph, "add-optimization", _node("candidate", "OPTIMIZATION", {
+            "source_snapshot_id": "e" * 40, "candidate_snapshot_id": "f" * 40,
+        }))
+        _command(graph, "candidate-ready", _status(
+            graph, "candidate", "PENDING", "READY", "SCHEDULER_READY", "CORE",
+        ))
+        _command(graph, "candidate-complete", _status(
+            graph, "candidate", "READY", "COMPLETED", "VERIFIED_COMPLETION", "CORE",
+            ["candidate:build"],
+        ))
+        revision = graph.graph_revision()
+        with pytest.raises(GraphStoreError, match="durable evaluator run receipt"):
+            _command(graph, "candidate-transition", {
+                "type": "TransitionNodePhase", "node_id": "candidate",
+                "expected_node_revision": 2, "from_phase": "OPTIMIZATION",
+                "to_phase": "VERIFICATION", "guard": "CANDIDATE_READY", "actor": "CORE",
+                "evidence_refs": ["evaluator://receipt/" + "1" * 64],
+            })
+        row = conn.execute(
+            "SELECT phase,status,revision FROM research_nodes WHERE node_id='candidate'",
+        ).fetchone()
+        assert tuple(row) == ("OPTIMIZATION", "COMPLETED", 2)
+        assert graph.graph_revision() == revision
+    finally:
+        graph.close()
+
+@pytest.mark.parametrize(("tier", "accepted"), [("dev", True), ("validation", False), ("holdout", False)])
+def test_candidate_ready_accepts_dev_only_receipt(monkeypatch, tier, accepted):
+    from bananloop.contracts import OptimizationCampaignSpecV2
+
+    conn, graph = _repo()
+    graph.bind_campaign_id("campaign-tier")
+    spec = OptimizationCampaignSpecV2.model_validate({
+        "schema_version": 2, "mode": "OPTIMIZATION", "goal": "optimize",
+        "source_repo": "/tmp/source", "base_commit": "0123456789abcdef",
+        "autonomy": {"mode": "SUPERVISED", "scope_digest": "a" * 64, "scope_version": 1},
+        "budget": {}, "role_registry_digest": "b" * 64,
+        "evaluation": {"protocol_id": "quality", "version": 1, "content_sha256": "c" * 64,
+                       "approval_digest": "d" * 64},
+    })
+    conn.execute("CREATE TABLE campaigns(id INTEGER PRIMARY KEY,spec_json TEXT NOT NULL)")
+    conn.execute("INSERT INTO campaigns VALUES(1,?)", (json.dumps(spec.model_dump(mode="json")),))
+    run = SimpleNamespace(tier=tier, source_snapshot_id="e" * 40,
+                          protocol_id="quality", protocol_version=1)
+
+    class _ReceiptAuthority:
+        def require_run_receipt(self, *_args, **_kwargs):
+            return run
+
+    monkeypatch.setattr(GraphRepository, "evaluator_protocols", property(lambda _self: _ReceiptAuthority()))
+    try:
+        _command(graph, "add-optimization", _node("candidate", "OPTIMIZATION", {
+            "source_snapshot_id": "e" * 40, "candidate_snapshot_id": "f" * 40,
+        }))
+        _command(graph, "candidate-ready", _status(
+            graph, "candidate", "PENDING", "READY", "SCHEDULER_READY", "CORE",
+        ))
+        _command(graph, "candidate-complete", _status(
+            graph, "candidate", "READY", "COMPLETED", "VERIFIED_COMPLETION", "CORE",
+            ["candidate:build"],
+        ))
+        transition = {
+            "type": "TransitionNodePhase", "node_id": "candidate",
+            "expected_node_revision": 2, "from_phase": "OPTIMIZATION",
+            "to_phase": "VERIFICATION", "guard": "CANDIDATE_READY", "actor": "CORE",
+            "evidence_refs": ["evaluator://receipt/" + "1" * 64],
+        }
+        if accepted:
+            _command(graph, "candidate-transition", transition)
+            row = conn.execute("SELECT phase,status FROM research_nodes WHERE node_id='candidate'").fetchone()
+            assert tuple(row) == ("VERIFICATION", "PENDING")
+        else:
+            revision = graph.graph_revision()
+            with pytest.raises(GraphStoreError, match="DEV evaluator evidence"):
+                _command(graph, "candidate-transition", transition)
+            assert graph.graph_revision() == revision
     finally:
         graph.close()

@@ -115,6 +115,21 @@ def test_v2_specs_are_frozen_and_approved_hash_is_canonical():
         spec.budget.max_attempts = 100
 
 
+def test_adding_optional_verifier_receipt_pin_preserves_old_hash_when_omitted():
+    legacy_shape = optimization_spec()
+    explicit_absent = optimization_spec(evaluation={
+        "protocol_id": "benchmark-quality", "version": 2, "content_sha256": SHA,
+        "approval_digest": None,
+    })
+    old_ref_hash = parse_campaign_spec_document(legacy_shape).approved_hash()
+    assert parse_campaign_spec_document(explicit_absent).approved_hash() == old_ref_hash
+    approved = optimization_spec(evaluation={
+        "protocol_id": "benchmark-quality", "version": 2, "content_sha256": SHA,
+        "approval_digest": "b" * 64,
+    })
+    assert parse_campaign_spec_document(approved).approved_hash() != old_ref_hash
+
+
 def test_optional_capability_policy_preserves_legacy_v2_hash_and_binds_explicit_policy():
     legacy = parse_campaign_spec_document(exploration_spec())
     payload = legacy.model_dump(mode="json")
@@ -188,3 +203,45 @@ def test_legacy_campaign_store_fails_closed_on_v2_spec(tmp_path):
             store.spec()
     finally:
         store.close()
+
+
+def test_populated_v4_database_reads_legacy_evaluator_binding_without_rewrite(tmp_path):
+    path = tmp_path / "historical-v4.sqlite3"
+    binding_json = '{"command":["python","evaluator.py"],"metric":"quality"}'
+    store = CampaignStore(path)
+    try:
+        assert store.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        legacy_spec = CampaignSpec.model_validate({
+            "schema_version": 1, "goal": "preserve legacy evaluator binding",
+            "source_repo": "repo", "base_commit": "abc",
+            "evaluation_command": ["python", "evaluator.py"],
+            "primary_metric": {"name": "quality", "direction": "maximize",
+                               "target": 1.0, "min_improvement": 0.1},
+        })
+        store.initialize(legacy_spec)
+        legacy_hash = store.spec().approved_hash()
+        store.save_evaluator_binding(
+            "legacy-binding-v1",
+            hashlib.sha256(binding_json.encode()).hexdigest(),
+            binding_json,
+        )
+        before = tuple(store.conn.execute(
+            "SELECT id,binding_id,binding_hash,binding_json FROM evaluator_bindings WHERE id=1"
+        ).fetchone())
+    finally:
+        store.close()
+
+    # Reopen the populated v4 database through the current store reader. The
+    # legacy singleton is read as-is; v2 protocol onboarding does not rewrite it.
+    reopened = CampaignStore(path)
+    try:
+        after = tuple(reopened.conn.execute(
+            "SELECT id,binding_id,binding_hash,binding_json FROM evaluator_bindings WHERE id=1"
+        ).fetchone())
+        assert reopened.evaluator_binding()["binding_json"] == binding_json
+        assert reopened.spec().approved_hash() == legacy_hash
+        assert reopened.campaign()["spec_hash"] == legacy_hash
+        assert reopened.conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert after == before
+    finally:
+        reopened.close()
