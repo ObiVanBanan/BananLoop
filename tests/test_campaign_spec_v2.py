@@ -7,6 +7,8 @@ import pytest
 from pydantic import ValidationError
 
 from bananloop.contracts import (
+    AutonomyScopeV2,
+    AutonomySpecV2,
     CampaignSpec,
     ExplorationCampaignSpecV2,
     OptimizationCampaignSpecV2,
@@ -134,6 +136,7 @@ def test_optional_capability_policy_preserves_legacy_v2_hash_and_binds_explicit_
     legacy = parse_campaign_spec_document(exploration_spec())
     payload = legacy.model_dump(mode="json")
     payload["autonomy"].pop("capability_policy", None)
+    payload["autonomy"].pop("scope", None)
     old_hash = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"),
                                         ensure_ascii=False, allow_nan=False).encode()).hexdigest()
     assert legacy.approved_hash() == old_hash
@@ -149,6 +152,108 @@ def test_optional_capability_policy_preserves_legacy_v2_hash_and_binds_explicit_
             "mode": "SUPERVISED", "scope_digest": SHA, "scope_version": 1,
             "capability_policy": {"read_paths": ["../private/**"]},
         }))
+def test_versioned_autonomy_scope_authorizes_only_bounded_full_auto_pivots():
+    scope = AutonomyScopeV2(
+        version=2, allowed_paths=("src/optimizer", "tests/optimizer"),
+        max_child_depth=2, max_child_campaigns=3,
+    )
+    full_auto = AutonomySpecV2(
+        mode="FULL_AUTO", scope_digest=scope.content_digest(),
+        scope_version=scope.version, scope=scope,
+    )
+
+    assert full_auto.authorize_pivot(["src/optimizer/scorer.py"]) == "AUTO_ALLOWED"
+    assert full_auto.authorize_pivot(
+        ["src/optimizer/scorer.py"], current_child_depth=1, current_child_count=2,
+    ) == "AUTO_ALLOWED"
+    assert full_auto.authorize_pivot(["docs/release.md"]) == "DENIED"
+    assert full_auto.authorize_pivot(["../private/secret.py"]) == "DENIED"
+    assert full_auto.authorize_pivot(
+        ["src/optimizer/scorer.py"], current_child_depth=2,
+    ) == "DENIED"
+    assert full_auto.authorize_pivot(
+        ["src/optimizer/scorer.py"], current_child_count=3,
+    ) == "DENIED"
+    legacy_full_auto = AutonomySpecV2(
+        mode="FULL_AUTO", scope_digest=SHA, scope_version=1,
+    )
+    assert legacy_full_auto.authorize_pivot(["src/optimizer/scorer.py"]) == "DENIED"
+
+
+@pytest.mark.parametrize("path", [
+    ".git/config", ".bananloop_eval/cache", "dataset/holdout", "src/evaluator.py",
+    "src/validation/cases", "config/secrets",
+])
+def test_autonomy_scope_rejects_protected_or_secret_paths(path):
+    with pytest.raises(ValidationError, match="protected evaluator"):
+        AutonomyScopeV2(version=1, allowed_paths=(path,))
+
+
+def test_supervised_pivots_still_require_explicit_operator_approval():
+    supervised = AutonomySpecV2(
+        mode="SUPERVISED", scope_digest=SHA, scope_version=1,
+    )
+    assert supervised.authorize_pivot(["src/optimizer/scorer.py"]) == "APPROVAL_REQUIRED"
+    assert supervised.authorize_pivot(["outside/scope.py"]) == "APPROVAL_REQUIRED"
+
+
+def test_child_autonomy_scope_is_inherited_and_cannot_expand_parent_bounds():
+    parent_scope = AutonomyScopeV2(
+        version=1, allowed_paths=("src/optimizer", "tests/optimizer"),
+        max_child_depth=3, max_child_campaigns=4,
+    )
+    parent = AutonomySpecV2(
+        mode="FULL_AUTO", scope_digest=parent_scope.content_digest(),
+        scope_version=1, scope=parent_scope,
+    )
+    child_scope = AutonomyScopeV2(
+        version=2, allowed_paths=("src/optimizer/model",),
+        max_child_depth=2, max_child_campaigns=3,
+    )
+    child = AutonomySpecV2(
+        mode="FULL_AUTO", scope_digest=child_scope.content_digest(),
+        scope_version=2, scope=child_scope,
+    )
+    broader_scope = AutonomyScopeV2(
+        version=2, allowed_paths=("src",),
+        max_child_depth=2, max_child_campaigns=3,
+    )
+    broader_child = AutonomySpecV2(
+        mode="FULL_AUTO", scope_digest=broader_scope.content_digest(),
+        scope_version=2, scope=broader_scope,
+    )
+    assert child.is_narrower_child_of(parent)
+    assert not broader_child.is_narrower_child_of(parent)
+
+    supervised_parent = AutonomySpecV2(
+        mode="SUPERVISED", scope_digest=parent_scope.content_digest(),
+        scope_version=1, scope=parent_scope,
+    )
+    assert not child.is_narrower_child_of(supervised_parent)
+
+
+def test_materialized_scope_is_digest_pinned_and_included_in_approved_hash():
+    legacy = parse_campaign_spec_document(exploration_spec())
+    scope = AutonomyScopeV2(
+        version=2, allowed_paths=("src/optimizer",),
+        max_child_depth=1, max_child_campaigns=2,
+    )
+    scoped_payload = exploration_spec(autonomy={
+        "mode": "FULL_AUTO", "scope_digest": scope.content_digest(),
+        "scope_version": scope.version, "scope": scope.model_dump(mode="json"),
+    })
+    scoped = parse_campaign_spec_document(scoped_payload)
+    assert scoped.autonomy.scope == scope
+    assert scoped.approved_hash() != legacy.approved_hash()
+
+    mismatched = exploration_spec(autonomy={
+        "mode": "FULL_AUTO", "scope_digest": SHA,
+        "scope_version": scope.version, "scope": scope.model_dump(mode="json"),
+    })
+    with pytest.raises(ValidationError, match="digest"):
+        parse_campaign_spec_document(mismatched)
+
+
 def test_feature_flag_profile_is_frozen_into_campaign_approved_hash():
     full = parse_campaign_spec_document(exploration_spec())
     diagnostic_payload = exploration_spec(
@@ -163,6 +268,39 @@ def test_feature_flag_profile_is_frozen_into_campaign_approved_hash():
         parse_campaign_spec_document(exploration_spec(
             feature_flags={"profile": "FULL", "enabled_features": ("exploration",)}
         ))
+
+
+def test_pivot_child_parent_reference_binds_complete_lineage_without_changing_old_hash():
+    legacy = parse_campaign_spec_document(exploration_spec(parent={
+        "parent_campaign_id": "campaign-parent", "allocation_id": "allocation-1",
+    }))
+    payload = legacy.model_dump(mode="json")
+    payload["autonomy"].pop("capability_policy", None)
+    payload["autonomy"].pop("scope", None)
+    payload["parent"].pop("parent_spec_hash", None)
+    payload["parent"].pop("pivot_proposal_id", None)
+    payload["parent"].pop("pivot_proposal_digest", None)
+    payload["parent"].pop("pivot_decision_id", None)
+    payload["parent"].pop("approval_request_id", None)
+    payload["parent"].pop("protocol_handoff_digest", None)
+    expected = hashlib.sha256(json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
+    ).encode()).hexdigest()
+    assert legacy.approved_hash() == expected
+
+    linked = parse_campaign_spec_document(exploration_spec(parent={
+        "parent_campaign_id": "campaign-parent", "allocation_id": "allocation-1",
+        "parent_spec_hash": SHA, "pivot_proposal_id": "pivot-" + "b" * 24,
+        "pivot_proposal_digest": "c" * 64, "pivot_decision_id": "approval-1",
+        "approval_request_id": "approval-1",
+    }))
+    assert linked.parent.parent_spec_hash == SHA
+    assert linked.approved_hash() != legacy.approved_hash()
+    with pytest.raises(ValidationError, match="supplied together"):
+        parse_campaign_spec_document(exploration_spec(parent={
+            "parent_campaign_id": "campaign-parent", "allocation_id": "allocation-1",
+            "parent_spec_hash": SHA,
+        }))
 
 
 def test_v1_dispatch_keeps_legacy_model_and_hash_behavior():

@@ -82,6 +82,14 @@ CREATE TABLE IF NOT EXISTS codex_sessions (
   campaign_id TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS campaign_request_tombstones (
+  request_key TEXT PRIMARY KEY,
+  goal_fingerprint TEXT NOT NULL,
+  campaign_id TEXT NOT NULL,
+  allocation_id TEXT NOT NULL,
+  cancellation_digest TEXT NOT NULL CHECK(length(cancellation_digest)=64),
+  created_at TEXT NOT NULL
+);
 """
 
 
@@ -235,7 +243,95 @@ class CampaignRegistry:
             finally:
                 conn.close()
 
-    def reserve(self, goal: str, request_id: str | None = None) -> tuple[CampaignEntry, Path, bool]:
+    def lookup_request(
+        self, goal: str, request_id: str,
+    ) -> tuple[CampaignEntry, Path] | None:
+        """Resolve an exact reserved request without creating or activating it."""
+        key = request_key(goal, request_id)
+        fingerprint = goal_fingerprint(goal)
+        # A missing registry cannot contain the requested reservation. Avoid
+        # _connect() here so a verification read never creates registry state.
+        if not self.path.exists():
+            return None
+        assert_safe_local_path(self.path, "campaign registry")
+        uri = self.path.resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=30)
+        conn.row_factory = sqlite3.Row
+        try:
+            has_tombstones = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='campaign_request_tombstones'",
+            ).fetchone()
+            tombstone = conn.execute(
+                "SELECT 1 FROM campaign_request_tombstones WHERE request_key=?", (key,),
+            ).fetchone() if has_tombstones else None
+            if tombstone:
+                raise RegistryError("campaign request was cancelled and is tombstoned")
+            row = conn.execute(
+                "SELECT * FROM campaign_index WHERE request_key=?", (key,),
+            ).fetchone()
+            if row is None:
+                return None
+            if row["goal_fingerprint"] != fingerprint:
+                raise RegistryError("campaign request mapping belongs to a different goal")
+            if (row["origin"] != "managed"
+                    or row["state_path"] != f"campaigns/{row['campaign_id']}"):
+                raise RegistryError("v2 child request mapping has a noncanonical registry identity")
+            entry = CampaignEntry(**dict(row))
+            return entry, self._validate_state_path(entry.state_path, entry.origin)
+        except sqlite3.DatabaseError as exc:
+            raise RegistryError("campaign request mapping cannot be read safely") from exc
+        finally:
+            conn.close()
+
+    def cancel_request(
+        self, goal: str, request_id: str, *, campaign_id: str,
+        allocation_id: str, cancellation_digest: str,
+    ) -> None:
+        """Persist an immutable tombstone so a cancelled request cannot be recreated."""
+        if not re.fullmatch(r"[0-9a-f]{64}", cancellation_digest):
+            raise RegistryError("cancellation digest must be a lowercase SHA-256 digest")
+        key = request_key(goal, request_id)
+        fingerprint = goal_fingerprint(goal)
+        expected_id = "c-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+        if campaign_id != expected_id:
+            raise RegistryError("cancellation campaign identity is not deterministic for its request")
+        self.ensure_legacy()
+        with _RegistryLock(self.lock_path):
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                mapping = conn.execute("SELECT * FROM campaign_index WHERE request_key=?", (key,)).fetchone()
+                if mapping is not None and (
+                    mapping["campaign_id"] != campaign_id
+                    or mapping["goal_fingerprint"] != fingerprint
+                    or mapping["origin"] != "managed"
+                    or mapping["state_path"] != f"campaigns/{campaign_id}"
+                ):
+                    raise RegistryError("cancellation registry mapping is not the expected managed child")
+                old = conn.execute(
+                    "SELECT * FROM campaign_request_tombstones WHERE request_key=?", (key,),
+                ).fetchone()
+                if old is not None:
+                    if (old["campaign_id"], old["allocation_id"], old["cancellation_digest"], old["goal_fingerprint"]) != (
+                        campaign_id, allocation_id, cancellation_digest, fingerprint,
+                    ):
+                        raise RegistryError("request tombstone conflicts with cancellation replay")
+                    conn.commit()
+                    return
+                conn.execute(
+                    "INSERT INTO campaign_request_tombstones VALUES(?,?,?,?,?,?)",
+                    (key, fingerprint, campaign_id, allocation_id, cancellation_digest, utc_now()),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+
+    def reserve(
+        self, goal: str, request_id: str | None = None, *, activate: bool = True,
+    ) -> tuple[CampaignEntry, Path, bool]:
         key = request_key(goal, request_id)
         fingerprint = goal_fingerprint(goal)
         self.ensure_legacy()
@@ -243,12 +339,18 @@ class CampaignRegistry:
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                tombstone = conn.execute(
+                    "SELECT 1 FROM campaign_request_tombstones WHERE request_key=?", (key,),
+                ).fetchone()
+                if tombstone:
+                    raise RegistryError("campaign request was cancelled and is tombstoned")
                 row = conn.execute("SELECT * FROM campaign_index WHERE request_key=?", (key,)).fetchone()
                 if row:
                     if row["goal_fingerprint"] != fingerprint:
                         raise RegistryError("request-id already belongs to a different goal")
                     entry = CampaignEntry(**dict(row))
-                    conn.execute("UPDATE project_meta SET active_campaign_id=? WHERE id=1", (entry.campaign_id,))
+                    if activate:
+                        conn.execute("UPDATE project_meta SET active_campaign_id=? WHERE id=1", (entry.campaign_id,))
                     conn.commit()
                     return entry, self._validate_state_path(entry.state_path, entry.origin), False
                 if request_id is None:
@@ -269,7 +371,8 @@ class CampaignRegistry:
                             "UPDATE campaign_index SET request_key=?,goal_fingerprint=?,goal_summary=?,updated_at=? WHERE campaign_id='legacy'",
                             (key, fingerprint, " ".join((legacy_goal or legacy["goal_summary"]).split())[:240], now),
                         )
-                        conn.execute("UPDATE project_meta SET active_campaign_id='legacy' WHERE id=1")
+                        if activate:
+                            conn.execute("UPDATE project_meta SET active_campaign_id='legacy' WHERE id=1")
                         adopted = conn.execute("SELECT * FROM campaign_index WHERE campaign_id='legacy'").fetchone()
                         conn.commit()
                         entry = CampaignEntry(**dict(adopted))
@@ -283,7 +386,8 @@ class CampaignRegistry:
                 conn.execute("INSERT INTO campaign_index VALUES(?,?,?,?,?,?,?,?)", (
                     campaign_id, key, fingerprint, summary, relative, "managed", now, now,
                 ))
-                conn.execute("UPDATE project_meta SET active_campaign_id=? WHERE id=1", (campaign_id,))
+                if activate:
+                    conn.execute("UPDATE project_meta SET active_campaign_id=? WHERE id=1", (campaign_id,))
                 conn.commit()
                 return CampaignEntry(campaign_id, key, fingerprint, summary, relative, "managed", now, now), state, True
             except Exception:

@@ -35,6 +35,23 @@ def test_goal_reservation_is_canonical_and_distinct_goals_get_distinct_directori
     assert registry.resolve()[1] == second.campaign_id
 
 
+def test_child_slot_reservation_can_preserve_active_campaign_until_activation(tmp_path):
+    registry = registry_for(tmp_path / "repo", tmp_path / "state")
+    parent, _, _ = registry.reserve("parent campaign")
+    child, child_path, created = registry.reserve(
+        "child campaign", "pivot-child-slot-1", activate=False,
+    )
+    replay, replay_path, replay_created = registry.reserve(
+        "child campaign", "pivot-child-slot-1", activate=False,
+    )
+
+    assert created and not replay_created
+    assert child == replay
+    assert child_path == replay_path
+    assert child.campaign_id != parent.campaign_id
+    assert registry.resolve()[1] == parent.campaign_id
+
+
 def test_request_id_is_hashed_and_conflicting_goal_does_not_mutate_entry(tmp_path):
     registry = registry_for(tmp_path / "repo", tmp_path / "state")
     entry, path, _ = registry.reserve("Improve quality", "../unsafe/request")

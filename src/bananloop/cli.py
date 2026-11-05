@@ -12,7 +12,7 @@ from pathlib import Path
 from .application import CampaignApplication
 from .bootstrap import BootstrapError, bootstrap_campaign
 from .agent_profiles import AgentProfileError, load_agent_profiles
-from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, NonRegressionSpec, PairedComparison, PivotDecisionCommand, RuntimePaths
+from .contracts import AgentConfig, BudgetSpec, CampaignSpec, Direction, GuardrailSpec, MetricSpec, NonRegressionSpec, PairedComparison, PivotDecisionCommand, PivotProposal, RuntimePaths
 from .codex_hook import main as codex_hook_main
 from .engine import ControlledInterruption, Engine, EngineError
 from .export import export_champion
@@ -578,6 +578,39 @@ def cmd_pivot_decision(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_v2_pivot_proposal(args: argparse.Namespace) -> int:
+    proposal = PivotProposal.model_validate_json(
+        Path(args.input).read_text(encoding="utf-8")
+    )
+    app = CampaignApplication(args.repo, campaign_id=args.campaign_id)
+    print(json.dumps(app.v2_record_pivot_proposal(proposal), sort_keys=True))
+    return 0
+
+
+def cmd_v2_pivot_decision(args: argparse.Namespace) -> int:
+    command = PivotDecisionCommand(
+        campaign_id=args.campaign_id,
+        request_id=args.request_id,
+        proposal_id=args.proposal_id,
+        digest=args.digest,
+        decision=args.decision,
+        rejection_action=args.on_reject,
+    )
+    receipt = CampaignApplication(
+        args.repo, campaign_id=args.campaign_id,
+    ).v2_pivot_decision(command)
+    print(json.dumps(receipt, sort_keys=True))
+    return 0
+
+
+def cmd_v2_pivot_execute(args: argparse.Namespace) -> int:
+    receipt = CampaignApplication(
+        args.repo, campaign_id=args.campaign_id,
+    ).v2_execute_pivot(args.proposal_id, args.digest, args.idempotency_key)
+    print(json.dumps(receipt, sort_keys=True))
+    return 0
+
+
 def cmd_stop(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     paths = _selected_paths(args)
@@ -1018,6 +1051,30 @@ def parser() -> argparse.ArgumentParser:
     graph_mutate.add_argument("--input", required=True, help="JSON file containing one canonical graph command")
     graph_mutate.add_argument("--idempotency-key", required=True)
     graph_mutate.set_defaults(func=cmd_graph_mutate)
+
+    v2_pivot = sub.add_parser("v2-pivot", help="record a v2 pivot proposal or supervised operator decision")
+    v2_pivot_sub = v2_pivot.add_subparsers(dest="v2_pivot_command", required=True)
+    proposal_cmd = v2_pivot_sub.add_parser("proposal", help="persist one immutable v2 pivot proposal")
+    proposal_cmd.add_argument("--repo", default=".")
+    proposal_cmd.add_argument("--campaign-id", required=True)
+    proposal_cmd.add_argument("--input", required=True, help="JSON file containing one PivotProposal")
+    proposal_cmd.set_defaults(func=cmd_v2_pivot_proposal)
+    decision_cmd = v2_pivot_sub.add_parser("decision", help="record one Supervised decision over an exact proposal digest")
+    decision_cmd.add_argument("--repo", default=".")
+    decision_cmd.add_argument("--campaign-id", required=True)
+    decision_cmd.add_argument("--request-id", required=True)
+    decision_cmd.add_argument("--proposal-id", required=True)
+    decision_cmd.add_argument("--digest", required=True)
+    decision_cmd.add_argument("--decision", choices=("approve", "reject"), required=True)
+    decision_cmd.add_argument("--on-reject", choices=("continue_old_plan", "change_conditions", "end_campaign"))
+    decision_cmd.set_defaults(func=cmd_v2_pivot_decision)
+    execute_cmd = v2_pivot_sub.add_parser("execute", help="execute or resume the exact persisted approved pivot plan")
+    execute_cmd.add_argument("--repo", default=".")
+    execute_cmd.add_argument("--campaign-id", required=True)
+    execute_cmd.add_argument("--proposal-id", required=True)
+    execute_cmd.add_argument("--digest", required=True)
+    execute_cmd.add_argument("--idempotency-key", required=True)
+    execute_cmd.set_defaults(func=cmd_v2_pivot_execute)
 
     serve = sub.add_parser("serve", help="serve the loopback-first REST, OpenAPI and SSE API")
     serve.add_argument("--repo", default=".")

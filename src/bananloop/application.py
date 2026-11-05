@@ -9,13 +9,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from .contracts import PivotDecisionCommand, RuntimePaths
+from .contracts import PivotDecisionCommand, PivotProposal, RuntimePaths
 from .graph_store import GraphStoreError, MutateGraph, V2CampaignStore
 from .operator_control import OperatorCommand, submit_control, submit_pivot_decision
 from .operator_snapshot import read_events_after, read_snapshot
 from .registry import CampaignRegistry, RegistryError, assert_safe_campaign_db
 from .report import build_report
 from .store import CampaignStore, StoreError, campaign_db_initialized
+from .v2_pivot_saga import V2PivotSaga
 
 
 class CampaignApplication:
@@ -141,6 +142,96 @@ class CampaignApplication:
                 return submit_pivot_decision(opened, campaign_id, command)
         _, campaign_id = self.resolve()
         return submit_pivot_decision(store, campaign_id, command)
+
+    def v2_record_pivot_proposal(self, proposal: PivotProposal) -> dict:
+        paths, campaign_id = self.resolve()
+        if self._schema_version(paths.db) != 5:
+            raise StoreError("v2 pivot proposals require a graph campaign")
+        saga = V2PivotSaga(
+            repo=self.repo, parent_campaign_id=campaign_id,
+        )
+        saga.record_pivot_proposal(proposal)
+        return {
+            "campaign_id": campaign_id, "proposal_id": proposal.proposal_id,
+            "digest": proposal.digest, "status": "PENDING",
+            "execution_plan": (
+                proposal.execution_plan.model_dump(mode="json")
+                if proposal.execution_plan is not None else None
+            ),
+            "resource_estimate_authoritative": False,
+            "automatic_execution": False,
+        }
+
+    def v2_pivot_decision(self, command: PivotDecisionCommand) -> dict:
+        paths, campaign_id = self.resolve()
+        if self._schema_version(paths.db) != 5:
+            raise StoreError("v2 pivot decisions require a graph campaign")
+        if command.campaign_id != campaign_id:
+            raise StoreError("pivot decision targets a different campaign")
+        saga = V2PivotSaga(
+            repo=self.repo, parent_campaign_id=campaign_id,
+        )
+        saga.record_pivot_decision(command)
+        return {
+            "campaign_id": campaign_id, "request_id": command.request_id,
+            "proposal_id": command.proposal_id, "digest": command.digest,
+            "decision": command.decision,
+            "status": "APPROVED" if command.decision == "approve" else "REJECTED",
+            "automatic_execution": False,
+        }
+
+    def v2_execute_pivot(self, proposal_id: str, digest: str, idempotency_key: str) -> dict:
+        """Execute or resume only the exact plan and approval persisted in the parent DB."""
+        paths, campaign_id = self.resolve()
+        if self._schema_version(paths.db) != 5:
+            raise StoreError("v2 pivot execution requires a graph campaign")
+        assert_safe_campaign_db(paths.db)
+        conn = sqlite3.connect(paths.db, timeout=30)
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                "SELECT * FROM v2_pivot_proposals WHERE proposal_id=?", (proposal_id,),
+            ).fetchone()
+            if row is None or row["digest"] != digest or row["spec_hash"] is None:
+                raise StoreError("persisted pivot proposal identity does not match")
+            proposal = PivotProposal.model_validate(json.loads(row["proposal_json"]))
+            if proposal.digest != digest or proposal.spec_hash != row["spec_hash"]:
+                raise StoreError("persisted pivot proposal is corrupt or stale")
+            if proposal.execution_plan is None:
+                raise StoreError("legacy pivot proposal has no executable plan")
+            campaign = conn.execute("SELECT spec_json,spec_hash FROM campaigns WHERE id=1").fetchone()
+            if campaign is None or campaign["spec_hash"] != row["spec_hash"]:
+                raise StoreError("pivot proposal no longer matches the frozen parent campaign")
+            parent_spec = json.loads(campaign["spec_json"])
+            mode = parent_spec.get("autonomy", {}).get("mode")
+            approval = None
+            if mode == "SUPERVISED":
+                decision = conn.execute(
+                    "SELECT * FROM v2_pivot_decisions WHERE campaign_id=? AND proposal_id=? "
+                    "AND digest=? AND decision='approve' AND status='APPROVED'",
+                    (campaign_id, proposal_id, digest),
+                ).fetchone()
+                if decision is None or row["status"] != "APPROVED":
+                    raise StoreError("pivot has no matching durable Supervised approval")
+                approval = PivotDecisionCommand(
+                    campaign_id=campaign_id, request_id=decision["request_id"],
+                    proposal_id=proposal_id, digest=digest, decision="approve",
+                )
+            elif mode != "FULL_AUTO":
+                raise StoreError("parent autonomy mode does not authorize pivot execution")
+        except StoreError:
+            raise
+        except Exception as exc:
+            raise StoreError("persisted pivot authorization could not be verified") from exc
+        finally:
+            conn.close()
+        saga = V2PivotSaga(repo=self.repo, parent_campaign_id=campaign_id)
+        return saga.create_child(
+            idempotency_key=idempotency_key,
+            proposal=proposal,
+            child_spec=json.loads(proposal.execution_plan.child_spec_json),
+            approval=approval,
+        )
 
     def status(self) -> dict:
         paths, campaign_id = self.resolve()

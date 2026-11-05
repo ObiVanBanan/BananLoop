@@ -232,6 +232,13 @@ class DurableWorkerQueue:
                 raise WorkerQueueError("primary resource and upper_bound must match resource_bounds")
         now = utc_now()
         with self._transaction():
+            binding = self.conn.execute(
+                "SELECT g.state FROM child_allocations a "
+                "JOIN child_allocation_gates g USING(allocation_id) WHERE a.child_id=?",
+                (campaign_id,),
+            ).fetchone()
+            if binding is not None and binding["state"] != "ACTIVE":
+                raise WorkerQueueError("child allocation admission gate is not active")
             replay = self.conn.execute("SELECT * FROM worker_jobs WHERE enqueue_key=?", (enqueue_key,)).fetchone()
             if replay:
                 expected = (job_id, campaign_id, action_id, resource, upper_bound, request_hash)

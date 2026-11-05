@@ -124,13 +124,17 @@ class BudgetSpec(BaseModel):
 
 def pivot_proposal_digest(payload: dict[str, Any]) -> str:
     """Hash the immutable, operator-reviewable body of a pivot proposal."""
+    # The optional execution plan was added after v2 proposals shipped. Keep
+    # legacy proposal identity byte-for-byte stable when it is absent.
+    if payload.get("execution_plan") is None:
+        payload = {key: value for key, value in payload.items() if key != "execution_plan"}
     body = {key: value for key, value in payload.items() if key not in {"proposal_id", "digest"}}
     encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 class PivotResourceRequest(BaseModel):
-    """Estimated extra resources needed if an operator approves a pivot."""
+    """Non-authoritative estimate; the bound execution plan carries real caps."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -138,6 +142,60 @@ class PivotResourceRequest(BaseModel):
     additional_evaluator_calls: int = Field(default=0, ge=0, le=1000)
     additional_evaluation_units: float | None = Field(default=None, ge=0, le=1_000_000)
     notes: str = Field(default="", max_length=1000)
+
+
+class PivotExecutionPlanV2(BaseModel):
+    """Immutable, digest-bound child plan for an executable pivot proposal.
+
+    JSON strings are used for nested data so a frozen model cannot be mutated
+    through a dict/list reference after approval.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1] = 1
+    child_spec_json: str = Field(min_length=2, max_length=200_000)
+    changed_paths: tuple[str, ...] = Field(min_length=1, max_length=128)
+    resource_vector_json: str = Field(min_length=2, max_length=10_000)
+
+    @field_validator("child_spec_json", "resource_vector_json")
+    @classmethod
+    def canonical_json(cls, value: str) -> str:
+        try:
+            parsed = json.loads(value, parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)))
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("pivot execution plan contains invalid JSON") from exc
+        except ValueError as exc:
+            raise ValueError("pivot execution plan JSON cannot contain NaN or Infinity") from exc
+        canonical = json.dumps(parsed, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+        if canonical != value:
+            raise ValueError("pivot execution plan JSON must be canonical")
+        return value
+
+    @field_validator("changed_paths")
+    @classmethod
+    def canonical_changed_paths(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        from pathlib import PurePosixPath, PureWindowsPath
+
+        if len(value) != len(set(value)):
+            raise ValueError("pivot execution plan paths must be unique")
+        for path in value:
+            posix = PurePosixPath(path)
+            windows = PureWindowsPath(path)
+            if (not path or "\\" in path or path.startswith("/") or windows.is_absolute() or windows.drive
+                    or any(part in {"", ".", ".."} for part in path.split("/"))
+                    or str(posix) != path):
+                raise ValueError("pivot execution plan paths must be canonical repository-relative paths")
+        return value
+
+    @classmethod
+    def build(cls, *, child_spec: dict[str, Any], changed_paths: list[str] | tuple[str, ...],
+              resource_vector: dict[str, Any]) -> "PivotExecutionPlanV2":
+        return cls(
+            child_spec_json=json.dumps(child_spec, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False),
+            changed_paths=tuple(changed_paths),
+            resource_vector_json=json.dumps(resource_vector, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False),
+        )
 
 
 class PivotProposal(BaseModel):
@@ -155,6 +213,7 @@ class PivotProposal(BaseModel):
     expected_effect: str = Field(min_length=1, max_length=1000)
     changed_scope: tuple[str, ...] = Field(min_length=1, max_length=32)
     resources: PivotResourceRequest
+    execution_plan: PivotExecutionPlanV2 | None = None
 
     @field_validator("changed_scope")
     @classmethod
@@ -177,6 +236,7 @@ class PivotProposal(BaseModel):
         current_architecture: str, proposed_architecture: str,
         rationale: str, expected_effect: str, changed_scope: list[str] | tuple[str, ...],
         resources: PivotResourceRequest | dict[str, Any],
+        execution_plan: PivotExecutionPlanV2 | dict[str, Any] | None = None,
     ) -> "PivotProposal":
         payload = {
             "spec_hash": spec_hash,
@@ -188,9 +248,16 @@ class PivotProposal(BaseModel):
             "changed_scope": list(changed_scope),
             "resources": (
                 resources.model_dump(mode="json")
-                if isinstance(resources, PivotResourceRequest) else resources
+                if isinstance(resources, PivotResourceRequest)
+                else PivotResourceRequest.model_validate(resources).model_dump(mode="json")
             ),
         }
+        if execution_plan is not None:
+            payload["execution_plan"] = (
+                execution_plan.model_dump(mode="json")
+                if isinstance(execution_plan, PivotExecutionPlanV2)
+                else PivotExecutionPlanV2.model_validate(execution_plan).model_dump(mode="json")
+            )
         digest = pivot_proposal_digest(payload)
         return cls.model_validate({
             **payload,
@@ -597,16 +664,129 @@ class CapabilityPolicyV2(BaseModel):
         return self
 
 
+class AutonomyScopeV2(BaseModel):
+    """Versioned, path-bounded permission envelope for autonomous pivots."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version: int = Field(ge=1)
+    allowed_paths: tuple[str, ...] = Field(min_length=1, max_length=64)
+    max_child_depth: int = Field(default=0, ge=0, le=32)
+    max_child_campaigns: int = Field(default=0, ge=0, le=1000)
+
+    @field_validator("allowed_paths")
+    @classmethod
+    def canonical_allowed_paths(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for value in values:
+            if (not value or value != value.strip() or "\\" in value or "\x00" in value
+                    or "*" in value or "?" in value or "[" in value or "]" in value):
+                raise ValueError("autonomy scope paths must be concrete relative POSIX path prefixes")
+            path = PurePosixPath(value)
+            if (path.is_absolute() or PureWindowsPath(value).drive
+                    or not path.parts or path.as_posix() != value
+                    or any(part in {".", ".."} for part in path.parts)):
+                raise ValueError("autonomy scope paths cannot be absolute or traverse their workspace")
+            protected = {".git", ".bananloop_eval", "holdout", "validation",
+                         "evaluator", "evaluation", "secret", "secrets", "credentials"}
+            lower = [part.lower() for part in path.parts]
+            if any(part in protected or part.startswith(".env")
+                   or re.search(r"(evaluator|evaluation|validation|holdout|secret|credential)", part)
+                   for part in lower):
+                raise ValueError("autonomy scope cannot include protected evaluator, holdout, or secret paths")
+            normalized.append(value)
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("autonomy scope paths must be unique")
+        return tuple(sorted(normalized))
+
+    def content_digest(self) -> str:
+        payload = json.dumps(self.model_dump(mode="json"), sort_keys=True,
+                             separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def allows_changed_paths(self, changed_paths: tuple[str, ...] | list[str]) -> bool:
+        if not changed_paths:
+            return False
+        try:
+            requested = AutonomyScopeV2(
+                version=self.version, allowed_paths=tuple(changed_paths),
+            ).allowed_paths
+        except (TypeError, ValidationError):
+            return False
+        return all(any(path == allowed or path.startswith(allowed + "/")
+                       for allowed in self.allowed_paths) for path in requested)
+
+    def is_subset_of(self, parent: "AutonomyScopeV2") -> bool:
+        return (
+            self.version >= parent.version
+            and self.max_child_depth <= parent.max_child_depth
+            and self.max_child_campaigns <= parent.max_child_campaigns
+            and all(any(path == allowed or path.startswith(allowed + "/")
+                        for allowed in parent.allowed_paths)
+                    for path in self.allowed_paths)
+        )
+
+
 class AutonomySpecV2(BaseModel):
-    """Immutable scope envelope for a v2 campaign."""
+    """Immutable autonomy mode and optional fully materialized pivot scope."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     mode: Literal["FULL_AUTO", "SUPERVISED"]
     scope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     scope_version: int = Field(ge=1)
-    # Omitted on older v2 specs to preserve their frozen approved hash.
+    # Omitted on earlier v2 specs to preserve their frozen approved hash.
     capability_policy: CapabilityPolicyV2 | None = None
+    # Legacy v2 specs retain their original hash and fail closed for auto pivots.
+    scope: AutonomyScopeV2 | None = None
+
+    @model_validator(mode="after")
+    def scope_digest_matches(self) -> "AutonomySpecV2":
+        if self.scope is not None:
+            if self.scope.version != self.scope_version:
+                raise ValueError("autonomy scope version differs from scope_version")
+            if self.scope.content_digest() != self.scope_digest:
+                raise ValueError("autonomy scope digest does not match its canonical contents")
+        return self
+
+    def authorize_pivot(
+        self, changed_paths: tuple[str, ...] | list[str], *,
+        current_child_depth: int = 0, current_child_count: int = 0,
+    ) -> Literal["AUTO_ALLOWED", "APPROVAL_REQUIRED", "DENIED"]:
+        """Return an explicit disposition; prose claims never grant Full Auto."""
+        if self.mode == "SUPERVISED":
+            return "APPROVAL_REQUIRED"
+        if (self.scope is None or isinstance(current_child_depth, bool)
+                or isinstance(current_child_count, bool)
+                or current_child_depth < 0 or current_child_count < 0
+                or current_child_depth >= self.scope.max_child_depth
+                or current_child_count >= self.scope.max_child_campaigns
+                or not self.scope.allows_changed_paths(changed_paths)):
+            return "DENIED"
+        return "AUTO_ALLOWED"
+
+    def is_narrower_child_of(self, parent: "AutonomySpecV2") -> bool:
+        if parent.mode == "SUPERVISED" and self.mode != "SUPERVISED":
+            return False
+        if parent.scope is None:
+            if self.scope is not None:
+                return False
+            return (self.scope_digest == parent.scope_digest
+                    and self.scope_version == parent.scope_version)
+        if self.scope is None or not self.scope.is_subset_of(parent.scope):
+            return False
+        if parent.capability_policy is None:
+            return self.capability_policy is None
+        if self.capability_policy is None:
+            return False
+        parent_policy, child_policy = parent.capability_policy, self.capability_policy
+        return (
+            set(child_policy.tools) <= set(parent_policy.tools)
+            and set(child_policy.read_paths) <= set(parent_policy.read_paths)
+            and set(child_policy.write_paths) <= set(parent_policy.write_paths)
+            and (not child_policy.network_access or parent_policy.network_access)
+            and (parent_policy.backend == "LOCAL" or child_policy.backend == "ISOLATED")
+        )
 
 
 class FrozenEvaluatorRefV2(BaseModel):
@@ -623,10 +803,31 @@ class FrozenEvaluatorRefV2(BaseModel):
 
 
 class ParentCampaignRefV2(BaseModel):
+    """Immutable parent allocation link with optional pivot audit lineage."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     parent_campaign_id: str = Field(min_length=1, max_length=200)
     allocation_id: str = Field(min_length=1, max_length=200)
+    parent_spec_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    pivot_proposal_id: str | None = Field(default=None, pattern=r"^pivot-[0-9a-f]{24}$")
+    pivot_proposal_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    pivot_decision_id: str | None = Field(default=None, min_length=1, max_length=200)
+    approval_request_id: str | None = Field(default=None, min_length=1, max_length=200)
+    protocol_handoff_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def complete_pivot_lineage(self) -> "ParentCampaignRefV2":
+        lineage = (
+            self.parent_spec_hash, self.pivot_proposal_id,
+            self.pivot_proposal_digest, self.pivot_decision_id,
+        )
+        if any(value is not None for value in lineage) and not all(value is not None for value in lineage):
+            raise ValueError("pivot child lineage fields must be supplied together")
+        if (self.approval_request_id is not None
+                and self.approval_request_id != self.pivot_decision_id):
+            raise ValueError("approval request must identify the pivot decision")
+        return self
 
 
 class TokenStageReserveV2(BaseModel):
@@ -750,8 +951,18 @@ class _CampaignSpecV2Base(BaseModel):
         data = self.model_dump(mode="json")
         if data["autonomy"].get("capability_policy") is None:
             data["autonomy"].pop("capability_policy", None)
+        if data["autonomy"].get("scope") is None:
+            data["autonomy"].pop("scope", None)
         if isinstance(data.get("evaluation"), dict) and data["evaluation"].get("approval_digest") is None:
             data["evaluation"].pop("approval_digest", None)
+        if isinstance(data.get("parent"), dict):
+            data["parent"] = {
+                key: value for key, value in data["parent"].items()
+                if not (key in {"parent_spec_hash", "pivot_proposal_id",
+                                "pivot_proposal_digest", "pivot_decision_id", "approval_request_id",
+                                "protocol_handoff_digest"}
+                        and value is None)
+            }
         payload = json.dumps(data, sort_keys=True,
                              separators=(",", ":"), ensure_ascii=False, allow_nan=False)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
