@@ -34,7 +34,7 @@ from .roles import (
     RoleRegistryV1, TeamFactoryV1, TeamManifestAuthority, TeamRequestV1,
     build_role_context,
 )
-from .scheduler import HybridScheduler
+from .scheduler import HybridScheduler, SchedulerPlan
 from .worker_queue import DurableWorkerQueue, WorkerBudgetError, WorkerQueueError
 
 
@@ -772,12 +772,26 @@ class V2OptimizationRuntime:
         if (spec.feature_flags.profile != "FULL"
                 or spec.role_registry_digest != self.role_registry.digest()):
             raise V2OptimizationError("campaign is not bound to the full pinned Optimization role registry")
+        control = self.queue.campaign_control(self.campaign_id)
+        if control["state"] == "PAUSED":
+            return SchedulerPlan((), "PAUSED", self.graph.graph_revision())
+        if control["state"] == "STOPPED":
+            return SchedulerPlan((), "STOP_REQUESTED", self.graph.graph_revision())
         budget = BudgetLedger(self.queue.path)
         try:
             snapshot = budget.snapshot(self.campaign_id)
         finally:
             budget.close()
         return HybridScheduler(self.graph).plan(budget=snapshot)
+
+    def pause(self, *, reason: str = "owner requested pause") -> dict[str, Any]:
+        return self.queue.set_campaign_control(self.campaign_id, "PAUSED", reason=reason)
+
+    def resume(self) -> dict[str, Any]:
+        return self.queue.set_campaign_control(self.campaign_id, "RUNNING")
+
+    def stop(self, *, reason: str = "owner requested stop") -> dict[str, Any]:
+        return self.queue.set_campaign_control(self.campaign_id, "STOPPED", reason=reason)
 
     def run_one(
         self, *, visible_paths: list[str] | tuple[str, ...],
@@ -896,6 +910,13 @@ class V2OptimizationRuntime:
                     "graph_revision": current.graph_revision,
                 }
             except WorkerQueueError as exc:
+                current = self.plan()
+                if current.reason in {"PAUSED", "STOP_REQUESTED"}:
+                    return {
+                        "status": current.reason, "campaign_id": self.campaign_id,
+                        "steps_this_call": len(steps), "steps": steps,
+                        "graph_revision": current.graph_revision,
+                    }
                 raise V2OptimizationError("durable Optimization worker failed") from exc
             steps.append(result)
         current = self.plan()

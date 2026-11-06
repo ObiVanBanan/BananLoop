@@ -91,6 +91,26 @@ class DurableWorkerQueue:
           response_json TEXT NOT NULL,
           created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS worker_campaign_controls (
+          campaign_id TEXT PRIMARY KEY,
+          state TEXT NOT NULL CHECK(state IN ('RUNNING','PAUSED','STOPPED')),
+          revision INTEGER NOT NULL CHECK(revision>0),
+          reason TEXT,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS worker_campaign_control_events (
+          event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+          campaign_id TEXT NOT NULL,
+          from_state TEXT NOT NULL,
+          to_state TEXT NOT NULL,
+          revision INTEGER NOT NULL,
+          reason TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE TRIGGER IF NOT EXISTS worker_campaign_control_events_no_update
+          BEFORE UPDATE ON worker_campaign_control_events BEGIN SELECT RAISE(ABORT,'campaign control history is immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS worker_campaign_control_events_no_delete
+          BEFORE DELETE ON worker_campaign_control_events BEGIN SELECT RAISE(ABORT,'campaign control history is immutable'); END;
         CREATE TABLE IF NOT EXISTS worker_job_resource_bounds (
           job_id TEXT NOT NULL REFERENCES worker_jobs(job_id),
           resource TEXT NOT NULL,
@@ -157,6 +177,73 @@ class DurableWorkerQueue:
 
     def close(self) -> None:
         self.conn.close()
+
+    def campaign_control(self, campaign_id: str) -> dict[str, Any]:
+        if not isinstance(campaign_id, str) or not campaign_id:
+            raise WorkerQueueError("campaign_id must be nonempty")
+        row = self.conn.execute(
+            "SELECT state,revision,reason,updated_at FROM worker_campaign_controls WHERE campaign_id=?",
+            (campaign_id,),
+        ).fetchone()
+        if row is None:
+            return {"campaign_id": campaign_id, "state": "RUNNING", "revision": 0,
+                    "reason": None, "updated_at": None}
+        return {"campaign_id": campaign_id, "state": row["state"],
+                "revision": int(row["revision"]), "reason": row["reason"],
+                "updated_at": row["updated_at"]}
+
+    def set_campaign_control(self, campaign_id: str, state: str, *, reason: str | None = None) -> dict[str, Any]:
+        """Durably pause, resume, or stop worker admission for one campaign."""
+        if not isinstance(campaign_id, str) or not campaign_id:
+            raise WorkerQueueError("campaign_id must be nonempty")
+        if state not in {"RUNNING", "PAUSED", "STOPPED"}:
+            raise WorkerQueueError("campaign control state is invalid")
+        if reason is not None and (not isinstance(reason, str) or not reason.strip() or len(reason) > 1000):
+            raise WorkerQueueError("campaign control reason must be nonempty and bounded")
+        with self._transaction():
+            row = self.conn.execute(
+                "SELECT state,revision,reason FROM worker_campaign_controls WHERE campaign_id=?",
+                (campaign_id,),
+            ).fetchone()
+            current = row["state"] if row else "RUNNING"
+            allowed = {
+                "RUNNING": {"RUNNING", "PAUSED", "STOPPED"},
+                "PAUSED": {"PAUSED", "RUNNING", "STOPPED"},
+                "STOPPED": {"STOPPED"},
+            }
+            if state not in allowed[current]:
+                raise WorkerQueueError("stopped campaign cannot be resumed")
+            if row is not None and state == current and reason == row["reason"]:
+                revision = int(row["revision"])
+            else:
+                revision = int(row["revision"]) + 1 if row else 1
+                timestamp = utc_now()
+                self.conn.execute(
+                    "INSERT INTO worker_campaign_controls(campaign_id,state,revision,reason,updated_at) "
+                    "VALUES(?,?,?,?,?) ON CONFLICT(campaign_id) DO UPDATE SET "
+                    "state=excluded.state,revision=excluded.revision,reason=excluded.reason,updated_at=excluded.updated_at",
+                    (campaign_id, state, revision, reason, timestamp),
+                )
+                self.conn.execute(
+                    "INSERT INTO worker_campaign_control_events "
+                    "(campaign_id,from_state,to_state,revision,reason,created_at) VALUES(?,?,?,?,?,?)",
+                    (campaign_id, current, state, revision, reason, timestamp),
+                )
+            result = self.campaign_control(campaign_id)
+            return result
+
+    def campaign_control_events(self, campaign_id: str) -> list[dict[str, Any]]:
+        if not isinstance(campaign_id, str) or not campaign_id:
+            raise WorkerQueueError("campaign_id must be nonempty")
+        rows = self.conn.execute(
+            "SELECT event_id,from_state,to_state,revision,reason,created_at "
+            "FROM worker_campaign_control_events WHERE campaign_id=? ORDER BY event_id",
+            (campaign_id,),
+        ).fetchall()
+        return [{"event_id": int(row["event_id"]), "campaign_id": campaign_id,
+                 "from_state": row["from_state"], "to_state": row["to_state"],
+                 "revision": int(row["revision"]), "reason": row["reason"],
+                 "created_at": row["created_at"]} for row in rows]
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
@@ -348,6 +435,12 @@ class DurableWorkerQueue:
             job = self.conn.execute("SELECT * FROM worker_jobs WHERE job_id=?", (job_id,)).fetchone()
             if job is None or job["state"] != "READY":
                 raise WorkerQueueError("job is missing or not READY")
+            control = self.conn.execute(
+                "SELECT state FROM worker_campaign_controls WHERE campaign_id=?",
+                (job["campaign_id"],),
+            ).fetchone()
+            if control is not None and control["state"] != "RUNNING":
+                raise WorkerQueueError(f"campaign is {control['state'].lower()}; worker admission is closed")
             fence = int(job["fence"]) + 1
             action_id = f"{job['action_id']}:{fence}"
             resource_bounds = self._resource_bounds(job_id)

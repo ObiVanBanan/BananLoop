@@ -18,8 +18,8 @@ from .exploration import EvidenceAdapterError, EvidenceOnlyAttemptAdapter, Evide
 from .graph_store import AddEdge, AddNode, GraphRepository, MutateGraph
 from .research_ledger import ResearchLedger
 from .roles import PinnedRoleExecutorV1, RoleRegistryV1, TeamManifestAuthority
-from .scheduler import HybridScheduler
-from .worker_queue import DurableWorkerQueue, WorkerBudgetError
+from .scheduler import HybridScheduler, SchedulerPlan
+from .worker_queue import DurableWorkerQueue, WorkerBudgetError, WorkerQueueError
 
 
 class V2RuntimeError(RuntimeError):
@@ -179,12 +179,26 @@ class V2ResearchRuntime:
             raise V2RuntimeError("diagnostic or partial profile cannot run as v0.2 Full")
         if spec.role_registry_digest != self.role_registry.digest():
             raise V2RuntimeError("role registry differs from the frozen campaign spec")
+        control = self.queue.campaign_control(self.campaign_id)
+        if control["state"] == "PAUSED":
+            return SchedulerPlan((), "PAUSED", self.graph.graph_revision())
+        if control["state"] == "STOPPED":
+            return SchedulerPlan((), "STOP_REQUESTED", self.graph.graph_revision())
         budget = BudgetLedger(self.queue.path)
         try:
             snapshot = budget.snapshot(self.campaign_id)
         finally:
             budget.close()
         return HybridScheduler(self.graph).plan(budget=snapshot)
+
+    def pause(self, *, reason: str = "owner requested pause") -> dict[str, Any]:
+        return self.queue.set_campaign_control(self.campaign_id, "PAUSED", reason=reason)
+
+    def resume(self) -> dict[str, Any]:
+        return self.queue.set_campaign_control(self.campaign_id, "RUNNING")
+
+    def stop(self, *, reason: str = "owner requested stop") -> dict[str, Any]:
+        return self.queue.set_campaign_control(self.campaign_id, "STOPPED", reason=reason)
 
     def run_one(self, *, node_id: str, visible_paths: list[str] | tuple[str, ...],
                 invoke: Callable[..., dict[str, Any]], worker_id: str = "v2-research",
@@ -194,6 +208,8 @@ class V2ResearchRuntime:
                     if item.node_id == node_id and item.lane == "EVIDENCE_WORKER"
                     and item.phase == "EXPLORATION"]
         if not eligible:
+            if plan.reason in {"PAUSED", "STOP_REQUESTED"}:
+                return {"status": plan.reason, "campaign_id": self.campaign_id}
             raise V2RuntimeError(
                 f"node {node_id!r} is not a schedulable v2 Exploration job; scheduler: {plan.reason}"
             )
@@ -276,6 +292,15 @@ class V2ResearchRuntime:
                 return {
                     "status": status,
                     "campaign_id": self.campaign_id,
+                    "iterations_this_call": len(completed), "completed": completed,
+                    "graph_revision": current.graph_revision,
+                }
+            except WorkerQueueError:
+                current = self.plan()
+                if current.reason not in {"PAUSED", "STOP_REQUESTED"}:
+                    raise
+                return {
+                    "status": current.reason, "campaign_id": self.campaign_id,
                     "iterations_this_call": len(completed), "completed": completed,
                     "graph_revision": current.graph_revision,
                 }

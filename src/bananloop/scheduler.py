@@ -15,7 +15,7 @@ from .graph_store import GraphRepository, GraphStoreError
 Phase = Literal["EXPLORATION", "METRIC_DISCOVERY", "OPTIMIZATION", "VERIFICATION"]
 StopReason = Literal[
     "CONTINUE", "WAITING_FOR_WORKERS", "ALL_NODES_COMPLETE", "BUDGET_EXHAUSTED",
-    "DEPENDENCIES_BLOCKED", "NO_REMAINING_WORK", "STOP_REQUESTED",
+    "DEPENDENCIES_BLOCKED", "NO_REMAINING_WORK", "STOP_REQUESTED", "PAUSED",
 ]
 
 _LANES: dict[str, tuple[str, str]] = {

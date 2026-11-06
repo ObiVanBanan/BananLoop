@@ -145,6 +145,34 @@ def test_action_lookup_supports_recovery_without_rebuilding_a_request(tmp_path):
         queue.close()
 
 
+def test_campaign_pause_persists_and_gates_claim_until_resume(tmp_path):
+    path, queue = _queue(tmp_path)
+    _enqueue(queue, "job-paused")
+    paused = queue.set_campaign_control("root", "PAUSED", reason="owner checkpoint")
+    assert paused["state"] == "PAUSED" and paused["revision"] == 1
+    assert queue.set_campaign_control("root", "PAUSED", reason="owner checkpoint")["revision"] == 1
+    queue.close()
+
+    recovered = DurableWorkerQueue(path)
+    try:
+        assert recovered.campaign_control("root")["state"] == "PAUSED"
+        with pytest.raises(WorkerQueueError, match="paused"):
+            recovered.claim("job-paused", "worker-paused", lease_seconds=30)
+        assert recovered.get_job("job-paused")["state"] == "READY"
+        resumed = recovered.set_campaign_control("root", "RUNNING")
+        assert resumed["state"] == "RUNNING" and resumed["revision"] == 2
+        assert recovered.claim("job-paused", "worker-resumed", lease_seconds=30)["fence"] == 1
+        stopped = recovered.set_campaign_control("root", "STOPPED", reason="owner stop")
+        assert stopped["state"] == "STOPPED"
+        assert [event["to_state"] for event in recovered.campaign_control_events("root")] == [
+            "PAUSED", "RUNNING", "STOPPED",
+        ]
+        with pytest.raises(WorkerQueueError, match="cannot be resumed"):
+            recovered.set_campaign_control("root", "RUNNING")
+    finally:
+        recovered.close()
+
+
 def test_complete_persists_canonical_result_for_projection_replay(tmp_path):
     import hashlib
     import json

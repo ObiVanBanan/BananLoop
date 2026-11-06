@@ -367,3 +367,50 @@ def test_trusted_core_rejects_nonexistent_artifact_ref(tmp_path):
     finally:
         queue.close()
         graph.close()
+
+
+def test_campaign_pause_and_resume_survive_runtime_restart(tmp_path):
+    runtime, graph, queue = _runtime(tmp_path)
+    graph.mutate({
+        "command_id": "pause-test-node", "idempotency_key": "pause-test-node",
+        "expected_graph_revision": graph.graph_revision(),
+        "changes": [{"type": "AddNode", "node_id": "pause-research", "phase": "EXPLORATION"}],
+    })
+    calls = []
+
+    def reply(public_input, **_pin):
+        calls.append(public_input)
+        return {
+            "next_experiment": "resume with a distinct observation",
+            "artifact_text": {"resume.txt": "campaign resumed after durable pause"},
+        }
+
+    recovered_queue = None
+    try:
+        assert runtime.pause(reason="test pause")["state"] == "PAUSED"
+        paused = runtime.run_campaign(
+            visible_paths=["README.md"], invoke=make_researcher_invoke(reply), max_iterations=1,
+        )
+        assert paused["status"] == "PAUSED" and calls == []
+        queue_path = queue.path
+        queue.close()
+
+        recovered_queue = DurableWorkerQueue(queue_path)
+        recovered = V2ResearchRuntime(
+            graph=graph, queue=recovered_queue, campaign_id="campaign-test",
+            state_root=tmp_path, role_registry=runtime.role_registry,
+        )
+        assert recovered.plan().reason == "PAUSED"
+        assert recovered.resume()["state"] == "RUNNING"
+        resumed = recovered.run_campaign(
+            visible_paths=["README.md"], invoke=make_researcher_invoke(reply), max_iterations=1,
+        )
+        assert resumed["status"] == "ITERATION_LIMIT"
+        assert resumed["iterations_this_call"] == 1 and len(calls) == 1
+        assert recovered_queue.get_job(resumed["completed"][0]["job_id"])["state"] == "COMPLETED"
+    finally:
+        if recovered_queue is not None:
+            recovered_queue.close()
+        else:
+            queue.close()
+        graph.close()
