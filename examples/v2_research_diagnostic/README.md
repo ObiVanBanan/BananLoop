@@ -11,14 +11,16 @@ On Manjaro/Linux, from the BananLoop repository root:
 
 ```bash
 python -m pip install -e '.[test]'
-python examples/v2_research_diagnostic/run_offline.py --work-dir /tmp/bananloop-rpdi13r-owner
+python examples/v2_research_diagnostic/run_offline.py --work-dir /tmp/bananloop-rpdi13r-owner --goal "Investigate a measurable toy question"
 python -m pytest tests/test_v2_research_runtime.py tests/test_exploration_adapter.py -q
 ```
 
 Choose a **new/empty** `--work-dir` on every run. Generated files and state
 stay inside that directory. Nothing is imported from the user's old v1 state.
 Expected status: `OFFLINE_V2_EXPLORATION_PASS`, with two evidence counts
-and `second_turn_received_public_memory=true`.
+and `second_turn_received_public_memory=true`. Machine-readable output is
+also stored in `state/campaigns/<campaign-id>/offline-result.json`; it records
+the exact BananLoop revision and whether the worktree was dirty.
 
 This is **not** a real LLM call or an official v0.2 Full qualification. The
 Optimization, verified evaluation and owner-approved live Codex broker path

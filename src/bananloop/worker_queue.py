@@ -205,6 +205,8 @@ class DurableWorkerQueue:
                 "SELECT state,revision,reason FROM worker_campaign_controls WHERE campaign_id=?",
                 (campaign_id,),
             ).fetchone()
+            if row is None and state == "RUNNING" and reason is None:
+                return self.campaign_control(campaign_id)
             current = row["state"] if row else "RUNNING"
             allowed = {
                 "RUNNING": {"RUNNING", "PAUSED", "STOPPED"},

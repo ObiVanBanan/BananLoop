@@ -36,9 +36,18 @@ def main() -> None:
                         help="new/empty work directory for safe disposable campaign")
     parser.add_argument("--model", default="gpt-6-luna",
                         help="pinned model slug returned by your ChatGPT model catalog")
+    parser.add_argument(
+        "--goal",
+        default=("What controlled test would distinguish a true mechanism behind an observed "
+                 "association from an unmeasured confounder? State one falsifiable hypothesis, "
+                 "a concrete control, the expected evidence and limitations."),
+        help="public research question sent in this one-call campaign",
+    )
     parser.add_argument("--approve-one-call", action="store_true",
                         help="explicit authorization to consume one ChatGPT plan request")
     args = parser.parse_args()
+    if not args.goal.strip() or len(args.goal) > 4000 or "\x00" in args.goal:
+        parser.error("--goal must contain 1 to 4000 non-NUL characters")
     if not args.approve_one_call:
         parser.error("NO MODEL CALL MADE: pass --approve-one-call only after reviewing quota")
     root = args.work_dir.expanduser().absolute()
@@ -58,11 +67,8 @@ def main() -> None:
     source = root / "source"
     source.mkdir(mode=0o700)
     (source / "TASK.md").write_text(
-        "Research question: What controlled test would distinguish a true "
-        "mechanism behind an observed association from an unmeasured "
-        "confounder? State one falsifiable hypothesis, a concrete control, "
-        "the expected evidence and limitations. Treat every inference as "
-        "unverified; do not claim experimental data exists.\n",
+        f"Research question: {args.goal}\n"
+        "Treat every inference as unverified; do not claim experimental data exists.\n",
         encoding="utf-8",
     )
     _git(["init", "-q"], source)
@@ -90,7 +96,7 @@ def main() -> None:
     )
     spec = ExplorationCampaignSpecV2.model_validate({
         "schema_version": 2, "mode": "EXPLORATION",
-        "goal": "Plan a falsifiable test of confounding for a public toy question",
+        "goal": args.goal,
         "source_repo": str(source), "base_commit": commit,
         "autonomy": {
             "mode": "SUPERVISED", "scope_digest": "a" * 64,
@@ -166,6 +172,7 @@ def main() -> None:
             "complete_full_pipeline_proven": False,
             "RPDI14_evidence": False,
             "campaign_id": entry.campaign_id,
+            "goal": spec.goal,
             "job_id": result["job_id"],
             "research_evidence_ids": result["research_evidence_ids"],
             "state_dir": str(state_root),

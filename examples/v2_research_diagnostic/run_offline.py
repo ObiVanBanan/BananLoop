@@ -29,7 +29,11 @@ def _git(args: list[str], cwd: Path) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-dir", required=True, type=Path, help="new, empty local directory")
+    parser.add_argument("--goal", default="Find testable explanations for a toy mechanism",
+                        help="public research question frozen into this disposable v2 campaign")
     args = parser.parse_args()
+    if not args.goal.strip() or len(args.goal) > 4000 or "\x00" in args.goal:
+        parser.error("--goal must contain 1 to 4000 non-NUL characters")
 
     root = args.work_dir.expanduser().resolve()
     if root.exists() and any(root.iterdir()):
@@ -38,8 +42,9 @@ def main() -> None:
     source = root / "source"
     source.mkdir()
     (source / "TASK.md").write_text(
-        "Observe a safe toy mechanism. Treat findings as unverified and "
-        "design a falsifying next experiment.\n", encoding="utf-8",
+        f"Research question: {args.goal}\n"
+        "Treat findings as unverified and design a falsifying next experiment.\n",
+        encoding="utf-8",
     )
     _git(["init", "-q"], source)
     _git(["add", "TASK.md"], source)
@@ -64,7 +69,7 @@ def main() -> None:
     )
     spec = ExplorationCampaignSpecV2.model_validate({
         "schema_version": 2, "mode": "EXPLORATION",
-        "goal": "Find testable explanations for a toy mechanism",
+        "goal": args.goal,
         "source_repo": str(source), "base_commit": base_commit,
         "autonomy": {
             "mode": "SUPERVISED", "scope_digest": "a" * 64,
@@ -167,6 +172,7 @@ def main() -> None:
             "bananloop_revision": bananloop_revision,
             "bananloop_worktree_dirty": code_dirty,
             "campaign_id": entry.campaign_id,
+            "goal": spec.goal,
             "source_commit": base_commit,
             "source_state": str(state_root),
             "campaign_loop_status": campaign_result["status"],

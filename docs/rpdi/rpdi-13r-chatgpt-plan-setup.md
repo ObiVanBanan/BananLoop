@@ -43,7 +43,8 @@ Only after you personally decide to spend one request:
 ```bash
 WORKDIR="$(mktemp -d /tmp/bananloop-siwc-smoke.XXXXXX)"
 python examples/v2_research_diagnostic/run_one_chatgpt.py \
-  --work-dir "$WORKDIR" --model gpt-6-luna --approve-one-call
+  --work-dir "$WORKDIR" --model gpt-6-luna \
+  --goal "Ask one concrete, falsifiable research question" --approve-one-call
 ```
 
 If your account's catalog does not contain `gpt-6-luna`, **do not**
