@@ -24,7 +24,7 @@ from .chatgpt_plan import ChatGPTPlanAuth, SIWCError
 
 MODEL = "gpt-6-luna"
 
-PAGE = """<!doctype html>
+PAGE = r"""<!doctype html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
