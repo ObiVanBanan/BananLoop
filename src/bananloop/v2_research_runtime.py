@@ -125,13 +125,29 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
             # ToolGateway is the only write authority.
             gateway.write_artifact(name, raw_bytes)
             artifacts.append({"path": name, "sha256": hashlib.sha256(raw_bytes).hexdigest()})
+        # Only trusted Core may bind claims to produced artifact digests.
+        # The LLM need not guess SHA-256 values and may not invent refs to
+        # unavailable artifacts. Findings remain unverified.
+        produced_refs = {f"artifact://sha256/{item['sha256']}" for item in artifacts}
+        findings: list[dict[str, Any]] = []
+        for raw_finding in reply.research_findings:
+            finding = dict(raw_finding)
+            supplied = finding.get("evidence_refs")
+            if supplied is None or supplied == [] or supplied == ():
+                if not produced_refs:
+                    raise V2RuntimeError("research finding requires a produced evidence artifact")
+                finding["evidence_refs"] = sorted(produced_refs)
+            elif (not isinstance(supplied, (list, tuple))
+                  or not set(supplied) <= produced_refs):
+                raise V2RuntimeError("research finding cites evidence not produced by this job")
+            findings.append(finding)
         output = EvidenceOnlyOutputV2.model_validate({
             "node_id": request["node_id"],
             "evidence_refs": reply.evidence_refs,
             "artifacts": artifacts,
             "limitations": reply.limitations,
             "next_experiment": reply.next_experiment,
-            "research_findings": reply.research_findings,
+            "research_findings": findings,
         })
         if not output.artifacts and not output.research_findings and not output.evidence_refs:
             raise V2RuntimeError("researcher returned no auditable evidence")
