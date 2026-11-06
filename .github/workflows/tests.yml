@@ -36,6 +36,7 @@ jobs:
           $testRoot = Join-Path $env:USERPROFILE ".bananloop-pytest-temp"
           New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
           $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          Write-Output "Pytest DACL runner SID: $currentSid"
           $acl = Get-Acl -Path $testRoot
           $acl.SetAccessRuleProtection($true, $false)
           foreach ($rule in @($acl.Access)) { $acl.RemoveAccessRuleAll($rule) }
@@ -53,7 +54,10 @@ jobs:
           $verifiedAcl = Get-Acl -Path $testRoot
           if (-not $verifiedAcl.AreAccessRulesProtected) { throw "Pytest DACL still inherits from USERPROFILE" }
           if (@($verifiedAcl.Access).Count -ne 3) { throw "Pytest DACL contains unexpected access rules" }
-          $verifiedAcl.Access | Format-Table IdentityReference, FileSystemRights, AccessControlType, IsInherited | Out-String | Write-Output
+          $verifiedAcl.Access | ForEach-Object {
+            $sid = $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+            Write-Output "$sid $($_.FileSystemRights) $($_.AccessControlType) inherited=$($_.IsInherited)"
+          }
           "BANANLOOP_TEST_BASETEMP=$testRoot" >> $env:GITHUB_ENV
       - name: Run pytest on Windows
         if: matrix.os == 'windows-latest'
