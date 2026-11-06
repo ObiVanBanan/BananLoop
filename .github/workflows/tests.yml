@@ -29,4 +29,25 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -U pip
       - run: python -m pip install -e ".[test]"
-      - run: pytest
+      - name: Prepare private Windows pytest root
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $testRoot = Join-Path $env:USERPROFILE ".bananloop-pytest-temp"
+          New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
+          $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          icacls $testRoot /inheritance:r | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Could not remove inherited pytest ACL" }
+          icacls $testRoot /grant:r "*$($currentSid):(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Could not apply private pytest ACL" }
+          "BANANLOOP_TEST_BASETEMP=$testRoot" >> $env:GITHUB_ENV
+      - name: Run pytest on Windows
+        if: matrix.os == 'windows-latest'
+        run: python -m pytest -p isolate_home --basetemp "$env:BANANLOOP_TEST_BASETEMP"
+        env:
+          PYTHONPATH: tests/plugins
+      - name: Run pytest on Ubuntu
+        if: matrix.os == 'ubuntu-latest'
+        run: python -m pytest -p isolate_home
+        env:
+          PYTHONPATH: tests/plugins

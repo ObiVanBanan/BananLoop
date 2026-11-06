@@ -378,18 +378,20 @@ def test_worker_runtime_fingerprint_binds_command_workspace_and_sandbox(tmp_path
     workspace.mkdir()
     code = workspace / "worker.py"
     code.write_text("print('first')\n", encoding="utf-8")
+    code.chmod(0o700)
     sandbox = tmp_path / "bwrap"
     sandbox.write_bytes(b"bubblewrap-fixture")
     sandbox.chmod(0o700)
-    initial = worker_bundle_fingerprint(workspace, ["/usr/bin/python3", "/workspace/worker.py"],
+    command = ["/workspace/worker.py", "/workspace/worker.py"]
+    initial = worker_bundle_fingerprint(workspace, command,
                                         sandbox_binary=sandbox)
     code.write_text("print('changed')\n", encoding="utf-8")
-    changed_code = worker_bundle_fingerprint(workspace, ["/usr/bin/python3", "/workspace/worker.py"],
+    changed_code = worker_bundle_fingerprint(workspace, command,
                                              sandbox_binary=sandbox)
-    changed_command = worker_bundle_fingerprint(workspace, ["/usr/bin/python3", "/workspace/other.py"],
+    changed_command = worker_bundle_fingerprint(workspace, [command[0], "/workspace/other.py"],
                                                 sandbox_binary=sandbox)
     sandbox.write_bytes(b"different-bubblewrap")
-    changed_sandbox = worker_bundle_fingerprint(workspace, ["/usr/bin/python3", "/workspace/worker.py"],
+    changed_sandbox = worker_bundle_fingerprint(workspace, command,
                                                 sandbox_binary=sandbox)
     assert len({initial, changed_code, changed_command, changed_sandbox}) == 4
 
