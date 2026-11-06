@@ -23,10 +23,11 @@ from bananloop.worker_queue import DurableWorkerQueue
 from test_exploration_adapter import _graph, _pinned_executor, _role_registry, _source_repo
 
 
-def _runtime(tmp_path, *, max_agent_calls=3, ledger_agent_calls=None):
+def _runtime(tmp_path, *, max_agent_calls=3, ledger_agent_calls=None,
+             role_calls_per_instance=2):
     source = tmp_path / "source"
     _source_repo(source)
-    roles = _role_registry()
+    roles = _role_registry(calls_per_instance=role_calls_per_instance)
     spec = ExplorationCampaignSpecV2.model_validate({
         "schema_version": 2, "mode": "EXPLORATION",
         "goal": "Investigate a public mechanism",
@@ -192,6 +193,34 @@ def test_hypothesis_portfolio_is_selected_and_persisted_as_evidence(tmp_path):
         ]
         assert len(serialized) == 1
         assert b'"selected_hypothesis_id":"h2"' in serialized[0]
+    finally:
+        queue.close()
+        graph.close()
+
+
+def test_exploration_stops_when_a_completed_experiment_reappears_after_another_step(tmp_path):
+    runtime, graph, queue = _runtime(
+        tmp_path, max_agent_calls=3, role_calls_per_instance=3,
+    )
+    experiments = iter(("vary the input size", "reverse the sample ordering",
+                        "  VARY THE INPUT SIZE  "))
+    try:
+        result = runtime.run_campaign(
+            visible_paths=["README.md"],
+            invoke=make_researcher_invoke(
+                lambda *_args, **_kwargs: {
+                    "next_experiment": next(experiments),
+                    "artifact_text": {"observation.txt": "durable observation"},
+                },
+            ),
+            max_iterations=5,
+        )
+        assert result["status"] == "CONVERGED_REPEATED_EXPERIMENT"
+        assert result["iterations_this_call"] == 3
+        assert len(graph.scheduling_snapshot()["nodes"]) == 3
+        assert "previously completed task" in json.loads(
+            Path(result["report_path"]).read_text()
+        )["stop_reason"]
     finally:
         queue.close()
         graph.close()

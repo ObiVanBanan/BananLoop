@@ -421,6 +421,13 @@ class V2ResearchRuntime:
         edges = {(edge["source_id"], edge["target_id"], edge["type"])
                  for edge in snapshot["edges"]}
         nodes = {node["node_id"]: node for node in snapshot["nodes"]}
+        completed_tasks: list[tuple[str, str]] = []
+        for node in snapshot["nodes"]:
+            if (node["status"] == "COMPLETED"
+                    and isinstance(node["payload"].get("completion_evidence"), dict)):
+                task = self._normalized_experiment(node["payload"].get("hypothesis"))
+                if task is not None:
+                    completed_tasks.append((node["node_id"], task))
         for parent in snapshot["nodes"]:
             evidence = parent["payload"].get("completion_evidence")
             if (parent["status"] != "COMPLETED" or not isinstance(evidence, dict)
@@ -434,11 +441,18 @@ class V2ResearchRuntime:
             if (not isinstance(result, dict)
                     or result.get("next_experiment") != evidence["next_experiment"]):
                 raise V2RuntimeError("completed exploration has no matching durable next-step result")
-            current_task = self._normalized_experiment(parent["payload"].get("hypothesis"))
             selected_task = self._normalized_experiment(evidence["next_experiment"])
-            if current_task is not None and selected_task == current_task:
+            direct_children = {
+                node_id for node_id, node in nodes.items()
+                if node["payload"].get("parent_node_id") == parent["node_id"]
+            }
+            prior_tasks = {
+                task for node_id, task in completed_tasks
+                if node_id not in direct_children
+            }
+            if selected_task is not None and selected_task in prior_tasks:
                 self._convergence_reason = (
-                    "Selected next experiment repeats the current hypothesis after normalization."
+                    "Selected next experiment repeats a previously completed task after normalization."
                 )
                 continue
             if child_id in nodes:

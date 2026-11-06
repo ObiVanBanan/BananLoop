@@ -49,7 +49,7 @@ def _graph(path, spec):
     return graph
 
 
-def _role_registry(context_fields=("campaign_goal", "node_id", "node_phase", "public_task", "evidence_refs", "dev_summary", "budget_remaining")):
+def _role_registry(context_fields=("campaign_goal", "node_id", "node_phase", "public_task", "evidence_refs", "dev_summary", "budget_remaining"), *, calls_per_instance=2):
     return RoleRegistryV1(
         registry_id="test-exploration",
         version=1,
@@ -62,7 +62,7 @@ def _role_registry(context_fields=("campaign_goal", "node_id", "node_phase", "pu
                 "read_paths": ["README.md"], "write_paths": ["**"], "backend": "LOCAL",
             },
             context_fields=context_fields,
-            min_instances=1, max_instances=1, calls_per_instance=2, tokens_per_instance=200,
+            min_instances=1, max_instances=1, calls_per_instance=calls_per_instance, tokens_per_instance=200,
         ),),
     )
 
