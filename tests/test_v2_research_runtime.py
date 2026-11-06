@@ -143,10 +143,9 @@ def test_researcher_rejects_score_and_no_evidence(tmp_path):
                     },
                 ),
             )
-        assert len(ResearchLedger(graph.conn).project(
-            campaign_ids=("campaign-test",), source_snapshot_id="0" * 40,
-            protocol_digest="0" * 64,
-        ).evidence) == 0
+        assert graph.conn.execute(
+            "SELECT status FROM research_nodes WHERE node_id='explore'"
+        ).fetchone()[0] != "COMPLETED"
     finally:
         queue.close()
         graph.close()

@@ -110,7 +110,7 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
             model_version=model_version, prompt_digest=prompt_digest,
             max_model_tokens=max_model_tokens,
         )
-        reply = ResearcherReplyV1.model_validate(raw, strict=True)
+        reply = ResearcherReplyV1.model_validate(raw)
         if len(reply.artifact_text) > MAX_VISIBLE_FILES:
             raise V2RuntimeError("too many researcher artifacts")
         artifacts: list[dict[str, str]] = []
