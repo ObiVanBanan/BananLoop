@@ -279,9 +279,14 @@ class EvidenceOnlyAttemptAdapter:
                     context_updated = True
                 if "dev_summary" in researcher.role.context_fields:
                     summary_lines = [
-                        f"{item.claim_key} [{item.status}]: " + " | ".join(item.statements)
-                        for item in projection.causal_memory
+                        f"{item.claim_key} [{item.stance}] evidence_ids={item.evidence_id}: {item.statement}"
+                        for item in projection.evidence
                     ]
+                    summary_lines.extend([
+                        f"{item.claim_key} [{item.status}] evidence_ids="
+                        f"{','.join(item.evidence_ids)}: " + " | ".join(item.statements)
+                        for item in projection.causal_memory
+                    ])
                     summary_lines.extend(
                         f"{item.signature} [{item.status}]: {item.intervention_type}/"
                         f"{item.algorithmic_layer}; paths={', '.join(item.affected_paths)}; "

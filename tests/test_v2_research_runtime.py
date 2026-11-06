@@ -236,6 +236,7 @@ def test_core_ranks_later_hypothesis_by_grounded_prior_evidence_not_model_prefer
                     "falsification_condition": "The prior control result does not replicate.",
                     "expected_evidence": "A replication outcome tied to the previous finding.",
                     "evidence_refs": [evidence_id],
+                    "target_claim_key": "mechanism:control",
                 },
             ],
             "selected_hypothesis_id": "model-choice",

@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Callable
@@ -42,6 +43,7 @@ class ResearchHypothesisV1(BaseModel):
     falsification_condition: str = Field(min_length=1, max_length=1000)
     expected_evidence: str = Field(min_length=1, max_length=1000)
     evidence_refs: tuple[str, ...] = Field(default=(), max_length=16)
+    target_claim_key: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_.:-]{0,119}$")
 
 
 class ResearcherReplyV1(BaseModel):
@@ -121,7 +123,9 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
                 "Return 2-4 materially different, bounded, falsifiable hypotheses, "
                 "each with id and hypothesis, plus selected_hypothesis_id identifying "
                 "the one best supported for the next experiment. Include a falsifiable "
-                "next_experiment for that selection and optional text artifacts. "
+                "next_experiment for that selection and optional text artifacts. When "
+                "using prior findings, provide target_claim_key and cite its exact "
+                "evidence_ids in evidence_refs. "
                 "Do not claim "
                 "independent evaluator approval, validation or HOLDOUT scores. "
                 "These observations are unverified PUBLIC_DEV evidence."
@@ -145,6 +149,16 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
             if reply.next_experiment is not None and reply.next_experiment != selected.next_experiment:
                 raise V2RuntimeError("next experiment must match the selected hypothesis candidate")
             allowed_evidence_refs = set(role_context.get("evidence_refs", ()))
+            claim_evidence: dict[str, set[str]] = {}
+            for line in str(role_context.get("dev_summary", "")).splitlines():
+                match = re.match(
+                    r"^([a-z][a-z0-9_.:-]{0,119}) \[[A-Z_]+\] evidence_ids=([0-9a-f,]*):",
+                    line,
+                )
+                if match:
+                    claim_evidence.setdefault(match.group(1), set()).update(
+                        filter(None, match.group(2).split(","))
+                    )
             evidence_scores: dict[str, int] = {}
             for candidate in reply.hypotheses:
                 refs = set(candidate.evidence_refs)
@@ -152,7 +166,15 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
                     raise V2RuntimeError(
                         "hypothesis cites prior evidence that is not present in its trusted role context"
                     )
-                evidence_scores[candidate.id] = len(refs)
+                if candidate.target_claim_key is not None:
+                    claim_refs = claim_evidence.get(candidate.target_claim_key, set())
+                    if not refs <= claim_refs:
+                        raise V2RuntimeError(
+                            "hypothesis evidence references do not belong to its target claim"
+                        )
+                    evidence_scores[candidate.id] = len(refs)
+                else:
+                    evidence_scores[candidate.id] = 0
             ranked = [item for item in reply.hypotheses if evidence_scores[item.id] > 0]
             if ranked:
                 # Candidate IDs and the model's preferred ID have no quality
@@ -169,7 +191,7 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
                     "method": "CORE_PUBLIC_DEV_EVIDENCE_COVERAGE",
                     "selected_hypothesis_id": selected.id,
                     "scores": evidence_scores,
-                    "reason": "Highest count of distinct prior public evidence references; tied candidates use a stable content digest.",
+                    "reason": "Highest count of distinct prior public evidence references attached to its exact target claim; tied candidates use a stable content digest.",
                 }
             else:
                 selection = {
