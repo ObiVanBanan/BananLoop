@@ -12,6 +12,7 @@ import json
 import os
 import tempfile
 import fnmatch
+import sqlite3
 import shutil
 import subprocess
 import tarfile
@@ -996,6 +997,83 @@ class V2OptimizationRuntime:
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
+        if spec.parent is not None:
+            from .registry import CampaignRegistry
+
+            parent_state, _ = CampaignRegistry(Path(spec.source_repo)).resolve_readonly(
+                spec.parent.parent_campaign_id,
+            )
+            parent_report_path = (parent_state / "reports" /
+                                  f"v2-exploration-{spec.parent.parent_campaign_id}.json")
+            exploration_report = None
+            if parent_report_path.is_file():
+                exploration_report = json.loads(parent_report_path.read_text(encoding="utf-8"))
+            else:
+                parent_db = parent_state / "campaign.sqlite3"
+                if parent_db.is_file():
+                    from .graph_store import GraphRepository
+
+                    parent_conn = sqlite3.connect(parent_db.resolve().as_uri() + "?mode=ro", uri=True)
+                    try:
+                        parent_graph = GraphRepository(parent_conn)
+                        if parent_graph.campaign_id != spec.parent.parent_campaign_id:
+                            raise V2OptimizationError("parent graph campaign identity does not match frozen child lineage")
+                        parent_snapshot = parent_graph.scheduling_snapshot()
+                        parent_spec = parent_graph.campaign_spec()
+                        exploration_report = {
+                            "schema_version": 1,
+                            "campaign_id": spec.parent.parent_campaign_id,
+                            "goal": parent_spec.goal,
+                            "status": "PERSISTED_GRAPH_SNAPSHOT",
+                            "scientific_conclusion": (
+                                "No verified scientific conclusion is asserted; parent findings are unverified PUBLIC_DEV evidence."
+                            ),
+                            "completed_experiments": [
+                                {
+                                    "node_id": node["node_id"],
+                                    "evidence_refs": node["payload"].get("completion_evidence", {}).get("evidence_refs", []),
+                                    "limitations": node["payload"].get("completion_evidence", {}).get("limitations", []),
+                                }
+                                for node in parent_snapshot["nodes"]
+                                if node["status"] == "COMPLETED"
+                                and isinstance(node["payload"].get("completion_evidence"), dict)
+                            ],
+                            "graph_revision": parent_snapshot["graph_revision"],
+                            "source": "READ_ONLY_CAMPAIGN_GRAPH",
+                        }
+                    finally:
+                        parent_conn.close()
+            final_report = {
+                "schema_version": 1,
+                "campaign_id": spec.parent.parent_campaign_id,
+                "status": result["status"],
+                "exploration_campaign_id": spec.parent.parent_campaign_id,
+                "optimization_campaign_id": self.campaign_id,
+                "exploration_report": exploration_report,
+                "optimization_report": report,
+                "limitations": report["limitations"] + ([] if exploration_report else [
+                    "Parent Exploration report was unavailable when this Optimization run completed.",
+                ]),
+                "as_of": utc_now(),
+            }
+            parent_reports = parent_state / "reports"
+            parent_reports.mkdir(parents=True, exist_ok=True)
+            final_target = parent_reports / f"v2-final-{spec.parent.parent_campaign_id}.json"
+            final_raw = (json.dumps(final_report, sort_keys=True, indent=2,
+                                    ensure_ascii=False) + "\n").encode("utf-8")
+            final_fd, final_temporary = tempfile.mkstemp(
+                prefix=f".{final_target.name}.", dir=parent_reports,
+            )
+            try:
+                with os.fdopen(final_fd, "wb") as output:
+                    output.write(final_raw)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(final_temporary, final_target)
+            finally:
+                if os.path.exists(final_temporary):
+                    os.unlink(final_temporary)
+            result["final_report_path"] = str(final_target)
         return {**result, "report_path": str(target)}
 
     def _baseline_validation_receipt(self, *, worker_id: str):

@@ -415,6 +415,21 @@ print(json.dumps({
                 executor=executor, worker_id="integrated-verifier",
             )
             assert replay == verification_receipt
+            from bananloop.v2_optimization_runtime import V2OptimizationRuntime
+
+            runtime = V2OptimizationRuntime(
+                graph=child_graph, queue=child_queue, campaign_id=child_id,
+                state_root=child_state, role_registry=roles,
+                trusted_evaluator=trusted,
+                integration_verifier=coordinator.integration_verifier,
+            )
+            finalized = runtime.run_campaign(visible_paths=["src/optimizer/model/ranker.py"])
+            final_report = json.loads(Path(finalized["final_report_path"]).read_text())
+            assert final_report["campaign_id"] == entry.campaign_id
+            assert final_report["optimization_campaign_id"] == child_id
+            assert final_report["exploration_report"]["campaign_id"] == entry.campaign_id
+            assert final_report["exploration_report"]["source"] == "READ_ONLY_CAMPAIGN_GRAPH"
+            assert final_report["optimization_report"]["integration_evidence"][0]["decision"] == "PASS"
         finally:
             child_queue.close()
             child_graph.close()
