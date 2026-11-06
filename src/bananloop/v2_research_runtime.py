@@ -29,7 +29,7 @@ class V2RuntimeError(RuntimeError):
 class ResearcherReplyV1(BaseModel):
     """Agent-authored research text only; artifacts are digested by trusted Core."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
     next_experiment: str = Field(min_length=1, max_length=4000)
     evidence_refs: tuple[str, ...] = ()
     limitations: tuple[str, ...] = ()
