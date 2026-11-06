@@ -397,3 +397,15 @@ def test_live_owner_smoke_requires_explicit_approval_before_any_state(tmp_path):
     assert completed.returncode != 0
     assert "NO MODEL CALL MADE" in completed.stderr
     assert not work_dir.exists()
+
+
+def test_live_smoke_result_is_atomically_persisted_with_unknown_usage(tmp_path):
+    from examples.v2_research_diagnostic.run_one_chatgpt import _persist_result
+
+    state_root = tmp_path / "campaign"
+    state_root.mkdir()
+    result = {"status": "SIWC_ONE_SHOT_EXPLORATION_FAILED", "usage": "UNKNOWN"}
+    target = _persist_result(state_root, result)
+    assert target == state_root / "live-smoke-result.json"
+    assert json.loads(target.read_text()) == result
+    assert result["result_path"] == str(target)

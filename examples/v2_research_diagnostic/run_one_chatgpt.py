@@ -9,8 +9,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sqlite3
 import subprocess
+import tempfile
 from pathlib import Path
 
 from bananloop.budget_ledger import BudgetLedger
@@ -28,6 +30,24 @@ def _git(args: list[str], source: Path) -> str:
     return subprocess.check_output(
         ["git", *args], cwd=source, text=True, stderr=subprocess.PIPE
     ).strip()
+
+
+def _persist_result(state_root: Path, result: dict) -> Path:
+    """Atomically retain a live smoke outcome without credential material."""
+    target = state_root / "live-smoke-result.json"
+    result["result_path"] = str(target)
+    encoded = (json.dumps(result, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode()
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=state_root)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(encoded)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, target)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return target
 
 
 def main() -> None:
@@ -158,15 +178,33 @@ def main() -> None:
             state_root=state_root, role_registry=registry_roles,
         )
         # The single subscription request happens only after the flag and preflight.
-        result = runner.run_one(
-            node_id="siwc-research-1", visible_paths=["TASK.md"],
-            invoke=make_researcher_invoke(researcher),
-        )
-        print(json.dumps({
+        try:
+            result = runner.run_one(
+                node_id="siwc-research-1", visible_paths=["TASK.md"],
+                invoke=make_researcher_invoke(researcher),
+            )
+        except (Exception, KeyboardInterrupt) as exc:
+            failure = {
+                "status": "SIWC_ONE_SHOT_EXPLORATION_FAILED",
+                "live_model_call": researcher.last_status in {"DISPATCHED", "FAILED", "COMPLETED"},
+                "provider": "chatgpt_plan", "model": args.model,
+                "request_status": researcher.last_status,
+                "response_request_id": researcher.last_request_id,
+                "usage": researcher.last_usage if researcher.last_usage is not None else "UNKNOWN",
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:1000],
+                "campaign_id": entry.campaign_id, "goal": spec.goal,
+                "state_dir": str(state_root), "recorded_at": utc_now(),
+            }
+            failure["result_path"] = str(_persist_result(state_root, failure))
+            print(json.dumps(failure, indent=2))
+            raise SystemExit(130 if isinstance(exc, KeyboardInterrupt) else 1) from exc
+        success = {
             "status": "SIWC_ONE_SHOT_EXPLORATION_COMPLETED",
             "live_model_call": True,
             "provider": "chatgpt_plan",
             "model": args.model,
+            "request_status": researcher.last_status,
             "response_request_id": researcher.last_request_id,
             "usage": researcher.last_usage if researcher.last_usage is not None else "UNKNOWN",
             "complete_full_pipeline_proven": False,
@@ -175,8 +213,10 @@ def main() -> None:
             "goal": spec.goal,
             "job_id": result["job_id"],
             "research_evidence_ids": result["research_evidence_ids"],
-            "state_dir": str(state_root),
-        }, indent=2))
+            "state_dir": str(state_root), "recorded_at": utc_now(),
+        }
+        success["result_path"] = str(_persist_result(state_root, success))
+        print(json.dumps(success, indent=2))
     finally:
         queue.close()
         graph.close()
