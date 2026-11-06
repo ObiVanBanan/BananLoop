@@ -113,7 +113,7 @@ def _receipt(proposal, *, decision="APPROVE", verifier_instance="agent-" + "5" *
 
 def build_full_optimization_runtime(
     *, graph, queue, campaign_id, state_root, source_snapshot_id,
-    candidate_snapshot_id, protocol, manifest, registry,
+    candidate_snapshot_id, protocol, manifest, registry, runner=None,
 ):
     """Build the real evaluator/integration adapters used by lifecycle E2E tests."""
     class DeterministicRunner(TrustedEvaluatorRunner):
@@ -151,7 +151,7 @@ def build_full_optimization_runtime(
 
     trusted = TrustedEvaluatorAdapter(
         graph=graph, queue=queue, campaign_id=campaign_id,
-        state_root=state_root, runner=DeterministicRunner(),
+        state_root=state_root, runner=runner or DeterministicRunner(),
     )
     team = TeamFactoryV1.build(
         registry,
@@ -728,8 +728,9 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(
 
 
 
+@pytest.mark.parametrize("real_isolation", [False, True], ids=["test-runner", "real-bwrap"])
 def test_optimization_lifecycle_integrates_durable_evaluator_and_verification_queues(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, real_isolation,
 ):
     repo = tmp_path / "source-repo"
     repo.mkdir()
@@ -754,15 +755,29 @@ def test_optimization_lifecycle_integrates_durable_evaluator_and_verification_qu
     input_bytes = b'{"prompt":"controlled case","label":"ok"}'
     input_sha = hashlib.sha256(input_bytes).hexdigest()
     bundle_io = __import__("io").BytesIO()
+    evaluator = b'''import json, os
+from pathlib import Path
+tier = Path(os.environ["BANANLOOP_TIER"])
+manifest = json.loads((tier / "manifest.json").read_text())
+cases = json.loads((tier / "input-map.json").read_text())
+candidate = Path(os.environ["BANANLOOP_CANDIDATE"]) / "src/app.py"
+source = candidate.read_text()
+quality = 0.5 if "regression candidate" in source else (0.6 if source == "base\\n" else 0.8)
+print(json.dumps({
+    "status": "ok", "metrics": {"quality": quality},
+    "protocol_sha256": manifest["protocol_sha256"],
+    "cases": [{key: item[key] for key in ("case_id", "repetition", "input_sha256")} for item in cases],
+}))
+'''
     with zipfile.ZipFile(bundle_io, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("evaluate.py", "# deterministic test asset\n")
+        archive.writestr("evaluate.py", evaluator)
     bundle_bytes = bundle_io.getvalue()
     bundle_sha = hashlib.sha256(bundle_bytes).hexdigest()
     preliminary = EvaluatorProtocolV1(
         protocol_id="lifecycle-quality", version=1,
         source_snapshot_id=source_snapshot_id,
         evaluator_bundle_sha256=bundle_sha,
-        entrypoint=("python", "{evaluator}/evaluate.py"),
+        entrypoint=("python3", "{evaluator}/evaluate.py"),
         metric_id="quality", metric_field="quality",
         direction="MAXIMIZE", aggregation="MEAN",
         tiers=(
@@ -913,10 +928,13 @@ def test_optimization_lifecycle_integrates_durable_evaluator_and_verification_qu
     protocol_authority._append_proposal(proposal)
     protocol_authority._append_verified_receipt(approval)
 
+    real_runner = TrustedEvaluatorRunner() if real_isolation else None
+    if real_runner is not None and not real_runner._sandbox_available():
+        pytest.skip("host does not permit production bubblewrap namespaces")
     coordinator, trusted, executor = build_full_optimization_runtime(
         graph=graph, queue=queue, campaign_id=campaign_id, state_root=state_root,
         source_snapshot_id=source_snapshot_id, candidate_snapshot_id=candidate_snapshot_id,
-        protocol=protocol, manifest=manifest, registry=registry,
+        protocol=protocol, manifest=manifest, registry=registry, runner=real_runner,
     )
     try:
         graph.mutate(MutateGraph(

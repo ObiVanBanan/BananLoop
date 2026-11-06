@@ -19,6 +19,8 @@ import zipfile
 from datetime import datetime, timezone
 from urllib.error import HTTPError
 
+import pytest
+
 from bananloop.api import create_server
 from bananloop.budget_ledger import BudgetLedger
 from bananloop.contracts import (
@@ -36,7 +38,7 @@ from bananloop.registry import CampaignRegistry
 from bananloop.research_ledger import ResearchLedger
 from bananloop.cli import parser
 from bananloop.roles import RoleDefinitionV1, RoleRegistryV1
-from bananloop.trusted_evaluator import _case_protocol_digest
+from bananloop.trusted_evaluator import TrustedEvaluatorRunner, _case_protocol_digest
 
 from test_exploration_adapter import _pinned_executor, _role_registry, _source_repo
 from test_evaluator_verification import _receipt, build_full_optimization_runtime
@@ -62,7 +64,10 @@ def _api_json(url: str, *, method="GET", payload=None, key=None):
         raise AssertionError(f"API {method} {url} returned {exc.code}: {exc.read().decode()}") from exc
 
 
-def test_exploration_research_handoff_child_agrees_through_api_and_cli(tmp_path, capsys, monkeypatch):
+@pytest.mark.parametrize("real_isolation", [False, True], ids=["test-runner", "real-bwrap"])
+def test_exploration_research_handoff_child_agrees_through_api_and_cli(
+    tmp_path, capsys, monkeypatch, real_isolation,
+):
     from pathlib import Path
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     repo = tmp_path / "source"
@@ -217,15 +222,28 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(tmp_path,
         input_bytes = b'{"prompt":"closed deterministic evaluator case","label":"pass"}'
         input_digest = hashlib.sha256(input_bytes).hexdigest()
         bundle_buffer = io.BytesIO()
+        evaluator = b'''import json, os
+from pathlib import Path
+tier = Path(os.environ["BANANLOOP_TIER"])
+manifest = json.loads((tier / "manifest.json").read_text())
+cases = json.loads((tier / "input-map.json").read_text())
+candidate = Path(os.environ["BANANLOOP_CANDIDATE"])
+quality = 0.8 if (candidate / "src/optimizer/model/ranker.py").is_file() else 0.5
+print(json.dumps({
+    "status": "ok", "metrics": {"quality": quality},
+    "protocol_sha256": manifest["protocol_sha256"],
+    "cases": [{key: item[key] for key in ("case_id", "repetition", "input_sha256")} for item in cases],
+}))
+'''
         with zipfile.ZipFile(bundle_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr("evaluate.py", "# verified deterministic test asset\n")
+            archive.writestr("evaluate.py", evaluator)
         bundle_bytes = bundle_buffer.getvalue()
         bundle_digest = hashlib.sha256(bundle_bytes).hexdigest()
         preliminary = EvaluatorProtocolV1(
             protocol_id="integrated-quality", version=1,
             source_snapshot_id=base_commit,
             evaluator_bundle_sha256=bundle_digest,
-            entrypoint=("python", "{evaluator}/evaluate.py"),
+            entrypoint=("python3", "{evaluator}/evaluate.py"),
             metric_id="quality", metric_field="quality", direction="MAXIMIZE",
             aggregation="MEAN",
             tiers=(
@@ -328,11 +346,14 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(tmp_path,
         child_graph = GraphRepository.open(str(child_db), campaign_id=child_id)
         child_queue = registry.worker_queue()
         try:
+            real_runner = TrustedEvaluatorRunner() if real_isolation else None
+            if real_runner is not None and not real_runner._sandbox_available():
+                pytest.skip("host does not permit production bubblewrap namespaces")
             coordinator, trusted, executor = build_full_optimization_runtime(
                 graph=child_graph, queue=child_queue, campaign_id=child_id,
                 state_root=child_state, source_snapshot_id=base_commit,
                 candidate_snapshot_id=candidate_snapshot_id, protocol=protocol,
-                manifest=evaluator_manifest, registry=roles,
+                manifest=evaluator_manifest, registry=roles, runner=real_runner,
             )
             child_graph.mutate(MutateGraph(
                 command_id="add-integrated-child-candidate",

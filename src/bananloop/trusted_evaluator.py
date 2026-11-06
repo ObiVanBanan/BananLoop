@@ -419,7 +419,33 @@ def _limit_evaluator_process(timeout_seconds: int) -> None:
         cpu_limit = max(1, int(timeout_seconds) + 2)
         _resource.setrlimit(_resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
         if hasattr(_resource, "RLIMIT_NPROC"):
-            _resource.setrlimit(_resource.RLIMIT_NPROC, (128, 128))
+            # RLIMIT_NPROC is charged to the host UID, even for a process
+            # entering a user namespace. A fixed cap below the host's existing
+            # process count prevents bubblewrap itself from starting. Preserve
+            # a small fixed fork budget above the observed baseline instead.
+            uid = os.getuid()
+            existing = 0
+            try:
+                for entry in os.scandir("/proc"):
+                    if not entry.name.isdecimal():
+                        continue
+                    try:
+                        status = Path(entry.path, "status").read_text(encoding="ascii")
+                        uid_line = next(line for line in status.splitlines() if line.startswith("Uid:"))
+                        if int(uid_line.split()[1]) != uid:
+                            continue
+                        existing += len(os.listdir(Path(entry.path, "task")))
+                    except (OSError, StopIteration, ValueError):
+                        continue
+            except OSError:
+                # When procfs is unavailable, retain the conservative historic
+                # cap; the sandbox will fail closed if the host cannot fork.
+                existing = 0
+            process_soft, process_hard = _resource.getrlimit(_resource.RLIMIT_NPROC)
+            target = max(128, existing + 128)
+            if process_hard != _resource.RLIM_INFINITY:
+                target = min(target, process_hard)
+            _resource.setrlimit(_resource.RLIMIT_NPROC, (target, process_hard))
         # Evaluator bundles are executable code and can otherwise exhaust the
         # host before their wall-clock timeout fires. Linux provides RLIMIT_AS;
         # fail closed if the hard memory ceiling cannot be applied.
