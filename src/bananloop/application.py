@@ -254,6 +254,7 @@ class CampaignApplication:
         conn = sqlite3.connect(uri, uri=True, timeout=5)
         conn.row_factory = sqlite3.Row
         try:
+            conn.execute("PRAGMA foreign_keys=ON")
             conn.execute("BEGIN")
             ledger = ResearchLedger(conn, read_only=True)
             if not ledger._available:
@@ -267,10 +268,17 @@ class CampaignApplication:
                 raise ValueError("public knowledge scope has no persisted evidence")
             if count > max_records:
                 raise OverflowError("knowledge scope exceeds the bounded export size")
-            package = ledger.export_knowledge(
-                campaign_ids=(campaign_id,), source_snapshot_id=source_snapshot_id,
-                protocol_digest=protocol_digest,
-            )
+            queue = CampaignRegistry(self.repo).worker_queue()
+            try:
+                # This handle must remain read-only: binding a campaign ID
+                # would write the graph identity marker on an export path.
+                graph = GraphRepository(conn)
+                package = ledger.export_knowledge(
+                    campaign_ids=(campaign_id,), source_snapshot_id=source_snapshot_id,
+                    protocol_digest=protocol_digest, graph=graph, queue=queue,
+                )
+            finally:
+                queue.close()
             projection = package.projection.model_dump(mode="json")
         except ResearchLedgerError as exc:
             raise ValueError("invalid research knowledge scope") from exc

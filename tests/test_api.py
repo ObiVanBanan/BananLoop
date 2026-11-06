@@ -500,15 +500,13 @@ def test_research_knowledge_read_model_is_public_bounded_and_redacted(api, tmp_p
         scopes = json.loads(response.read())
     assert len(scopes["scopes"]) == 1
     query = "source_snapshot_id=" + "a" * 40 + "&protocol_digest=" + "b" * 64
-    with _request(f"{base}/v1/campaigns/{campaign_id}/research?{query}") as response:
-        projection = json.loads(response.read())
-    encoded = json.dumps(projection)
-    assert projection["evidence"][0]["verification_status"] == "UNVERIFIED_ROLE_FINDING"
-    assert projection["evidence"][0]["causal_status"] == "UNVERIFIED_INFERENCE"
-    assert "private-job-id" not in encoded and "source_request_hash" not in encoded
-    assert "src/private_module.py" not in encoded and "affected_paths" not in encoded
-    assert "PUBLIC_DEV" in encoded and "PERSISTED" in encoded
-    assert len(projection["evidence"][0]["evidence_refs"][0]) < 100
+    # A self-hashing database row is not sufficient proof: the export must
+    # revalidate it against the durable queue result and completed graph node.
+    with pytest.raises(urllib.error.HTTPError) as fabricated_evidence:
+        _request(f"{base}/v1/campaigns/{campaign_id}/research?{query}")
+    assert fabricated_evidence.value.code == 400
+    assert "private-job-id" not in fabricated_evidence.value.read().decode()
+    fabricated_evidence.value.close()
 
     with pytest.raises(urllib.error.HTTPError) as invalid_scope:
         _request(f"{base}/v1/campaigns/{campaign_id}/research?source_snapshot_id=bad&protocol_digest=" + "b" * 64)
