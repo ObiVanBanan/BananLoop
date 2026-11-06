@@ -89,7 +89,7 @@ def test_official_pkce_dynamic_registration():
     assert data["agent_name_hint"] == "BananLoop"
     assert data["resource"] == "https://api.openai.com/v1"
     assert data["code_challenge_method"] == "S256"
-    assert data["code_challenge"] == "Y3wJq3gI0qVZ7xYnzrsJuN_GnHVEePq9uIG4JF2_CaM"
+    assert data["code_challenge"] == "iMnq5o6zALKXGivsnlom_0F5_WYda32GHkxlV7mq7hQ"
     assert "chatgpt.tokens.use.direct" in data["scope"]
     returned = authorization_parameters(
         "urn:uuid:16d5e285-35cd-4a2d-91b3-6e667dd01e8a",
