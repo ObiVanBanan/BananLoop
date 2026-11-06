@@ -124,8 +124,27 @@ def main() -> None:
         requests.append(public_input)
         text = f"mock observation {len(requests)}"
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        selected = "control" if len(requests) == 1 else "replication"
         return {
-            "next_experiment": "Repeat with an independent controlled sample",
+            "hypotheses": [
+                {
+                    "id": "control",
+                    "hypothesis": "The observed effect depends on the intervention.",
+                    "rationale": "A matched control can distinguish intervention effects from baseline variation.",
+                    "next_experiment": "Run a matched control while holding other conditions fixed",
+                    "falsification_condition": "The matched control produces the same observation.",
+                    "expected_evidence": "A paired observation under controlled conditions.",
+                },
+                {
+                    "id": "replication",
+                    "hypothesis": "The observation is reproducible on an independent sample.",
+                    "rationale": "Independent replication tests whether the first observation was sample-specific.",
+                    "next_experiment": "Repeat with an independent controlled sample",
+                    "falsification_condition": "The independent sample does not reproduce the observation.",
+                    "expected_evidence": "A second observation from a distinct sample.",
+                },
+            ],
+            "selected_hypothesis_id": selected,
             "artifact_text": {"observation.txt": text},
             "research_findings": [{
                 "claim_key": "toy:mechanism",
