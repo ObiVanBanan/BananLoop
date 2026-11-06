@@ -592,6 +592,14 @@ def cmd_graph_mutate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_v2_explore(args: argparse.Namespace) -> int:
+    from .v2_campaign_cli import run_v2_explore
+
+    result = run_v2_explore(args)
+    print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
+    return 0 if result.get("status") not in {"BUDGET_EXHAUSTED", "STOP_REQUESTED"} else 2
+
+
 def _status_evaluation_summary(measurements: list[dict]) -> list[dict]:
     """Keep status output aggregate-only; full reports have a separate command."""
     return [{
@@ -1105,6 +1113,27 @@ def parser() -> argparse.ArgumentParser:
     graph_mutate.add_argument("--input", required=True, help="JSON file containing one canonical graph command")
     graph_mutate.add_argument("--idempotency-key", required=True)
     graph_mutate.set_defaults(func=cmd_graph_mutate)
+
+    v2 = sub.add_parser("v2", help="create and run a v2 Full campaign without the legacy Engine")
+    v2_sub = v2.add_subparsers(dest="v2_command", required=True)
+    v2_explore = v2_sub.add_parser(
+        "explore", help="create or resume a frozen v2 Exploration campaign through SIWC",
+    )
+    v2_explore.add_argument("--repo", default=".")
+    v2_explore.add_argument("--state-dir")
+    v2_explore.add_argument("--request-id", help="stable campaign identity used to resume this goal")
+    v2_explore.add_argument("--goal", required=True)
+    v2_explore.add_argument("--read-path", action="append", required=True,
+                            help="exact public source file path visible to the researcher; repeat as needed")
+    v2_explore.add_argument("--model", default="gpt-6-luna")
+    v2_explore.add_argument("--max-agent-calls", type=int, default=2)
+    v2_explore.add_argument("--max-model-tokens", type=int, default=2048,
+                            help="per-call ledger ceiling; SIWC may not enforce this provider-side")
+    v2_explore.add_argument("--max-iterations", type=int, default=2)
+    v2_explore.add_argument("--approve-up-to-calls", type=int, default=0,
+                            help="explicit consent to spend up to this many ChatGPT plan requests now")
+    v2_explore.add_argument("--timeout-seconds", type=int, default=120)
+    v2_explore.set_defaults(func=cmd_v2_explore)
 
     v2_pivot = sub.add_parser("v2-pivot", help="record a v2 pivot proposal or supervised operator decision")
     v2_pivot_sub = v2_pivot.add_subparsers(dest="v2_pivot_command", required=True)

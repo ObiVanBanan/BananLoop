@@ -36,6 +36,36 @@ are too permissive, inspect them and fix owner-only permissions before use.
 python -m pytest tests/test_chatgpt_plan.py tests/test_v2_research_runtime.py -q
 ```
 
+## Create or resume a general v2 Exploration campaign
+
+The v2 command persists a frozen v2 spec, exact public read-path allowlist,
+SQLite graph, durable queue, and budget. It makes **zero model requests** by
+default:
+
+```bash
+bananloop v2 explore --repo . --state-dir /tmp/bananloop-v2-state \
+  --request-id toy-study-001 \
+  --goal "Test whether a controlled intervention changes the toy outcome" \
+  --read-path README.md
+```
+
+After reviewing the frozen goal, model, paths, and call budget, explicitly
+authorize one ChatGPT plan request for the same persisted campaign:
+
+```bash
+bananloop v2 explore --repo . --state-dir /tmp/bananloop-v2-state \
+  --request-id toy-study-001 \
+  --goal "Test whether a controlled intervention changes the toy outcome" \
+  --read-path README.md --approve-up-to-calls 1
+```
+
+The same stable request ID, goal, repo HEAD, paths, model and budget must be
+used to resume the campaign. A subsequent explicitly authorized command can
+advance one more iteration. Uncertain dispatched calls are not retried. The
+command runs the v2 scheduler/queue/Research Ledger path and does not call the
+legacy Engine. This entry point currently covers Exploration; it is not a
+claim that the full Optimization and verification cycle is qualified.
+
 ## Explicit one-shot owner experiment (optional, consumes ChatGPT plan)
 
 Only after you personally decide to spend one request:
