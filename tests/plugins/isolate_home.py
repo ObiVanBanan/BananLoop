@@ -1,26 +1,17 @@
 """Keep repository tests from reading or writing the developer's home directory."""
 from __future__ import annotations
 
-import shutil
 import os
-import subprocess
+import shutil
 import tempfile
 from pathlib import Path
 
 
 if os.name == "nt":
-    _isolated_home = Path(os.environ["USERPROFILE"]) / ".bananloop-pytest-home"
+    # The workflow prepares a protected DACL on this root before pytest starts.
+    # Descendants inherit only the runner, SYSTEM, and Administrators entries.
+    _isolated_home = Path(os.environ["BANANLOOP_TEST_BASETEMP"]) / "isolated-home"
     _isolated_home.mkdir(parents=True, exist_ok=True)
-    current_sid = subprocess.check_output(
-        ["whoami", "/user", "/fo", "csv", "/nh"], text=True,
-    ).strip().strip('"').split('","')[-1]
-    subprocess.run(["icacls", str(_isolated_home), "/inheritance:r"],
-                   check=True, capture_output=True, text=True)
-    subprocess.run([
-        "icacls", str(_isolated_home), "/grant:r",
-        f"*{current_sid}:(OI)(CI)F", "*S-1-5-18:(OI)(CI)F",
-        "*S-1-5-32-544:(OI)(CI)F",
-    ], check=True, capture_output=True, text=True)
 else:
     _isolated_home = Path(tempfile.mkdtemp(prefix="bananloop-pytest-home-"))
 

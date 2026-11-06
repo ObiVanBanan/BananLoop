@@ -36,10 +36,24 @@ jobs:
           $testRoot = Join-Path $env:USERPROFILE ".bananloop-pytest-temp"
           New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
           $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-          icacls $testRoot /inheritance:r | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "Could not remove inherited pytest ACL" }
-          icacls $testRoot /grant:r "*$($currentSid):(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
-          if ($LASTEXITCODE -ne 0) { throw "Could not apply private pytest ACL" }
+          $acl = Get-Acl -Path $testRoot
+          $acl.SetAccessRuleProtection($true, $false)
+          foreach ($rule in @($acl.Access)) { $acl.RemoveAccessRuleAll($rule) }
+          $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
+            [Security.AccessControl.InheritanceFlags]::ObjectInherit
+          foreach ($sid in @($currentSid, "S-1-5-18", "S-1-5-32-544")) {
+            $identity = [Security.Principal.SecurityIdentifier]::new($sid)
+            $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+              $identity, [Security.AccessControl.FileSystemRights]::FullControl,
+              $inheritance, [Security.AccessControl.PropagationFlags]::None,
+              [Security.AccessControl.AccessControlType]::Allow)
+            [void]$acl.AddAccessRule($rule)
+          }
+          Set-Acl -Path $testRoot -AclObject $acl
+          $verifiedAcl = Get-Acl -Path $testRoot
+          if (-not $verifiedAcl.AreAccessRulesProtected) { throw "Pytest DACL still inherits from USERPROFILE" }
+          if (@($verifiedAcl.Access).Count -ne 3) { throw "Pytest DACL contains unexpected access rules" }
+          $verifiedAcl.Access | Format-Table IdentityReference, FileSystemRights, AccessControlType, IsInherited | Out-String | Write-Output
           "BANANLOOP_TEST_BASETEMP=$testRoot" >> $env:GITHUB_ENV
       - name: Run pytest on Windows
         if: matrix.os == 'windows-latest'
