@@ -1,0 +1,63 @@
+# RPDI-13R ChatGPT plan setup (official SIWC)
+
+This uses the official [Sign in with ChatGPT for open-source apps](https://developers.openai.com/siwc/token-sharing-open-source).
+It is NOT an API key, Codex CLI credential export, LearnHarness code
+or ChatGPT backend-api request. All OAuth credentials stay in the private
+host owner vault and never enter model-visible task files. This preview
+uses the same plan usage as other ChatGPT apps; it has no separate quota.
+
+## Install and connect — no inference yet
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[test]'
+bananloop-chatgpt status
+bananloop-chatgpt login
+bananloop-chatgpt models
+```
+
+The `login` command starts a loopback HTTP listener on `127.0.0.1`,
+opens the system browser at `auth.openai.com`, and requests the
+ChatGPT plan permission. Complete the interactive consent yourself.
+`status` displays no bearer tokens, and `models` lists only visible
+model slugs for the signed-in account. An advertised model does not
+guarantee entitlement to a successful request.
+
+**Security:** The vault defaults to `~/.config/bananloop/chatgpt-plan.json`
+(or `$XDG_CONFIG_HOME/bananloop/chatgpt-plan.json`), with mode 0600 and
+a mode 0700 directory on Linux. Do not include that file in archives,
+git commits, diagnostic logs or agent workspaces. If existing directories
+are too permissive, inspect them and fix owner-only permissions before use.
+
+## Tests, zero subscription calls
+
+```bash
+python -m pytest tests/test_chatgpt_plan.py tests/test_v2_research_runtime.py -q
+```
+
+## Explicit one-shot owner experiment (optional, consumes ChatGPT plan)
+
+Only after you personally decide to spend one request:
+
+```bash
+WORKDIR="$(mktemp -d /tmp/bananloop-siwc-smoke.XXXXXX)"
+python examples/v2_research_diagnostic/run_one_chatgpt.py \
+  --work-dir "$WORKDIR" --model gpt-6-luna --approve-one-call
+```
+
+If your account's catalog does not contain `gpt-6-luna`, **do not**
+silently change the model used for benchmark comparison. Confirm a
+different model explicitly before separate experiments. This command
+allows only one durable research worker job, no self-initiated shell
+or network tools, no hidden evaluator, and no automatic retries. It
+does not prove complete v0.2 Full or satisfy RPDI-14.
+
+The SIWC Responses preview rejects a server-side `max_output_tokens`
+parameter, so the advertised `tokens_per_instance` here is **not**
+an enforceable token ceiling for official benchmark purposes.
+Only received provider usage counts may be reported; missing counts
+must be `UNKNOWN`. No API-key fallback is ever configured.
+
+`bananloop-chatgpt logout` clears usable local tokens. To revoke remote
+app access, also use ChatGPT Settings → Apps/Connections (wording may vary).
