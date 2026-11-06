@@ -18,9 +18,9 @@ for machine-readable evidence.
 - Offline diagnostic:
   `python examples/v2_research_diagnostic/run_offline.py --work-dir /tmp/bananloop-v2-offline-acceptance-14cb0a4`
 - Diagnostic status: `OFFLINE_V2_EXPLORATION_PASS`; two durable iterations,
-  public memory in the second turn, no live model call. The run completed while
-  this report was untracked, so it marked the worktree dirty; the tested code
-  revision was exactly `14cb0a4`.
+  public memory in the second turn, no live model call. It completed on clean
+  repository revision `23e01eecd35ef7e677e9b7627af314fcabf2d686`; runtime code
+  was unchanged from tested code commit `14cb0a4`.
 - No ChatGPT subscription request was made.
 
 ## Windows CI fixes
