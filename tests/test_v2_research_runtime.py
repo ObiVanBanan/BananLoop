@@ -147,6 +147,39 @@ def test_researcher_rejects_score_and_no_evidence(tmp_path):
         graph.close()
 
 
+def test_hypothesis_portfolio_is_selected_and_persisted_as_evidence(tmp_path):
+    runtime, graph, queue = _runtime(tmp_path)
+    hypotheses = [
+        {"id": "h1", "hypothesis": "vary the public input size"},
+        {"id": "h2", "hypothesis": "hold input size fixed and vary ordering"},
+    ]
+    try:
+        result = runtime.run_one(
+            node_id="explore", visible_paths=["README.md"],
+            invoke=make_researcher_invoke(lambda *_args, **_kwargs: {
+                "hypotheses": hypotheses,
+                "selected_hypothesis_id": "h2",
+                "next_experiment": "hold input size fixed and vary ordering",
+                "artifact_text": {"observation.txt": "two candidates considered"},
+            }),
+        )
+        assert result["status"] == "EXPLORATION_COMPLETED"
+        completion = graph.scheduling_snapshot()["nodes"][0]["payload"]["completion_evidence"]
+        assert completion["next_experiment"] == "hold input size fixed and vary ordering"
+        artifacts = completion["artifact_digests"]
+        assert len(artifacts) == 2  # observation plus trusted serialized portfolio
+        artifact_root = tmp_path / "rpdi05" / "artifacts"
+        serialized = [
+            path.read_bytes() for path in artifact_root.rglob("*")
+            if path.is_file() and path.read_bytes().startswith(b'{"candidates"')
+        ]
+        assert len(serialized) == 1
+        assert b'"selected_hypothesis_id":"h2"' in serialized[0]
+    finally:
+        queue.close()
+        graph.close()
+
+
 def test_completed_research_job_is_projected_after_runtime_restart_without_redelivery(tmp_path):
     runtime, graph, queue = _runtime(tmp_path)
     calls = []

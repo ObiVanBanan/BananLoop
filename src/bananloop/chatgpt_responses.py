@@ -18,8 +18,10 @@ from .chatgpt_plan import ChatGPTPlanAuth, SIWCError
 INSTRUCTIONS = (
     "You are the research role in BananLoop v0.2. Only PUBLIC_DEV "
     "information in the supplied JSON is available. Use that information "
-    "to propose falsifiable scientific hypotheses and the next investigation. "
-    "Return ONE strict JSON object, with keys next_experiment (nonempty string), "
+    "to propose a portfolio of 2-4 materially different, bounded, falsifiable "
+    "hypotheses and select one using the supplied evidence and research memory. "
+    "Return ONE strict JSON object, with keys hypotheses (array of objects each "
+    "with id and hypothesis), selected_hypothesis_id, next_experiment (nonempty string), "
     "artifact_text (mapping of relative file names to UTF-8 text, optional), "
     "research_findings (array of objects, optional), evidence_refs (array, "
     "optional), limitations (array, optional). Findings need claim_key, "

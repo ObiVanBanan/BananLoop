@@ -7,6 +7,7 @@ would bypass the capability boundary and is not a supported integration.
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 from typing import Any, Callable
 
@@ -30,7 +31,9 @@ class ResearcherReplyV1(BaseModel):
     """Agent-authored research text only; artifacts are digested by trusted Core."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-    next_experiment: str = Field(min_length=1, max_length=4000)
+    next_experiment: str | None = Field(default=None, min_length=1, max_length=4000)
+    hypotheses: tuple[dict[str, Any], ...] = Field(default=(), max_length=4)
+    selected_hypothesis_id: str | None = Field(default=None, min_length=1, max_length=100)
     evidence_refs: tuple[str, ...] = ()
     limitations: tuple[str, ...] = ()
     research_findings: tuple[dict[str, Any], ...] = ()
@@ -98,8 +101,11 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
             "role_context": role_context,
             "visible_documents": documents,
             "instruction": (
-                "Return a strictly structured research finding with a falsifiable "
-                "next experiment and optional text artifacts. Do not claim "
+                "Return 2-4 materially different, bounded, falsifiable hypotheses, "
+                "each with id and hypothesis, plus selected_hypothesis_id identifying "
+                "the one best supported for the next experiment. Include a falsifiable "
+                "next_experiment for that selection and optional text artifacts. "
+                "Do not claim "
                 "independent evaluator approval, validation or HOLDOUT scores. "
                 "These observations are unverified PUBLIC_DEV evidence."
             ),
@@ -111,6 +117,28 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
             max_model_tokens=max_model_tokens,
         )
         reply = ResearcherReplyV1.model_validate(raw)
+        if reply.hypotheses:
+            if len(reply.hypotheses) < 2:
+                raise V2RuntimeError("hypothesis portfolio must contain at least two candidates")
+            ids = [item.get("id") for item in reply.hypotheses]
+            if (any(not isinstance(item, str) or not item or len(item) > 100 for item in ids)
+                    or len(set(ids)) != len(ids)
+                    or reply.selected_hypothesis_id not in ids):
+                raise V2RuntimeError("hypothesis selection must identify one unique portfolio candidate")
+            selected = next(item for item in reply.hypotheses if item["id"] == reply.selected_hypothesis_id)
+            hypothesis = selected.get("hypothesis")
+            if not isinstance(hypothesis, str) or not hypothesis.strip() or len(hypothesis) > 4000:
+                raise V2RuntimeError("selected hypothesis must be bounded nonempty text")
+            next_experiment = reply.next_experiment or hypothesis
+            portfolio = json.dumps({
+                "candidates": list(reply.hypotheses),
+                "selected_hypothesis_id": reply.selected_hypothesis_id,
+            }, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        else:
+            if not reply.next_experiment:
+                raise V2RuntimeError("researcher must return a hypothesis portfolio or next experiment")
+            next_experiment = reply.next_experiment
+            portfolio = None
         if len(reply.artifact_text) > MAX_VISIBLE_FILES:
             raise V2RuntimeError("too many researcher artifacts")
         artifacts: list[dict[str, str]] = []
@@ -125,6 +153,10 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
             # ToolGateway is the only write authority.
             gateway.write_artifact(name, raw_bytes)
             artifacts.append({"path": name, "sha256": hashlib.sha256(raw_bytes).hexdigest()})
+        if portfolio is not None:
+            name = "research/hypothesis-portfolio.json"
+            gateway.write_artifact(name, portfolio)
+            artifacts.append({"path": name, "sha256": hashlib.sha256(portfolio).hexdigest()})
         # Only trusted Core may bind claims to produced artifact digests.
         # The LLM need not guess SHA-256 values and may not invent refs to
         # unavailable artifacts. Findings remain unverified.
@@ -146,7 +178,7 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
             "evidence_refs": reply.evidence_refs,
             "artifacts": artifacts,
             "limitations": reply.limitations,
-            "next_experiment": reply.next_experiment,
+            "next_experiment": next_experiment,
             "research_findings": findings,
         })
         if not output.artifacts and not output.research_findings and not output.evidence_refs:
