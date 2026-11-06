@@ -57,7 +57,7 @@ def main() -> None:
             model="gpt-6-luna", model_version="offline-mock-v1",
             prompt_digest="e" * 64, capability_policy=policy,
             context_fields=("campaign_goal", "node_id", "node_phase",
-                            "public_task", "evidence_refs", "dev_summary"),
+                            "public_task", "evidence_refs", "dev_summary", "budget_remaining"),
             min_instances=1, max_instances=1, calls_per_instance=2,
             tokens_per_instance=200,
         ),),
@@ -135,35 +135,49 @@ def main() -> None:
             graph=graph, queue=queue, campaign_id=entry.campaign_id,
             state_root=state_root, role_registry=roles,
         )
-        results = []
-        for ordinal in (1, 2):
-            node = f"research-{ordinal}"
-            graph.mutate({
-                "command_id": f"demo-add-{ordinal}",
-                "idempotency_key": f"demo-add-{ordinal}",
-                "expected_graph_revision": graph.graph_revision(),
-                "changes": [{"type": "AddNode", "node_id": node,
-                             "phase": "EXPLORATION"}],
-            })
-            results.append(runner.run_one(
-                node_id=node, visible_paths=["TASK.md"],
-                invoke=make_researcher_invoke(mock_model),
-            ))
+        graph.mutate({
+            "command_id": "demo-add-initial-research",
+            "idempotency_key": "demo-add-initial-research",
+            "expected_graph_revision": graph.graph_revision(),
+            "changes": [{"type": "AddNode", "node_id": "research-initial",
+                         "phase": "EXPLORATION"}],
+        })
+        campaign_result = runner.run_campaign(
+            visible_paths=["TASK.md"], invoke=make_researcher_invoke(mock_model),
+            max_iterations=2,
+        )
+        if campaign_result["iterations_this_call"] != 2:
+            raise RuntimeError("offline campaign did not complete its two bounded iterations")
+        results = campaign_result["completed"]
         inherited = requests[1]["role_context"].get("dev_summary", "")
         if "toy:mechanism" not in inherited:
             raise RuntimeError("the second model turn did not receive public causal memory")
-        print(json.dumps({
+        code_repo = Path(__file__).resolve().parents[2]
+        bananloop_revision = subprocess.check_output(
+            ["git", "-C", str(code_repo), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        code_dirty = bool(subprocess.check_output(
+            ["git", "-C", str(code_repo), "status", "--porcelain"], text=True,
+        ).strip())
+        result = {
             "status": "OFFLINE_V2_EXPLORATION_PASS",
             "live_model_called": False,
             "full_identity_only": True,
             "complete_full_pipeline_proven": False,
+            "bananloop_revision": bananloop_revision,
+            "bananloop_worktree_dirty": code_dirty,
             "campaign_id": entry.campaign_id,
             "source_commit": base_commit,
             "source_state": str(state_root),
+            "campaign_loop_status": campaign_result["status"],
             "jobs": [x["job_id"] for x in results],
             "research_evidence_counts": [len(x["research_evidence_ids"]) for x in results],
             "second_turn_received_public_memory": True,
-        }, indent=2))
+        }
+        (state_root / "offline-result.json").write_text(
+            json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
     finally:
         queue.close()
         graph.close()

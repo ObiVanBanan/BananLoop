@@ -16,7 +16,8 @@ from bananloop.chatgpt_plan import (
     _validate_token_body, verify_id_token, JWKS, MODELS, TOKEN, SCOPES,
 )
 from bananloop.chatgpt_responses import (
-    ChatGPTPlanResearcher, ChatGPTPlanResponseError, collect_completed, _event_stream,
+    ChatGPTPlanResearcher, ChatGPTPlanOptimizer, ChatGPTPlanIntegrationVerifier,
+    ChatGPTPlanResponseError, collect_completed, _event_stream,
 )
 
 
@@ -295,6 +296,65 @@ def test_official_response_payload_is_subscription_only(tmp_path):
     assert headers["Authorization"] == "Bearer oauth-access-token"
     assert "access_token" not in json.dumps(body)
     assert conn.closed
+
+
+def test_optimizer_siwc_protocol_is_pinned_and_tool_free(tmp_path):
+    auth, _ = _auth(tmp_path)
+    _connect(auth)
+    body = json.dumps({
+        "hypothesis_id": "hyp-1", "rationale": "test a small change",
+        "changes": {"src/app.py": "candidate\n"}, "limitations": [],
+    })
+    conn = FakeConnection(_finished(body=body))
+    optimizer = ChatGPTPlanOptimizer(
+        auth, approved_model="gpt-6-luna", transport_factory=lambda *args, **kwargs: conn,
+    )
+    result = optimizer(
+        {"protocol": "v2-optimizer-one-shot-v1", "role_context": {"public_task": "hyp-1"},
+         "visible_documents": {"src/app.py": "base\n"}, "instruction": "bounded"},
+        provider="openai", model="gpt-6-luna", model_version="pin-v1",
+        prompt_digest="a" * 64, max_model_tokens=100,
+    )
+    assert result["hypothesis_id"] == "hyp-1"
+    sent = conn.sent[0][2]
+    assert sent["store"] is False and sent["stream"] is True
+    assert "commands" in sent["input"][0]["content"]
+    assert "Authorization" not in json.dumps(sent)
+
+
+def test_integration_verifier_siwc_receives_only_core_summary(tmp_path):
+    auth, _ = _auth(tmp_path)
+    _connect(auth)
+    output = {
+        "candidate_snapshot_id": "a" * 40, "protocol_digest": "b" *  64,
+        "decision": "FAIL", "checks": ["candidate_identity"],
+        "diagnostics": ["Core evidence reports a failed check"],
+    }
+    conn = FakeConnection(_finished(body=json.dumps(output)))
+    verifier = ChatGPTPlanIntegrationVerifier(
+        auth, approved_model="gpt-6-luna", transport_factory=lambda *args, **kwargs: conn,
+    )
+    request = {
+        "schema": "integration-verification-v1", "campaign_id": "c1",
+        "spec_hash": "c" * 64, "source_snapshot_id": "d" * 40,
+        "approval_digest": "e" * 64, "protocol_id": "p", "protocol_version": 1,
+        "protocol_digest": "b" * 64, "candidate_snapshot_id": "a" * 40,
+        "core_evidence_digest": "f" * 64, "role_binding": {},
+        "role_context": {"public_task": "Core evidence summary"},
+        "team_manifest_digest": "1" * 64, "role_registry_digest": "2" * 64,
+    }
+    result = verifier._dispatch_verifier(
+        request, None, provider="openai", model="gpt-6-luna",
+        model_version="pin-v1", prompt_digest="3" * 64, max_model_tokens=100,
+    )
+    assert result["decision"] == "FAIL"
+    user_input = json.loads(conn.sent[0][2]["input"][1]["content"])
+    assert user_input["protocol"] == "v2-integration-verifier-one-shot-v1"
+    assert user_input["role_context"] == request["role_context"]
+    assert set(user_input) == {
+        "protocol", "role_context", "candidate_snapshot_id", "protocol_digest",
+    }
+    assert "access_token" not in json.dumps(user_input)
 
 
 def test_wrong_pin_or_unapproved_input_avoids_model_call(tmp_path):

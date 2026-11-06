@@ -1190,6 +1190,29 @@ class TrustedEvaluatorAdapter:
         repo = Path(spec.source_repo).resolve()
         if not repo.is_dir() or repo.is_symlink():
             raise TrustedEvaluatorError("frozen campaign source repository is unavailable")
+        # v2 Optimizer candidates are committed into a Core-owned private Git
+        # snapshot repository. Never import their objects into the user's
+        # source repository; resolve the exact content-addressed path instead.
+        try:
+            subprocess.check_output(
+                ["git", "-C", str(repo), "cat-file", "-e", f"{candidate_snapshot_id}^{{commit}}"],
+                stderr=subprocess.PIPE, timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            snapshot_root = (self.state_root / "v2_optimization" / "snapshots"
+                             / self.campaign_id).resolve()
+            candidate_repo = snapshot_root / candidate_snapshot_id
+            try:
+                candidate_resolved = candidate_repo.resolve(strict=True)
+                candidate_resolved.relative_to(snapshot_root)
+            except (OSError, ValueError):
+                raise TrustedEvaluatorError(
+                    "candidate snapshot is unavailable in the source or Core snapshot repository"
+                ) from None
+            if (candidate_repo.is_symlink() or not candidate_resolved.is_dir()
+                    or (candidate_resolved / ".git").is_symlink()):
+                raise TrustedEvaluatorError("Core candidate snapshot repository is unsafe")
+            repo = candidate_resolved
         for commit in (source_snapshot_id, candidate_snapshot_id):
             try:
                 resolved = subprocess.check_output(

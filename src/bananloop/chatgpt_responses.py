@@ -31,6 +31,21 @@ INSTRUCTIONS = (
     "If evidence is insufficient, identify the limitation and propose a "
     "direct falsification experiment."
 )
+OPTIMIZER_INSTRUCTIONS = (
+    "You are the pinned BananLoop v0.2 optimizer. Return one strict JSON object with "
+    "hypothesis_id, rationale, changes (a mapping of allowlisted relative paths to "
+    "complete UTF-8 replacement text), and optional limitations. Do not return commands, "
+    "scores, tests, evaluator output, credentials, or private data. Make only the smallest "
+    "change that tests the stated hypothesis."
+)
+INTEGRATION_VERIFIER_INSTRUCTIONS = (
+    "You are an independent reviewer of trusted Core evaluation evidence. Return one strict "
+    "JSON object with candidate_snapshot_id, protocol_digest, decision (PASS or FAIL), "
+    "checks, and optional diagnostics. Review only the supplied public evidence summary. "
+    "PASS requires all six checks: candidate_identity, protocol_identity, evaluation_receipt, "
+    "budget_receipt, artifact_integrity, regression_policy. If any supplied Core check failed, "
+    "or evidence is insufficient, return FAIL and explain why. Never invent evidence or scores."
+)
 MAX_REPLY_BYTES = 256_000
 MAX_ERROR_BYTES = 4_096
 MAX_EVENT_BYTES = 512_000
@@ -140,7 +155,12 @@ class ChatGPTPlanResearcher:
 
     def __init__(self, auth: ChatGPTPlanAuth, *, approved_model: str,
                  timeout_seconds: int = 120,
-                 transport_factory: Callable[..., Any] = http.client.HTTPSConnection):
+                 transport_factory: Callable[..., Any] = http.client.HTTPSConnection,
+                 protocol: str = "rpdi13r-researcher-one-shot-v1",
+                 instructions: str = INSTRUCTIONS,
+                 input_fields: frozenset[str] = frozenset({
+                     "protocol", "role_context", "visible_documents", "instruction",
+                 })):
         if not isinstance(approved_model, str) or not approved_model:
             raise SIWCError("a pinned model slug is required")
         if not isinstance(timeout_seconds, int) or not 1 <= timeout_seconds <= 300:
@@ -149,6 +169,9 @@ class ChatGPTPlanResearcher:
         self.approved_model = approved_model
         self.timeout_seconds = timeout_seconds
         self.transport_factory = transport_factory
+        self.protocol = protocol
+        self.instructions = instructions
+        self.input_fields = input_fields
         self.last_usage: dict[str, Any] | None = None
         self.last_request_id: str | None = None
         self.last_status = "NOT_STARTED"
@@ -167,10 +190,10 @@ class ChatGPTPlanResearcher:
                 or isinstance(max_model_tokens, bool) or not isinstance(max_model_tokens, int)
                 or max_model_tokens < 1):
             raise SIWCError("researcher provider configuration is incomplete")
-        if not isinstance(public_input, dict) or public_input.get("protocol") != "rpdi13r-researcher-one-shot-v1":
-            raise SIWCError("untrusted or unversioned research input")
-        if set(public_input) != {"protocol", "role_context", "visible_documents", "instruction"}:
-            raise SIWCError("research model input contains non-approved fields")
+        if not isinstance(public_input, dict) or public_input.get("protocol") != self.protocol:
+            raise SIWCError("untrusted or unversioned pinned-role input")
+        if set(public_input) != self.input_fields:
+            raise SIWCError("pinned-role model input contains non-approved fields")
 
         # Note: ChatGPT-plan Responses currently rejects max_output_tokens.
         # A pinned token allowance here is not a provider-enforced hard cap:
@@ -178,7 +201,7 @@ class ChatGPTPlanResearcher:
         body = {
             "model": model,
             "input": [
-                {"role": "developer", "content": INSTRUCTIONS},
+                {"role": "developer", "content": self.instructions},
                 {"role": "user", "content": json.dumps(public_input, ensure_ascii=False, allow_nan=False)},
             ],
             "store": False, "stream": True,
@@ -227,3 +250,67 @@ class ChatGPTPlanResearcher:
             raise
         finally:
             connection.close()
+
+
+class ChatGPTPlanOptimizer(ChatGPTPlanResearcher):
+    """Official SIWC Responses caller for the bounded v2 optimizer protocol."""
+
+    def __init__(self, auth: ChatGPTPlanAuth, *, approved_model: str,
+                 timeout_seconds: int = 120,
+                 transport_factory: Callable[..., Any] = http.client.HTTPSConnection):
+        super().__init__(auth, approved_model=approved_model,
+                         timeout_seconds=timeout_seconds,
+                         transport_factory=transport_factory,
+                         protocol="v2-optimizer-one-shot-v1",
+                         instructions=OPTIMIZER_INSTRUCTIONS)
+
+
+class ChatGPTPlanIntegrationVerifier(ChatGPTPlanResearcher):
+    """Tool-free SIWC executor for the independent integration-verifier role."""
+
+    def __init__(self, auth: ChatGPTPlanAuth, *, approved_model: str,
+                 timeout_seconds: int = 120,
+                 transport_factory: Callable[..., Any] = http.client.HTTPSConnection):
+        super().__init__(auth, approved_model=approved_model,
+                         timeout_seconds=timeout_seconds,
+                         transport_factory=transport_factory,
+                         protocol="v2-integration-verifier-one-shot-v1",
+                         instructions=INTEGRATION_VERIFIER_INSTRUCTIONS,
+                         input_fields=frozenset({
+                             "protocol", "role_context", "candidate_snapshot_id",
+                             "protocol_digest",
+                         }))
+
+    def executor(self, manifest: Any, instance_id: str):
+        """Bind this transport to one already-pinned, no-capability verifier role."""
+        from .roles import PinnedRoleExecutorV1
+
+        return PinnedRoleExecutorV1.from_manifest(
+            manifest, instance_id, self._dispatch_verifier,
+        )
+
+    def _dispatch_verifier(self, request: dict[str, Any], gateway: Any, **pin: Any) -> dict[str, Any]:
+        if gateway is not None or request.get("schema") != "integration-verification-v1":
+            raise SIWCError("integration verifier accepts only the bounded Core evidence request")
+        allowed = {
+            "schema", "campaign_id", "spec_hash", "source_snapshot_id", "approval_digest",
+            "protocol_id", "protocol_version", "protocol_digest", "candidate_snapshot_id",
+            "core_evidence_digest", "role_binding", "role_context", "team_manifest_digest",
+            "role_registry_digest",
+        }
+        if set(request) != allowed:
+            raise SIWCError("integration verifier request contains unexpected fields")
+        model = pin.get("model")
+        if not isinstance(model, str):
+            raise SIWCError("pinned integration verifier model is missing")
+        public_input = {
+            "protocol": self.protocol,
+            "role_context": request["role_context"],
+            "candidate_snapshot_id": request["candidate_snapshot_id"],
+            "protocol_digest": request["protocol_digest"],
+        }
+        return self(
+            public_input, provider=pin.get("provider"), model=model,
+            model_version=pin.get("model_version"), prompt_digest=pin.get("prompt_digest"),
+            max_model_tokens=int(pin.get("max_model_tokens") or 1),
+        )

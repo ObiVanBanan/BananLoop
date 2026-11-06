@@ -134,7 +134,15 @@ def build_full_optimization_runtime(
                 "case_id": item["case_id"], "repetition": item["repetition"],
                 "input_sha256": item["input_sha256"], "metrics": {},
             } for item in private_map]
-            score = 0.6 if candidate_snapshot_id == source_snapshot_id else 0.8
+            if candidate_snapshot_id == source_snapshot_id:
+                score = 0.6
+            else:
+                candidate_file = (state_root / "v2_optimization" / "snapshots"
+                                  / campaign_id / candidate_snapshot_id / "src" / "app.py")
+                try:
+                    score = 0.5 if "regression candidate" in candidate_file.read_text() else 0.8
+                except FileNotFoundError:
+                    score = 0.8
             return json.dumps({
                 "status": "ok", "metrics": {"quality": score},
                 "protocol_sha256": self.protocol_hash, "cases": measured_cases,
@@ -149,7 +157,10 @@ def build_full_optimization_runtime(
         registry,
         TeamRequestV1(
             campaign_id=campaign_id, spec_hash=graph.campaign_spec().approved_hash(),
-            requested_instances={"integration_verifier": 1}, specializations=(),
+            requested_instances={
+                "integration_verifier": 1,
+                **({"optimizer": 1} if any(role.role_id == "optimizer" for role in registry.roles) else {}),
+            }, specializations=(),
             available_agent_calls=10, available_model_tokens=1000,
         ),
         expected_registry_digest=registry.digest(),
@@ -157,12 +168,13 @@ def build_full_optimization_runtime(
     manifest_authority = TeamManifestAuthority(queue.path)
     manifest_authority.pin(team)
     manifest_authority.close()
-    member = team.members[0]
+    member = next(item for item in team.members if item.role.role_id == "integration_verifier")
 
     def invoke(request, _gateway, **_pinned):
+        public_evidence = json.loads(request["role_context"]["public_task"])
         return IntegrationVerifierOutputV1(
             candidate_snapshot_id=request["candidate_snapshot_id"],
-            protocol_digest=request["protocol_digest"], decision="PASS",
+            protocol_digest=request["protocol_digest"], decision=public_evidence["decision"],
             checks=(
                 "candidate_identity", "protocol_identity", "evaluation_receipt",
                 "budget_receipt", "artifact_integrity", "regression_policy",
@@ -716,7 +728,7 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(
 
 
 
-def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
+def test_optimization_lifecycle_integrates_durable_evaluator_and_verification_queues(
     tmp_path, monkeypatch,
 ):
     repo = tmp_path / "source-repo"
@@ -815,11 +827,24 @@ def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
         ),
         context_fields=("campaign_goal", "public_task"),
         priority=1, min_instances=1, max_instances=1,
-        calls_per_instance=1, tokens_per_instance=100,
+        calls_per_instance=5, tokens_per_instance=500,
+    )
+    optimizer_role = RoleDefinitionV1(
+        role_id="optimizer", adapter="codex", provider="openai",
+        model="gpt-6-luna", model_version="pin-test", prompt_digest="b" * 64,
+        capability_policy=CapabilityPolicyV2(
+            tools=("read_file", "write_file", "commit_candidate"),
+            read_paths=("src/**",), write_paths=("src/**",), backend="LOCAL",
+            network_access=False,
+        ),
+        context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
+                        "constraints", "evidence_refs", "dev_summary"),
+        priority=1, min_instances=1, max_instances=1,
+        calls_per_instance=5, tokens_per_instance=500,
     )
     registry = RoleRegistryV1(
         registry_id="full-lifecycle-registry", version=1,
-        roles=(role_definition,),
+        roles=(role_definition, optimizer_role),
     )
     spec = parse_campaign_spec_document({
         "schema_version": 2, "mode": "OPTIMIZATION",
@@ -828,8 +853,9 @@ def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
         "autonomy": {
             "mode": "SUPERVISED", "scope_digest": "b" * 64, "scope_version": 1,
             "capability_policy": {
-                "tools": [], "read_paths": ["src/**"], "write_paths": [],
-                "backend": "ISOLATED", "network_access": False,
+                "tools": ["read_file", "write_file", "commit_candidate"],
+                "read_paths": ["src/**"], "write_paths": ["src/**"],
+                "backend": "LOCAL", "network_access": False,
             },
         },
         "budget": {
@@ -859,7 +885,8 @@ def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
     db_path = state_root / "campaign.sqlite3"
     ledger = BudgetLedger(db_path)
     ledger.create_root(
-        campaign_id, {"agent_calls": 20, "evaluator_calls": 20},
+        campaign_id, {"agent_calls": 20, "evaluator_calls": 20,
+                      "experiments": 10, "attempts": 20},
     )
     ledger.close()
     conn = sqlite3.connect(db_path, isolation_level=None)
@@ -986,6 +1013,137 @@ def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
         assert graph.conn.execute(
             "SELECT COUNT(*) FROM evaluator_integration_receipts"
         ).fetchone()[0] == 1
+
+        graph.mutate(MutateGraph(
+            command_id="add-v2-runtime-proposal", idempotency_key="add-v2-runtime-proposal",
+            expected_graph_revision=graph.graph_revision(),
+            changes=(AddNode(
+                type="AddNode", node_id="v2-runtime-proposal", phase="OPTIMIZATION",
+                payload={"source_snapshot_id": source_snapshot_id,
+                         "hypothesis": "Improve the deterministic ranker.",
+                         "scheduler": {"priority": 5}},
+            ),),
+        ))
+        from bananloop.v2_optimization_runtime import V2OptimizationRuntime
+
+        runtime = V2OptimizationRuntime(
+            graph=graph, queue=queue, campaign_id=campaign_id, state_root=state_root,
+            role_registry=registry, trusted_evaluator=trusted,
+            integration_verifier=coordinator.integration_verifier,
+        )
+
+        def optimizer_reply(public_input, **_pinned):
+            assert "visible_documents" in public_input
+            encoded = json.dumps(public_input).lower()
+            assert "controlled-case" not in encoded
+            assert "controlled case" not in encoded
+            return {
+                "hypothesis_id": "ranker-hypothesis",
+                "rationale": "Use the improved deterministic ranker implementation.",
+                "changes": {"src/app.py": "optimized candidate\n"},
+            }
+
+        proposed = runtime.run_one(
+            visible_paths=["src/app.py"], hypothesis_id="ranker-hypothesis",
+            model_reply=optimizer_reply, worker_id="v2-optimizer-test",
+        )
+        assert proposed["status"] == "CANDIDATE_CREATED"
+        assert proposed["candidate_snapshot_id"] != source_snapshot_id
+        published_revision = graph.graph_revision()
+        published_events = len(queue.events_after(0))
+        replayed = runtime.candidate_adapter.publish_completed(proposed["job_id"])
+        assert replayed["replayed"] is True
+        assert graph.graph_revision() == published_revision
+        assert len(queue.events_after(0)) == published_events
+        optimized = runtime.run_campaign(
+            visible_paths=["src/app.py"], integration_verifier_executor=executor,
+            max_steps=2, worker_id="v2-optimization-cycle",
+        )
+        assert optimized["steps_this_call"] == 2
+        assert [step["status"] for step in optimized["steps"]] == [
+            "DEV_EVALUATED", "INDEPENDENT_VERIFICATION_PASS",
+        ]
+        verified = optimized["steps"][-1]
+        assert verified["champion"]["snapshot_id"] == proposed["candidate_snapshot_id"]
+
+        graph.mutate(MutateGraph(
+            command_id="add-v2-runtime-regression", idempotency_key="add-v2-runtime-regression",
+            expected_graph_revision=graph.graph_revision(),
+            changes=(AddNode(
+                type="AddNode", node_id="v2-runtime-regression", phase="OPTIMIZATION",
+                payload={"source_snapshot_id": source_snapshot_id,
+                         "hypothesis": "Try an intentionally regressing implementation.",
+                         "scheduler": {"priority": 10}},
+            ),),
+        ))
+
+        def regressing_reply(_public_input, **_pinned):
+            return {
+                "hypothesis_id": "regressing-hypothesis",
+                "rationale": "This candidate is deliberately worse for the rejection test.",
+                "changes": {"src/app.py": "regression candidate\n"},
+            }
+
+        regressing = runtime.run_one(
+            visible_paths=["src/app.py"], hypothesis_id="regressing-hypothesis",
+            model_reply=regressing_reply, worker_id="v2-regression-optimizer",
+        )
+        assert regressing["status"] == "CANDIDATE_CREATED"
+        assert runtime.run_one(
+            visible_paths=["src/app.py"], worker_id="v2-regression-evaluator",
+        )["status"] == "DEV_EVALUATED"
+        rejected = runtime.run_one(
+            visible_paths=["src/app.py"], integration_verifier_executor=executor,
+            worker_id="v2-regression-verifier",
+        )
+        assert rejected["status"] == "INDEPENDENT_VERIFICATION_FAIL"
+        assert rejected["champion"] is None
+
+        # Reopen the durable graph and queue after the rejected attempt. The
+        # next role context must still carry the persisted failure evidence.
+        restarted_graph = GraphRepository.open(str(db_path), campaign_id=campaign_id)
+        restarted_queue = DurableWorkerQueue(db_path)
+        restarted_trusted = TrustedEvaluatorAdapter(
+            graph=restarted_graph, queue=restarted_queue, campaign_id=campaign_id,
+            state_root=state_root, runner=trusted.runner,
+        )
+        restarted_integration = IntegrationVerificationAdapter(
+            graph=restarted_graph, queue=restarted_queue, campaign_id=campaign_id,
+            trusted_evaluator=restarted_trusted,
+        )
+        runtime = V2OptimizationRuntime(
+            graph=restarted_graph, queue=restarted_queue, campaign_id=campaign_id,
+            state_root=state_root, role_registry=registry,
+            trusted_evaluator=restarted_trusted,
+            integration_verifier=restarted_integration,
+        )
+
+        def memory_guided_reply(public_input, **_pinned):
+            constraints = public_input["role_context"]["constraints"]
+            assert any("previous candidate did not pass" in item.lower() for item in constraints)
+            assert public_input["role_context"]["evidence_refs"]
+            return {
+                "hypothesis_id": "revised-hypothesis",
+                "rationale": "Use the prior rejection evidence to revise the implementation.",
+                "changes": {"src/app.py": "recovered optimized candidate\n"},
+            }
+
+        revised = runtime.run_one(
+            visible_paths=["src/app.py"], hypothesis_id="revised-hypothesis",
+            model_reply=memory_guided_reply, worker_id="v2-recovery-optimizer",
+        )
+        assert revised["status"] == "CANDIDATE_CREATED"
+        assert runtime.run_one(
+            visible_paths=["src/app.py"], worker_id="v2-recovery-evaluator",
+        )["status"] == "DEV_EVALUATED"
+        recovered = runtime.run_one(
+            visible_paths=["src/app.py"], integration_verifier_executor=executor,
+            worker_id="v2-recovery-verifier",
+        )
+        assert recovered["status"] == "INDEPENDENT_VERIFICATION_PASS"
+        assert recovered["champion"]["snapshot_id"] == revised["candidate_snapshot_id"]
+        restarted_queue.close()
+        restarted_graph.close()
     finally:
         queue.close()
         graph.close()

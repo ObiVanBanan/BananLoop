@@ -133,6 +133,18 @@ def test_claim_reservation_event_commit_or_rollback_as_one(tmp_path):
     queue.close()
 
 
+def test_action_lookup_supports_recovery_without_rebuilding_a_request(tmp_path):
+    _path, queue = _queue(tmp_path)
+    try:
+        assert queue.get_job_for_action("root", "action:job-action") is None
+        _enqueue(queue, "job-action")
+        found = queue.get_job_for_action("root", "action:job-action")
+        assert found["job_id"] == "job-action"
+        assert found["request"] == {"operation": "agent", "job": "job-action"}
+    finally:
+        queue.close()
+
+
 def test_complete_persists_canonical_result_for_projection_replay(tmp_path):
     import hashlib
     import json
@@ -461,6 +473,40 @@ def test_vector_enqueue_replay_and_complete_bind_all_resource_amounts(tmp_path):
             actual_usage={"evaluator_calls": 1, "evaluation_units": 8},
             receipt_digest="b" * 64, now=103,
         )
+    queue.close()
+
+
+def test_vector_complete_can_preserve_unmetered_provider_usage_as_unknown(tmp_path):
+    path = tmp_path / "unknown-provider-usage.sqlite3"
+    ledger = BudgetLedger(path)
+    ledger.create_root("root", {"agent_calls": 2, "model_tokens": 1000})
+    ledger.close()
+    queue = DurableWorkerQueue(path)
+    queue.enqueue(
+        job_id="job-provider-usage", enqueue_key="enqueue:provider-usage",
+        campaign_id="root", action_id="action:provider-usage",
+        resource="agent_calls", upper_bound=1,
+        resource_bounds={"agent_calls": 1, "model_tokens": 500},
+        request={"operation": "optimizer", "job": "provider-usage"},
+    )
+    lease = queue.claim("job-provider-usage", "worker-provider", lease_seconds=30, now=100)
+    queue.mark_dispatched("job-provider-usage", "worker-provider", lease["fence"], now=101)
+    result = {"candidate": "committed", "provider_usage": "not reported"}
+    digest = hashlib.sha256(json.dumps(
+        result, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode()).hexdigest()
+    queue.complete(
+        "job-provider-usage", "worker-provider", lease["fence"],
+        output_digest=digest, receipt_digest="c" * 64, actual_amount=1,
+        actual_usage={"agent_calls": 1, "model_tokens": None}, result_payload=result,
+        now=102,
+    )
+    ledger = BudgetLedger(path)
+    snapshot = ledger.snapshot("root")
+    assert snapshot["agent_calls"]["spent"] == 1
+    assert snapshot["model_tokens"]["unknown"] == 500
+    assert snapshot["model_tokens"]["reserved"] == 0
+    ledger.close()
     queue.close()
 
 

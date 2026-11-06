@@ -14,12 +14,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .budget_ledger import BudgetLedger
 from .contracts import ExplorationCampaignSpecV2
-from .exploration import EvidenceOnlyAttemptAdapter, EvidenceOnlyOutputV2
-from .graph_store import GraphRepository
+from .exploration import EvidenceAdapterError, EvidenceOnlyAttemptAdapter, EvidenceOnlyOutputV2
+from .graph_store import AddEdge, AddNode, GraphRepository, MutateGraph
 from .research_ledger import ResearchLedger
 from .roles import PinnedRoleExecutorV1, RoleRegistryV1, TeamManifestAuthority
 from .scheduler import HybridScheduler
-from .worker_queue import DurableWorkerQueue
+from .worker_queue import DurableWorkerQueue, WorkerBudgetError
 
 
 class V2RuntimeError(RuntimeError):
@@ -213,8 +213,14 @@ class V2ResearchRuntime:
         if member.role.role_id != "researcher":
             raise V2RuntimeError("scheduled role is not the canonical researcher")
         executor = PinnedRoleExecutorV1.from_manifest(manifest, member.instance_id, invoke)
-        self.adapter.run_one(job_id=job["job_id"], worker_id=worker_id,
-                             executor=executor, lease_seconds=lease_seconds)
+        state = self.queue.get_job(job["job_id"])["state"]
+        if state == "READY":
+            self.adapter.run_one(job_id=job["job_id"], worker_id=worker_id,
+                                 executor=executor, lease_seconds=lease_seconds)
+        elif state != "COMPLETED":
+            raise V2RuntimeError(
+                f"research job is {state}; uncertain work is never dispatched twice"
+            )
         published = self.adapter.publish_completed(job["job_id"])
         evidence = ResearchLedger(self.graph.conn).ingest_completed_job(
             self.graph, self.queue, job["job_id"],
@@ -229,3 +235,108 @@ class V2ResearchRuntime:
             "published": published,
             "research_evidence_ids": list(evidence),
         }
+
+    def run_campaign(
+        self, *, visible_paths: list[str] | tuple[str, ...],
+        invoke: Callable[..., dict[str, Any]], max_iterations: int = 10,
+        worker_id: str = "v2-research", lease_seconds: int = 300,
+    ) -> dict[str, Any]:
+        """Advance a bounded sequence of Exploration nodes and persist each next step.
+
+        The next node is derived from the previous durable completion record,
+        linked to its predecessor, and recovered idempotently after restart.
+        Existing budget reservations remain the authority for stopping work.
+        """
+        if (isinstance(max_iterations, bool) or not isinstance(max_iterations, int)
+                or not 1 <= max_iterations <= 100):
+            raise V2RuntimeError("max_iterations must be an integer from 1 to 100")
+        self.plan()  # Validate the persisted Full spec and pinned roles before any graph mutation.
+        completed: list[dict[str, Any]] = []
+        self._recover_followups()
+        while len(completed) < max_iterations:
+            plan = self.plan()
+            selected = next((item for item in plan.candidates
+                             if item.phase == "EXPLORATION" and item.lane == "EVIDENCE_WORKER"), None)
+            if selected is None:
+                return {
+                    "status": plan.reason, "campaign_id": self.campaign_id,
+                    "iterations_this_call": len(completed), "completed": completed,
+                    "graph_revision": plan.graph_revision,
+                }
+            try:
+                result = self.run_one(
+                    node_id=selected.node_id, visible_paths=visible_paths,
+                    invoke=invoke, worker_id=worker_id, lease_seconds=lease_seconds,
+                )
+            except WorkerBudgetError as exc:
+                current = self.plan()
+                status = ("ROLE_ALLOCATION_EXHAUSTED" if "role instance" in str(exc)
+                          else current.reason if current.reason == "BUDGET_EXHAUSTED"
+                          else "BUDGET_RESERVATION_REJECTED")
+                return {
+                    "status": status,
+                    "campaign_id": self.campaign_id,
+                    "iterations_this_call": len(completed), "completed": completed,
+                    "graph_revision": current.graph_revision,
+                }
+            except EvidenceAdapterError as exc:
+                if "allocation exhausted" not in str(exc):
+                    raise
+                current = self.plan()
+                return {
+                    "status": "ROLE_ALLOCATION_EXHAUSTED" if "role instance" in str(exc)
+                              else current.reason,
+                    "campaign_id": self.campaign_id,
+                    "iterations_this_call": len(completed), "completed": completed,
+                    "graph_revision": current.graph_revision,
+                }
+            completed.append(result)
+            self._recover_followups()
+        return {
+            "status": "ITERATION_LIMIT", "campaign_id": self.campaign_id,
+            "iterations_this_call": len(completed), "completed": completed,
+            "graph_revision": self.graph.graph_revision(),
+        }
+
+    def _recover_followups(self) -> None:
+        snapshot = self.graph.scheduling_snapshot()
+        edges = {(edge["source_id"], edge["target_id"], edge["type"])
+                 for edge in snapshot["edges"]}
+        nodes = {node["node_id"]: node for node in snapshot["nodes"]}
+        for parent in snapshot["nodes"]:
+            evidence = parent["payload"].get("completion_evidence")
+            if (parent["status"] != "COMPLETED" or not isinstance(evidence, dict)
+                    or not isinstance(evidence.get("job_id"), str)
+                    or not isinstance(evidence.get("next_experiment"), str)):
+                continue
+            job_id = evidence["job_id"]
+            child_id = "explore-next-" + hashlib.sha256(job_id.encode()).hexdigest()[:32]
+            if child_id in nodes:
+                if (parent["node_id"], child_id, "REQUIRES") not in edges:
+                    raise V2RuntimeError("persisted Exploration follow-up is missing its prerequisite edge")
+                continue
+            durable = self.queue.get_result(job_id)
+            result = durable.get("result") if isinstance(durable, dict) else None
+            if (not isinstance(result, dict)
+                    or result.get("next_experiment") != evidence["next_experiment"]):
+                raise V2RuntimeError("completed exploration has no matching durable next-step result")
+            key = "exploration-followup:" + hashlib.sha256(job_id.encode()).hexdigest()
+            parent_priority = int(parent["payload"].get("scheduler", {}).get("priority", 0))
+            parent_iteration = int(parent["payload"].get("iteration", 0))
+            self.graph.mutate(MutateGraph(
+                command_id=key, idempotency_key=key,
+                expected_graph_revision=self.graph.graph_revision(),
+                changes=(
+                    AddNode(
+                        type="AddNode", node_id=child_id, phase="EXPLORATION",
+                        payload={
+                            "hypothesis": evidence["next_experiment"],
+                            "parent_node_id": parent["node_id"],
+                            "iteration": parent_iteration + 1,
+                            "scheduler": {"priority": parent_priority},
+                        },
+                    ),
+                    AddEdge(type="AddEdge", source_id=parent["node_id"],
+                            target_id=child_id, edge_type="REQUIRES"),
+                ),
+            ))

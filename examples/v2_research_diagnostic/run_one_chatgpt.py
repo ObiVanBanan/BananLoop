@@ -83,7 +83,7 @@ def main() -> None:
             prompt_digest=hashlib.sha256(INSTRUCTIONS.encode("utf-8")).hexdigest(),
             capability_policy=policy,
             context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
-                            "evidence_refs", "dev_summary"),
+                            "evidence_refs", "dev_summary", "budget_remaining"),
             min_instances=1, max_instances=1, calls_per_instance=1,
             tokens_per_instance=2048,
         ),),

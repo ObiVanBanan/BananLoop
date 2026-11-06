@@ -61,7 +61,7 @@ def _role_registry():
                 "tools": ["read_file", "list_files", "write_artifact", "commit_candidate"],
                 "read_paths": ["README.md"], "write_paths": ["**"], "backend": "LOCAL",
             },
-            context_fields=("campaign_goal", "node_id", "node_phase", "public_task", "evidence_refs", "dev_summary"),
+            context_fields=("campaign_goal", "node_id", "node_phase", "public_task", "evidence_refs", "dev_summary", "budget_remaining"),
             min_instances=1, max_instances=1, calls_per_instance=2, tokens_per_instance=200,
         ),),
     )

@@ -448,7 +448,7 @@ class DurableWorkerQueue:
     def complete(
         self, job_id: str, worker_id: str, fence: int, *, output_digest: str,
         receipt_digest: str, actual_amount: int | None = None,
-        actual_usage: dict[str, int] | None = None, now: float | None = None,
+        actual_usage: dict[str, int | None] | None = None, now: float | None = None,
         result_payload: dict[str, Any] | None = None, fail_before_commit: bool = False,
     ) -> dict[str, Any]:
         """Commit a result and settle its reservation under the active fence.
@@ -489,6 +489,8 @@ class DurableWorkerQueue:
                 job, actual_amount=actual_amount, actual_usage=actual_usage,
             )
             primary_amount = usage[job["resource"]]
+            if primary_amount is None:
+                raise WorkerQueueError("the primary job resource must have known usage to complete")
             if prior is not None:
                 prior_response = json.loads(prior["response_json"])
                 expected = (fence, output_digest, primary_amount, receipt_digest, usage)
@@ -501,8 +503,10 @@ class DurableWorkerQueue:
             job = self._owned_job(job_id, worker_id, fence, state="DISPATCHED", now=effective_now)
             try:
                 for item in self._reservation_rows(job):
-                    self.ledger.settle_action(item["reservation_id"], actual=usage[item["resource"]],
-                                              quality="actual", receipt_digest=receipt_digest,
+                    amount = usage[item["resource"]]
+                    self.ledger.settle_action(item["reservation_id"], actual=amount,
+                                              quality="unknown" if amount is None else "actual",
+                                              receipt_digest=receipt_digest,
                                               fence=fence)
             except BudgetLedgerError as exc:
                 raise WorkerBudgetError(str(exc)) from exc
@@ -667,6 +671,19 @@ class DurableWorkerQueue:
             raise WorkerQueueError("unknown job")
         return self._job_view(row)
 
+    def get_job_for_action(self, campaign_id: str, action_id: str) -> dict[str, Any] | None:
+        """Find a previously admitted action for deterministic crash recovery."""
+        if (not isinstance(campaign_id, str) or not campaign_id
+                or not isinstance(action_id, str) or not action_id):
+            raise WorkerQueueError("campaign_id and action_id must be nonempty strings")
+        rows = self.conn.execute(
+            "SELECT * FROM worker_jobs WHERE campaign_id=? AND action_id=? ORDER BY created_at,job_id",
+            (campaign_id, action_id),
+        ).fetchall()
+        if len(rows) > 1:
+            raise WorkerQueueError("action identity maps to multiple durable jobs")
+        return self._job_view(rows[0]) if rows else None
+
     def get_result(self, job_id: str) -> dict[str, Any]:
         """Return the durable result payload for crash-safe downstream projection."""
         self._validate_job_id(job_id)
@@ -771,8 +788,8 @@ class DurableWorkerQueue:
 
     def _normalize_actual_usage(
         self, job: sqlite3.Row, *, actual_amount: int | None,
-        actual_usage: dict[str, int] | None,
-    ) -> dict[str, int]:
+        actual_usage: dict[str, int | None] | None,
+    ) -> dict[str, int | None]:
         bounds = self._resource_bounds(job["job_id"])
         if actual_usage is None:
             if set(bounds) != {job["resource"]}:
@@ -785,10 +802,13 @@ class DurableWorkerQueue:
                 raise WorkerQueueError("actual_usage must be a nonempty resource-to-nonnegative-integer mapping")
             if any(not isinstance(resource, str) for resource in actual_usage):
                 raise WorkerQueueError("actual_usage keys must be resource names")
-            usage: dict[str, int] = {}
+            usage: dict[str, int | None] = {}
             for resource, amount in sorted(actual_usage.items()):
                 if resource not in _RESOURCES:
                     raise WorkerQueueError(f"unsupported resource: {resource}")
+                if amount is None:
+                    usage[resource] = None
+                    continue
                 if isinstance(amount, bool) or not isinstance(amount, int) or amount < 0:
                     raise WorkerQueueError("actual_usage amounts must be nonnegative integers")
                 usage[resource] = amount

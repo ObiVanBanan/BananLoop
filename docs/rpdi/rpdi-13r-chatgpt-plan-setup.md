@@ -53,6 +53,18 @@ allows only one durable research worker job, no self-initiated shell
 or network tools, no hidden evaluator, and no automatic retries. It
 does not prove complete v0.2 Full or satisfy RPDI-14.
 
+The same official Responses transport now has protocol-specific
+`ChatGPTPlanOptimizer` and `ChatGPTPlanIntegrationVerifier` adapters. They
+accept only their pinned, bounded JSON protocol; the optimizer sees only the
+Core-provided source allowlist, while the integration verifier sees the
+public Core evidence summary and has no tools or paths. Wire them with
+`make_optimizer_invoke(...)` and
+`ChatGPTPlanIntegrationVerifier.executor(manifest, instance_id)` inside a
+trusted campaign runner. These are prepared adapters, not a complete
+Optimization launch command; no Optimization subscription request has been
+made. The integration verifier reviews trusted Core receipts and never runs
+the evaluator itself.
+
 The SIWC Responses preview rejects a server-side `max_output_tokens`
 parameter, so the advertised `tokens_per_instance` here is **not**
 an enforceable token ceiling for official benchmark purposes.

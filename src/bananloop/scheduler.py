@@ -21,7 +21,9 @@ StopReason = Literal[
 _LANES: dict[str, tuple[str, str]] = {
     "EXPLORATION": ("EVIDENCE_WORKER", "agent_calls"),
     "METRIC_DISCOVERY": ("METRIC_DISCOVERY_WORKER", "agent_calls"),
-    "OPTIMIZATION": ("LEGACY_ENGINE_ADAPTER", "experiments"),
+    # Every v2 Optimization node must be handled by an explicit v2 adapter.
+    # The old v1 Engine is never a scheduler fallback for a v2 graph.
+    "OPTIMIZATION": ("OPTIMIZATION_WORKER", "experiments"),
     "VERIFICATION": ("INDEPENDENT_VERIFIER", "evaluator_calls"),
 }
 _PHASE_ORDER = {"EXPLORATION": 0, "METRIC_DISCOVERY": 1, "VERIFICATION": 2, "OPTIMIZATION": 3}

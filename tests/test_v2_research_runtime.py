@@ -18,10 +18,10 @@ from bananloop.v2_research_runtime import (
 )
 from bananloop.worker_queue import DurableWorkerQueue
 
-from test_exploration_adapter import _graph, _role_registry, _source_repo
+from test_exploration_adapter import _graph, _pinned_executor, _role_registry, _source_repo
 
 
-def _runtime(tmp_path, *, max_agent_calls=3):
+def _runtime(tmp_path, *, max_agent_calls=3, ledger_agent_calls=None):
     source = tmp_path / "source"
     _source_repo(source)
     roles = _role_registry()
@@ -43,7 +43,10 @@ def _runtime(tmp_path, *, max_agent_calls=3):
     graph = _graph(tmp_path / "campaign.sqlite3", spec)
     ledger = BudgetLedger(tmp_path / "registry.sqlite3")
     try:
-        ledger.create_root("campaign-test", {"agent_calls": max_agent_calls})
+        ledger.create_root(
+            "campaign-test", {"agent_calls": max_agent_calls if ledger_agent_calls is None
+                              else ledger_agent_calls},
+        )
     finally:
         ledger.close()
     queue = DurableWorkerQueue(tmp_path / "registry.sqlite3")
@@ -86,36 +89,28 @@ def test_two_real_exploration_nodes_preserve_public_memory_and_pins(tmp_path):
         }
 
     try:
-        one = runtime.run_one(
-            node_id="explore", visible_paths=["README.md"],
-            invoke=make_researcher_invoke(model_reply),
+        campaign_result = runtime.run_campaign(
+            visible_paths=["README.md"], invoke=make_researcher_invoke(model_reply),
+            max_iterations=2,
         )
-        assert one["status"] == "EXPLORATION_COMPLETED"
+        assert campaign_result["status"] == "ITERATION_LIMIT"
+        assert campaign_result["iterations_this_call"] == 2
+        one, two = campaign_result["completed"]
+        assert all(item["status"] == "EXPLORATION_COMPLETED" for item in (one, two))
         assert one["profile"] == "FULL"
         assert len(one["research_evidence_ids"]) == 1
         assert queue.get_job(one["job_id"])["state"] == "COMPLETED"
         with pytest.raises(V2RuntimeError, match="not a schedulable"):
             runtime.run_one(
-                node_id="explore", visible_paths=["README.md"],
+                node_id=one["node_id"], visible_paths=["README.md"],
                 invoke=make_researcher_invoke(model_reply),
             )
-        assert len(observed) == 1  # replay cannot create a second model call
+        assert len(observed) == 2  # replay cannot create a third model call
 
-        graph.mutate({
-            "command_id": "add-second", "idempotency_key": "add-second",
-            "expected_graph_revision": graph.graph_revision(),
-            "changes": [{
-                "type": "AddNode", "node_id": "explore-second",
-                "phase": "EXPLORATION",
-            }],
-        })
-        two = runtime.run_one(
-            node_id="explore-second", visible_paths=["README.md"],
-            invoke=make_researcher_invoke(model_reply),
-        )
-        assert two["status"] == "EXPLORATION_COMPLETED"
         assert len(observed) == 2
         assert "mechanism:alpha" in observed[1]["role_context"]["dev_summary"]
+        assert observed[1]["role_context"]["public_task"] == "test a new independent condition"
+        assert observed[1]["role_context"]["budget_remaining"]["agent_calls"] == 2
         projection = ResearchLedger(graph.conn).project(
             campaign_ids=("campaign-test",),
             source_snapshot_id=queue.get_job(one["job_id"])["request"]["base_commit"],
@@ -146,6 +141,113 @@ def test_researcher_rejects_score_and_no_evidence(tmp_path):
         assert graph.conn.execute(
             "SELECT status FROM research_nodes WHERE node_id='explore'"
         ).fetchone()[0] != "COMPLETED"
+    finally:
+        queue.close()
+        graph.close()
+
+
+def test_completed_research_job_is_projected_after_runtime_restart_without_redelivery(tmp_path):
+    runtime, graph, queue = _runtime(tmp_path)
+    calls = []
+
+    def model_reply(*_args, **_kwargs):
+        calls.append("called")
+        return {
+            "next_experiment": "repeat with a matched control",
+            "artifact_text": {"observation.txt": "observed once"},
+        }
+
+    try:
+        invoke = make_researcher_invoke(model_reply)
+        job = runtime.adapter.enqueue(node_id="explore", visible_paths=["README.md"])
+        _manifest, _member, executor = _pinned_executor(
+            queue, graph, "campaign-test", runtime.role_registry, job, invoke,
+        )
+        # Simulate process death after queue settlement but before graph and
+        # Research Ledger projection.
+        runtime.adapter.run_one(job_id=job["job_id"], worker_id="before-crash", executor=executor)
+        assert queue.get_job(job["job_id"])["state"] == "COMPLETED"
+        assert graph.conn.execute(
+            "SELECT status FROM research_nodes WHERE node_id='explore'",
+        ).fetchone()[0] == "READY"
+        events_before_recovery = len(queue.events_after(0))
+
+        restarted = V2ResearchRuntime(
+            graph=graph, queue=queue, campaign_id="campaign-test",
+            state_root=tmp_path, role_registry=runtime.role_registry,
+        )
+        projected = restarted.run_one(
+            node_id="explore", visible_paths=["README.md"], invoke=invoke,
+        )
+        assert projected["status"] == "EXPLORATION_COMPLETED"
+        assert calls == ["called"]
+        assert len(queue.events_after(0)) == events_before_recovery
+        assert graph.conn.execute(
+            "SELECT status FROM research_nodes WHERE node_id='explore'",
+        ).fetchone()[0] == "COMPLETED"
+        assert len(projected["research_evidence_ids"]) == 0
+
+        # Restart after graph publication but before automatic follow-up
+        # creation; the durable completion record is sufficient to resume.
+        resumed = restarted.run_campaign(
+            visible_paths=["README.md"], invoke=invoke, max_iterations=1,
+        )
+        assert resumed["status"] == "ITERATION_LIMIT"
+        assert resumed["iterations_this_call"] == 1
+        assert calls == ["called", "called"]
+        assert resumed["completed"][0]["node_id"] != "explore"
+    finally:
+        queue.close()
+        graph.close()
+
+
+def test_campaign_loop_stops_at_authoritative_agent_budget_and_persists_next_node(tmp_path):
+    runtime, graph, queue = _runtime(tmp_path, max_agent_calls=3, ledger_agent_calls=1)
+    calls = []
+
+    def model_reply(*_args, **_kwargs):
+        calls.append("one-call")
+        return {
+            "next_experiment": "follow up after obtaining more budget",
+            "artifact_text": {"observation.txt": "one metered observation"},
+        }
+
+    try:
+        result = runtime.run_campaign(
+            visible_paths=["README.md"], invoke=make_researcher_invoke(model_reply),
+            max_iterations=5,
+        )
+        assert result["status"] == "BUDGET_EXHAUSTED"
+        assert result["iterations_this_call"] == 1
+        assert calls == ["one-call"]
+        followups = [node for node in graph.scheduling_snapshot()["nodes"]
+                     if node["phase"] == "EXPLORATION" and node["status"] == "PENDING"]
+        assert len(followups) == 1
+        assert followups[0]["payload"]["hypothesis"] == "follow up after obtaining more budget"
+    finally:
+        queue.close()
+        graph.close()
+
+
+def test_campaign_loop_reports_pinned_role_allocation_exhaustion(tmp_path):
+    runtime, graph, queue = _runtime(tmp_path, max_agent_calls=5)
+    calls = []
+
+    def model_reply(*_args, **_kwargs):
+        calls.append("one-call")
+        return {
+            "next_experiment": "continue while the pinned researcher allocation remains",
+            "artifact_text": {"observation.txt": f"observation {len(calls)}"},
+        }
+
+    try:
+        result = runtime.run_campaign(
+            visible_paths=["README.md"], invoke=make_researcher_invoke(model_reply),
+            max_iterations=5,
+        )
+        assert result["status"] == "ROLE_ALLOCATION_EXHAUSTED"
+        assert result["iterations_this_call"] == 2
+        assert len(calls) == 2
     finally:
         queue.close()
         graph.close()
@@ -206,6 +308,7 @@ def test_one_command_owner_demo_uses_disposable_v2_state(tmp_path):
     assert result["status"] == "OFFLINE_V2_EXPLORATION_PASS"
     assert result["live_model_called"] is False
     assert result["complete_full_pipeline_proven"] is False
+    assert result["campaign_loop_status"] == "ITERATION_LIMIT"
     assert len(result["jobs"]) == 2
     assert result["research_evidence_counts"] == [1, 1]
     assert result["second_turn_received_public_memory"] is True
