@@ -187,3 +187,25 @@ def test_disallowed_artifact_path_fails_through_gateway(tmp_path):
     finally:
         queue.close()
         graph.close()
+
+
+def test_one_command_owner_demo_uses_disposable_v2_state(tmp_path):
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    command = [
+        sys.executable, str(repo / "examples" / "v2_research_diagnostic" / "run_offline.py"),
+        "--work-dir", str(tmp_path / "owner-smoke"),
+    ]
+    process = subprocess.run(command, cwd=repo, text=True, capture_output=True, timeout=90)
+    assert process.returncode == 0, process.stdout + "\\n" + process.stderr
+    result = json.loads(process.stdout)
+    assert result["status"] == "OFFLINE_V2_EXPLORATION_PASS"
+    assert result["live_model_called"] is False
+    assert result["complete_full_pipeline_proven"] is False
+    assert len(result["jobs"]) == 2
+    assert result["research_evidence_counts"] == [1, 1]
+    assert result["second_turn_received_public_memory"] is True
