@@ -190,7 +190,10 @@ def test_symlink_or_world_readable_vault_is_rejected(tmp_path):
             vault.read()
         os.chmod(vault.path, 0o600)
     link = tmp_path / "linked.json"
-    link.symlink_to(vault.path)
+    try:
+        link.symlink_to(vault.path)
+    except (OSError, NotImplementedError):
+        pytest.skip("Windows runner does not permit creating symlinks")
     with pytest.raises(SIWCError, match="symlink"):
         SIWCVault(link).read()
 

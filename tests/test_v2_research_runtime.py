@@ -209,3 +209,58 @@ def test_one_command_owner_demo_uses_disposable_v2_state(tmp_path):
     assert len(result["jobs"]) == 2
     assert result["research_evidence_counts"] == [1, 1]
     assert result["second_turn_received_public_memory"] is True
+
+
+def test_trusted_core_binds_artifact_hash_to_claim(tmp_path):
+    runtime, graph, queue = _runtime(tmp_path)
+    try:
+        result = runtime.run_one(
+            node_id="explore", visible_paths=["README.md"],
+            invoke=make_researcher_invoke(
+                lambda *_args, **_kwargs: {
+                    "next_experiment": "repeat with new data",
+                    "artifact_text": {"trial.txt": "observed controlled trial"},
+                    "research_findings": [{
+                        "claim_key": "mechanism:trusted-hash",
+                        "statement": "The record is an unverified observation",
+                        "kind": "OBSERVATION", "stance": "UNCERTAIN",
+                        "confidence": 0.2,
+                    }],
+                },
+            ),
+        )
+        published = queue.get_result(result["job_id"])
+        finding = published["result_payload"]["research_findings"][0]
+        expected = hashlib.sha256(b"observed controlled trial").hexdigest()
+        assert finding["evidence_refs"] == ["artifact://sha256/" + expected]
+    finally:
+        queue.close()
+        graph.close()
+
+
+def test_trusted_core_rejects_nonexistent_artifact_ref(tmp_path):
+    runtime, graph, queue = _runtime(tmp_path)
+    try:
+        with pytest.raises(V2RuntimeError, match="not produced"):
+            runtime.run_one(
+                node_id="explore", visible_paths=["README.md"],
+                invoke=make_researcher_invoke(
+                    lambda *_args, **_kwargs: {
+                        "next_experiment": "repeat",
+                        "artifact_text": {"trial.txt": "controlled observation"},
+                        "research_findings": [{
+                            "claim_key": "mechanism:wrong-hash",
+                            "statement": "Unverified observation",
+                            "kind": "OBSERVATION", "stance": "UNCERTAIN",
+                            "confidence": 0.1,
+                            "evidence_refs": ["artifact://sha256/" + "0" * 64],
+                        }],
+                    },
+                ),
+            )
+        assert graph.conn.execute(
+            "SELECT status FROM research_nodes WHERE node_id='explore'"
+        ).fetchone()[0] != "COMPLETED"
+    finally:
+        queue.close()
+        graph.close()
