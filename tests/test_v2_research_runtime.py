@@ -198,6 +198,75 @@ def test_hypothesis_portfolio_is_selected_and_persisted_as_evidence(tmp_path):
         graph.close()
 
 
+def test_core_ranks_later_hypothesis_by_grounded_prior_evidence_not_model_preference(tmp_path):
+    runtime, graph, queue = _runtime(
+        tmp_path, max_agent_calls=4, role_calls_per_instance=3,
+    )
+    observed = []
+
+    def model_reply(public_input, **_kwargs):
+        observed.append(public_input)
+        if len(observed) == 1:
+            text = "first durable observation"
+            digest = hashlib.sha256(text.encode()).hexdigest()
+            return {
+                "next_experiment": "test the mechanism with a matched control",
+                "artifact_text": {"observation.txt": text},
+                "research_findings": [{
+                    "claim_key": "mechanism:control",
+                    "statement": "The initial public observation supports the control mechanism.",
+                    "stance": "SUPPORTS", "kind": "OBSERVATION", "confidence": 0.7,
+                    "evidence_refs": [f"artifact://sha256/{digest}"],
+                }],
+            }
+        evidence_id = public_input["role_context"]["evidence_refs"][0]
+        return {
+            "hypotheses": [
+                {
+                    "id": "model-choice", "hypothesis": "test a broad unrelated condition",
+                    "rationale": "The researcher prefers this candidate.",
+                    "next_experiment": "test an unrelated condition",
+                    "falsification_condition": "No predicted change is observed.",
+                    "expected_evidence": "A public outcome for the unrelated condition.",
+                },
+                {
+                    "id": "evidence-choice", "hypothesis": "test the prior control evidence",
+                    "rationale": "This candidate is grounded in the previous durable observation.",
+                    "next_experiment": "replicate the matched control observation",
+                    "falsification_condition": "The prior control result does not replicate.",
+                    "expected_evidence": "A replication outcome tied to the previous finding.",
+                    "evidence_refs": [evidence_id],
+                },
+            ],
+            "selected_hypothesis_id": "model-choice",
+            "artifact_text": {"observation.txt": "second durable observation"},
+        }
+
+    try:
+        result = runtime.run_campaign(
+            visible_paths=["README.md"], invoke=make_researcher_invoke(model_reply),
+            max_iterations=2,
+        )
+        assert result["iterations_this_call"] == 2
+        assert observed[1]["role_context"]["evidence_refs"]
+        nodes = graph.scheduling_snapshot()["nodes"]
+        second = next(node for node in nodes if node["payload"].get("iteration") == 1)
+        completion = second["payload"]["completion_evidence"]
+        assert completion["next_experiment"] == "replicate the matched control observation"
+        artifact_root = tmp_path / "rpdi05" / "artifacts"
+        portfolio = next(
+            json.loads(path.read_text()) for path in artifact_root.rglob("*")
+            if path.is_file() and b'"core_selection"' in path.read_bytes()
+        )
+        assert portfolio["researcher_preferred_hypothesis_id"] == "model-choice"
+        assert portfolio["selected_hypothesis_id"] == "evidence-choice"
+        assert portfolio["core_selection"]["method"] == "CORE_PUBLIC_DEV_EVIDENCE_COVERAGE"
+        assert portfolio["core_selection"]["scores"]["evidence-choice"] == 1
+    finally:
+        queue.close()
+        graph.close()
+
+
 def test_exploration_stops_when_a_completed_experiment_reappears_after_another_step(tmp_path):
     runtime, graph, queue = _runtime(
         tmp_path, max_agent_calls=3, role_calls_per_instance=3,

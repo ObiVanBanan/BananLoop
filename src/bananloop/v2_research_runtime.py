@@ -41,6 +41,7 @@ class ResearchHypothesisV1(BaseModel):
     next_experiment: str = Field(min_length=1, max_length=4000)
     falsification_condition: str = Field(min_length=1, max_length=1000)
     expected_evidence: str = Field(min_length=1, max_length=1000)
+    evidence_refs: tuple[str, ...] = Field(default=(), max_length=16)
 
 
 class ResearcherReplyV1(BaseModel):
@@ -141,12 +142,48 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
                     or reply.selected_hypothesis_id not in ids):
                 raise V2RuntimeError("hypothesis selection must identify one unique portfolio candidate")
             selected = next(item for item in reply.hypotheses if item.id == reply.selected_hypothesis_id)
-            next_experiment = selected.next_experiment
-            if reply.next_experiment is not None and reply.next_experiment != next_experiment:
+            if reply.next_experiment is not None and reply.next_experiment != selected.next_experiment:
                 raise V2RuntimeError("next experiment must match the selected hypothesis candidate")
+            allowed_evidence_refs = set(role_context.get("evidence_refs", ()))
+            evidence_scores: dict[str, int] = {}
+            for candidate in reply.hypotheses:
+                refs = set(candidate.evidence_refs)
+                if not refs <= allowed_evidence_refs:
+                    raise V2RuntimeError(
+                        "hypothesis cites prior evidence that is not present in its trusted role context"
+                    )
+                evidence_scores[candidate.id] = len(refs)
+            ranked = [item for item in reply.hypotheses if evidence_scores[item.id] > 0]
+            if ranked:
+                # Candidate IDs and the model's preferred ID have no quality
+                # weight. Core ranks only references already present in the
+                # trusted context, then uses a content-only digest for ties.
+                selected = max(ranked, key=lambda item: (
+                    evidence_scores[item.id],
+                    hashlib.sha256(json.dumps(
+                        item.model_dump(mode="json", exclude={"id"}),
+                        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                    ).encode("utf-8")).hexdigest(),
+                ))
+                selection = {
+                    "method": "CORE_PUBLIC_DEV_EVIDENCE_COVERAGE",
+                    "selected_hypothesis_id": selected.id,
+                    "scores": evidence_scores,
+                    "reason": "Highest count of distinct prior public evidence references; tied candidates use a stable content digest.",
+                }
+            else:
+                selection = {
+                    "method": "RESEARCHER_INITIAL_SELECTION",
+                    "selected_hypothesis_id": selected.id,
+                    "scores": evidence_scores,
+                    "reason": "No prior evidence was available to rank candidates; researcher preference is advisory for the initial step.",
+                }
+            next_experiment = selected.next_experiment
             portfolio = json.dumps({
                 "candidates": [item.model_dump(mode="json") for item in reply.hypotheses],
-                "selected_hypothesis_id": reply.selected_hypothesis_id,
+                "selected_hypothesis_id": selected.id,
+                "researcher_preferred_hypothesis_id": reply.selected_hypothesis_id,
+                "core_selection": selection,
             }, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         else:
             if not reply.next_experiment:
