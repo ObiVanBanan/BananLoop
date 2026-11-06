@@ -112,6 +112,7 @@ def test_two_real_exploration_nodes_preserve_public_memory_and_pins(tmp_path):
         assert observed[1]["role_context"]["public_task"] == "test a new independent condition"
         assert observed[1]["role_context"]["budget_remaining"]["agent_calls"] == 2
         projection = ResearchLedger(graph.conn).project(
+            graph=graph, queue=queue,
             campaign_ids=("campaign-test",),
             source_snapshot_id=queue.get_job(one["job_id"])["request"]["base_commit"],
             protocol_digest=ResearchLedger.protocol_digest_for_binding(
