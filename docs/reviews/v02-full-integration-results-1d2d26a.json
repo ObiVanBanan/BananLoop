@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "tested_code_commit": "1d2d26a4d25bc2159997254263f4b13cf45ef125",
+  "branch": "codex/v02-full-integration",
+  "base_main_commit": "6c89975870b0da8060146953faea966e203ba857",
+  "paid_model_call_made": false,
+  "hypothesis_portfolio": {
+    "schema": "2-4 candidates with unique ids and selected_hypothesis_id",
+    "selection_validation": "passed",
+    "portfolio_persisted_as_content_addressed_evidence": true
+  },
+  "research_knowledge_export": {
+    "durable_graph_and_queue_validation": "passed",
+    "read_only_graph_access": true,
+    "fabricated_evidence_rejected": true,
+    "exploration_api_handoff": "passed"
+  },
+  "repository_tests": {
+    "collected": 923,
+    "passed": 921,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "command": "python3.12 -m pytest -p bananloop_test_home_plugin -q -ra --tb=no",
+    "host_loopback_bind_enabled": true
+  },
+  "evaluator_isolation": {
+    "verified_in_host": false,
+    "reason": "bwrap cannot create the required network namespace: Failed to create NETLINK_ROUTE socket: Operation not permitted",
+    "security_checks_disabled": false
+  },
+  "open_acceptance_gates": [
+    "independent candidate ranking and convergence detection",
+    "one full Exploration-to-Optimization-to-Independent-Verification E2E with final report",
+    "real bubblewrap evaluator execution on a host permitting namespaces",
+    "current-head CI completion",
+    "owner-approved one-call ChatGPT live smoke (not run)"
+  ]
+}
