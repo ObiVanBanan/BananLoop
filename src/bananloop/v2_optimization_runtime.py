@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import fnmatch
 import os
+import tempfile
+import fnmatch
 import shutil
 import subprocess
 import tarfile
-import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
@@ -25,7 +25,7 @@ from .capabilities import (
     BubblewrapBackend, CapabilityAuthority, CapabilityDenied, CapabilityGrantV1,
     LocalBackend, PermissionEngine, SandboxUnavailable, ToolGateway,
 )
-from .contracts import OptimizationCampaignSpecV2
+from .contracts import OptimizationCampaignSpecV2, utc_now
 from .evaluator_verification import EvaluatorProtocolAuthority
 from .graph_store import AddEdge, AddNode, MutateGraph, TransitionNodeStatus
 from .optimization_lifecycle import OptimizationAttemptCoordinator
@@ -891,11 +891,11 @@ class V2OptimizationRuntime:
         for _ in range(max_steps):
             plan = self.plan()
             if not plan.candidates:
-                return {
+                return self._finish_campaign_run({
                     "status": plan.reason, "campaign_id": self.campaign_id,
                     "steps_this_call": len(steps), "steps": steps,
                     "graph_revision": plan.graph_revision,
-                }
+                })
             try:
                 result = self.run_one(
                     visible_paths=visible_paths, model_reply=model_reply,
@@ -904,28 +904,99 @@ class V2OptimizationRuntime:
                 )
             except WorkerBudgetError:
                 current = self.plan()
-                return {
+                return self._finish_campaign_run({
                     "status": "BUDGET_EXHAUSTED", "campaign_id": self.campaign_id,
                     "steps_this_call": len(steps), "steps": steps,
                     "graph_revision": current.graph_revision,
-                }
+                })
             except WorkerQueueError as exc:
                 current = self.plan()
                 if current.reason in {"PAUSED", "STOP_REQUESTED"}:
-                    return {
+                    return self._finish_campaign_run({
                         "status": current.reason, "campaign_id": self.campaign_id,
                         "steps_this_call": len(steps), "steps": steps,
                         "graph_revision": current.graph_revision,
-                    }
+                    })
                 raise V2OptimizationError("durable Optimization worker failed") from exc
             steps.append(result)
         current = self.plan()
-        return {
+        return self._finish_campaign_run({
             "status": current.reason if not current.candidates else "STEP_LIMIT",
             "campaign_id": self.campaign_id,
             "steps_this_call": len(steps), "steps": steps,
             "graph_revision": current.graph_revision,
+        })
+
+    def _finish_campaign_run(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Persist a bounded public Optimization outcome after each run call."""
+        snapshot = self.graph.scheduling_snapshot()
+        nodes = []
+        for node in snapshot["nodes"]:
+            transition = node["payload"].get("last_phase_transition", {})
+            nodes.append({
+                "node_id": node["node_id"], "phase": node["phase"],
+                "status": node["status"],
+                "candidate_snapshot_id": node["payload"].get("candidate_snapshot_id"),
+                "guard": transition.get("guard"),
+                "evidence_refs": list(transition.get("evidence_refs", ())),
+            })
+        spec = self.graph.campaign_spec()
+        evaluation_receipts = []
+        for row in self.graph.conn.execute(
+            "SELECT receipt_digest,candidate_snapshot_id,receipt_json "
+            "FROM evaluator_run_receipts WHERE campaign_id=? ORDER BY rowid",
+            (self.campaign_id,),
+        ):
+            receipt = json.loads(row["receipt_json"])
+            if receipt.get("tier") not in {"dev", "validation"}:
+                continue
+            evaluation_receipts.append({
+                "receipt_digest": row["receipt_digest"],
+                "candidate_snapshot_id": row["candidate_snapshot_id"],
+                "tier": receipt["tier"], "result_digest": receipt["result_digest"],
+            })
+        integration_evidence = [
+            {"evidence_digest": row["evidence_digest"], "decision": row["decision"],
+             "baseline_run_receipt_digest": row["baseline_run_receipt_digest"],
+             "candidate_run_receipt_digest": row["candidate_run_receipt_digest"]}
+            for row in self.graph.conn.execute(
+                "SELECT evidence_digest,decision,baseline_run_receipt_digest,"
+                "candidate_run_receipt_digest FROM evaluator_integration_evidence "
+                "WHERE campaign_id=? ORDER BY rowid", (self.campaign_id,),
+            )
+        ]
+        report = {
+            "schema_version": 1, "campaign_id": self.campaign_id,
+            "mode": "OPTIMIZATION", "goal": spec.goal,
+            "status": result["status"], "graph_revision": snapshot["graph_revision"],
+            "steps": result.get("steps", []), "nodes": nodes,
+            "evaluation_receipts": evaluation_receipts,
+            "integration_evidence": integration_evidence,
+            "parent": spec.parent.model_dump(mode="json") if spec.parent else None,
+            "champion": result.get("steps", [{}])[-1].get("champion") if result.get("steps") else None,
+            "verification": [step for step in result.get("steps", [])
+                             if str(step.get("status", "")).startswith("INDEPENDENT_VERIFICATION_")],
+            "limitations": [
+                "Exploration evidence remains unverified PUBLIC_DEV evidence.",
+                "This report contains public receipt references and no private evaluator data.",
+            ],
+            "as_of": utc_now(),
         }
+        reports = self.state_root / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        target = reports / f"v2-optimization-{self.campaign_id}.json"
+        raw = (json.dumps(report, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=reports)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(raw)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        return {**result, "report_path": str(target)}
 
     def _baseline_validation_receipt(self, *, worker_id: str):
         spec = self.graph.campaign_spec()

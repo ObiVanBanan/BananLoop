@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 import sqlite3
 import subprocess
 import zipfile
@@ -1083,6 +1084,18 @@ print(json.dumps({
         ]
         verified = optimized["steps"][-1]
         assert verified["champion"]["snapshot_id"] == proposed["candidate_snapshot_id"]
+        optimization_report = json.loads(Path(optimized["report_path"]).read_text())
+        assert optimization_report["campaign_id"] == campaign_id
+        assert optimization_report["status"] == optimized["status"]
+        assert optimization_report["champion"]["snapshot_id"] == proposed["candidate_snapshot_id"]
+        assert optimization_report["verification"][0]["status"] == "INDEPENDENT_VERIFICATION_PASS"
+        assert {item["tier"] for item in optimization_report["evaluation_receipts"]} == {
+            "dev", "validation",
+        }
+        assert optimization_report["integration_evidence"][0]["decision"] == "PASS"
+        assert any(item.startswith("evidence:") or item.startswith("integration://receipt/")
+                   for node in optimization_report["nodes"] for item in node["evidence_refs"])
+        assert "holdout" not in json.dumps(optimization_report).lower()
 
         graph.mutate(MutateGraph(
             command_id="add-v2-runtime-regression", idempotency_key="add-v2-runtime-regression",
