@@ -230,7 +230,7 @@ def test_trusted_core_binds_artifact_hash_to_claim(tmp_path):
             ),
         )
         published = queue.get_result(result["job_id"])
-        finding = published["result_payload"]["research_findings"][0]
+        finding = published["result"]["research_findings"][0]
         expected = hashlib.sha256(b"observed controlled trial").hexdigest()
         assert finding["evidence_refs"] == ["artifact://sha256/" + expected]
     finally:
