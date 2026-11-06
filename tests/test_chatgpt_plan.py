@@ -317,3 +317,20 @@ def test_catalog_must_include_pinned_slug(tmp_path):
     researcher = ChatGPTPlanResearcher(auth, approved_model="unavailable")
     with pytest.raises(SIWCError, match="missing"):
         researcher.check_model()
+
+
+def test_live_owner_smoke_requires_explicit_approval_before_any_state(tmp_path):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1]
+    work_dir = tmp_path / "untouched"
+    script = source / "examples" / "v2_research_diagnostic" / "run_one_chatgpt.py"
+    completed = subprocess.run(
+        [sys.executable, str(script), "--work-dir", str(work_dir)],
+        cwd=source, capture_output=True, text=True, timeout=20,
+    )
+    assert completed.returncode != 0
+    assert "NO MODEL CALL MADE" in completed.stderr
+    assert not work_dir.exists()
