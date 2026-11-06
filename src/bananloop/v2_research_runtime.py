@@ -27,12 +27,25 @@ class V2RuntimeError(RuntimeError):
     """The requested work is not an authorized v2 Exploration attempt."""
 
 
+class ResearchHypothesisV1(BaseModel):
+    """One bounded candidate and its directly testable next action."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,79}$")
+    hypothesis: str = Field(min_length=1, max_length=4000)
+    rationale: str = Field(min_length=1, max_length=1000)
+    next_experiment: str = Field(min_length=1, max_length=4000)
+    falsification_condition: str = Field(min_length=1, max_length=1000)
+    expected_evidence: str = Field(min_length=1, max_length=1000)
+
+
 class ResearcherReplyV1(BaseModel):
     """Agent-authored research text only; artifacts are digested by trusted Core."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     next_experiment: str | None = Field(default=None, min_length=1, max_length=4000)
-    hypotheses: tuple[dict[str, Any], ...] = Field(default=(), max_length=4)
+    hypotheses: tuple[ResearchHypothesisV1, ...] = Field(default=(), max_length=4)
     selected_hypothesis_id: str | None = Field(default=None, min_length=1, max_length=100)
     evidence_refs: tuple[str, ...] = ()
     limitations: tuple[str, ...] = ()
@@ -118,20 +131,18 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
         )
         reply = ResearcherReplyV1.model_validate(raw)
         if reply.hypotheses:
-            if len(reply.hypotheses) < 2:
+            if not 2 <= len(reply.hypotheses) <= 4:
                 raise V2RuntimeError("hypothesis portfolio must contain at least two candidates")
-            ids = [item.get("id") for item in reply.hypotheses]
-            if (any(not isinstance(item, str) or not item or len(item) > 100 for item in ids)
-                    or len(set(ids)) != len(ids)
+            ids = [item.id for item in reply.hypotheses]
+            if (len(set(ids)) != len(ids)
                     or reply.selected_hypothesis_id not in ids):
                 raise V2RuntimeError("hypothesis selection must identify one unique portfolio candidate")
-            selected = next(item for item in reply.hypotheses if item["id"] == reply.selected_hypothesis_id)
-            hypothesis = selected.get("hypothesis")
-            if not isinstance(hypothesis, str) or not hypothesis.strip() or len(hypothesis) > 4000:
-                raise V2RuntimeError("selected hypothesis must be bounded nonempty text")
-            next_experiment = reply.next_experiment or hypothesis
+            selected = next(item for item in reply.hypotheses if item.id == reply.selected_hypothesis_id)
+            next_experiment = selected.next_experiment
+            if reply.next_experiment is not None and reply.next_experiment != next_experiment:
+                raise V2RuntimeError("next experiment must match the selected hypothesis candidate")
             portfolio = json.dumps({
-                "candidates": list(reply.hypotheses),
+                "candidates": [item.model_dump(mode="json") for item in reply.hypotheses],
                 "selected_hypothesis_id": reply.selected_hypothesis_id,
             }, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         else:

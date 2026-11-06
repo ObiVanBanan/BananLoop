@@ -150,8 +150,20 @@ def test_researcher_rejects_score_and_no_evidence(tmp_path):
 def test_hypothesis_portfolio_is_selected_and_persisted_as_evidence(tmp_path):
     runtime, graph, queue = _runtime(tmp_path)
     hypotheses = [
-        {"id": "h1", "hypothesis": "vary the public input size"},
-        {"id": "h2", "hypothesis": "hold input size fixed and vary ordering"},
+        {
+            "id": "h1", "hypothesis": "vary the public input size",
+            "rationale": "Tests sensitivity to scale.",
+            "next_experiment": "vary the public input size",
+            "falsification_condition": "The result is invariant across sizes.",
+            "expected_evidence": "A measured output change across sizes.",
+        },
+        {
+            "id": "h2", "hypothesis": "hold input size fixed and vary ordering",
+            "rationale": "Tests sensitivity to order independently.",
+            "next_experiment": "hold input size fixed and vary ordering",
+            "falsification_condition": "The result is invariant across orderings.",
+            "expected_evidence": "A measured output change across orderings.",
+        },
     ]
     try:
         result = runtime.run_one(
@@ -159,7 +171,6 @@ def test_hypothesis_portfolio_is_selected_and_persisted_as_evidence(tmp_path):
             invoke=make_researcher_invoke(lambda *_args, **_kwargs: {
                 "hypotheses": hypotheses,
                 "selected_hypothesis_id": "h2",
-                "next_experiment": "hold input size fixed and vary ordering",
                 "artifact_text": {"observation.txt": "two candidates considered"},
             }),
         )
@@ -175,6 +186,37 @@ def test_hypothesis_portfolio_is_selected_and_persisted_as_evidence(tmp_path):
         ]
         assert len(serialized) == 1
         assert b'"selected_hypothesis_id":"h2"' in serialized[0]
+    finally:
+        queue.close()
+        graph.close()
+
+
+def test_hypothesis_portfolio_rejects_action_not_bound_to_selected_candidate(tmp_path):
+    runtime, graph, queue = _runtime(tmp_path)
+    try:
+        with pytest.raises(V2RuntimeError, match="must match the selected"):
+            runtime.run_one(
+                node_id="explore", visible_paths=["README.md"],
+                invoke=make_researcher_invoke(lambda *_args, **_kwargs: {
+                    "hypotheses": [{
+                        "id": f"h{i}", "hypothesis": f"hypothesis {i}",
+                        "rationale": "A distinct testable explanation.",
+                        "next_experiment": f"experiment {i}",
+                        "falsification_condition": "The predicted difference is absent.",
+                        "expected_evidence": "A bounded public observation.",
+                    } for i in (1, 2)],
+                    "selected_hypothesis_id": "h2",
+                    "next_experiment": "experiment 1",
+                    "artifact_text": {"observation.txt": "observation"},
+                }),
+            )
+        job = queue.conn.execute(
+            "SELECT state FROM worker_jobs WHERE campaign_id='campaign-test'",
+        ).fetchone()
+        assert job[0] != "COMPLETED"
+        assert graph.conn.execute(
+            "SELECT status FROM research_nodes WHERE node_id='explore'",
+        ).fetchone()[0] != "COMPLETED"
     finally:
         queue.close()
         graph.close()
