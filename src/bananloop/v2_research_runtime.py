@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .budget_ledger import BudgetLedger
 from .contracts import ExplorationCampaignSpecV2, utc_now
 from .exploration import EvidenceAdapterError, EvidenceOnlyAttemptAdapter, EvidenceOnlyOutputV2
+from .experiment_intent import same_experiment_intent
 from .graph_store import AddEdge, AddNode, GraphRepository, MutateGraph
 from .research_ledger import ResearchLedger
 from .roles import PinnedRoleExecutorV1, RoleRegistryV1, TeamManifestAuthority
@@ -450,9 +451,13 @@ class V2ResearchRuntime:
                 task for node_id, task in completed_tasks
                 if node_id not in direct_children
             }
-            if selected_task is not None and selected_task in prior_tasks:
+            semantic_repeat = next((task for task in prior_tasks
+                                    if same_experiment_intent(evidence["next_experiment"], task)), None)
+            if ((selected_task is not None and selected_task in prior_tasks)
+                    or semantic_repeat is not None):
                 self._convergence_reason = (
-                    "Selected next experiment repeats a previously completed task after normalization."
+                    "Selected next experiment repeats a previously completed task by exact normalization "
+                    "or conservative controlled-variable intent matching."
                 )
                 continue
             if child_id in nodes:

@@ -226,6 +226,41 @@ def test_exploration_stops_when_a_completed_experiment_reappears_after_another_s
         graph.close()
 
 
+def test_exploration_detects_conservative_semantic_paraphrase_loop(tmp_path):
+    runtime, graph, queue = _runtime(
+        tmp_path, max_agent_calls=3, role_calls_per_instance=3,
+    )
+    experiments = iter(("vary the input size", "change the number of observations"))
+    try:
+        result = runtime.run_campaign(
+            visible_paths=["README.md"],
+            invoke=make_researcher_invoke(
+                lambda *_args, **_kwargs: {
+                    "next_experiment": next(experiments),
+                    "artifact_text": {"observation.txt": "durable observation"},
+                },
+            ),
+            max_iterations=5,
+        )
+        assert result["status"] == "CONVERGED_REPEATED_EXPERIMENT"
+        assert result["iterations_this_call"] == 2
+        assert len(graph.scheduling_snapshot()["nodes"]) == 2
+        report = json.loads(Path(result["report_path"]).read_text())
+        assert "controlled-variable intent matching" in report["stop_reason"]
+    finally:
+        queue.close()
+        graph.close()
+
+
+def test_experiment_intent_distinguishes_directions_and_controlled_variables():
+    from bananloop.experiment_intent import same_experiment_intent
+
+    assert same_experiment_intent("vary the input size", "change number of observations")
+    assert same_experiment_intent("increase sample size", "vary the number of observations")
+    assert not same_experiment_intent("increase sample size", "decrease sample size")
+    assert not same_experiment_intent("vary sample size", "reverse sample ordering")
+
+
 def test_hypothesis_portfolio_rejects_action_not_bound_to_selected_candidate(tmp_path):
     runtime, graph, queue = _runtime(tmp_path)
     try:
