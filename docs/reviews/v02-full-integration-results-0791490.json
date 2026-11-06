@@ -1,0 +1,40 @@
+{
+  "runtime_code_commit": "07914900afc7d621c358c97e796eab05d2231c71",
+  "branch": "codex/v02-full-integration",
+  "base_main": "6c89975870b0da8060146953faea966e203ba857",
+  "suite": {
+    "command": "PYTHONPATH=tests/plugins python -m pytest -p isolate_home -q -ra --tb=no",
+    "collected": 932,
+    "passed": 930,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "skips": [
+      "pinned selector source commit unavailable",
+      "Windows ACL/reparse-point contract on non-Windows host"
+    ],
+    "host_permissions": "loopback and Linux namespace access enabled"
+  },
+  "offline_smoke": {
+    "command": "python examples/v2_research_diagnostic/run_offline.py --work-dir /tmp/bananloop-v2-offline-acceptance-0791490",
+    "revision": "07914900afc7d621c358c97e796eab05d2231c71",
+    "status": "OFFLINE_V2_EXPLORATION_PASS",
+    "iterations": 2,
+    "public_memory_received_on_second_turn": true,
+    "live_model_called": false,
+    "worktree_clean_during_run": true
+  },
+  "previous_windows_run": {
+    "revision": "e3e593b0f8f56c2aea8f2419965b1bc72ed82c11",
+    "run_url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42311144391",
+    "conclusion": "failure",
+    "failures": 64,
+    "passed": 857,
+    "skipped": 9,
+    "diagnosis": "private pytest DACL still contained write access for an untrusted principal"
+  },
+  "windows_acl_repair_commit": "b8e9de82e444fb292c1b4349d63a2da62e00b397",
+  "windows_repair_ci": "pending next push",
+  "live_smoke": "not run; owner confirmation required",
+  "full_acceptance": false
+}
