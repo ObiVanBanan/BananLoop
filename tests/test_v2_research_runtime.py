@@ -5,6 +5,8 @@ No subscription, Codex CLI or external LLM is invoked in these tests.
 from __future__ import annotations
 
 import hashlib
+import json
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -93,8 +95,12 @@ def test_two_real_exploration_nodes_preserve_public_memory_and_pins(tmp_path):
             visible_paths=["README.md"], invoke=make_researcher_invoke(model_reply),
             max_iterations=2,
         )
-        assert campaign_result["status"] == "ITERATION_LIMIT"
+        assert campaign_result["status"] == "CONVERGED_REPEATED_EXPERIMENT"
         assert campaign_result["iterations_this_call"] == 2
+        report = json.loads(Path(campaign_result["report_path"]).read_text())
+        assert report["status"] == "CONVERGED_REPEATED_EXPERIMENT"
+        assert len(report["completed_experiments"]) == 2
+        assert "No verified scientific conclusion" in report["scientific_conclusion"]
         one, two = campaign_result["completed"]
         assert all(item["status"] == "EXPLORATION_COMPLETED" for item in (one, two))
         assert one["profile"] == "FULL"
@@ -268,7 +274,7 @@ def test_completed_research_job_is_projected_after_runtime_restart_without_redel
         resumed = restarted.run_campaign(
             visible_paths=["README.md"], invoke=invoke, max_iterations=1,
         )
-        assert resumed["status"] == "ITERATION_LIMIT"
+        assert resumed["status"] == "CONVERGED_REPEATED_EXPERIMENT"
         assert resumed["iterations_this_call"] == 1
         assert calls == ["called", "called"]
         assert resumed["completed"][0]["node_id"] != "explore"
@@ -312,7 +318,10 @@ def test_campaign_loop_reports_pinned_role_allocation_exhaustion(tmp_path):
     def model_reply(*_args, **_kwargs):
         calls.append("one-call")
         return {
-            "next_experiment": "continue while the pinned researcher allocation remains",
+            "next_experiment": (
+                "continue with a distinct controlled condition "
+                f"{len(calls)}"
+            ),
             "artifact_text": {"observation.txt": f"observation {len(calls)}"},
         }
 

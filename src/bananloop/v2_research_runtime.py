@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from .budget_ledger import BudgetLedger
-from .contracts import ExplorationCampaignSpecV2
+from .contracts import ExplorationCampaignSpecV2, utc_now
 from .exploration import EvidenceAdapterError, EvidenceOnlyAttemptAdapter, EvidenceOnlyOutputV2
 from .graph_store import AddEdge, AddNode, GraphRepository, MutateGraph
 from .research_ledger import ResearchLedger
@@ -209,6 +211,7 @@ class V2ResearchRuntime:
         self.campaign_id = campaign_id
         self.state_root = Path(state_root)
         self.role_registry = role_registry
+        self._convergence_reason: str | None = None
         self.adapter = EvidenceOnlyAttemptAdapter(
             graph=graph, queue=queue, campaign_id=campaign_id,
             state_root=state_root, role_registry=role_registry,
@@ -312,16 +315,17 @@ class V2ResearchRuntime:
         self.plan()  # Validate the persisted Full spec and pinned roles before any graph mutation.
         completed: list[dict[str, Any]] = []
         self._recover_followups()
+        if self._convergence_reason is not None:
+            return self._finish_campaign_run(
+                "CONVERGED_REPEATED_EXPERIMENT", completed,
+                convergence_reason=self._convergence_reason,
+            )
         while len(completed) < max_iterations:
             plan = self.plan()
             selected = next((item for item in plan.candidates
                              if item.phase == "EXPLORATION" and item.lane == "EVIDENCE_WORKER"), None)
             if selected is None:
-                return {
-                    "status": plan.reason, "campaign_id": self.campaign_id,
-                    "iterations_this_call": len(completed), "completed": completed,
-                    "graph_revision": plan.graph_revision,
-                }
+                return self._finish_campaign_run(plan.reason, completed)
             try:
                 result = self.run_one(
                     node_id=selected.node_id, visible_paths=visible_paths,
@@ -332,38 +336,84 @@ class V2ResearchRuntime:
                 status = ("ROLE_ALLOCATION_EXHAUSTED" if "role instance" in str(exc)
                           else current.reason if current.reason == "BUDGET_EXHAUSTED"
                           else "BUDGET_RESERVATION_REJECTED")
-                return {
-                    "status": status,
-                    "campaign_id": self.campaign_id,
-                    "iterations_this_call": len(completed), "completed": completed,
-                    "graph_revision": current.graph_revision,
-                }
+                return self._finish_campaign_run(status, completed)
             except WorkerQueueError:
                 current = self.plan()
                 if current.reason not in {"PAUSED", "STOP_REQUESTED"}:
                     raise
-                return {
-                    "status": current.reason, "campaign_id": self.campaign_id,
-                    "iterations_this_call": len(completed), "completed": completed,
-                    "graph_revision": current.graph_revision,
-                }
+                return self._finish_campaign_run(current.reason, completed)
             except EvidenceAdapterError as exc:
                 if "allocation exhausted" not in str(exc):
                     raise
                 current = self.plan()
-                return {
-                    "status": "ROLE_ALLOCATION_EXHAUSTED" if "role instance" in str(exc)
-                              else current.reason,
-                    "campaign_id": self.campaign_id,
-                    "iterations_this_call": len(completed), "completed": completed,
-                    "graph_revision": current.graph_revision,
-                }
+                status = ("ROLE_ALLOCATION_EXHAUSTED" if "role instance" in str(exc)
+                          else current.reason)
+                return self._finish_campaign_run(status, completed)
             completed.append(result)
             self._recover_followups()
+            if self._convergence_reason is not None:
+                return self._finish_campaign_run(
+                    "CONVERGED_REPEATED_EXPERIMENT", completed,
+                    convergence_reason=self._convergence_reason,
+                )
+        return self._finish_campaign_run("ITERATION_LIMIT", completed)
+
+    @staticmethod
+    def _normalized_experiment(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = " ".join(value.casefold().split())
+        return normalized or None
+
+    def _finish_campaign_run(self, status: str, completed: list[dict[str, Any]],
+                             *, convergence_reason: str | None = None) -> dict[str, Any]:
+        snapshot = self.graph.scheduling_snapshot()
+        evidence_nodes = []
+        for node in snapshot["nodes"]:
+            completion = node["payload"].get("completion_evidence")
+            if node["status"] != "COMPLETED" or not isinstance(completion, dict):
+                continue
+            evidence_nodes.append({
+                "node_id": node["node_id"],
+                "iteration": node["payload"].get("iteration", 0),
+                "hypothesis": node["payload"].get("hypothesis"),
+                "evidence_refs": completion.get("evidence_refs", []),
+                "limitations": completion.get("limitations", []),
+                "next_experiment": completion.get("next_experiment"),
+            })
+        spec = self.graph.campaign_spec()
+        report = {
+            "schema_version": 1,
+            "campaign_id": self.campaign_id,
+            "goal": spec.goal,
+            "status": status,
+            "stop_reason": convergence_reason or status,
+            "scientific_conclusion": (
+                "No verified scientific conclusion is asserted; Exploration findings are unverified PUBLIC_DEV evidence."
+            ),
+            "completed_experiments": evidence_nodes,
+            "graph_revision": snapshot["graph_revision"],
+            "as_of": utc_now(),
+        }
+        reports = self.state_root / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        target = reports / f"v2-exploration-{self.campaign_id}.json"
+        raw = (json.dumps(report, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=reports)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(raw)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
         return {
-            "status": "ITERATION_LIMIT", "campaign_id": self.campaign_id,
+            "status": status, "campaign_id": self.campaign_id,
             "iterations_this_call": len(completed), "completed": completed,
-            "graph_revision": self.graph.graph_revision(),
+            "graph_revision": snapshot["graph_revision"],
+            "report_path": str(target),
         }
 
     def _recover_followups(self) -> None:
@@ -379,15 +429,22 @@ class V2ResearchRuntime:
                 continue
             job_id = evidence["job_id"]
             child_id = "explore-next-" + hashlib.sha256(job_id.encode()).hexdigest()[:32]
-            if child_id in nodes:
-                if (parent["node_id"], child_id, "REQUIRES") not in edges:
-                    raise V2RuntimeError("persisted Exploration follow-up is missing its prerequisite edge")
-                continue
             durable = self.queue.get_result(job_id)
             result = durable.get("result") if isinstance(durable, dict) else None
             if (not isinstance(result, dict)
                     or result.get("next_experiment") != evidence["next_experiment"]):
                 raise V2RuntimeError("completed exploration has no matching durable next-step result")
+            current_task = self._normalized_experiment(parent["payload"].get("hypothesis"))
+            selected_task = self._normalized_experiment(evidence["next_experiment"])
+            if current_task is not None and selected_task == current_task:
+                self._convergence_reason = (
+                    "Selected next experiment repeats the current hypothesis after normalization."
+                )
+                continue
+            if child_id in nodes:
+                if (parent["node_id"], child_id, "REQUIRES") not in edges:
+                    raise V2RuntimeError("persisted Exploration follow-up is missing its prerequisite edge")
+                continue
             key = "exploration-followup:" + hashlib.sha256(job_id.encode()).hexdigest()
             parent_priority = int(parent["payload"].get("scheduler", {}).get("priority", 0))
             parent_iteration = int(parent["payload"].get("iteration", 0))

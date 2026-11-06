@@ -195,6 +195,7 @@ def main() -> None:
             "source_commit": base_commit,
             "source_state": str(state_root),
             "campaign_loop_status": campaign_result["status"],
+            "campaign_report_path": campaign_result["report_path"],
             "jobs": [x["job_id"] for x in results],
             "research_evidence_counts": [len(x["research_evidence_ids"]) for x in results],
             "second_turn_received_public_memory": True,
