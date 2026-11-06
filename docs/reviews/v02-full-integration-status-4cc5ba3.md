@@ -54,6 +54,10 @@ for machine-readable evidence.
   and
   `pytest -q 'tests/test_rpdi13_integrated_acceptance.py::test_exploration_research_handoff_child_agrees_through_api_and_cli[real-bwrap]'`.
 - No ChatGPT subscription request was made.
+- Owner-gated live command (not run):
+  `python examples/v2_research_diagnostic/run_one_chatgpt.py --work-dir /tmp/bananloop-v2-live-one-call --model gpt-6-luna --approve-one-call`
+  The script preflights the connected SIWC model, makes at most one request,
+  and records usage as `UNKNOWN` when the transport omits it.
 
 ## Remaining Full acceptance gates
 

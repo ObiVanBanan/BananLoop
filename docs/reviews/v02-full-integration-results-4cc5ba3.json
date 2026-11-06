@@ -4,6 +4,7 @@
   "branch": "codex/v02-full-integration",
   "base_main_commit": "6c89975870b0da8060146953faea966e203ba857",
   "paid_model_call_made": false,
+  "prepared_live_smoke_command": "python examples/v2_research_diagnostic/run_one_chatgpt.py --work-dir /tmp/bananloop-v2-live-one-call --model gpt-6-luna --approve-one-call",
   "hypothesis_portfolio": {
     "candidate_count": 2,
     "typed_fields": ["id", "hypothesis", "rationale", "next_experiment", "falsification_condition", "expected_evidence"],
