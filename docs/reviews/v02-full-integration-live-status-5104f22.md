@@ -4,11 +4,13 @@ This checkpoint records a successful single-inference SIWC Optimization run. It 
 
 ## Offline Linux verification
 
-Runtime/test SHA: `23242e577049046cf33b9722be5d11be706ae299`.
+Live Optimization SHA: `5104f22d00eb0adcf5105475f45b8cc88ee3c248`.
+Latest offline test SHA: `b3cebf2eb776aec943ae41e2f2b3c6adf5ff9bf4`.
 
 - Full Linux suite: **950 collected, 948 passed, 0 failed, 0 errors, 2 skipped**.
 - Skips: pinned selector source commit unavailable; Windows ACL/reparse contract is not runnable on Linux.
 - The suite includes three-iteration Research Memory follow-up, malformed-response accounting, crash/restart no-redrive, cross-layer Exploration/Optimization/Evaluator/Verification/HOLDOUT, and Titanic mini-benchmark tests.
+- Titanic optimizer calls are checked immediately before dispatch: the model sees only `data/train.csv` and `src/model.json`, can write only `src/model.json`, and receives no VALIDATION/HOLDOUT content.
 - Reproduce: `PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest -p isolate_home -q -ra --tb=short`.
 
 ## Live SIWC Optimization

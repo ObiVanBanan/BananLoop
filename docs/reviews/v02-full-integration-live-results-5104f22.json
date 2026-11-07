@@ -1,7 +1,7 @@
 {
   "schema": "bananloop-v02-live-optimization-acceptance-v1",
   "tested_code_sha": "5104f22d00eb0adcf5105475f45b8cc88ee3c248",
-  "offline_test_sha": "23242e577049046cf33b9722be5d11be706ae299",
+  "offline_test_sha": "b3cebf2eb776aec943ae41e2f2b3c6adf5ff9bf4",
   "pull_request": "https://github.com/ObiVanBanan/BananLoop/pull/135",
   "live_siwc": {
     "model": "gpt-6-luna",
