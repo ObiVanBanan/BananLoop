@@ -382,7 +382,7 @@ def test_v2_cli_requires_exact_owner_call_approval_before_auth_or_inference(tmp_
     assert result["status"] == "READY_FOR_OWNER_APPROVAL"
 
 
-def test_v2_cli_live_allowance_uses_pinned_mock_transport_and_resumes(tmp_path, monkeypatch):
+def test_v2_cli_live_allowance_uses_pinned_mock_transport_and_resumes(tmp_path, monkeypatch, capsys):
     repo = _repo(tmp_path)
     state_dir = tmp_path / "state"
     calls = []
@@ -450,12 +450,27 @@ def test_v2_cli_live_allowance_uses_pinned_mock_transport_and_resumes(tmp_path, 
     monkeypatch.setattr("bananloop.v2_campaign_cli.ChatGPTPlanAuth", MockAuth)
     monkeypatch.setattr("bananloop.v2_campaign_cli.ChatGPTPlanResearcher", MockResearcher)
     args = _args(repo, state_dir, approve_up_to_calls=1)
-    first = run_v2_explore(args)
+
+    def invoke_cli():
+        argv = [
+            "v2", "explore", "--repo", args.repo, "--state-dir", args.state_dir,
+            "--request-id", args.request_id, "--goal", args.goal,
+            "--read-path", "README.md", "--max-agent-calls", str(args.max_agent_calls),
+            "--max-model-tokens", str(args.max_model_tokens), "--max-iterations",
+            str(args.max_iterations), "--approve-up-to-calls", str(args.approve_up_to_calls),
+            "--timeout-seconds", str(args.timeout_seconds), "--model", args.model,
+        ]
+        parsed = parser().parse_args(argv)
+        assert parsed.func is cmd_v2_explore
+        assert parsed.func(parsed) == 0
+        return json.loads(capsys.readouterr().out)
+
+    first = invoke_cli()
     assert first["status"] == "ITERATION_LIMIT"
     assert first["live_model_called"] is True and len(calls) == 1
     assert calls[0]["protocol"] == "rpdi13r-researcher-one-shot-v1"
 
-    second = run_v2_explore(args)
+    second = invoke_cli()
     assert second["status"] == "ITERATION_LIMIT"
     assert second["campaign_id"] == first["campaign_id"]
     assert len(calls) == 2
