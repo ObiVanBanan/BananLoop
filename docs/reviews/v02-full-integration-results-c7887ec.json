@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "campaign": "BananLoop v0.2 Full integration follow-up",
+  "implementation_sha": "c7887ec761bd472a6de25fb080fa906bf886f696",
+  "pr": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "offline_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest -p isolate_home -o addopts='' -q -ra --tb=short",
+    "result": "passed",
+    "passed": 954,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "subtests_passed": 7,
+    "duration_seconds": 67.57,
+    "skips": [
+      "Pinned selector source commit cd753c97c62148c3ccd3f030251e96a4d19b23bd is unavailable",
+      "Windows ACL/reparse-point contract cannot run on Linux; Windows deferred"
+    ]
+  },
+  "focused_acceptance": {
+    "result": "passed",
+    "passed": 82,
+    "skipped": 1,
+    "coverage": [
+      "Owner Exploration role budget split and pinned role registry persistence",
+      "Durable independent protocol verification and approved receipt recovery",
+      "Supervised Optimization pivot creation and persisted owner status",
+      "Optimization child trusted evaluator execution",
+      "API and CLI read models agree",
+      "test-runner and real-bwrap acceptance modes"
+    ]
+  },
+  "live_titanic": {
+    "holdout_correct": 153,
+    "holdout_total": 196,
+    "holdout_accuracy": 0.7806122448979592,
+    "target_accuracy": 0.95,
+    "target_met": false,
+    "additional_calls_for_implementation": 0
+  },
+  "ci": {
+    "revision": "c7887ec761bd472a6de25fb080fa906bf886f696",
+    "status_at_report_creation": "pending"
+  },
+  "goal_status": "active; remaining acceptance criteria and CI verification are tracked in Draft PR #135"
+}
