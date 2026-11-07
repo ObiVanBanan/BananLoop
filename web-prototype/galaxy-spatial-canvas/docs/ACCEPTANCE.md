@@ -3,6 +3,8 @@
 - [x] Adopted Banana Noir (Atelier typographic restraint), removed theme switcher and Motion Lab from primary toolbar.
 - [x] Source code uses React Flow components rather than a custom SVG graph renderer.
 - [x] Drag, wheel zoom, pan, minimap, double-click note, personal arrow actions modeled.
+- [x] Personal arrows support editing a label via edge click or immediately after creation; labels render on the edge, are browser-local, limited to 80 characters and survive reload. Engine edges cannot be renamed.
+- [ ] Manual browser recheck of arrow click, label editor focus, on-edge rendering, deletion, and persistence after refresh.
 - [x] Browser-local persistence separates personal canvas from immutable Engine dependencies.
 - [x] Rail collapses/resizes, inspector explains READY vs VERIFIED vs PENDING, CSS reduced-motion fallback.
 - [x] Automated Node 22 unit tests cover state parsing, validation, storage, arrow constraints, boundaries.
