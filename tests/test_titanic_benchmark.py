@@ -4,6 +4,7 @@ import csv
 import hashlib
 import io
 import json
+import os
 import shutil
 import zipfile
 from pathlib import Path
@@ -154,6 +155,8 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path):
     import hashlib
     import sqlite3
     import subprocess
+    from bananloop.chatgpt_plan import ChatGPTPlanAuth, SIWCError
+    from bananloop.chatgpt_responses import ChatGPTPlanOptimizer, OPTIMIZER_INSTRUCTIONS
     from bananloop.budget_ledger import BudgetLedger
     from bananloop.contracts import (
         AutonomyScopeV2, CapabilityPolicyV2, ProtocolManifest,
@@ -173,7 +176,40 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path):
 
     from test_evaluator_verification import _receipt, build_full_optimization_runtime
 
+    live_mode = os.environ.get("BANANLOOP_TITANIC_LIVE") == "1"
     state_root = tmp_path / "campaign-state"
+    live_receipts = []
+    live_optimizer = None
+    if live_mode:
+        auth = ChatGPTPlanAuth()
+        if not auth.status().get("connected"):
+            state_root.mkdir(parents=True, exist_ok=True)
+            (state_root / "live-smoke-result.json").write_text(json.dumps({
+                "schema": "bananloop-titanic-live-smoke-v1",
+                "status": "NOT_DISPATCHED", "reason": "SIWC account is not connected",
+                "inference_calls": 0,
+            }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            pytest.fail("live smoke stopped before inference: SIWC account is not connected")
+        live_optimizer = ChatGPTPlanOptimizer(
+            auth, approved_model="gpt-6-luna", timeout_seconds=120,
+            call_observer=lambda receipt: live_receipts.append(dict(receipt)),
+        )
+        try:
+            live_optimizer.check_model()
+        except SIWCError as exc:
+            state_root.mkdir(parents=True, exist_ok=True)
+            (state_root / "live-smoke-result.json").write_text(json.dumps({
+                "schema": "bananloop-titanic-live-smoke-v1",
+                "status": "NOT_DISPATCHED", "reason": str(exc),
+                "inference_calls": 0,
+            }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            pytest.fail(f"live smoke stopped before inference: {exc}")
+
+    optimizer_model_version = "siwc-responses-v1" if live_mode else "titanic-e2e-v1"
+    optimizer_prompt_digest = (
+        hashlib.sha256(OPTIMIZER_INSTRUCTIONS.encode("utf-8")).hexdigest()
+        if live_mode else "b" * 64
+    )
     prep = prepare(DATASET, state_root, seed=2026)
     source_repo = tmp_path / "candidate-source"
     shutil.copytree(state_root / "candidate", source_repo)
@@ -219,8 +255,8 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path):
             ),
             RoleDefinitionV1(
                 role_id="optimizer", adapter="codex", provider="openai",
-                model="gpt-6-luna", model_version="titanic-e2e-v1",
-                prompt_digest="b" * 64,
+                model="gpt-6-luna", model_version=optimizer_model_version,
+                prompt_digest=optimizer_prompt_digest,
                 capability_policy=CapabilityPolicyV2(
                     tools=("read_file", "write_file", "commit_candidate"),
                     read_paths=("data/**", "src/**"), write_paths=("src/**",),
@@ -312,7 +348,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path):
         )
         child_spec = parse_campaign_spec_document({
             "schema_version": 2, "mode": "OPTIMIZATION",
-            "goal": "Improve Titanic survival accuracy from the frozen training split",
+            "goal": "Improve Titanic accuracy toward the 0.95 stretch target using only frozen training features; report actual results without accessing protected evaluation tiers",
             "source_repo": str(source_repo), "base_commit": source_snapshot,
             "autonomy": {
                 "mode": "SUPERVISED", "scope_digest": scope.content_digest(),
@@ -404,13 +440,56 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path):
                 },
             }
 
-        result = runtime.run_campaign(
-            visible_paths=["data/train.csv", "src/model.json"],
-            write_paths=["src/model.json"],
-            model_reply=offline_optimizer,
-            integration_verifier_executor=integration_executor,
-            max_steps=3, worker_id="titanic-offline-e2e",
-        )
+        if live_mode:
+            live_dispatch_count = 0
+
+            def one_shot_live_optimizer(public_input, **pinned):
+                nonlocal live_dispatch_count
+                if live_dispatch_count:
+                    raise RuntimeError(
+                        "live smoke refuses a second optimizer dispatch; inspect persisted outcome"
+                    )
+                live_dispatch_count += 1
+                return live_optimizer(public_input, **pinned)
+
+            selected_optimizer = one_shot_live_optimizer
+            worker_id = "titanic-live-smoke"
+        else:
+            selected_optimizer = offline_optimizer
+            worker_id = "titanic-offline-e2e"
+        try:
+            result = runtime.run_campaign(
+                visible_paths=["data/train.csv", "src/model.json"],
+                write_paths=["src/model.json"],
+                model_reply=selected_optimizer,
+                integration_verifier_executor=integration_executor,
+                max_steps=3, worker_id=worker_id,
+            )
+        except Exception as exc:
+            if live_mode:
+                (state_root / "live-smoke-result.json").write_text(
+                    json.dumps({
+                        "schema": "bananloop-titanic-live-smoke-v1",
+                        "status": "FAILED",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc)[:1000],
+                        "provider_request_receipts": live_receipts,
+                        "provider_usage": live_optimizer.last_usage or "UNKNOWN",
+                        "retry_policy": "no automatic or test-level retry",
+                    }, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+                )
+            raise
+        if live_mode:
+            (state_root / "live-smoke-result.json").write_text(json.dumps({
+                "schema": "bananloop-titanic-live-smoke-v1",
+                "status": "RETURNED",
+                "campaign_status": result.get("status"),
+                "provider_request_receipts": live_receipts,
+                "provider_usage": live_optimizer.last_usage or "UNKNOWN",
+                "holdout_metric": result.get("holdout", {}).get("metric"),
+                "retry_policy": "one optimizer inference maximum; no automatic retry",
+            }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            assert len(live_receipts) == 1
         assert result["status"] == "ALL_NODES_COMPLETE"
         assert result["holdout"]["status"] == "VERIFIED"
         assert result["holdout"]["tier"] == "holdout"
@@ -434,12 +513,26 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path):
             "holdout": result["holdout"],
             "champion_snapshot_id": report["optimization_report"]["champion"]["snapshot_id"],
             "final_report_path": result["final_report_path"],
-            "live_model_calls": 0,
-            "token_usage": "UNKNOWN",
+            "live_model_calls": len(live_receipts),
+            "provider_request_receipts": live_receipts,
+            "token_usage": live_optimizer.last_usage if live_mode and live_optimizer.last_usage
+                           else "UNKNOWN",
         }
         (state_root / "benchmark-result.json").write_text(
             json.dumps(benchmark_result, indent=2, sort_keys=True) + "\n", encoding="utf-8",
         )
+        if live_mode:
+            (state_root / "live-smoke-result.json").write_text(
+                json.dumps({
+                    "schema": "bananloop-titanic-live-smoke-v1",
+                    "status": "COMPLETED",
+                    "campaign_status": result["status"],
+                    "provider_request_receipts": live_receipts,
+                    "provider_usage": live_optimizer.last_usage or "UNKNOWN",
+                    "holdout_metric": result["holdout"]["metric"],
+                    "retry_policy": "one optimizer inference maximum; no automatic retry",
+                }, indent=2, sort_keys=True) + "\n", encoding="utf-8",
+            )
     finally:
         if queue is not None:
             queue.close()

@@ -71,6 +71,32 @@ fields. The reproducible result and receipt digests are committed in
 under its private temporary campaign state. Token usage is `UNKNOWN`; there
 were zero live model calls.
 
+## Optional one-call SIWC optimizer smoke
+
+After reviewing account quota, an owner may run the same campaign with the
+existing Sign in with ChatGPT connection. It sends only the candidate-visible
+training CSV and bounded Core task/evidence context to `gpt-6-luna`; the
+trusted evaluator, private tiers, and deterministic independent verifier stay
+inside Core. The test refuses a second optimizer dispatch, does not retry an
+uncertain request, and records its provider receipt/error under the temporary
+campaign state.
+
+```sh
+LIVE_ROOT="$(mktemp -d /tmp/bananloop-titanic-live.XXXXXX)"
+BANANLOOP_TITANIC_LIVE=1 PYTHONPATH=tests/plugins:tests:src:. \
+  .venv/bin/python -m pytest -p isolate_home -s \
+  --basetemp "$LIVE_ROOT/pytest" \
+  tests/test_titanic_benchmark.py::test_titanic_v2_optimization_campaign_runs_to_terminal_holdout
+```
+
+Inspect `$LIVE_ROOT/pytest/test_titanic_v2_optimization_c0/campaign-state/live-smoke-result.json`
+even if pytest fails. Do not rerun after a dispatched request until its result
+is reconciled. A transport timeout bounds the local wait but does not prove
+provider cancellation, and the SIWC preview does not enforce `tokens_per_instance`
+or provide monetary cost accounting; missing usage/cost remains `UNKNOWN`.
+This is an optimizer smoke with a deterministic independent verifier, not a
+live Exploration-to-Optimization run.
+
 To prepare a private run directory:
 
 ```sh
