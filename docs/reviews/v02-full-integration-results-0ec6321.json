@@ -1,0 +1,70 @@
+{
+  "tested_code_commit": "0ec6321120794358fa783459352e88c72aeea220",
+  "branch": "codex/v02-full-integration",
+  "pull_request": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "full_acceptance": false,
+  "local_linux_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. /tmp/bananloop-check/bin/python -m pytest -p isolate_home -q -ra --tb=no",
+    "collected": 942,
+    "passed": 940,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "exit_code": 0,
+    "skip_reasons": [
+      "pinned selector source commit cd753c97c62148c3ccd3f030251e96a4d19b23bd unavailable",
+      "Windows ACL/reparse-point contract on Linux"
+    ],
+    "host_capabilities": ["loopback sockets", "Linux bubblewrap namespaces"]
+  },
+  "research_memory_enforcement": {
+    "ordinary_reply_requires_evidence_linked_finding": true,
+    "later_reply_requires_hypothesis_portfolio": true,
+    "later_portfolio_requires_exact_prior_claim_and_evidence_id": true,
+    "core_selection_method": "CORE_PUBLIC_DEV_EVIDENCE_COVERAGE",
+    "missing_finding_regression": "tests/test_v2_research_runtime.py::test_researcher_cannot_complete_without_a_ledger_finding",
+    "missing_memory_citation_regression": "tests/test_v2_research_runtime.py::test_later_portfolio_must_use_available_research_memory"
+  },
+  "live_chatgpt_memory_campaign": {
+    "campaign_id": "c-7f977d8bed30e14d2b5b061a723b296a",
+    "attempt_id": "a-00f7f6671225498b354609b8",
+    "model": "gpt-6-luna",
+    "provider": "existing Sign in with ChatGPT connection",
+    "synthetic_public_fixture_only": true,
+    "calls": 2,
+    "request_ids": [
+      "resp_03cc64d716a82c38016aeee9e78cd487d290b1c45404de1ad2",
+      "resp_0d48e83dfcddb021016aeee9f97ac087d29ef83da1ae9efad1"
+    ],
+    "call_tokens": [1895, 2269],
+    "total_tokens": 4164,
+    "spend_usd": "UNKNOWN",
+    "automatic_retries": 0,
+    "campaign_status": "ITERATION_LIMIT",
+    "completed_exploration_nodes": 2,
+    "first_finding_claim": "synthetic_readme_scope",
+    "first_finding_evidence_id": "f90e49ce7a025ebb86d3419f1df2e740f4f7bf0fae0cfd888b530bd2994ec443",
+    "second_turn_received_prior_memory": true,
+    "second_turn_candidate_cited_prior_evidence": true,
+    "core_selection_method": "CORE_PUBLIC_DEV_EVIDENCE_COVERAGE",
+    "experiment_executed": false,
+    "experiment_execution_limit": "The synthetic README contains no executable test definitions or configurations.",
+    "sqlite_provider_call_events": 2,
+    "report_path": "/tmp/bananloop-v2-live-memory-guard-20261107/state/campaigns/c-7f977d8bed30e14d2b5b061a723b296a/reports/v2-owner-run-a-00f7f6671225498b354609b8.json"
+  },
+  "prior_hosted_ci_reference": {
+    "tested_head": "0b34ed6ae2663043d2069cb8900a8d9cc6780aff",
+    "linux_python_3_11_3_12_3_13": "success",
+    "chromium": "success",
+    "mutation_policy": "success"
+  },
+  "remaining_limits": [
+    "live run does not execute the proposed synthetic experiment",
+    "RPDI-14 authoritative subscription usage and cost accounting unavailable",
+    "evidence-reference ranking does not prove scientific truth or semantic relevance",
+    "repeat matching uses a bounded controlled-variable matcher",
+    "Windows investigation deferred by owner",
+    "hosted CI for this new code SHA pending"
+  ],
+  "pull_request_state": "open_draft_unmerged"
+}
