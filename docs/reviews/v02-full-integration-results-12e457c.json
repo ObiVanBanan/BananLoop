@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "campaign": "BananLoop v0.2 Linux offline acceptance",
+  "implementation_sha": "12e457cfd764ca726a1c169e7e14f4e6f615775f",
+  "pr": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "offline_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest -p isolate_home -o addopts='' -q -ra --tb=short",
+    "result": "passed",
+    "passed": 954,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "subtests_passed": 7,
+    "duration_seconds": 63.88,
+    "skips": [
+      "Pinned selector source commit cd753c97c62148c3ccd3f030251e96a4d19b23bd is unavailable",
+      "Windows ACL/reparse-point contract deferred by owner"
+    ]
+  },
+  "integrated_acceptance": {
+    "result": "passed",
+    "variants": ["test-runner", "real-bwrap"],
+    "route": "actual parsed v2 optimize CLI after Exploration handoff and owner-approved pivot",
+    "siwc_optimizer_and_verifier_transports": "mocked",
+    "external_model_calls": 0,
+    "browser_enabled_result": "2 variants passed locally on preceding implementation revision; probe fix present in this revision"
+  },
+  "live_titanic": {
+    "holdout_correct": 153,
+    "holdout_total": 196,
+    "holdout_accuracy": 0.7806122448979592,
+    "target_accuracy": 0.95,
+    "target_met": false,
+    "additional_calls": 0,
+    "cost": "UNKNOWN where provider did not report it"
+  },
+  "ci": {
+    "revision": "12e457cfd764ca726a1c169e7e14f4e6f615775f",
+    "successful": [
+      "pytest ubuntu-latest Python 3.11",
+      "pytest ubuntu-latest Python 3.12",
+      "pytest ubuntu-latest Python 3.13",
+      "chromium",
+      "mutate-policy"
+    ],
+    "in_progress": ["pytest windows-latest Python 3.12"],
+    "windows_acceptance": "deferred by owner"
+  },
+  "goal_status": "active; Linux offline integrated path passes; 95% live target unmet and remaining acceptance criteria open"
+}
