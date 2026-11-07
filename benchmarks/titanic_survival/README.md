@@ -66,8 +66,8 @@ isolation, not a live research/model call.
 The first frozen run (seed 2026) completed with **HOLDOUT accuracy 0.7806
 (153/196)**. This is below the requested 0.95
 stretch target and is reported without changing the split or using protected
-fields. The reproducible result and receipt digests are committed in
-`results/linux-offline-e2e.json`; the test also emits `benchmark-result.json`
+fields. The latest exact-SHA result and receipt digests are committed in
+`results/linux-offline-e2e-1f4d6df.json`; the test also emits `benchmark-result.json`
 under its private temporary campaign state. Token usage is `UNKNOWN`; there
 were zero live model calls.
 
