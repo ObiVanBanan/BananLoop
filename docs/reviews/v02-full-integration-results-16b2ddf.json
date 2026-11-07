@@ -1,0 +1,73 @@
+{
+  "runtime_code_commit": "16b2ddfbad1475181b2caed3622ba5c54131cc16",
+  "branch": "codex/v02-full-integration",
+  "base_main": "6c89975870b0da8060146953faea966e203ba857",
+  "pull_request": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "linux_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. /tmp/bananloop-check/bin/python -m pytest -p isolate_home -q -ra --tb=no",
+    "collected": 935,
+    "passed": 933,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "skips": [
+      "pinned selector source commit unavailable",
+      "Windows ACL/reparse-point contract on Linux"
+    ],
+    "host_permissions": "loopback and Linux namespace access enabled"
+  },
+  "integrated_offline_e2e": {
+    "test": "tests/test_rpdi13_integrated_acceptance.py::test_integrated_exploration_optimization_verification_acceptance",
+    "research_turns": 2,
+    "durable_evidence_and_next_turn_memory": true,
+    "optimizer_candidate_commit": true,
+    "dev_evaluation": true,
+    "independent_verification": true,
+    "champion_promotion": true,
+    "combined_final_report": true,
+    "production_bubblewrap_evaluator": "passed",
+    "deterministic_test_evaluator": "passed",
+    "model_calls": "deterministic offline adapters; no subscription call"
+  },
+  "offline_exploration_diagnostic": {
+    "command": "python examples/v2_research_diagnostic/run_offline.py --work-dir /tmp/bananloop-v2-offline-acceptance-16b2ddf",
+    "revision": "16b2ddfbad1475181b2caed3622ba5c54131cc16",
+    "worktree_clean_during_run": true,
+    "status": "OFFLINE_V2_EXPLORATION_PASS",
+    "campaign_loop_status": "ITERATION_LIMIT",
+    "iterations": 2,
+    "research_evidence_counts": [1, 1],
+    "public_memory_received_on_second_turn": true,
+    "live_model_called": false,
+    "complete_full_pipeline_proven": false
+  },
+  "ci": {
+    "run_id": 42349705710,
+    "head_sha": "16b2ddfbad1475181b2caed3622ba5c54131cc16",
+    "completed_successfully": [
+      "pytest (ubuntu-latest, 3.12)",
+      "pytest (ubuntu-latest, 3.13)"
+    ],
+    "in_progress_at_report_preparation": [
+      "pytest (ubuntu-latest, 3.11)",
+      "pytest (windows-latest, 3.12)"
+    ],
+    "auxiliary_success": [
+      "chromium",
+      "mutate-policy"
+    ]
+  },
+  "windows_portability_fixes": [
+    "Protected evidence uses exclusive creation under a Windows ACL/reparse verified root; POSIX descriptor-relative no-follow creation is retained.",
+    "SQLite privacy uses trusted Windows ACL verification and POSIX mode 0600 enforcement.",
+    "Provider broker fails closed without AF_UNIX and uses no weaker fallback."
+  ],
+  "candidate_ranking": {
+    "method": "distinct trusted prior evidence references for exact target claim",
+    "scientific_truth_independently_validated": false,
+    "semantic_relevance_independently_validated": false
+  },
+  "pause_resume_and_failure_recovery_e2e": "not established",
+  "live_smoke": "not run; separate owner confirmation required",
+  "full_acceptance": false
+}
