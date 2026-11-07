@@ -1,0 +1,57 @@
+{
+  "schema": "bananloop-v02-linux-acceptance-result-v1",
+  "tested_code_sha": "4566af0ea60eb93fd5a0beba643875ff12a4984f",
+  "branch": "codex/v02-full-integration",
+  "pull_request": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "platform": "Linux x86_64",
+  "test_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest -p isolate_home -q -ra --tb=short",
+    "collected": 948,
+    "passed": 946,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "exit_code": 0,
+    "skips": [
+      {
+        "test": "tests/test_selector_preregistration.py::test_selector_preregistration_hashes_and_portfolio_contract_are_frozen",
+        "reason": "pinned selector source commit cd753c97c62148c3ccd3f030251e96a4d19b23bd is unavailable"
+      },
+      {
+        "test": "tests/test_v02_full_prereg.py",
+        "reason": "Windows ACL/reparse-point contract is not runnable on Linux"
+      }
+    ]
+  },
+  "e2e_evidence": {
+    "cross_layer": "tests/test_rpdi13_integrated_acceptance.py: Exploration -> Research Memory -> supervised Optimization -> trusted DEV evaluation -> independent verification -> champion promotion -> terminal HOLDOUT",
+    "research_intelligence_test": "tests/test_v2_research_runtime.py::test_two_real_exploration_nodes_use_refutation_memory_and_preserve_pins",
+    "research_intelligence_assertions": [
+      "first turn records REFUTES evidence",
+      "second turn receives the refutation in public role context",
+      "Core selects the evidence-linked follow-up over the model's unrelated preference",
+      "follow-up executes in the next durable iteration",
+      "the contradictory evidence remains explicitly unverified"
+    ],
+    "titanic_optimization_result": "benchmarks/titanic_survival/results/linux-offline-e2e-1f4d6df.json"
+  },
+  "live_siwc": {
+    "generation_calls": 2,
+    "model": "gpt-6-luna",
+    "total_observed_tokens": 28110,
+    "monetary_cost": "UNKNOWN",
+    "automatic_retries": 0,
+    "post_fix_live_verification": "not run; the authorized two-call smoke allowance was consumed",
+    "attempts": [
+      "benchmarks/titanic_survival/results/siwc-optimizer-attempt-20261107.json",
+      "benchmarks/titanic_survival/results/siwc-optimizer-attempt-20261107-02.json"
+    ]
+  },
+  "acceptance_disposition": "INCOMPLETE",
+  "remaining_limits": [
+    "successful live SIWC Optimization through trusted DEV, VALIDATION, and HOLDOUT is not verified",
+    "the offline Titanic protocol approval is fixture-seeded",
+    "the two-call live smoke exposed optimizer contract issues; fixes are verified offline only",
+    "RPDI-14 authoritative monetary usage remains unavailable"
+  ]
+}
