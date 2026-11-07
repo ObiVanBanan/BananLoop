@@ -59,7 +59,20 @@
     "evidence ranking does not prove truth or semantic relevance",
     "repeat matching uses bounded controlled-variable synonyms",
     "Windows investigation deferred by owner",
-    "hosted CI for this new PR head pending"
+    "Windows investigation deferred by owner"
   ],
+  "latest_hosted_ci": {
+    "head_sha": "557fd283a77bc4bfb4db95f4b95ccfd7ee5bd15c",
+    "linux_python_3_11_3_12_3_13": "success",
+    "linux_matrix_run": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42357011212",
+    "chromium": {
+      "status": "success",
+      "run": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42357011201"
+    },
+    "mutation_policy": {
+      "status": "success",
+      "run": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42357011199"
+    }
+  },
   "pull_request_state": "open_draft_unmerged"
 }

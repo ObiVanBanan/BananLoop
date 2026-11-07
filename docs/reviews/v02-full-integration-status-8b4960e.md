@@ -13,7 +13,7 @@ This checkpoint verifies Linux integration and the owner-authorized subscription
 - Reproduction: `PYTHONPATH=tests/plugins:tests:src:. /tmp/bananloop-check/bin/python -m pytest -p isolate_home -q -ra --tb=no`.
 - Skips: pinned selector commit `cd753c97c62148c3ccd3f030251e96a4d19b23bd` unavailable; Windows ACL/reparse-point contract on Linux.
 - The run used host permissions needed for loopback and bubblewrap; security checks were not disabled.
-- The preceding checkpoint records hosted Linux matrix, Chromium, mutation-policy, and production-bubblewrap integrated E2E evidence at its exact SHA in [`v02-full-integration-status-84035b5.md`](v02-full-integration-status-84035b5.md). This commit changes provider receipt durability and prompt guidance; hosted CI for this new PR head is pending.
+- The preceding checkpoint records production-bubblewrap integrated E2E evidence at its exact SHA in [`v02-full-integration-status-84035b5.md`](v02-full-integration-status-84035b5.md). Current PR head `557fd283a77bc4bfb4db95f4b95ccfd7ee5bd15c` passed hosted Linux/Python 3.11, 3.12 and 3.13, Chromium, and mutation-policy: [Linux matrix](https://github.com/ObiVanBanan/BananLoop/actions/runs/42357011212) · [Chromium](https://github.com/ObiVanBanan/BananLoop/actions/runs/42357011201) · [mutation-policy](https://github.com/ObiVanBanan/BananLoop/actions/runs/42357011199).
 
 ## Provider receipt and failure persistence
 
