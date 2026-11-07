@@ -94,8 +94,8 @@ even if pytest fails. Do not rerun after a dispatched request until its result
 is reconciled. A transport timeout bounds the local wait but does not prove
 provider cancellation, and the SIWC preview does not enforce `tokens_per_instance`
 or provide monetary cost accounting; missing usage/cost remains `UNKNOWN`.
-This is an optimizer smoke with a deterministic independent verifier, not a
-live Exploration-to-Optimization run.
+This optimizer smoke uses a fixture-seeded protocol approval and deterministic
+independent verifier; it does not make the parent Exploration protocol discovery live.
 
 Two bounded live attempts used the existing SIWC connection, one optimizer
 inference per run and no retries. On SHA `e6ca86c`, the first completed with
@@ -110,8 +110,26 @@ name `male_child`; the strict DEV evaluator rejected this unsupported key.
 No validation or holdout evaluation ran. That response is preserved in
 `results/siwc-optimizer-attempt-20261107-02.json`. The candidate-visible starter
 now lists all permitted coefficient names and optimizer instructions forbid
-inventing feature names. No further live call was made after the two-call
-limit. Combined observed usage was 28,110 tokens; monetary cost is `UNKNOWN`.
+inventing feature names.
+
+After explicit authorization for one more request, the run on current runtime
+SHA `5104f22d00eb0adcf5105475f45b8cc88ee3c248` completed with exactly one
+optimizer inference and no retries. The optimizer preserved the selected
+hypothesis ID and used only the published coefficient vocabulary. The v2
+campaign reached `ALL_NODES_COMPLETE`: trusted DEV evaluation completed,
+independent verification passed, VALIDATION completed, and terminal trusted
+HOLDOUT was verified. HOLDOUT accuracy was **0.780612 (153/196)**, still below
+the 0.95 stretch target. The request used 13,722 input and 337 output tokens
+(14,059 total; request ID `resp_03919cb951eec047016aef443035ec87d28562ebaa13404a1b`).
+No automatic retry occurred. Monetary cost is `UNKNOWN`.
+
+The live receipt, optimizer response, public campaign report, evaluation
+receipt digests, and exact result are preserved in:
+`results/live-siwc-optimization-20261107.json`,
+`results/live-siwc-optimization-20261107-receipt.json`, and
+`results/live-siwc-optimization-20261107-campaign-report.json`.
+Across all three attempts, observed usage totals 42,169 tokens; monetary cost
+remains `UNKNOWN`.
 
 To prepare a private run directory:
 
@@ -134,5 +152,6 @@ permissions; without them, pytest reports a skip for the affected production
 isolation case. The independent RPDI-13 E2E covers the broader
 Exploration → Research Memory → Optimization handoff; this Titanic mini
 benchmark covers the real Optimization/evaluator/verification/HOLDOUT path.
-95% remains a stretch target, not a guarantee. A live ChatGPT model-driven
-Titanic campaign has not yet been run.
+95% remains a stretch target, not a guarantee. A live model-driven Titanic
+Optimization run has completed; the upstream Exploration protocol-discovery
+handoff still uses a fixture-seeded approval.

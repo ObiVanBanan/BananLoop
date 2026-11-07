@@ -1,0 +1,68 @@
+{
+  "schema": "bananloop-v02-live-optimization-acceptance-v1",
+  "tested_code_sha": "5104f22d00eb0adcf5105475f45b8cc88ee3c248",
+  "offline_test_sha": "23242e577049046cf33b9722be5d11be706ae299",
+  "pull_request": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "live_siwc": {
+    "model": "gpt-6-luna",
+    "status": "COMPLETED",
+    "inference_calls": 1,
+    "automatic_retries": 0,
+    "request_id": "resp_03919cb951eec047016aef443035ec87d28562ebaa13404a1b",
+    "input_tokens": 13722,
+    "output_tokens": 337,
+    "total_tokens": 14059,
+    "monetary_cost": "UNKNOWN",
+    "campaign_status": "ALL_NODES_COMPLETE",
+    "trusted_dev_evaluation": "COMPLETED",
+    "independent_verification": "PASS",
+    "validation": "COMPLETED",
+    "terminal_holdout": {
+      "status": "VERIFIED",
+      "metric_id": "accuracy",
+      "value": 0.7806122448979592,
+      "correct": 153,
+      "case_count": 196,
+      "receipt_digest": "73a1bea811d764a8468945cfc3d34aff9af3169d6aec548fc83a6ea3367d6aa8"
+    },
+    "protocol_approval": "fixture-seeded",
+    "independent_verifier": "deterministic Core verifier",
+    "result_artifacts": [
+      "benchmarks/titanic_survival/results/live-siwc-optimization-20261107.json",
+      "benchmarks/titanic_survival/results/live-siwc-optimization-20261107-receipt.json",
+      "benchmarks/titanic_survival/results/live-siwc-optimization-20261107-campaign-report.json"
+    ]
+  },
+  "offline_linux_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest -p isolate_home -q -ra --tb=short",
+    "tested_code_sha": "23242e577049046cf33b9722be5d11be706ae299",
+    "collected": 950,
+    "passed": 948,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "exit_code": 0
+  },
+  "prior_live_attempts": {
+    "calls": 2,
+    "observed_tokens": 28110,
+    "automatic_retries": 0,
+    "records": [
+      "benchmarks/titanic_survival/results/siwc-optimizer-attempt-20261107.json",
+      "benchmarks/titanic_survival/results/siwc-optimizer-attempt-20261107-02.json"
+    ]
+  },
+  "combined_observed_tokens": 42169,
+  "combined_monetary_cost": "UNKNOWN",
+  "remaining_limits": [
+    "Titanic 0.95 stretch accuracy was not achieved",
+    "Titanic parent protocol approval was fixture-seeded",
+    "RPDI-14 monetary cost accounting remains unavailable",
+    "live Exploration protocol discovery through Optimization is not established by this campaign"
+  ],
+  "ci": {
+    "tests_run": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42386544693",
+    "dashboard_browser": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42386544678",
+    "critical_rule_mutation": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42386544690"
+  }
+}
