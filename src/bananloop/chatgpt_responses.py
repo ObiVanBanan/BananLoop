@@ -22,6 +22,8 @@ INSTRUCTIONS = (
     "hypotheses and select one using the supplied evidence and research memory. "
     "Each candidate must have id, hypothesis, rationale, next_experiment, "
     "falsification_condition, and expected_evidence. Return ONE strict JSON object, "
+    "Candidate ids must match ^[a-z0-9][a-z0-9_-]{0,79}$ exactly; use lowercase "
+    "letters only (for example, h1_mediated_effect, never H1_mediated_effect). "
     "with keys hypotheses (array of 2-4 such objects), selected_hypothesis_id, "
     "and optional next_experiment only if it exactly matches the selected candidate, "
     "artifact_text (mapping of relative file names to UTF-8 text, optional), "

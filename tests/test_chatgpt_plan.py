@@ -17,7 +17,7 @@ from bananloop.chatgpt_plan import (
 )
 from bananloop.chatgpt_responses import (
     ChatGPTPlanResearcher, ChatGPTPlanOptimizer, ChatGPTPlanIntegrationVerifier,
-    ChatGPTPlanResponseError, collect_completed, _event_stream,
+    ChatGPTPlanResponseError, INSTRUCTIONS, collect_completed, _event_stream,
 )
 
 
@@ -296,6 +296,11 @@ def test_official_response_payload_is_subscription_only(tmp_path):
     assert headers["Authorization"] == "Bearer oauth-access-token"
     assert "access_token" not in json.dumps(body)
     assert conn.closed
+
+
+def test_research_prompt_states_exact_lowercase_candidate_id_contract():
+    assert "^[a-z0-9][a-z0-9_-]{0,79}$" in INSTRUCTIONS
+    assert "never H1_mediated_effect" in INSTRUCTIONS
 
 
 def test_optimizer_siwc_protocol_is_pinned_and_tool_free(tmp_path):
