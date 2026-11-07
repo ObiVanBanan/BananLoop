@@ -1187,11 +1187,14 @@ print(json.dumps({
         assert finalized["status"] == "ALL_NODES_COMPLETE"
         assert finalized["holdout"]["status"] == "VERIFIED"
         assert finalized["holdout"]["candidate_snapshot_id"] == revised["candidate_snapshot_id"]
+        assert finalized["holdout"]["metric"]["metric_id"] == "quality"
+        assert finalized["holdout"]["metric"]["value"] == 0.8
         optimization_report = json.loads(Path(finalized["report_path"]).read_text())
         assert optimization_report["campaign_id"] == campaign_id
         assert optimization_report["status"] == finalized["status"]
         assert optimization_report["champion"]["snapshot_id"] == revised["candidate_snapshot_id"]
         assert optimization_report["holdout"]["tier"] == "holdout"
+        assert optimization_report["holdout"]["metric"]["value"] == 0.8
         assert {item["tier"] for item in optimization_report["evaluation_receipts"]} == {
             "dev", "validation",
         }

@@ -582,6 +582,13 @@ print(json.dumps({
             assert optimized["holdout"]["tier"] == "holdout"
             assert optimized["holdout"]["candidate_snapshot_id"] == candidate["candidate_snapshot_id"]
             assert optimized["holdout"]["status"] == "VERIFIED"
+            holdout_metric = optimized["holdout"]["metric"]
+            assert holdout_metric["metric_id"] == "quality"
+            assert holdout_metric["metric_field"] == "quality"
+            assert holdout_metric["direction"] == "MAXIMIZE"
+            assert holdout_metric["value"] in {0.8, 0.9}
+            assert holdout_metric["unit"] is None
+            assert holdout_metric["n"] is None
             final_report = json.loads(Path(optimized["final_report_path"]).read_text())
             assert final_report["campaign_id"] == entry.campaign_id
             assert final_report["optimization_campaign_id"] == child_id

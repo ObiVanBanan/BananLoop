@@ -959,7 +959,7 @@ class V2OptimizationRuntime:
         reuse completed work; an indeterminate job fails closed.
         """
         from .champion_promotion import ChampionPromotionError, ChampionPromotionService
-        from .trusted_evaluator import TrustedEvaluatorError
+        from .trusted_evaluator import EvaluatorRunReceiptV1, TrustedEvaluatorError
 
         spec = self.graph.campaign_spec()
         authority = EvaluatorProtocolAuthority(self.graph.conn)
@@ -983,6 +983,7 @@ class V2OptimizationRuntime:
             receipt = next((json.loads(row[0]) for row in existing
                             if json.loads(row[0]).get("tier") == "holdout"), None)
             if receipt is not None:
+                receipt_model = EvaluatorRunReceiptV1.model_validate(receipt)
                 return {
                     "status": "VERIFIED", "tier": "holdout",
                     "candidate_snapshot_id": receipt["candidate_snapshot_id"],
@@ -990,6 +991,7 @@ class V2OptimizationRuntime:
                     "case_count": receipt["case_count"],
                     "repeatability_runs": receipt["repeatability_runs"],
                     "tier_manifest_sha256": receipt["tier_manifest_sha256"],
+                    "metric": self.trusted_evaluator.owner_metric_summary(receipt_model),
                     "replayed": True,
                 }
             job_ids = self.trusted_evaluator.enqueue_repeatability(
@@ -1017,6 +1019,7 @@ class V2OptimizationRuntime:
             "case_count": receipt.case_count,
             "repeatability_runs": receipt.repeatability_runs,
             "tier_manifest_sha256": receipt.tier_manifest_sha256,
+            "metric": self.trusted_evaluator.owner_metric_summary(receipt),
         }
 
     def _finish_campaign_run(self, result: dict[str, Any]) -> dict[str, Any]:
