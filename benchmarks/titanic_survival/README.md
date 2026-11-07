@@ -64,10 +64,10 @@ proposal is deterministic/offline; this demonstrates actual v2 execution and
 isolation, not a live research/model call.
 
 The frozen run (seed 2026) completed with **HOLDOUT accuracy 0.7806
-(153/196)** on code SHA `818f009894aa436754ff3e5bdb3c40f7c81ec104`. This is below the requested 0.95
+(153/196)** on code SHA `23242e577049046cf33b9722be5d11be706ae299`. This is below the requested 0.95
 stretch target and is reported without changing the split or using protected
 fields. The exact-SHA result and receipt digests are committed in
-`results/linux-offline-e2e-818f009.json`; the test also emits `benchmark-result.json`
+`results/linux-offline-e2e-23242e5.json`; the test also emits `benchmark-result.json`
 under its private temporary campaign state. Token usage is `UNKNOWN`; there
 were zero live model calls.
 

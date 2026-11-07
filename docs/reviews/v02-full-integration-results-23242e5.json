@@ -1,13 +1,13 @@
 {
   "schema": "bananloop-v02-linux-acceptance-result-v1",
-  "tested_code_sha": "818f009894aa436754ff3e5bdb3c40f7c81ec104",
+  "tested_code_sha": "23242e577049046cf33b9722be5d11be706ae299",
   "branch": "codex/v02-full-integration",
   "pull_request": "https://github.com/ObiVanBanan/BananLoop/pull/135",
   "platform": "Linux x86_64",
   "test_suite": {
     "command": "PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest -p isolate_home -q -ra --tb=short",
-    "collected": 949,
-    "passed": 947,
+    "collected": 950,
+    "passed": 948,
     "failed": 0,
     "errors": 0,
     "skipped": 2,
@@ -34,6 +34,13 @@
       "the Exploration node is not marked complete",
       "the consumed or uncertain agent-call budget remains accounted"
     ],
+    "crash_recovery_test": "tests/test_v2_research_runtime.py::test_expired_dispatched_job_is_not_redriven_after_runtime_restart",
+    "crash_recovery_assertions": [
+      "lease expiry after dispatch marks the attempt UNKNOWN",
+      "reopening the runtime does not call the model again",
+      "no evidence or completed graph node is projected",
+      "the uncertain agent call remains charged to the budget"
+    ],
     "research_intelligence_assertions": [
       "first turn records REFUTES evidence",
       "second turn receives the refutation in public role context",
@@ -41,7 +48,7 @@
       "follow-up executes in the next durable iteration",
       "the contradictory evidence remains explicitly unverified"
     ],
-    "titanic_optimization_result": "benchmarks/titanic_survival/results/linux-offline-e2e-818f009.json"
+    "titanic_optimization_result": "benchmarks/titanic_survival/results/linux-offline-e2e-23242e5.json"
   },
   "live_siwc": {
     "generation_calls": 2,
