@@ -31,7 +31,6 @@ from bananloop.evaluator_verification import (
     EvaluatorProtocolAuthority, EvaluatorProtocolV1, EvaluatorTierManifestV1,
     MetricDiscoveryProposalV1,
 )
-from bananloop.exploration import EvidenceOnlyAttemptAdapter
 from bananloop.graph_store import AddNode, GraphRepository, MutateGraph, TransitionNodeStatus
 from bananloop.migrations import create_v5_graph_schema
 from bananloop.registry import CampaignRegistry
@@ -40,7 +39,7 @@ from bananloop.cli import parser
 from bananloop.roles import RoleDefinitionV1, RoleRegistryV1
 from bananloop.trusted_evaluator import TrustedEvaluatorRunner, _case_protocol_digest
 
-from test_exploration_adapter import _pinned_executor, _role_registry, _source_repo
+from test_exploration_adapter import _role_registry, _source_repo
 from test_evaluator_verification import _receipt, build_full_optimization_runtime
 from test_v2_pivot_saga import _proposal_for_child
 
@@ -71,15 +70,21 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
     from pathlib import Path
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     repo = tmp_path / "source"
-    base_commit = _source_repo(repo)
+    _source_repo(repo)
     (repo / "src" / "optimizer" / "model").mkdir(parents=True)
-    (repo / "src" / "optimizer" / "model" / "ranker.py").write_text(
-        "candidate ranker = 1\n", encoding="utf-8",
-    )
+    ranker = repo / "src" / "optimizer" / "model" / "ranker.py"
+    ranker.write_text("baseline ranker = 0\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "add", "src/optimizer/model/ranker.py"], check=True)
     subprocess.run([
         "git", "-C", str(repo), "-c", "user.name=RPDI-13 test",
-        "-c", "user.email=rpdi13@example.invalid", "commit", "-qm", "optimization candidate",
+        "-c", "user.email=rpdi13@example.invalid", "commit", "-qm", "baseline optimizer",
+    ], check=True)
+    base_commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    ranker.write_text("candidate ranker = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "src/optimizer/model/ranker.py"], check=True)
+    subprocess.run([
+        "git", "-C", str(repo), "-c", "user.name=RPDI-13 test",
+        "-c", "user.email=rpdi13@example.invalid", "commit", "-qm", "candidate optimizer",
     ], check=True)
     candidate_snapshot_id = subprocess.check_output(
         ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
@@ -94,12 +99,26 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
             network_access=False,
         ),
         context_fields=("campaign_goal", "public_task"), priority=1,
-        min_instances=1, max_instances=1, calls_per_instance=1,
+        min_instances=1, max_instances=1, calls_per_instance=3,
         tokens_per_instance=100,
+    )
+    optimizer_role = RoleDefinitionV1(
+        role_id="optimizer", adapter="codex", provider="openai",
+        model="gpt-6-luna", model_version="rpdi13-test-pin",
+        prompt_digest="b" * 64,
+        capability_policy=CapabilityPolicyV2(
+            tools=("read_file", "write_file", "commit_candidate"),
+            read_paths=("src/**",), write_paths=("src/**",), backend="LOCAL",
+            network_access=False,
+        ),
+        context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
+                        "constraints", "evidence_refs", "dev_summary"),
+        priority=1, min_instances=1, max_instances=1,
+        calls_per_instance=3, tokens_per_instance=500,
     )
     roles = RoleRegistryV1(
         registry_id="rpdi13-integrated-roles", version=1,
-        roles=(*researcher_roles.roles, integration_role),
+        roles=(*researcher_roles.roles, integration_role, optimizer_role),
     )
     policy = CapabilityPolicyV2(
         tools=("read_file", "list_files", "write_artifact", "commit_candidate"),
@@ -171,27 +190,73 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
             "expected_graph_revision": graph.graph_revision(),
             "changes": [{"type": "AddNode", "node_id": "explore-1", "phase": "EXPLORATION"}],
         })
-        adapter = EvidenceOnlyAttemptAdapter(
-            graph=graph, queue=queue, campaign_id=entry.campaign_id,
-            state_root=state_root, role_registry=roles,
-        )
-        job = adapter.enqueue(node_id="explore-1", visible_paths=["README.md"])
+        from bananloop.v2_research_runtime import V2ResearchRuntime, make_researcher_invoke
 
-        artifact_digest = hashlib.sha256(b"controlled observation\n").hexdigest()
+        observed_turns = []
 
-        def execute(_request, gateway, **_pin):
-            content = b"controlled observation\n"
-            gateway.write_artifact("observation.txt", content)
-            assert hashlib.sha256(content).hexdigest() == artifact_digest
+        def mock_researcher(public_input, **_pinned):
+            observed_turns.append(public_input)
+            turn = len(observed_turns)
+            content = f"controlled observation {turn}\n"
+            artifact_digest = hashlib.sha256(content.encode()).hexdigest()
+            if turn == 1:
+                return {
+                    "hypotheses": [
+                        {
+                            "id": "matched-control", "hypothesis": "The effect survives a matched control.",
+                            "rationale": "A controlled comparison can expose the mechanism.",
+                            "next_experiment": "run a matched control observation",
+                            "falsification_condition": "The control has the same baseline response.",
+                            "expected_evidence": "A controlled observation under matched conditions.",
+                        },
+                        {
+                            "id": "unrelated-check", "hypothesis": "An unrelated condition explains the outcome.",
+                            "rationale": "A separate condition can check an alternative explanation.",
+                            "next_experiment": "test an unrelated condition",
+                            "falsification_condition": "The unrelated condition does not change the outcome.",
+                            "expected_evidence": "A public outcome for the unrelated condition.",
+                        },
+                    ],
+                    "selected_hypothesis_id": "matched-control",
+                    "artifact_text": {"observation.txt": content},
+                    "limitations": ["one deterministic public observation"],
+                    "research_findings": [{
+                        "claim_key": "effect:retrieval",
+                        "statement": "The deterministic observation supports retrieval effect.",
+                        "stance": "SUPPORTS", "kind": "CAUSAL_INFERENCE", "confidence": 0.4,
+                        "intervention_type": "feature_representation",
+                        "algorithmic_layer": "features",
+                        "affected_paths": ["src/optimizer/ranker.py"],
+                        "evidence_refs": [f"artifact://sha256/{artifact_digest}"],
+                    }],
+                }
+            evidence_id = public_input["role_context"]["evidence_refs"][0]
             return {
-                "node_id": "explore-1", "evidence_refs": ["observation:1"],
-                "artifacts": [{"path": "observation.txt", "sha256": artifact_digest}],
-                "limitations": ["one deterministic observation"],
-                "next_experiment": "repeat with an independent case",
+                "hypotheses": [
+                    {
+                        "id": "model-choice", "hypothesis": "An unrelated condition explains the outcome.",
+                        "rationale": "The researcher prefers a fresh condition.",
+                        "next_experiment": "test an unrelated condition",
+                        "falsification_condition": "The unrelated condition has no effect.",
+                        "expected_evidence": "A public outcome for the unrelated condition.",
+                    },
+                    {
+                        "id": "evidence-choice", "hypothesis": "The matched-control observation replicates.",
+                        "rationale": "This candidate directly follows the durable prior finding.",
+                        "next_experiment": "replicate the matched-control observation",
+                        "falsification_condition": "The matched-control result does not replicate.",
+                        "expected_evidence": "A replication result for the prior claim.",
+                        "evidence_refs": [evidence_id],
+                        "target_claim_key": "effect:retrieval",
+                    },
+                ],
+                "selected_hypothesis_id": "model-choice",
+                "artifact_text": {"observation.txt": content},
+                "limitations": ["one deterministic public replication"],
                 "research_findings": [{
                     "claim_key": "effect:retrieval",
-                    "statement": "The deterministic observation supports retrieval effect.",
-                    "stance": "SUPPORTS", "kind": "CAUSAL_INFERENCE", "confidence": 0.4,
+                    "statement": "A second deterministic observation supports retrieval effect.",
+                    "stance": "SUPPORTS", "kind": "CAUSAL_INFERENCE", "confidence": 0.5,
                     "intervention_type": "feature_representation",
                     "algorithmic_layer": "features",
                     "affected_paths": ["src/optimizer/ranker.py"],
@@ -199,25 +264,52 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
                 }],
             }
 
-        _, _, executor = _pinned_executor(queue, graph, entry.campaign_id, roles, job, execute)
-        adapter.run_one(job_id=job["job_id"], worker_id="integrated-worker", executor=executor)
-        adapter.publish_completed(job["job_id"])
+        research_runtime = V2ResearchRuntime(
+            graph=graph, queue=queue, campaign_id=entry.campaign_id,
+            state_root=state_root, role_registry=roles,
+        )
+        exploration = research_runtime.run_campaign(
+            visible_paths=["README.md"],
+            invoke=make_researcher_invoke(mock_researcher), max_iterations=2,
+            worker_id="integrated-v2-researcher",
+        )
+        assert exploration["iterations_this_call"] == 2
+        assert len(observed_turns) == 2
+        assert observed_turns[1]["role_context"]["evidence_refs"]
+        assert "effect:retrieval" in observed_turns[1]["role_context"]["dev_summary"]
+        assert observed_turns[1]["role_context"]["public_task"] == (
+            "run a matched control observation"
+        )
+        portfolio_files = (state_root / "rpdi05" / "artifacts").rglob("*")
+        portfolios = [
+            json.loads(path.read_text(encoding="utf-8")) for path in portfolio_files
+            if path.is_file() and b'"core_selection"' in path.read_bytes()
+        ]
+        assert any(item["researcher_preferred_hypothesis_id"] == "model-choice"
+                   and item["selected_hypothesis_id"] == "evidence-choice"
+                   for item in portfolios)
+        job_id = exploration["completed"][-1]["job_id"]
+        job = queue.get_job(job_id)
+        artifact_digest = hashlib.sha256(b"controlled observation 2\n").hexdigest()
         ledger = ResearchLedger(graph.conn)
         role_binding = job["request"]["role_binding"]
         protocol_digest = ledger.protocol_digest_for_binding(role_binding)
-        evidence_ids = ledger.ingest_completed_job(graph, queue, job["job_id"])
+        evidence_ids = exploration["completed"][-1]["research_evidence_ids"]
         assert len(evidence_ids) == 1
 
         scope_index = _api_json(root_url + f"/{entry.campaign_id}/research?limit=50")
         assert scope_index["source"] == "PERSISTED"
-        assert len(scope_index["scopes"]) == 1
+        assert len(scope_index["scopes"]) >= 1
         public_knowledge = _api_json(
             root_url + f"/{entry.campaign_id}/research?source_snapshot_id={base_commit}"
             f"&protocol_digest={protocol_digest}"
         )
-        assert public_knowledge["evidence"][0]["verification_status"] == "UNVERIFIED_ROLE_FINDING"
-        assert public_knowledge["evidence"][0]["causal_status"] == "UNVERIFIED_INFERENCE"
-        assert public_knowledge["evidence"][0]["evidence_id"] in evidence_ids
+        current_evidence = next(
+            item for item in public_knowledge["evidence"]
+            if item["evidence_id"] in evidence_ids
+        )
+        assert current_evidence["verification_status"] == "UNVERIFIED_ROLE_FINDING"
+        assert current_evidence["causal_status"] == "UNVERIFIED_INFERENCE"
 
         input_bytes = b'{"prompt":"closed deterministic evaluator case","label":"pass"}'
         input_digest = hashlib.sha256(input_bytes).hexdigest()
@@ -228,7 +320,8 @@ tier = Path(os.environ["BANANLOOP_TIER"])
 manifest = json.loads((tier / "manifest.json").read_text())
 cases = json.loads((tier / "input-map.json").read_text())
 candidate = Path(os.environ["BANANLOOP_CANDIDATE"])
-quality = 0.8 if (candidate / "src/optimizer/model/ranker.py").is_file() else 0.5
+ranker = (candidate / "src/optimizer/model/ranker.py").read_text()
+quality = 0.9 if "ranker = 2" in ranker else 0.8 if "ranker = 1" in ranker else 0.5
 print(json.dumps({
     "status": "ok", "metrics": {"quality": quality},
     "protocol_sha256": manifest["protocol_sha256"],
@@ -267,14 +360,14 @@ print(json.dumps({
                 EvaluatorTierManifestV1(tier="validation", manifest_sha256=manifest_digest, case_count=1),
             ),
         })
-        completed_job = queue.get_job(job["job_id"])
-        completed_result = queue.get_result(job["job_id"])
+        completed_job = queue.get_job(job_id)
+        completed_result = queue.get_result(job_id)
         role_binding = job["request"]["role_binding"]
-        source_event_cursor = max(event["event_id"] for event in queue.events(job["job_id"]))
+        source_event_cursor = max(event["event_id"] for event in queue.events(job_id))
         protocol_proposal_payload = {
             "schema_version": 1, "campaign_id": entry.campaign_id,
             "spec_hash": spec.approved_hash(), "source_snapshot_id": base_commit,
-            "source_node_id": "explore-1", "source_job_id": job["job_id"],
+            "source_node_id": job["request"]["node_id"], "source_job_id": job_id,
             "source_fence": completed_job["fence"],
             "source_request_hash": completed_job["request_hash"],
             "source_output_digest": completed_result["output_digest"],
@@ -312,6 +405,12 @@ print(json.dumps({
         }
         child_spec = spec.model_dump(mode="json")
         child_spec["mode"] = "OPTIMIZATION"
+        child_spec["autonomy"]["capability_policy"] = {
+            "policy_version": 1,
+            "tools": ["read_file", "write_file", "commit_candidate"],
+            "read_paths": ["src/**"], "write_paths": ["src/**"],
+            "backend": "LOCAL", "network_access": False,
+        }
         child_spec["evaluation"] = {
             "protocol_id": protocol.protocol_id, "version": protocol.version,
             "content_sha256": protocol.content_digest(),
@@ -423,13 +522,62 @@ print(json.dumps({
                 trusted_evaluator=trusted,
                 integration_verifier=coordinator.integration_verifier,
             )
-            finalized = runtime.run_campaign(visible_paths=["src/optimizer/model/ranker.py"])
-            final_report = json.loads(Path(finalized["final_report_path"]).read_text())
+            child_graph.mutate(MutateGraph(
+                command_id="add-v2-optimizer-proposal",
+                idempotency_key="add-v2-optimizer-proposal",
+                expected_graph_revision=child_graph.graph_revision(),
+                changes=(AddNode(
+                    type="AddNode", node_id="v2-optimizer-proposal", phase="OPTIMIZATION",
+                    payload={"source_snapshot_id": base_commit,
+                             "hypothesis": "Improve the bounded deterministic ranker."},
+                ),),
+            ))
+
+            def optimizer_reply(public_input, **_pinned):
+                assert set(public_input) == {
+                    "protocol", "role_context", "visible_documents", "instruction",
+                }
+                assert public_input["visible_documents"]["src/optimizer/model/ranker.py"] == (
+                    "baseline ranker = 0\n"
+                )
+                assert "closed deterministic evaluator case" not in json.dumps(public_input).lower()
+                return {
+                    "hypothesis_id": "improve-ranker",
+                    "rationale": "Apply the research-selected ranker improvement.",
+                    "changes": {"src/optimizer/model/ranker.py": "candidate ranker = 2\n"},
+                }
+
+            candidate = runtime.run_one(
+                visible_paths=["src/optimizer/model/ranker.py"],
+                hypothesis_id="improve-ranker", model_reply=optimizer_reply,
+                worker_id="integrated-v2-optimizer",
+            )
+            assert candidate["status"] == "CANDIDATE_CREATED"
+            assert candidate["candidate_snapshot_id"] != base_commit
+            optimized = runtime.run_campaign(
+                visible_paths=["src/optimizer/model/ranker.py"],
+                integration_verifier_executor=executor, max_steps=2,
+                worker_id="integrated-v2-evaluator",
+            )
+            assert [step["status"] for step in optimized["steps"]] == [
+                "DEV_EVALUATED", "INDEPENDENT_VERIFICATION_PASS",
+            ]
+            assert optimized["steps"][-1]["champion"]["snapshot_id"] == candidate[
+                "candidate_snapshot_id"
+            ]
+            final_report = json.loads(Path(optimized["final_report_path"]).read_text())
             assert final_report["campaign_id"] == entry.campaign_id
             assert final_report["optimization_campaign_id"] == child_id
             assert final_report["exploration_report"]["campaign_id"] == entry.campaign_id
-            assert final_report["exploration_report"]["source"] == "READ_ONLY_CAMPAIGN_GRAPH"
-            assert final_report["optimization_report"]["integration_evidence"][0]["decision"] == "PASS"
+            assert final_report["exploration_report"]["status"] == "ITERATION_LIMIT"
+            assert len(final_report["exploration_report"]["completed_experiments"]) == 2
+            assert final_report["optimization_report"]["champion"]["snapshot_id"] == candidate[
+                "candidate_snapshot_id"
+            ]
+            assert final_report["optimization_report"]["integration_evidence"][-1]["decision"] == "PASS"
+            assert {item["tier"] for item in final_report["optimization_report"]["evaluation_receipts"]} == {
+                "dev", "validation",
+            }
         finally:
             child_queue.close()
             child_graph.close()
