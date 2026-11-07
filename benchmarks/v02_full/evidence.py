@@ -370,6 +370,26 @@ def verify_protected_directory(path: str | Path) -> None:
             os.close(descriptor)
 
 
+def verify_protected_file(path: str | Path) -> None:
+    """Require a regular, non-link file whose ACL/mode is private to trusted writers."""
+    target = Path(path)
+    if os.name == "nt":
+        try:
+            _verify_windows_path(target, final_is_directory=False)
+        except EvidenceError:
+            raise
+        except OSError as exc:
+            raise EvidenceError("protected Windows file is missing or unreadable") from exc
+        return
+    try:
+        info = target.lstat()
+    except OSError as exc:
+        raise EvidenceError("protected file is missing or unreadable") from exc
+    if (not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077
+            or (hasattr(os, "geteuid") and info.st_uid not in {0, os.geteuid()})):
+        raise EvidenceError("protected file must be regular, trusted, and mode 0600")
+
+
 def _parse_trust_policy(raw: bytes) -> tuple[TrustPolicy, str]:
     def unique_object(pairs):
         result = {}

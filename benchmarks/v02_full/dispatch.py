@@ -29,7 +29,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from .accounting import ActionReceipt, ResourceUsage, make_receipt
 from .evidence import (
     EvidenceArtifactRef, EvidenceError, TrustPolicy, _create_protected_evidence, canonical_bytes, load_trust_policy,
-    sign_evidence, verify_protected_directory,
+    sign_evidence, verify_protected_directory, verify_protected_file,
 )
 from .execution import (
     ArmAssignmentProjection, RunStartAuthorization, RunStartError,
@@ -249,9 +249,14 @@ class MeteredDispatchBoundary:
             raise DispatchBoundaryError("meter database must be a regular non-symlink file")
         if self.db_path.exists():
             info = self.db_path.stat()
-            if ((hasattr(os, "geteuid") and info.st_uid not in {0, os.geteuid()})
-                    or info.st_mode & 0o077):
-                raise DispatchBoundaryError("existing meter database must be trusted and mode 0600")
+            try:
+                if os.name == "nt":
+                    verify_protected_file(self.db_path)
+                elif ((hasattr(os, "geteuid") and info.st_uid not in {0, os.geteuid()})
+                      or info.st_mode & 0o077):
+                    raise EvidenceError("existing meter database is not trusted or mode 0600")
+            except EvidenceError as exc:
+                raise DispatchBoundaryError("existing meter database must be private and trusted") from exc
         self._validate_assignment(self._verify_authority())
         self.conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
@@ -316,9 +321,12 @@ class MeteredDispatchBoundary:
                     info = path.stat()
                     if not stat.S_ISREG(info.st_mode):
                         raise DispatchBoundaryError("SQLite files must be regular files")
-                    os.chmod(path, 0o600)
-                    if path.stat().st_mode & 0o077:
-                        raise DispatchBoundaryError("cannot protect SQLite files with mode 0600")
+                    if os.name == "nt":
+                        verify_protected_file(path)
+                    else:
+                        os.chmod(path, 0o600)
+                        if path.stat().st_mode & 0o077:
+                            raise DispatchBoundaryError("cannot protect SQLite files with mode 0600")
                 except OSError as exc:
                     self.conn.close()
                     raise DispatchBoundaryError("cannot protect SQLite files with mode 0600") from exc

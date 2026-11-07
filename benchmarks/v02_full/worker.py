@@ -27,7 +27,8 @@ from pathlib import PurePosixPath
 from typing import Literal
 
 from .evidence import (EvidenceArtifactRef, EvidenceError, load_trust_policy,
-                       verify_evidence_artifact, verify_protected_directory)
+                       verify_evidence_artifact, verify_protected_directory,
+                       verify_protected_file)
 from .execution import ArmAssignmentProjection
 from .prereg import ArmConfig, TrackManifest, canonical_bytes
 
@@ -121,8 +122,13 @@ def _consume_metered_arm_launch_permit(
     if database.is_symlink() or not database.is_file():
         raise ArmWorkerError("worker launch permit has no protected meter database")
     info = database.stat()
-    if info.st_mode & 0o077:
-        raise ArmWorkerError("meter database permissions are too broad for worker launch")
+    try:
+        if os.name == "nt":
+            verify_protected_file(database)
+        elif info.st_mode & 0o077:
+            raise EvidenceError("meter database mode is too broad")
+    except EvidenceError as exc:
+        raise ArmWorkerError("meter database permissions are too broad for worker launch") from exc
     database_path_sha256 = hashlib.sha256(
         str(database.resolve(strict=True)).encode("utf-8")
     ).hexdigest()
