@@ -744,8 +744,10 @@ def test_optimization_lifecycle_integrates_durable_evaluator_and_verification_qu
     git("config", "user.email", "rpdi11@example.invalid")
     git("config", "user.name", "RPDI-11 test")
     (repo / "src").mkdir()
+    (repo / "data").mkdir()
+    (repo / "data" / "train.csv").write_text("sex,survived\nfemale,1\n", encoding="utf-8")
     (repo / "src" / "app.py").write_text("base\n", encoding="utf-8")
-    git("add", "src/app.py")
+    git("add", "src/app.py", "data/train.csv")
     git("commit", "-qm", "source snapshot")
     source_snapshot_id = git("rev-parse", "HEAD")
     (repo / "src" / "app.py").write_text("candidate\n", encoding="utf-8")
@@ -869,7 +871,7 @@ print(json.dumps({
         model="gpt-6-luna", model_version="pin-test", prompt_digest="b" * 64,
         capability_policy=CapabilityPolicyV2(
             tools=("read_file", "write_file", "commit_candidate"),
-            read_paths=("src/**",), write_paths=("src/**",), backend="LOCAL",
+            read_paths=("data/**", "src/**"), write_paths=("src/**",), backend="LOCAL",
             network_access=False,
         ),
         context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
@@ -889,7 +891,7 @@ print(json.dumps({
             "mode": "SUPERVISED", "scope_digest": "b" * 64, "scope_version": 1,
             "capability_policy": {
                 "tools": ["read_file", "write_file", "commit_candidate"],
-                "read_paths": ["src/**"], "write_paths": ["src/**"],
+                "read_paths": ["data/**", "src/**"], "write_paths": ["src/**"],
                 "backend": "LOCAL", "network_access": False,
             },
         },
@@ -1073,6 +1075,10 @@ print(json.dumps({
 
         def optimizer_reply(public_input, **_pinned):
             assert "visible_documents" in public_input
+            assert public_input["visible_documents"]["data/train.csv"] == (
+                "sex,survived\nfemale,1\n"
+            )
+            assert public_input["writable_paths"] == ["src/app.py"]
             encoded = json.dumps(public_input).lower()
             assert "controlled-case" not in encoded
             assert "controlled case" not in encoded
@@ -1083,7 +1089,8 @@ print(json.dumps({
             }
 
         proposed = runtime.run_one(
-            visible_paths=["src/app.py"], hypothesis_id="ranker-hypothesis",
+            visible_paths=["src/app.py", "data/train.csv"],
+            write_paths=["src/app.py"], hypothesis_id="ranker-hypothesis",
             model_reply=optimizer_reply, worker_id="v2-optimizer-test",
         )
         assert proposed["status"] == "CANDIDATE_CREATED"

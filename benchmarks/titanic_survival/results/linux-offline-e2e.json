@@ -1,0 +1,24 @@
+{
+  "schema": "bananloop-titanic-mini-benchmark-result-v1",
+  "dataset": "OpenML Titanic 40945 v1",
+  "dataset_md5": "60ac7205eee0ba5045c90b3bba95b1c4",
+  "seed": 2026,
+  "source_snapshot_id": "d9d52acc7ac7926e06896efe1a4d2bd01dbc1f70",
+  "campaign_id": "c-22222222222222222222222222222222",
+  "status": "ALL_NODES_COMPLETE",
+  "candidate_snapshot_id": "d83f1c169773b3687a7c13ed7c6e019d5ee4d8de",
+  "holdout": {
+    "status": "VERIFIED",
+    "tier": "holdout",
+    "metric_id": "accuracy",
+    "value": 0.7806122448979592,
+    "correct": 153,
+    "case_count": 196,
+    "repeatability_runs": 2,
+    "receipt_digest": "06477237d82fe743e915e1e820f4916a78443e6878f837cbdc047a9f61e9e2b3",
+    "tier_manifest_sha256": "90f135c8fb7d46e626e681ceba5e8aeef4ce42efa41cb57beaa6aa708a148238"
+  },
+  "live_model_calls": 0,
+  "token_usage": "UNKNOWN",
+  "report_note": "Deterministic offline optimizer and fixture-seeded approved protocol; runtime uses production bubblewrap evaluator."
+}

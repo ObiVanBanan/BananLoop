@@ -120,9 +120,19 @@ def make_optimizer_invoke(model_reply: OptimizerModelReply) -> Callable[..., dic
             raise V2OptimizationError("model request differs from its pinned optimizer role")
         manifest = request.get("capability_manifest")
         paths = manifest.get("visible_paths") if isinstance(manifest, dict) else None
+        write_paths = (manifest.get("write_paths", paths)
+                       if isinstance(manifest, dict) else None)
         if (not isinstance(paths, list) or not paths or len(paths) > 16
-                or any(not isinstance(path, str) for path in paths)):
+                or any(not isinstance(path, str) for path in paths)
+                or not isinstance(write_paths, list) or not write_paths
+                or len(write_paths) > 16 or any(not isinstance(path, str) for path in write_paths)):
             raise V2OptimizationError("optimizer has no bounded source visibility allowlist")
+        paths = [_safe_path(path) for path in paths]
+        write_paths = [_safe_path(path) for path in write_paths]
+        if len(paths) != len(set(paths)) or len(write_paths) != len(set(write_paths)):
+            raise V2OptimizationError("optimizer source path allowlists must be unique")
+        if not set(write_paths) <= set(paths):
+            raise V2OptimizationError("candidate write paths must also be visible to the optimizer")
         documents: dict[str, str] = {}
         total = 0
         for raw_path in paths:
@@ -141,8 +151,9 @@ def make_optimizer_invoke(model_reply: OptimizerModelReply) -> Callable[..., dic
             "protocol": "v2-optimizer-one-shot-v1",
             "role_context": context,
             "visible_documents": documents,
+            "writable_paths": write_paths,
             "instruction": (
-                "Return complete replacement text for only the proposed allowlisted files. "
+                "Return complete replacement text for only writable_paths. "
                 "Do not return shell commands, scores, evaluator claims, or private test data. "
                 "The trusted Core will run the frozen DEV evaluator after committing this candidate."
             ),
@@ -164,8 +175,8 @@ def make_optimizer_invoke(model_reply: OptimizerModelReply) -> Callable[..., dic
         changed: list[str] = []
         for raw_path, content in sorted(proposal.changes.items()):
             path = _safe_path(raw_path)
-            if path not in paths:
-                raise V2OptimizationError("candidate change is outside the task's exact path allowlist")
+            if path not in write_paths:
+                raise V2OptimizationError("candidate change is outside the task's exact write allowlist")
             gateway.write_file(path, content)
             changed.append(path)
         return {
@@ -215,7 +226,9 @@ class V2OptimizationCandidateAdapter:
         self.role_registry = role_registry
 
     def _pinned(self, node_id: str, visible_paths: list[str] | tuple[str, ...],
-                hypothesis_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+                hypothesis_id: str,
+                write_paths: list[str] | tuple[str, ...] | None = None
+                ) -> tuple[dict[str, Any], dict[str, Any]]:
         spec = self.graph.campaign_spec()
         if not isinstance(spec, OptimizationCampaignSpecV2):
             raise V2OptimizationError("v2 optimizer requires a persisted Optimization campaign")
@@ -248,6 +261,10 @@ class V2OptimizationCandidateAdapter:
         paths = tuple(sorted({_safe_path(item) for item in visible_paths}))
         if not paths or len(paths) > 16:
             raise V2OptimizationError("optimizer requires 1 to 16 exact visible source paths")
+        writes = tuple(sorted({_safe_path(item) for item in
+                               (visible_paths if write_paths is None else write_paths)}))
+        if (not writes or len(writes) > 16 or not set(writes) <= set(paths)):
+            raise V2OptimizationError("optimizer write paths must be a nonempty subset of visible paths")
         repo = Path(spec.source_repo).resolve()
         if not repo.is_dir() or repo.is_symlink():
             raise V2OptimizationError("approved source repository is unavailable")
@@ -258,15 +275,16 @@ class V2OptimizationCandidateAdapter:
             if not any(fnmatch.fnmatchcase(path, pattern)
                        for pattern in spec.autonomy.capability_policy.read_paths):
                 raise V2OptimizationError("source visibility exceeds the campaign read policy")
-            if not any(fnmatch.fnmatchcase(path, pattern)
-                       for pattern in spec.autonomy.capability_policy.write_paths):
-                raise V2OptimizationError("candidate writes exceed the campaign write policy")
             scope = getattr(spec.autonomy, "scope", None)
             if scope is not None and not any(
                 path == prefix or path.startswith(prefix.rstrip("/") + "/")
                 for prefix in scope.allowed_paths
             ):
-                raise V2OptimizationError("candidate path exceeds the approved autonomy scope")
+                raise V2OptimizationError("source visibility exceeds the approved autonomy scope")
+        for path in writes:
+            if not any(fnmatch.fnmatchcase(path, pattern)
+                       for pattern in spec.autonomy.capability_policy.write_paths):
+                raise V2OptimizationError("candidate writes exceed the campaign write policy")
 
         spec_hash = spec.approved_hash()
         budget = BudgetLedger(self.queue.path)
@@ -361,12 +379,12 @@ class V2OptimizationCandidateAdapter:
             context_digest=role_context.digest(),
         )
         task_policy = spec.autonomy.capability_policy.model_copy(
-            update={"read_paths": paths, "write_paths": paths},
+            update={"read_paths": paths, "write_paths": writes},
         )
         role_policy = role.capability_policy
         role_binding_digest = _sha256(_canonical(binding).encode())
         capability_manifest = {
-            "visible_paths": list(paths), "write_paths": list(paths),
+            "visible_paths": list(paths), "write_paths": list(writes),
             "source_snapshot_id": source_snapshot_id,
             "node_revision": node_revision,
             "team_manifest_digest": manifest.manifest_digest,
@@ -377,7 +395,8 @@ class V2OptimizationCandidateAdapter:
             "campaign_id": self.campaign_id, "node_id": node_id,
             "hypothesis_id": hypothesis_id, "source_snapshot_id": source_snapshot_id,
             "spec_hash": spec_hash, "team_manifest_digest": manifest.manifest_digest,
-            "node_revision": node_revision,
+            "node_revision": node_revision, "visible_paths": paths,
+            "write_paths": writes,
         }).encode())
         job_id = f"opt-{identity[:40]}"
         final_grant = PermissionEngine.derive(
@@ -385,8 +404,8 @@ class V2OptimizationCandidateAdapter:
             scope_digest=spec.autonomy.scope_digest,
             campaign=spec.autonomy.capability_policy, role=role_policy, task=task_policy,
         )
-        if any(not final_grant.allows_path("read", path) or not final_grant.allows_path("write", path)
-               for path in paths):
+        if (any(not final_grant.allows_path("read", path) for path in paths)
+                or any(not final_grant.allows_path("write", path) for path in writes)):
             raise V2OptimizationError("the intersected capability grant rejects the requested file scope")
         authority = CapabilityAuthority(self.queue.path)
         try:
@@ -411,7 +430,8 @@ class V2OptimizationCandidateAdapter:
         }
         return request, {
             "member": member, "manifest": manifest, "role": role,
-            "spec": spec, "paths": paths, "source_snapshot_id": source_snapshot_id,
+            "spec": spec, "paths": paths, "write_paths": writes,
+            "source_snapshot_id": source_snapshot_id,
             "grant": final_grant,
         }
 
@@ -427,8 +447,9 @@ class V2OptimizationCandidateAdapter:
         return tuple(item for item in parts if item)
 
     def enqueue(self, *, node_id: str, visible_paths: list[str] | tuple[str, ...],
-                hypothesis_id: str) -> dict[str, Any]:
-        request, pinned = self._pinned(node_id, visible_paths, hypothesis_id)
+                hypothesis_id: str,
+                write_paths: list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
+        request, pinned = self._pinned(node_id, visible_paths, hypothesis_id, write_paths)
         member = pinned["member"]
         return self.queue.enqueue(
             job_id=self._job_id(request), enqueue_key=self._job_id(request),
@@ -464,14 +485,17 @@ class V2OptimizationCandidateAdapter:
             "hypothesis_id": request["hypothesis_id"], "source_snapshot_id": request["source_snapshot_id"],
             "spec_hash": request["spec_hash"], "team_manifest_digest": request["team_manifest_digest"],
             "node_revision": request["node_revision"],
+            "visible_paths": request["capability_manifest"]["visible_paths"],
+            "write_paths": request["capability_manifest"]["write_paths"],
         }).encode())
         return f"opt-{digest[:40]}"
 
     def run_one(self, *, node_id: str, visible_paths: list[str] | tuple[str, ...],
                 hypothesis_id: str, model_reply: OptimizerModelReply,
+                write_paths: list[str] | tuple[str, ...] | None = None,
                 worker_id: str = "v2-optimizer", lease_seconds: int = 300) -> dict[str, Any]:
         job = self.enqueue(node_id=node_id, visible_paths=visible_paths,
-                           hypothesis_id=hypothesis_id)
+                           hypothesis_id=hypothesis_id, write_paths=write_paths)
         if job["state"] == "COMPLETED":
             return self.publish_completed(job["job_id"])
         if job["state"] != "READY":
@@ -796,6 +820,7 @@ class V2OptimizationRuntime:
 
     def run_one(
         self, *, visible_paths: list[str] | tuple[str, ...],
+        write_paths: list[str] | tuple[str, ...] | None = None,
         model_reply: OptimizerModelReply | None = None,
         integration_verifier_executor: Any | None = None,
         hypothesis_id: str | None = None,
@@ -828,6 +853,7 @@ class V2OptimizationRuntime:
                     )[:24]
                 return self.candidate_adapter.run_one(
                     node_id=selected.node_id, visible_paths=visible_paths,
+                    write_paths=write_paths,
                     hypothesis_id=next_hypothesis, model_reply=model_reply,
                     worker_id=worker_id,
                 )
@@ -881,6 +907,7 @@ class V2OptimizationRuntime:
 
     def run_campaign(
         self, *, visible_paths: list[str] | tuple[str, ...],
+        write_paths: list[str] | tuple[str, ...] | None = None,
         model_reply: OptimizerModelReply | None = None,
         integration_verifier_executor: Any | None = None,
         max_steps: int = 20,
@@ -913,7 +940,8 @@ class V2OptimizationRuntime:
                 })
             try:
                 result = self.run_one(
-                    visible_paths=visible_paths, model_reply=model_reply,
+                    visible_paths=visible_paths, write_paths=write_paths,
+                    model_reply=model_reply,
                     integration_verifier_executor=integration_verifier_executor,
                     worker_id=worker_id,
                 )

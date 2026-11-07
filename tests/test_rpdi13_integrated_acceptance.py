@@ -549,7 +549,8 @@ print(json.dumps({
 
             def optimizer_reply(public_input, **_pinned):
                 assert set(public_input) == {
-                    "protocol", "role_context", "visible_documents", "instruction",
+                    "protocol", "role_context", "visible_documents",
+                    "writable_paths", "instruction",
                 }
                 assert public_input["visible_documents"]["src/optimizer/model/ranker.py"] == (
                     "baseline ranker = 0\n"
