@@ -113,8 +113,10 @@ def _runtime(tmp_path, *, max_agent_calls=3, ledger_agent_calls=None,
     return runtime, graph, queue
 
 
-def test_two_real_exploration_nodes_preserve_public_memory_and_pins(tmp_path):
-    runtime, graph, queue = _runtime(tmp_path)
+def test_two_real_exploration_nodes_use_refutation_memory_and_preserve_pins(tmp_path):
+    runtime, graph, queue = _runtime(
+        tmp_path, max_agent_calls=4, role_calls_per_instance=4,
+    )
     observed = []
 
     def model_reply(public_input, **pin):
@@ -122,7 +124,7 @@ def test_two_real_exploration_nodes_preserve_public_memory_and_pins(tmp_path):
         assert pin == {
             "provider": "openai", "model": "gpt-6-luna",
             "model_version": "test-pin-v1", "prompt_digest": "c" * 64,
-            "max_model_tokens": 100,
+            "max_model_tokens": 50,
         }
         assert set(public_input) == {
             "protocol", "role_context", "visible_documents", "instruction",
@@ -132,13 +134,64 @@ def test_two_real_exploration_nodes_preserve_public_memory_and_pins(tmp_path):
         assert "capability_grant" not in public_input
         text = f"hypothesis-{len(observed)}"
         sha = hashlib.sha256(text.encode()).hexdigest()
+        first_turn = len(observed) == 1
+        if first_turn:
+            hypotheses = [
+                {
+                    "id": "matched-control", "hypothesis": "The effect survives a matched control.",
+                    "rationale": "A control can falsify persistence of the claimed mechanism.",
+                    "next_experiment": "run a matched control",
+                    "falsification_condition": "The matched control produces the same outcome.",
+                    "expected_evidence": "A controlled observation under matched conditions.",
+                },
+                {
+                    "id": "unrelated-check", "hypothesis": "A separate condition explains the outcome.",
+                    "rationale": "An alternate condition can test a different explanation.",
+                    "next_experiment": "test an unrelated condition",
+                    "falsification_condition": "The unrelated condition has no effect.",
+                    "expected_evidence": "A public outcome for the alternate condition.",
+                },
+            ]
+            selected = "matched-control"
+            next_experiment = "run a matched control"
+        else:
+            prior_evidence = public_input["role_context"]["evidence_refs"][0]
+            assert "refutes persistence" in public_input["role_context"]["dev_summary"]
+            hypotheses = [
+                {
+                    "id": "model-choice", "hypothesis": "An unrelated condition explains the outcome.",
+                    "rationale": "The researcher proposes a fresh direction.",
+                    "next_experiment": "test an unrelated condition",
+                    "falsification_condition": "The unrelated condition has no effect.",
+                    "expected_evidence": "A public outcome for the alternate condition.",
+                },
+                {
+                    "id": "memory-choice", "hypothesis": "A narrowed mechanism responds in an independent condition.",
+                    "rationale": "Follow up the refutation by testing a distinct, narrower condition.",
+                    "next_experiment": "test an independent condition after the refutation",
+                    "falsification_condition": "The narrowed mechanism does not appear under the independent condition.",
+                    "expected_evidence": "An independent observation distinguishing the narrowed mechanism.",
+                    "evidence_refs": [prior_evidence],
+                    "target_claim_key": "mechanism:alpha",
+                },
+            ]
+            # Core should overrule this ungrounded preference using the cited refutation.
+            selected = "model-choice"
+            next_experiment = "test an unrelated condition"
         return {
-            "next_experiment": "test a new independent condition",
+            "hypotheses": hypotheses,
+            "selected_hypothesis_id": selected,
+            "next_experiment": next_experiment,
             "artifact_text": {"observation.txt": text},
             "research_findings": [{
                 "claim_key": "mechanism:alpha",
-                "statement": f"Unverified observation {len(observed)} supports mechanism alpha.",
-                "stance": "SUPPORTS", "kind": "CAUSAL_INFERENCE",
+                "statement": (
+                    "Unverified matched control refutes persistence of mechanism alpha."
+                    if first_turn else
+                    "Unverified independent condition supports a narrowed mechanism alpha."
+                ),
+                "stance": "REFUTES" if first_turn else "SUPPORTS",
+                "kind": "CAUSAL_INFERENCE",
                 "confidence": 0.4,
                 "evidence_refs": [f"artifact://sha256/{sha}"],
             }],
@@ -147,16 +200,16 @@ def test_two_real_exploration_nodes_preserve_public_memory_and_pins(tmp_path):
     try:
         campaign_result = runtime.run_campaign(
             visible_paths=["README.md"], invoke=make_researcher_invoke(model_reply),
-            max_iterations=2,
+            max_iterations=3,
         )
         assert campaign_result["status"] == "CONVERGED_REPEATED_EXPERIMENT"
-        assert campaign_result["iterations_this_call"] == 2
+        assert campaign_result["iterations_this_call"] == 3
         report = json.loads(Path(campaign_result["report_path"]).read_text())
         assert report["status"] == "CONVERGED_REPEATED_EXPERIMENT"
-        assert len(report["completed_experiments"]) == 2
+        assert len(report["completed_experiments"]) == 3
         assert "No verified scientific conclusion" in report["scientific_conclusion"]
-        one, two = campaign_result["completed"]
-        assert all(item["status"] == "EXPLORATION_COMPLETED" for item in (one, two))
+        one, two, three = campaign_result["completed"]
+        assert all(item["status"] == "EXPLORATION_COMPLETED" for item in (one, two, three))
         assert one["profile"] == "FULL"
         assert len(one["research_evidence_ids"]) == 1
         assert queue.get_job(one["job_id"])["state"] == "COMPLETED"
@@ -165,12 +218,18 @@ def test_two_real_exploration_nodes_preserve_public_memory_and_pins(tmp_path):
                 node_id=one["node_id"], visible_paths=["README.md"],
                 invoke=make_researcher_invoke(model_reply),
             )
-        assert len(observed) == 2  # replay cannot create a third model call
+        assert len(observed) == 3  # replay cannot create another model call
 
-        assert len(observed) == 2
+        assert len(observed) == 3
         assert "mechanism:alpha" in observed[1]["role_context"]["dev_summary"]
-        assert observed[1]["role_context"]["public_task"] == "test a new independent condition"
-        assert observed[1]["role_context"]["budget_remaining"]["agent_calls"] == 2
+        assert "REFUTES" in observed[1]["role_context"]["dev_summary"]
+        assert "refutes persistence" in observed[1]["role_context"]["dev_summary"]
+        assert observed[1]["role_context"]["public_task"] == "run a matched control"
+        assert observed[2]["role_context"]["public_task"] == (
+            "test an independent condition after the refutation"
+        )
+        assert "REFUTES" in observed[2]["role_context"]["dev_summary"]
+        assert observed[1]["role_context"]["budget_remaining"]["agent_calls"] == 3
         projection = ResearchLedger(graph.conn).project(
             graph=graph, queue=queue,
             campaign_ids=("campaign-test",),
@@ -179,7 +238,10 @@ def test_two_real_exploration_nodes_preserve_public_memory_and_pins(tmp_path):
                 queue.get_job(one["job_id"])["request"]["role_binding"],
             ),
         )
-        assert len(projection.evidence) == 2
+        assert len(projection.evidence) == 3
+        assert any(item.stance == "REFUTES" for item in projection.evidence)
+        assert projection.causal_memory[0].status == "CONTRADICTED"
+        assert len(projection.contradictions) == 1
         assert all(item.verification_status == "UNVERIFIED_ROLE_FINDING" for item in projection.evidence)
     finally:
         queue.close()
