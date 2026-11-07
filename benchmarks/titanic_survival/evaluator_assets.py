@@ -13,6 +13,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from .features import MODEL_FEATURES
 from bananloop.contracts import ProtocolCase, ProtocolManifest
 from bananloop.evaluator_verification import (
     EvaluatorProtocolV1,
@@ -40,11 +41,7 @@ from pathlib import Path
 candidate = Path(os.environ["BANANLOOP_CANDIDATE"])
 tier = Path(os.environ["BANANLOOP_TIER"])
 model = json.loads((candidate / "src" / "model.json").read_text())
-allowed = {
-    "sex_female", "pclass_1", "pclass_2", "pclass_3", "age_years",
-    "sibsp", "parch", "fare_log1p", "embarked_C", "embarked_Q", "embarked_S",
-    "male_pclass1_child",
-}
+allowed = set(ALLOWED_FEATURES_PLACEHOLDER)
 coefficients = model.get("coefficients")
 all_weights = [model.get("intercept"), *(coefficients.values() if isinstance(coefficients, dict) else ())]
 if (set(model) != {"schema", "intercept", "coefficients"}
@@ -102,6 +99,7 @@ print(json.dumps({
     "cases": measurements,
 }, sort_keys=True, separators=(",", ":")))
 '''
+    source = source.replace("ALLOWED_FEATURES_PLACEHOLDER", repr(MODEL_FEATURES))
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("evaluate.py", source)

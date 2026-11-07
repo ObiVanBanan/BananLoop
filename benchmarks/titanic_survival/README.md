@@ -97,14 +97,21 @@ or provide monetary cost accounting; missing usage/cost remains `UNKNOWN`.
 This is an optimizer smoke with a deterministic independent verifier, not a
 live Exploration-to-Optimization run.
 
-One authorized live attempt was made on SHA `e6ca86c`. SIWC returned a valid
-response using 13,585 input and 329 output tokens (13,914 total), but Core
-rejected it because the response changed the selected hypothesis ID. No
-candidate was committed and no evaluator tier was exposed. The issue was that
-the optimizer prompt did not receive the selected ID; protocol v2 now passes
-it explicitly and requires the model to copy it exactly. The failed attempt
-was not retried. Its machine-readable receipt is
-`results/siwc-optimizer-attempt-20261107.json`; monetary cost is `UNKNOWN`.
+Two bounded live attempts used the existing SIWC connection, one optimizer
+inference per run and no retries. On SHA `e6ca86c`, the first completed with
+13,585 input and 329 output tokens (13,914 total), but Core rejected the reply
+because it changed the selected hypothesis ID. This exposed that the optimizer
+prompt did not receive that ID. Protocol v2 now passes it explicitly and
+requires an exact copy.
+
+The second attempt on SHA `fb31cf7` used 13,608 input and 588 output tokens
+(14,196 total). The hypothesis ID passed, but the model invented coefficient
+name `male_child`; the strict DEV evaluator rejected this unsupported key.
+No validation or holdout evaluation ran. That response is preserved in
+`results/siwc-optimizer-attempt-20261107-02.json`. The candidate-visible starter
+now lists all permitted coefficient names and optimizer instructions forbid
+inventing feature names. No further live call was made after the two-call
+limit. Combined observed usage was 28,110 tokens; monetary cost is `UNKNOWN`.
 
 To prepare a private run directory:
 

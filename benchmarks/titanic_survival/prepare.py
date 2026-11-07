@@ -11,6 +11,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+from .features import MODEL_FEATURES
 
 EXPECTED_MD5 = "60ac7205eee0ba5045c90b3bba95b1c4"
 FEATURES = ("pclass", "sex", "age", "sibsp", "parch", "fare", "embarked")
@@ -145,7 +146,12 @@ def prepare(source: str | Path, output: str | Path, *, seed: int = 2026) -> dict
     initial_model.write_text(json.dumps({
         "schema": "titanic-linear-v1",
         "intercept": -0.5,
-        "coefficients": {"sex_female": 1.0},
+        # Zero-initialized keys publish the permitted feature vocabulary to
+        # the optimizer without exposing the evaluator implementation.
+        "coefficients": {
+            feature: 1.0 if feature == "sex_female" else 0.0
+            for feature in MODEL_FEATURES
+        },
     }, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
     initial_model.chmod(0o600)
 

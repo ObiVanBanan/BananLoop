@@ -13,6 +13,7 @@ import pytest
 
 from benchmarks.titanic_survival.prepare import (
     FEATURES,
+    MODEL_FEATURES,
     TitanicPreparationError,
     _read_arff,
     _split_groups,
@@ -51,10 +52,12 @@ def test_titanic_benchmark_prepares_separate_grouped_private_tiers(tmp_path):
     assert len(training_rows) == result["split"]["train"]["rows"]
     assert "boat" not in training_rows[0] and "body" not in training_rows[0]
     initial_model = json.loads((candidate / "src" / "model.json").read_text(encoding="utf-8"))
-    assert initial_model == {
-        "schema": "titanic-linear-v1", "intercept": -0.5,
-        "coefficients": {"sex_female": 1.0},
-    }
+    assert initial_model["schema"] == "titanic-linear-v1"
+    assert initial_model["intercept"] == -0.5
+    assert set(initial_model["coefficients"]) == set(MODEL_FEATURES)
+    assert initial_model["coefficients"]["sex_female"] == 1.0
+    assert all(weight == 0.0 for feature, weight in initial_model["coefficients"].items()
+               if feature != "sex_female")
     assert not any((candidate / f"{tier}.json").exists()
                    for tier in ("dev", "validation", "holdout"))
     assert {"dev.json", "validation.json", "holdout.json"} <= {

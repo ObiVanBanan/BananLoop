@@ -1,0 +1,29 @@
+{
+  "schema": "bananloop-titanic-live-smoke-result-v1",
+  "date_utc": "2026-11-07",
+  "tested_code_sha": "fb31cf76a6299c16a249657d7466f0eaaf7159e0",
+  "model": "gpt-6-luna",
+  "provider": "existing Sign in with ChatGPT connection",
+  "inference_dispatched": true,
+  "automatic_retries": 0,
+  "request_id": "resp_0174bb7625464cc7016aef3c8a22bc87d2a970d92c737bc916",
+  "provider_status": "COMPLETED",
+  "usage": {
+    "input_tokens": 13608,
+    "output_tokens": 588,
+    "total_tokens": 14196
+  },
+  "monetary_cost": "UNKNOWN",
+  "model_response": {
+    "hypothesis_id": "titanic-child-interaction",
+    "rationale": "Add a positive, bounded interaction for male children to address young male passengers missed by the female-only baseline while leaving the existing female rule unchanged.",
+    "changes": {
+      "src/model.json": "{\"coefficients\":{\"sex_female\":1.0,\"male_child\":0.5},\"intercept\":-0.5,\"schema\":\"titanic-linear-v1\"}"
+    }
+  },
+  "campaign_status": "FAILED_DURING_DEV_EVALUATION",
+  "failure": "The strict evaluator rejected unsupported coefficient key male_child. No validation or holdout evaluation ran.",
+  "holdout_exposed_to_model": false,
+  "evaluator_or_private_data_exposed_to_model": false,
+  "follow_up": "Candidate-visible starter now enumerates the permitted coefficient names, and optimizer instructions prohibit inventing feature names. No further live inference was made."
+}
