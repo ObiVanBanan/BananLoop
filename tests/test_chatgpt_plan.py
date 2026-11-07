@@ -17,7 +17,8 @@ from bananloop.chatgpt_plan import (
 )
 from bananloop.chatgpt_responses import (
     ChatGPTPlanResearcher, ChatGPTPlanOptimizer, ChatGPTPlanIntegrationVerifier,
-    ChatGPTPlanResponseError, INSTRUCTIONS, collect_completed, _event_stream,
+    ChatGPTPlanProtocolVerifier, ChatGPTPlanResponseError, INSTRUCTIONS,
+    collect_completed, _event_stream,
 )
 
 
@@ -414,6 +415,40 @@ def test_integration_verifier_siwc_receives_only_core_summary(tmp_path):
         "protocol", "role_context", "candidate_snapshot_id", "protocol_digest",
     }
     assert "access_token" not in json.dumps(user_input)
+
+
+def test_protocol_verifier_siwc_receives_only_bound_public_review_material(tmp_path):
+    auth, _ = _auth(tmp_path)
+    _connect(auth)
+    proposal_digest = "a" * 64
+    output = {
+        "proposal_digest": proposal_digest, "decision": "REJECT",
+        "checks": ["protocol_identity"], "rationale": "The public evidence is insufficient.",
+    }
+    conn = FakeConnection(_finished(body=json.dumps(output)))
+    verifier = ChatGPTPlanProtocolVerifier(
+        auth, approved_model="gpt-6-luna", transport_factory=lambda *args, **kwargs: conn,
+    )
+    request = {
+        "schema": "evaluator-protocol-verification-v1", "campaign_id": "c1",
+        "source_spec_hash": "b" * 64, "source_snapshot_id": "c" * 40,
+        "protocol_id": "toy-v1", "protocol_version": 1,
+        "protocol_digest": "d" * 64, "proposal_digest": proposal_digest,
+        "review_material_digest": "e" * 64, "role_binding": {},
+        "role_context": {"public_task": "Bounded public review material"},
+        "team_manifest_digest": "f" * 64, "role_registry_digest": "1" * 64,
+    }
+    result = verifier._dispatch_verifier(
+        request, None, provider="openai", model="gpt-6-luna",
+        model_version="pin-v1", prompt_digest="2" * 64, max_model_tokens=100,
+    )
+    assert result["decision"] == "REJECT"
+    user_input = json.loads(conn.sent[0][2]["input"][1]["content"])
+    assert user_input == {
+        "protocol": "evaluator-protocol-verification-v1",
+        "role_context": request["role_context"], "proposal_digest": proposal_digest,
+    }
+    assert "holdout" not in json.dumps(user_input).lower()
 
 
 def test_wrong_pin_or_unapproved_input_avoids_model_call(tmp_path):

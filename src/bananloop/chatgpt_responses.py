@@ -72,6 +72,16 @@ INTEGRATION_VERIFIER_INSTRUCTIONS = (
     "budget_receipt, artifact_integrity, regression_policy. If any supplied Core check failed, "
     "or evidence is insufficient, return FAIL and explain why. Never invent evidence or scores."
 )
+PROTOCOL_VERIFIER_INSTRUCTIONS = (
+    "You are an independent reviewer of a proposed public evaluator protocol. "
+    "Return one strict JSON object matching ProtocolVerifierOutputV1 with the exact "
+    "proposal_digest, decision (APPROVE or REJECT), all eight named checks, and "
+    "diagnostics. Approve only when the supplied public protocol and source evidence "
+    "support protocol_identity, evaluator_bundle_review, metric_contract, tier_manifests, "
+    "frozen_case_scope, no_hidden_data_dependency, fair_comparison, and error_semantics. "
+    "If any point is missing, unclear, or unsafe, reject. You receive no case records, "
+    "labels, hidden evaluator, tools, filesystem, or network access. Do not invent evidence."
+)
 MAX_REPLY_BYTES = 256_000
 MAX_ERROR_BYTES = 4_096
 MAX_EVENT_BYTES = 512_000
@@ -361,6 +371,49 @@ class ChatGPTPlanIntegrationVerifier(ChatGPTPlanResearcher):
         }
         return self(
             public_input, provider=pin.get("provider"), model=model,
+            model_version=pin.get("model_version"), prompt_digest=pin.get("prompt_digest"),
+            max_model_tokens=int(pin.get("max_model_tokens") or 1),
+        )
+
+
+class ChatGPTPlanProtocolVerifier(ChatGPTPlanResearcher):
+    """Tool-free SIWC executor for the independent evaluator-protocol role."""
+
+    def __init__(self, auth: ChatGPTPlanAuth, *, approved_model: str,
+                 timeout_seconds: int = 120,
+                 transport_factory: Callable[..., Any] = http.client.HTTPSConnection,
+                 call_observer: Callable[[dict[str, Any]], None] | None = None):
+        super().__init__(auth, approved_model=approved_model,
+                         timeout_seconds=timeout_seconds,
+                         transport_factory=transport_factory,
+                         protocol="evaluator-protocol-verification-v1",
+                         instructions=PROTOCOL_VERIFIER_INSTRUCTIONS,
+                         call_observer=call_observer,
+                         input_fields=frozenset({"protocol", "role_context", "proposal_digest"}))
+
+    def executor(self, manifest: Any, instance_id: str):
+        """Bind this transport to a pinned, capability-free verifier role."""
+        from .roles import PinnedRoleExecutorV1
+
+        return PinnedRoleExecutorV1.from_manifest(manifest, instance_id, self._dispatch_verifier)
+
+    def _dispatch_verifier(self, request: dict[str, Any], gateway: Any, **pin: Any) -> dict[str, Any]:
+        if gateway is not None or request.get("schema") != "evaluator-protocol-verification-v1":
+            raise SIWCError("protocol verifier accepts only the bounded Core review request")
+        allowed = {
+            "schema", "campaign_id", "source_spec_hash", "source_snapshot_id", "protocol_id",
+            "protocol_version", "protocol_digest", "proposal_digest", "review_material_digest",
+            "role_binding", "role_context", "team_manifest_digest", "role_registry_digest",
+        }
+        if set(request) != allowed:
+            raise SIWCError("protocol verifier request contains unexpected fields")
+        model = pin.get("model")
+        if not isinstance(model, str):
+            raise SIWCError("pinned protocol verifier model is missing")
+        return self(
+            {"protocol": self.protocol, "role_context": request["role_context"],
+             "proposal_digest": request["proposal_digest"]},
+            provider=pin.get("provider"), model=model,
             model_version=pin.get("model_version"), prompt_digest=pin.get("prompt_digest"),
             max_model_tokens=int(pin.get("max_model_tokens") or 1),
         )
