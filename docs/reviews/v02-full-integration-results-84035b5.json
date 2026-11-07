@@ -1,0 +1,82 @@
+{
+  "tested_code_commit": "84035b58e8f83a29696c9102291a29f4ac5b5cde",
+  "branch": "codex/v02-full-integration",
+  "base_main": "6c89975870b0da8060146953faea966e203ba857",
+  "pull_request": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "full_acceptance": false,
+  "local_linux_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. /tmp/bananloop-check/bin/python -m pytest -p isolate_home -q -ra --tb=no",
+    "collected": 937,
+    "passed": 935,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "exit_code": 0,
+    "skip_reasons": [
+      "pinned selector source commit cd753c97c62148c3ccd3f030251e96a4d19b23bd unavailable",
+      "Windows ACL/reparse-point contract on Linux"
+    ],
+    "host_capabilities": ["loopback sockets", "Linux bubblewrap namespaces"]
+  },
+  "production_bubblewrap_integrated_e2e": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. /tmp/bananloop-check/bin/python -m pytest -p isolate_home -q tests/test_rpdi13_integrated_acceptance.py -k real-bwrap",
+    "passed": 1,
+    "failed": 0,
+    "exit_code": 0,
+    "coverage": [
+      "two Exploration turns and persisted public memory",
+      "approved Optimization child campaign",
+      "candidate source change and commit",
+      "frozen evaluator inside production bubblewrap",
+      "independent verification and champion promotion",
+      "API/CLI state projection agreement"
+    ]
+  },
+  "strategy_change_human_in_loop": {
+    "request_artifact": "research/strategy-change-request.json",
+    "gateway_written": true,
+    "persisted_in_graph_sqlite": true,
+    "persisted_in_queue_sqlite": true,
+    "campaign_paused": true,
+    "automatic_followup_suppressed": true,
+    "both_sqlite_databases_closed_and_reopened_in_test": true,
+    "model_replayed_after_restart": false,
+    "test": "tests/test_v2_research_runtime.py::test_strategy_change_request_durably_pauses_until_owner_decision"
+  },
+  "hosted_ci": {
+    "head_sha": "84035b58e8f83a29696c9102291a29f4ac5b5cde",
+    "python_3_11": "success",
+    "python_3_12": "success",
+    "python_3_13": "success",
+    "chromium": {
+      "status": "success",
+      "run": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42355436238"
+    },
+    "mutation_policy": {
+      "status": "success",
+      "run": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42355436235"
+    },
+    "linux_matrix_run": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42355436256"
+  },
+  "live_chatgpt_plan_smoke": {
+    "calls": 2,
+    "model": "gpt-6-luna",
+    "provider": "existing Sign in with ChatGPT connection",
+    "separate_api_key": false,
+    "automatic_retries": 0,
+    "total_tokens": 3336,
+    "spend_usd": "UNKNOWN",
+    "full_live_campaign_proven": false,
+    "records": [
+      "docs/reviews/v02-live-smoke-first-invalid-ef428ae.json",
+      "docs/reviews/v02-live-smoke-second-complete-ef428ae.json"
+    ]
+  },
+  "remaining_limits": [
+    "no complete live multi-iteration campaign or RPDI-14 accounting evidence",
+    "evidence-reference ranking does not prove truth or semantic relevance",
+    "repeat matching uses bounded controlled-variable synonyms",
+    "Windows investigation deferred by owner"
+  ],
+  "pull_request_state": "open_draft_unmerged"
+}
