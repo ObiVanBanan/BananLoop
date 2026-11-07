@@ -42,12 +42,17 @@ function GalaxyBody(){
   const {screenToFlowPosition,fitView}=useReactFlow();
   const railRef=useRef<{startX:number;startWidth:number;pointerId:number}|null>(null);
   const saveTimer=useRef<number|null>(null);
+  const latestPersonal=useRef<PersonalCanvas>(initial);
+  latestPersonal.current=personal;
 
   useEffect(()=>{
     if(saveTimer.current!==null)window.clearTimeout(saveTimer.current);
     saveTimer.current=window.setTimeout(()=>saveCanvas(safeStorage(),fixture.campaignId,personal),180);
     return ()=>{if(saveTimer.current!==null)window.clearTimeout(saveTimer.current)};
   },[personal]);
+
+  // A final synchronous write prevents losing a drag/note on an immediate browser refresh.
+  useEffect(()=>{const flush=()=>{saveCanvas(safeStorage(),fixture.campaignId,latestPersonal.current)};window.addEventListener('pagehide',flush);return()=>window.removeEventListener('pagehide',flush)},[]);
 
   const noteEdit=useCallback((id:string,text:string)=>setPersonal(current=>({...current,notes:current.notes.map(n=>n.id===id?{...n,text:text.slice(0,2000)}:n)})),[]);
   const noteDelete=useCallback((id:string)=>{
