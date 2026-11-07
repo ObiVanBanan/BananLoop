@@ -1,13 +1,13 @@
 {
   "schema": "bananloop-v02-linux-acceptance-result-v1",
-  "tested_code_sha": "4566af0ea60eb93fd5a0beba643875ff12a4984f",
+  "tested_code_sha": "818f009894aa436754ff3e5bdb3c40f7c81ec104",
   "branch": "codex/v02-full-integration",
   "pull_request": "https://github.com/ObiVanBanan/BananLoop/pull/135",
   "platform": "Linux x86_64",
   "test_suite": {
     "command": "PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest -p isolate_home -q -ra --tb=short",
-    "collected": 948,
-    "passed": 946,
+    "collected": 949,
+    "passed": 947,
     "failed": 0,
     "errors": 0,
     "skipped": 2,
@@ -26,6 +26,14 @@
   "e2e_evidence": {
     "cross_layer": "tests/test_rpdi13_integrated_acceptance.py: Exploration -> Research Memory -> supervised Optimization -> trusted DEV evaluation -> independent verification -> champion promotion -> terminal HOLDOUT",
     "research_intelligence_test": "tests/test_v2_research_runtime.py::test_two_real_exploration_nodes_use_refutation_memory_and_preserve_pins",
+    "malformed_attempt_test": "tests/test_v2_research_runtime.py::test_malformed_dispatched_response_is_durable_but_never_published",
+    "malformed_attempt_assertions": [
+      "the malformed reply is rejected after its model dispatch",
+      "the dispatched attempt is durably marked UNKNOWN and is not automatically retried",
+      "no result is committed or projected to Research Memory",
+      "the Exploration node is not marked complete",
+      "the consumed or uncertain agent-call budget remains accounted"
+    ],
     "research_intelligence_assertions": [
       "first turn records REFUTES evidence",
       "second turn receives the refutation in public role context",
@@ -33,7 +41,7 @@
       "follow-up executes in the next durable iteration",
       "the contradictory evidence remains explicitly unverified"
     ],
-    "titanic_optimization_result": "benchmarks/titanic_survival/results/linux-offline-e2e-1f4d6df.json"
+    "titanic_optimization_result": "benchmarks/titanic_survival/results/linux-offline-e2e-818f009.json"
   },
   "live_siwc": {
     "generation_calls": 2,

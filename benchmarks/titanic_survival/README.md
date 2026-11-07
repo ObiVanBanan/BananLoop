@@ -63,11 +63,11 @@ unavailable. The parent protocol approval is fixture-seeded, and the optimizer
 proposal is deterministic/offline; this demonstrates actual v2 execution and
 isolation, not a live research/model call.
 
-The first frozen run (seed 2026) completed with **HOLDOUT accuracy 0.7806
-(153/196)**. This is below the requested 0.95
+The frozen run (seed 2026) completed with **HOLDOUT accuracy 0.7806
+(153/196)** on code SHA `818f009894aa436754ff3e5bdb3c40f7c81ec104`. This is below the requested 0.95
 stretch target and is reported without changing the split or using protected
-fields. The latest exact-SHA result and receipt digests are committed in
-`results/linux-offline-e2e-1f4d6df.json`; the test also emits `benchmark-result.json`
+fields. The exact-SHA result and receipt digests are committed in
+`results/linux-offline-e2e-818f009.json`; the test also emits `benchmark-result.json`
 under its private temporary campaign state. Token usage is `UNKNOWN`; there
 were zero live model calls.
 

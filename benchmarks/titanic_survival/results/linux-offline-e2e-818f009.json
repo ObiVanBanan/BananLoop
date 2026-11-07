@@ -1,6 +1,6 @@
 {
   "schema": "bananloop-titanic-mini-benchmark-result-v1",
-  "tested_code_sha": "1f4d6df902a6ec0dae0cfc32c153d12817977d14",
+  "tested_code_sha": "818f009894aa436754ff3e5bdb3c40f7c81ec104",
   "dataset": "OpenML Titanic 40945 v1",
   "dataset_md5": "60ac7205eee0ba5045c90b3bba95b1c4",
   "seed": 2026,
