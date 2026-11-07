@@ -30,9 +30,10 @@ from bananloop.contracts import (
 )
 from bananloop.evaluator_verification import (
     EvaluatorProtocolAuthority, EvaluatorProtocolDraftV1, EvaluatorProtocolV1,
-    EvaluatorTierManifestV1, EvaluatorVerificationAdapter, ProtocolVerifierOutputV1,
+    EvaluatorTierManifestV1, EvaluatorVerificationAdapter, IntegrationVerifierOutputV1,
+    ProtocolVerifierOutputV1,
 )
-from bananloop.graph_store import AddNode, GraphRepository, MutateGraph, TransitionNodeStatus
+from bananloop.graph_store import AddNode, GraphRepository, MutateGraph
 from bananloop.migrations import create_v5_graph_schema
 from bananloop.registry import CampaignRegistry
 from bananloop.research_ledger import ResearchLedger
@@ -40,10 +41,11 @@ from bananloop.cli import parser
 from bananloop.roles import (
     PinnedRoleExecutorV1, RoleDefinitionV1, RoleRegistryV1, TeamManifestAuthority,
 )
-from bananloop.trusted_evaluator import TrustedEvaluatorRunner, _case_protocol_digest
+from bananloop.trusted_evaluator import (
+    TrustedEvaluatorAdapter, TrustedEvaluatorRunner, _case_protocol_digest,
+)
 
 from test_exploration_adapter import _role_registry, _source_repo
-from test_evaluator_verification import build_full_optimization_runtime
 
 
 TOKEN = "rpdi13-integrated-test-token"
@@ -82,15 +84,6 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
         "-c", "user.email=rpdi13@example.invalid", "commit", "-qm", "baseline optimizer",
     ], check=True)
     base_commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
-    ranker.write_text("candidate ranker = 1\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo), "add", "src/optimizer/model/ranker.py"], check=True)
-    subprocess.run([
-        "git", "-C", str(repo), "-c", "user.name=RPDI-13 test",
-        "-c", "user.email=rpdi13@example.invalid", "commit", "-qm", "candidate optimizer",
-    ], check=True)
-    candidate_snapshot_id = subprocess.check_output(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
-    ).strip()
     researcher_roles = _role_registry()
     researcher_role = researcher_roles.roles[0].model_copy(update={"min_instances": 0})
     integration_role = RoleDefinitionV1(
@@ -541,79 +534,123 @@ print(json.dumps({
             real_runner = TrustedEvaluatorRunner() if real_isolation else None
             if real_runner is not None and not real_runner._sandbox_available():
                 pytest.skip("host does not permit production bubblewrap namespaces")
-            coordinator, trusted, executor = build_full_optimization_runtime(
-                graph=child_graph, queue=child_queue, campaign_id=child_id,
-                state_root=child_state, source_snapshot_id=base_commit,
-                candidate_snapshot_id=candidate_snapshot_id, protocol=protocol,
-                manifest=evaluator_manifest, registry=roles, runner=real_runner,
-            )
-            child_graph.mutate(MutateGraph(
-                command_id="add-integrated-child-candidate",
-                idempotency_key="add-integrated-child-candidate",
-                expected_graph_revision=child_graph.graph_revision(),
-                changes=(AddNode(
-                    type="AddNode", node_id="integrated-child-candidate", phase="OPTIMIZATION",
-                    payload={"source_snapshot_id": base_commit,
-                             "candidate_snapshot_id": candidate_snapshot_id},
-                ),),
-            ))
-            child_graph.mutate(MutateGraph(
-                command_id="ready-integrated-child-candidate",
-                idempotency_key="ready-integrated-child-candidate",
-                expected_graph_revision=child_graph.graph_revision(),
-                changes=(TransitionNodeStatus(
-                    type="TransitionNodeStatus", node_id="integrated-child-candidate",
-                    expected_node_revision=0, expected_status="PENDING", to_status="READY",
-                    guard="SCHEDULER_READY", actor="CORE",
-                ),),
-            ))
-            baseline_jobs = trusted.enqueue_repeatability(
-                candidate_snapshot_id=base_commit, tier="validation",
-            )
-            for job_id in baseline_jobs:
-                trusted.run_one(job_id, worker_id="integrated-baseline")
-            baseline_receipt = trusted.finalize_repeatability(baseline_jobs)
+            if real_runner is None:
+                class DeterministicRunner(TrustedEvaluatorRunner):
+                    def __init__(self):
+                        super().__init__(bwrap_binary="not-used-in-test")
+                        self.protocol_hash = evaluator_manifest.protocol_sha256
 
-            dev_receipt = coordinator.evaluate_candidate(
-                node_id="integrated-child-candidate", worker_id="integrated-evaluator",
-            )
-            assert dev_receipt.tier == "dev"
-            assert dev_receipt.candidate_snapshot_id == candidate_snapshot_id
-            current_node = next(
-                node for node in child_graph.scheduling_snapshot()["nodes"]
-                if node["node_id"] == "integrated-child-candidate"
-            )
-            assert (current_node["phase"], current_node["status"]) == ("VERIFICATION", "PENDING")
-            child_graph.mutate(MutateGraph(
-                command_id="ready-integrated-child-verification",
-                idempotency_key="ready-integrated-child-verification",
-                expected_graph_revision=child_graph.graph_revision(),
-                changes=(TransitionNodeStatus(
-                    type="TransitionNodeStatus", node_id="integrated-child-candidate",
-                    expected_node_revision=int(current_node["revision"]),
-                    expected_status="PENDING", to_status="READY",
-                    guard="SCHEDULER_READY", actor="CORE",
-                ),),
-            ))
-            verification_receipt = coordinator.verify_candidate(
-                node_id="integrated-child-candidate",
-                baseline_run_receipt_digest=baseline_receipt.receipt_digest,
-                executor=executor, worker_id="integrated-verifier",
-            )
-            assert verification_receipt.decision == "PASS"
-            replay = coordinator.verify_candidate(
-                node_id="integrated-child-candidate",
-                baseline_run_receipt_digest=baseline_receipt.receipt_digest,
-                executor=executor, worker_id="integrated-verifier",
-            )
-            assert replay == verification_receipt
-            from bananloop.v2_optimization_runtime import V2OptimizationRuntime
+                    def _sandbox_available(self):
+                        return True
 
-            runtime = V2OptimizationRuntime(
-                graph=child_graph, queue=child_queue, campaign_id=child_id,
-                state_root=child_state, role_registry=roles,
-                trusted_evaluator=trusted,
-                integration_verifier=coordinator.integration_verifier,
+                    def _execute_isolated(
+                        self, argv, *, readonly, output, candidate_snapshot_id,
+                        tier, timeout,
+                    ):
+                        private_map = json.loads(
+                            (readonly / "tier" / "input-map.json").read_text(encoding="utf-8")
+                        )
+                        measured_cases = [{
+                            "case_id": item["case_id"], "repetition": item["repetition"],
+                            "input_sha256": item["input_sha256"], "metrics": {},
+                        } for item in private_map]
+                        if candidate_snapshot_id == base_commit:
+                            score = 0.6
+                        else:
+                            candidate_file = (
+                                child_state / "v2_optimization" / "snapshots"
+                                / child_id / candidate_snapshot_id / "src"
+                                / "optimizer" / "model" / "ranker.py"
+                            )
+                            score = (
+                                0.5 if "regression candidate" in candidate_file.read_text()
+                                else 0.8
+                            )
+                        return json.dumps({
+                            "status": "ok", "metrics": {"quality": score},
+                            "protocol_sha256": self.protocol_hash, "cases": measured_cases,
+                            "diagnostics": {},
+                        })
+
+                evaluator_runner = DeterministicRunner()
+            else:
+                evaluator_runner = real_runner
+            monkeypatch.setattr(
+                "bananloop.v2_optimization_cli.TrustedEvaluatorAdapter",
+                lambda **kwargs: TrustedEvaluatorAdapter(**kwargs, runner=evaluator_runner),
+            )
+            monkeypatch.setattr(
+                "bananloop.v2_optimization_cli.ChatGPTPlanAuth",
+                lambda: type("MockAuth", (), {
+                    "status": lambda self: {"connected": True},
+                })(),
+            )
+
+            class MockOptimizer:
+                def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer):
+                    assert approved_model == "gpt-6-luna" and timeout_seconds == 60
+                    self.call_observer = call_observer
+                    self.request_history = []
+
+                def check_model(self):
+                    return None
+
+                def __call__(self, public_input, **_pin):
+                    assert set(public_input) == {
+                        "protocol", "role_context", "selected_hypothesis_id", "visible_documents",
+                        "writable_paths", "instruction",
+                    }
+                    assert public_input["selected_hypothesis_id"] == "improve-ranker"
+                    assert public_input["visible_documents"]["src/optimizer/model/ranker.py"] == (
+                        "baseline ranker = 0\n"
+                    )
+                    assert "closed deterministic evaluator case" not in json.dumps(public_input).lower()
+                    receipt = {
+                        "request_id": "resp_integrated_optimizer", "status": "COMPLETED",
+                        "dispatched": True, "usage": {"total_tokens": 31},
+                    }
+                    self.request_history.append(receipt)
+                    self.call_observer(receipt)
+                    return {
+                        "hypothesis_id": "improve-ranker",
+                        "rationale": "Apply the research-selected ranker improvement.",
+                        "changes": {"src/optimizer/model/ranker.py": "candidate ranker = 2\n"},
+                    }
+
+            class MockVerifier:
+                def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer):
+                    assert approved_model == "gpt-6-luna" and timeout_seconds == 60
+                    self.call_observer = call_observer
+                    self.request_history = []
+
+                def check_model(self):
+                    return None
+
+                def _dispatch_verifier(self, request, gateway, **_pin):
+                    assert gateway is None
+                    assert request["role_binding"]["role_id"] == "integration_verifier"
+                    public_evidence = json.loads(request["role_context"]["public_task"])
+                    assert "closed deterministic evaluator case" not in json.dumps(public_evidence).lower()
+                    output = IntegrationVerifierOutputV1(
+                        candidate_snapshot_id=request["candidate_snapshot_id"],
+                        protocol_digest=request["protocol_digest"],
+                        decision=public_evidence["decision"],
+                        checks=(
+                            "candidate_identity", "protocol_identity", "evaluation_receipt",
+                            "budget_receipt", "artifact_integrity", "regression_policy",
+                        ),
+                    ).model_dump(mode="json")
+                    receipt = {
+                        "request_id": "resp_integrated_verifier", "status": "COMPLETED",
+                        "dispatched": True, "usage": {"total_tokens": 19},
+                    }
+                    self.request_history.append(receipt)
+                    self.call_observer(receipt)
+                    return output
+
+            monkeypatch.setattr("bananloop.v2_optimization_cli.ChatGPTPlanOptimizer", MockOptimizer)
+            monkeypatch.setattr(
+                "bananloop.v2_optimization_cli.ChatGPTPlanIntegrationVerifier", MockVerifier,
             )
             child_graph.mutate(MutateGraph(
                 command_id="add-v2-optimizer-proposal",
@@ -622,41 +659,30 @@ print(json.dumps({
                 changes=(AddNode(
                     type="AddNode", node_id="v2-optimizer-proposal", phase="OPTIMIZATION",
                     payload={"source_snapshot_id": base_commit,
+                             "hypothesis_id": "improve-ranker",
                              "hypothesis": "Improve the bounded deterministic ranker."},
                 ),),
             ))
 
-            def optimizer_reply(public_input, **_pinned):
-                assert set(public_input) == {
-                    "protocol", "role_context", "selected_hypothesis_id", "visible_documents",
-                    "writable_paths", "instruction",
-                }
-                assert public_input["selected_hypothesis_id"] == "improve-ranker"
-                assert public_input["visible_documents"]["src/optimizer/model/ranker.py"] == (
-                    "baseline ranker = 0\n"
-                )
-                assert "closed deterministic evaluator case" not in json.dumps(public_input).lower()
-                return {
-                    "hypothesis_id": "improve-ranker",
-                    "rationale": "Apply the research-selected ranker improvement.",
-                    "changes": {"src/optimizer/model/ranker.py": "candidate ranker = 2\n"},
-                }
-
-            candidate = runtime.run_one(
-                visible_paths=["src/optimizer/model/ranker.py"],
-                hypothesis_id="improve-ranker", model_reply=optimizer_reply,
-                worker_id="integrated-v2-optimizer",
-            )
-            assert candidate["status"] == "CANDIDATE_CREATED"
-            assert candidate["candidate_snapshot_id"] != base_commit
-            optimized = runtime.run_campaign(
-                visible_paths=["src/optimizer/model/ranker.py"],
-                integration_verifier_executor=executor, max_steps=2,
-                worker_id="integrated-v2-evaluator",
-            )
+            optimize_args = parser().parse_args([
+                "v2", "optimize", "--repo", str(repo), "--campaign-id", child_id,
+                "--role-registry", pivot_ready["role_registry_path"],
+                "--visible-path", "src/optimizer/model/ranker.py",
+                "--write-path", "src/optimizer/model/ranker.py",
+                "--max-steps", "8", "--approve-up-to-calls", "2", "--timeout-seconds", "60",
+            ])
+            assert optimize_args.func(optimize_args) == 0
+            optimized = json.loads(capsys.readouterr().out)
+            assert optimized["status"] == "ALL_NODES_COMPLETE"
+            assert optimized["live_model_called"] is True
+            assert optimized["provider"] == "chatgpt_plan"
+            assert optimized["provider_call_attempts"] == 2
             assert [step["status"] for step in optimized["steps"]] == [
-                "DEV_EVALUATED", "INDEPENDENT_VERIFICATION_PASS",
+                "CANDIDATE_CREATED", "DEV_EVALUATED", "INDEPENDENT_VERIFICATION_PASS",
             ]
+            candidate = next(
+                step for step in optimized["steps"] if step["status"] == "CANDIDATE_CREATED"
+            )
             assert optimized["steps"][-1]["champion"]["snapshot_id"] == candidate[
                 "candidate_snapshot_id"
             ]
@@ -695,7 +721,7 @@ print(json.dumps({
         assert len(child_lifecycle["protocol_handoffs"]) == 1
         child_api_graph = _api_json(root_url + f"/{child_id}/graph")
         child_node = next(item for item in child_api_graph["nodes"]
-                          if item["node_id"] == "integrated-child-candidate")
+                          if item["node_id"] == candidate["candidate_node_id"])
         assert (child_node["phase"], child_node["status"]) == ("CONSOLIDATION", "COMPLETED")
         assert child_node["completion_evidence_refs"]
         child_cli_args = parser().parse_args([
@@ -707,7 +733,7 @@ print(json.dumps({
         assert child_cli["campaign_id"] == child_id
         assert child_cli["graph"]["graph_revision"] == child_api_graph["graph_revision"]
         child_cli_node = next(item for item in child_cli["graph"]["nodes"]
-                              if item["node_id"] == "integrated-child-candidate")
+                              if item["node_id"] == candidate["candidate_node_id"])
         assert child_cli_node == child_node
         if os.environ.get("BANANLOOP_BROWSER_LIVE_E2E") == "1":
             browser_probe = Path(__file__).parent / "browser" / "live_dashboard_probe.js"
