@@ -20,7 +20,7 @@ from bananloop.v2_research_runtime import (
     V2ResearchRuntime, V2RuntimeError,
     make_researcher_invoke as _make_researcher_invoke,
 )
-from bananloop.worker_queue import DurableWorkerQueue
+from bananloop.worker_queue import DurableWorkerQueue, WorkerQueueError
 
 from test_exploration_adapter import _graph, _pinned_executor, _role_registry, _source_repo
 
@@ -264,6 +264,56 @@ def test_researcher_rejects_score_and_no_evidence(tmp_path):
         assert graph.conn.execute(
             "SELECT status FROM research_nodes WHERE node_id='explore'"
         ).fetchone()[0] != "COMPLETED"
+    finally:
+        queue.close()
+        graph.close()
+
+
+def test_malformed_dispatched_response_is_durable_but_never_published(tmp_path):
+    runtime, graph, queue = _runtime(tmp_path)
+    calls = []
+
+    def malformed_reply(*_args, **_kwargs):
+        calls.append("dispatched")
+        return {
+            "next_experiment": "repeat the observation",
+            "score": 1.0,
+            "artifact_text": {"observation.txt": "must not be published"},
+        }
+
+    try:
+        with pytest.raises(ValidationError, match="extra_forbidden"):
+            runtime.run_campaign(
+                visible_paths=["README.md"],
+                invoke=make_researcher_invoke(malformed_reply),
+                max_iterations=1,
+            )
+
+        assert calls == ["dispatched"]
+        job = queue.get_job_for_action("campaign-test", "exploration:explore")
+        assert job is not None
+        assert job["state"] == "UNKNOWN"
+        with pytest.raises(WorkerQueueError, match="no committed result"):
+            queue.get_result(job["job_id"])
+        assert graph.conn.execute(
+            "SELECT status FROM research_nodes WHERE node_id='explore'",
+        ).fetchone()[0] != "COMPLETED"
+        assert ResearchLedger(graph.conn).project(
+            graph=graph, queue=queue,
+            campaign_ids=("campaign-test",),
+            source_snapshot_id=job["request"]["base_commit"],
+            protocol_digest=ResearchLedger.protocol_digest_for_binding(
+                job["request"]["role_binding"],
+            ),
+        ).evidence == ()
+        # The failed dispatch remains in durable accounting; it is not
+        # mistaken for an unused call and silently dispatched a second time.
+        budget = BudgetLedger(queue.path)
+        try:
+            agent_calls = budget.snapshot("campaign-test")["agent_calls"]
+        finally:
+            budget.close()
+        assert agent_calls["spent"] + agent_calls["unknown"] >= 1
     finally:
         queue.close()
         graph.close()
