@@ -635,3 +635,63 @@ def test_campaign_pause_and_resume_survive_runtime_restart(tmp_path):
         else:
             queue.close()
         graph.close()
+
+
+def test_strategy_change_request_durably_pauses_until_owner_decision(tmp_path):
+    runtime, graph, queue = _runtime(tmp_path)
+    calls = []
+
+    def proposal(public_input, **_pin):
+        calls.append(public_input)
+        return {"strategy_change_request": {
+            "current_strategy": "test local feature correlations",
+            "proposed_strategy": "switch to causal intervention experiments",
+            "rationale": "Observational probes cannot distinguish the competing mechanisms.",
+            "expected_effect": "Interventions should falsify one mechanism directly.",
+            "changed_scope": ["experiment design", "causal identification"],
+        }}
+
+    recovered_queue = None
+    try:
+        result = runtime.run_campaign(
+            visible_paths=["README.md"], invoke=make_researcher_invoke(proposal),
+            max_iterations=4,
+        )
+        assert result["status"] == "PAUSED_NEEDS_INPUT"
+        assert result["iterations_this_call"] == 1 and len(calls) == 1
+        assert queue.campaign_control("campaign-test")["state"] == "PAUSED"
+        snapshot = graph.scheduling_snapshot()
+        completed = next(node for node in snapshot["nodes"] if node["node_id"] == "explore")
+        request = completed["payload"]["completion_evidence"]["human_decision_request"]
+        assert len(request["request_id"]) == 64
+        assert len(snapshot["nodes"]) == 1
+        job_id = completed["payload"]["completion_evidence"]["job_id"]
+        artifact = queue.get_result(job_id)["result"]["artifacts"][0]
+        assert artifact["path"] == "research/strategy-change-request.json"
+        assert hashlib.sha256(
+            next((tmp_path / "rpdi05" / "artifacts").rglob("strategy-change-request.json")).read_bytes()
+        ).hexdigest() == artifact["sha256"]
+        report = json.loads(Path(result["report_path"]).read_text())
+        assert report["human_decision_requests"] == [{"node_id": "explore", "request": request}]
+        assert report["completed_experiments"] == []
+
+        queue_path = queue.path
+        queue.close()
+        recovered_queue = DurableWorkerQueue(queue_path)
+        recovered = V2ResearchRuntime(
+            graph=graph, queue=recovered_queue, campaign_id="campaign-test",
+            state_root=tmp_path, role_registry=runtime.role_registry,
+        )
+        replay = recovered.run_campaign(
+            visible_paths=["README.md"], invoke=make_researcher_invoke(proposal),
+            max_iterations=4,
+        )
+        assert replay["status"] == "PAUSED_NEEDS_INPUT"
+        assert replay["iterations_this_call"] == 0 and len(calls) == 1
+        assert len(graph.scheduling_snapshot()["nodes"]) == 1
+    finally:
+        if recovered_queue is not None:
+            recovered_queue.close()
+        else:
+            queue.close()
+        graph.close()

@@ -25,6 +25,7 @@ from .capabilities import (
 )
 from .contracts import ExplorationCampaignSpecV2
 from .graph_store import ExplorationCompletionV2, GraphRepository, GraphStoreError
+from .human_decision import HumanDecisionRequestV1
 from .roles import (
     PinnedRoleExecutorV1, RoleContextSourceV1,
     RoleContractError, RoleContextV1, RoleRegistryV1, TeamFactoryV1,
@@ -56,6 +57,7 @@ class EvidenceOnlyOutputV2(BaseModel):
     next_experiment: str = Field(min_length=1, max_length=4000)
     research_findings: tuple[ResearchFindingV1, ...] = Field(default=(), max_length=64)
     protocol_draft: EvaluatorProtocolDraftV1 | None = None
+    human_decision_request: HumanDecisionRequestV1 | None = None
 
     @field_validator("evidence_refs", "limitations")
     @classmethod
@@ -599,6 +601,7 @@ class EvidenceOnlyAttemptAdapter:
             "evidence_refs": tuple(sorted((*result.evidence_refs, *artifact_refs))),
             "artifact_digests": tuple(sorted(artifact_digests)), "limitations": result.limitations,
             "next_experiment": result.next_experiment,
+            "human_decision_request": result.human_decision_request,
         }
         try:
             completion = ExplorationCompletionV2.model_validate(payload)

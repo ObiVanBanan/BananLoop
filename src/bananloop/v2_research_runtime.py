@@ -21,6 +21,7 @@ from .contracts import ExplorationCampaignSpecV2, utc_now
 from .exploration import EvidenceAdapterError, EvidenceOnlyAttemptAdapter, EvidenceOnlyOutputV2
 from .experiment_intent import same_experiment_intent
 from .graph_store import AddEdge, AddNode, GraphRepository, MutateGraph
+from .human_decision import HumanDecisionRequestV1, StrategyChangeProposalV1
 from .research_ledger import ResearchLedger
 from .roles import PinnedRoleExecutorV1, RoleRegistryV1, TeamManifestAuthority
 from .scheduler import HybridScheduler, SchedulerPlan
@@ -57,6 +58,7 @@ class ResearcherReplyV1(BaseModel):
     limitations: tuple[str, ...] = ()
     research_findings: tuple[dict[str, Any], ...] = ()
     artifact_text: dict[str, str] = Field(default_factory=dict)
+    strategy_change_request: StrategyChangeProposalV1 | None = None
 
 
 # The adapter is a synchronous, one-model-call protocol: one durable
@@ -128,7 +130,11 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
                 "evidence_ids in evidence_refs. "
                 "Do not claim "
                 "independent evaluator approval, validation or HOLDOUT scores. "
-                "These observations are unverified PUBLIC_DEV evidence."
+                "These observations are unverified PUBLIC_DEV evidence. If the evidence "
+                "indicates that a fundamental strategy change is needed, you may instead "
+                "return only strategy_change_request with current_strategy, proposed_strategy, "
+                "rationale, expected_effect, and changed_scope. This creates a request for "
+                "owner review only; it does not authorize a pivot or run another experiment."
             ),
         }
         # The broker controls provider/model selection; worker content cannot.
@@ -138,6 +144,33 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
             max_model_tokens=max_model_tokens,
         )
         reply = ResearcherReplyV1.model_validate(raw)
+        if reply.strategy_change_request is not None:
+            if (reply.next_experiment is not None or reply.hypotheses
+                    or reply.selected_hypothesis_id is not None or reply.evidence_refs
+                    or reply.limitations or reply.research_findings or reply.artifact_text):
+                raise V2RuntimeError(
+                    "strategy-change request must be the only researcher action"
+                )
+            job_node_id = request["node_id"]
+            proposal = reply.strategy_change_request.model_dump(mode="json")
+            request_id = hashlib.sha256(json.dumps(
+                proposal, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+            ).encode("utf-8")).hexdigest()
+            request = HumanDecisionRequestV1(**proposal, request_id=request_id)
+            raw_request = (json.dumps(
+                request.model_dump(mode="json"), sort_keys=True,
+                separators=(",", ":"), ensure_ascii=False,
+            ) + "\n").encode("utf-8")
+            gateway.write_artifact("research/strategy-change-request.json", raw_request)
+            digest = hashlib.sha256(raw_request).hexdigest()
+            output = EvidenceOnlyOutputV2.model_validate({
+                "node_id": job_node_id,
+                "artifacts": [{"path": "research/strategy-change-request.json", "sha256": digest}],
+                "limitations": ("No experiment was executed; owner review is required before strategy changes.",),
+                "next_experiment": "Await owner decision on the proposed strategy change.",
+                "human_decision_request": request.model_dump(mode="json"),
+            })
+            return output.model_dump(mode="json")
         if reply.hypotheses:
             if not 2 <= len(reply.hypotheses) <= 4:
                 raise V2RuntimeError("hypothesis portfolio must contain at least two candidates")
@@ -347,6 +380,16 @@ class V2ResearchRuntime:
         evidence = ResearchLedger(self.graph.conn).ingest_completed_job(
             self.graph, self.queue, job["job_id"],
         )
+        completion = next((node["payload"].get("completion_evidence")
+                           for node in self.graph.scheduling_snapshot()["nodes"]
+                           if node["node_id"] == node_id), None)
+        human_request = (completion.get("human_decision_request")
+                         if isinstance(completion, dict) else None)
+        if isinstance(human_request, dict):
+            self.queue.set_campaign_control(
+                self.campaign_id, "PAUSED",
+                reason=f"strategy decision required: {human_request['request_id']}",
+            )
         return {
             "status": "EXPLORATION_COMPLETED",
             "mode": "EXPLORATION",
@@ -356,6 +399,7 @@ class V2ResearchRuntime:
             "job_id": job["job_id"],
             "published": published,
             "research_evidence_ids": list(evidence),
+            "human_decision_request": human_request,
         }
 
     def run_campaign(
@@ -374,6 +418,9 @@ class V2ResearchRuntime:
             raise V2RuntimeError("max_iterations must be an integer from 1 to 100")
         self.plan()  # Validate the persisted Full spec and pinned roles before any graph mutation.
         completed: list[dict[str, Any]] = []
+        pending = self._pending_human_decision()
+        if pending is not None:
+            return self._finish_campaign_run("PAUSED_NEEDS_INPUT", completed)
         self._recover_followups()
         if self._convergence_reason is not None:
             return self._finish_campaign_run(
@@ -410,6 +457,8 @@ class V2ResearchRuntime:
                           else current.reason)
                 return self._finish_campaign_run(status, completed)
             completed.append(result)
+            if result.get("human_decision_request") is not None:
+                return self._finish_campaign_run("PAUSED_NEEDS_INPUT", completed)
             self._recover_followups()
             if self._convergence_reason is not None:
                 return self._finish_campaign_run(
@@ -433,6 +482,8 @@ class V2ResearchRuntime:
             completion = node["payload"].get("completion_evidence")
             if node["status"] != "COMPLETED" or not isinstance(completion, dict):
                 continue
+            if completion.get("human_decision_request") is not None:
+                continue
             evidence_nodes.append({
                 "node_id": node["node_id"],
                 "iteration": node["payload"].get("iteration", 0),
@@ -441,6 +492,16 @@ class V2ResearchRuntime:
                 "limitations": completion.get("limitations", []),
                 "next_experiment": completion.get("next_experiment"),
             })
+        human_decision_requests = [
+            {
+                "node_id": node["node_id"],
+                "request": node["payload"]["completion_evidence"]["human_decision_request"],
+            }
+            for node in snapshot["nodes"]
+            if node["status"] == "COMPLETED"
+            and isinstance(node["payload"].get("completion_evidence"), dict)
+            and node["payload"]["completion_evidence"].get("human_decision_request") is not None
+        ]
         spec = self.graph.campaign_spec()
         report = {
             "schema_version": 1,
@@ -452,6 +513,7 @@ class V2ResearchRuntime:
                 "No verified scientific conclusion is asserted; Exploration findings are unverified PUBLIC_DEV evidence."
             ),
             "completed_experiments": evidence_nodes,
+            "human_decision_requests": human_decision_requests,
             "graph_revision": snapshot["graph_revision"],
             "as_of": utc_now(),
         }
@@ -491,6 +553,7 @@ class V2ResearchRuntime:
         for parent in snapshot["nodes"]:
             evidence = parent["payload"].get("completion_evidence")
             if (parent["status"] != "COMPLETED" or not isinstance(evidence, dict)
+                    or evidence.get("human_decision_request") is not None
                     or not isinstance(evidence.get("job_id"), str)
                     or not isinstance(evidence.get("next_experiment"), str)):
                 continue
@@ -543,3 +606,17 @@ class V2ResearchRuntime:
                             target_id=child_id, edge_type="REQUIRES"),
                 ),
             ))
+
+    def _pending_human_decision(self) -> dict[str, Any] | None:
+        snapshot = self.graph.scheduling_snapshot()
+        for node in snapshot["nodes"]:
+            completion = node["payload"].get("completion_evidence")
+            if (node["status"] == "COMPLETED" and isinstance(completion, dict)
+                    and isinstance(completion.get("human_decision_request"), dict)):
+                request = completion["human_decision_request"]
+                self.queue.set_campaign_control(
+                    self.campaign_id, "PAUSED",
+                    reason=f"strategy decision required: {request['request_id']}",
+                )
+                return request
+        return None

@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator,
 
 from .contracts import CampaignSpec, ExplorationCampaignSpecV2, OptimizationCampaignSpecV2
 from .contracts import parse_campaign_spec_document
+from .human_decision import HumanDecisionRequestV1
 
 
 class GraphStoreError(RuntimeError):
@@ -171,6 +172,7 @@ class ExplorationCompletionV2(BaseModel):
     artifact_digests: tuple[str, ...] = ()
     limitations: tuple[str, ...] = ()
     next_experiment: str = Field(min_length=1, max_length=4000)
+    human_decision_request: HumanDecisionRequestV1 | None = None
 
     @field_validator("evidence_refs", "artifact_digests", "limitations")
     @classmethod
@@ -427,6 +429,10 @@ class GraphRepository:
                 "artifact_digests": list(request.artifact_digests),
                 "limitations": list(request.limitations),
                 "next_experiment": request.next_experiment,
+                "human_decision_request": (
+                    request.human_decision_request.model_dump(mode="json")
+                    if request.human_decision_request is not None else None
+                ),
             }
             node_payload = json.loads(node["payload_json"])
             node_payload["completion_evidence"] = evidence
