@@ -52,3 +52,9 @@ Personal Canvas (browser localStorage, versioned, campaign scoped)
 ## Integration guidance
 
 This implementation is intended to replace the prior hand-written SVG canvas only after a proper React Flow runtime smoke test and QA. Use a typed, safely redacted `GraphViewDTO` when UI-03 is ready. Keep `PersonalCanvas` independent of graph revision and evaluator isolation, resolve positions when nodes enter or exit the graph, and do **not** enable `onConnect` for authoritative edges.
+
+## Personal arrow labels (UI-01.3 follow-up)
+
+Select **Arrow**, click a source node, then click a target node. The new arrow opens its inspector with a **Название стрелки** field. Type a label (up to 80 characters); it appears directly on the dashed cyan arrow. To change or delete it later, **click the dashed arrow**. Labels save in the campaign-scoped local browser canvas alongside notes and positions. Research dependency edges from Engine remain immutable. Unlabeled arrows from an earlier UI-01.3 save still load.
+
+Other navigation sections remain intentional noninteractive previews and will receive real functionality in later RPDI slices.
