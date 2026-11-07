@@ -67,7 +67,8 @@
     "scientific_truth_independently_validated": false,
     "semantic_relevance_independently_validated": false
   },
-  "pause_resume_and_failure_recovery_e2e": "not established",
+  "pause_resume_after_queue_restart": "covered by tests/test_v2_research_runtime.py::test_campaign_pause_and_resume_survive_runtime_restart",
+  "completed_job_recovery_without_redelivery": "covered by tests/test_v2_research_runtime.py::test_completed_research_job_is_projected_after_runtime_restart_without_redelivery",
   "live_smoke": "not run; separate owner confirmation required",
   "full_acceptance": false
 }

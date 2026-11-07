@@ -22,7 +22,7 @@ Protected evidence creation uses exclusive file creation beneath a Windows ACL- 
 
 ## Remaining Full acceptance gates
 
-- Pause/resume and recovery after injected failures have not been established as a complete end-to-end acceptance path in this checkpoint.
+- Runtime pause/resume across queue restart is covered by `test_campaign_pause_and_resume_survive_runtime_restart`; worker completion recovery without duplicate execution is covered by `test_completed_research_job_is_projected_after_runtime_restart_without_redelivery`. These are runtime-level recovery tests, separate from the combined Optimization E2E.
 - Core candidate ranking counts trusted evidence references for the exact target claim; it does not independently validate scientific truth or semantic relevance.
 - Semantic repeat detection uses a bounded controlled-variable synonym map, not general semantic inference.
 - Owner-approved one-call SIWC live smoke remains unrun. It requires separate confirmation; no subscription call was made.
