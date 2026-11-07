@@ -6,7 +6,8 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from benchmarks.v02_full.evidence import (
-    EvidenceArtifactRef, EvidenceError, TrustPolicy, TrustedSigner, sign_evidence,
+    EvidenceArtifactRef, EvidenceError, TrustPolicy, TrustedSigner,
+    _WINDOWS_OWNER_RIGHTS_SID, _windows_acl_writer_is_trusted, sign_evidence,
     verify_content_artifact, verify_evidence_artifact,
 )
 
@@ -40,6 +41,20 @@ def _private_key():
 def _policy(*signers):
     return TrustPolicy({item.key_id: item for item in signers},
                        independent_principal_exclusions=frozenset({"arm-author", "arm-operator"}))
+
+
+def test_windows_owner_rights_is_only_trusted_for_an_already_trusted_owner():
+    user = b"trusted-current-user"
+    untrusted = b"untrusted-owner"
+    assert _windows_acl_writer_is_trusted(
+        _WINDOWS_OWNER_RIGHTS_SID, user_sid=user, owner_sid=user,
+    )
+    assert not _windows_acl_writer_is_trusted(
+        _WINDOWS_OWNER_RIGHTS_SID, user_sid=user, owner_sid=untrusted,
+    )
+    assert not _windows_acl_writer_is_trusted(
+        untrusted, user_sid=user, owner_sid=user,
+    )
 
 
 def test_evidence_verifier_accepts_a_valid_canonical_authenticated_document(tmp_path):
