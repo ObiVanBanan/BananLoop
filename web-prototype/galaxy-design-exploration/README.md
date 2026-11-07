@@ -4,7 +4,7 @@ This is a **synthetic, visual-only study** following the UI-01.2 review. It does
 
 ## Open it
 
-**Fastest**: open `BananLoop_Galaxy_Design_Exploration.html` in your browser. It contains all HTML/CSS/JavaScript and requires **no npm installation or network**. Alternatively, open `index.html` in the extracted folder alongside `styles.css` and `app.js`.
+**From GitHub**: open `index.html`. It is self-contained (HTML/CSS/JavaScript in one file) and needs **no npm installation or network**. **From the downloadable ZIP**: open `BananLoop_Galaxy_Design_Exploration.html`, or the split `index.html` next to `styles.css` and `app.js`.
 
 ### Three directions
 
@@ -38,13 +38,13 @@ Switch between them using **Appearance** in the top toolbar. This switcher exist
 
 ## Technical files
 
-- `index.html`, `styles.css`, `app.js`: working no-dependency reference implementation.
-- `BananLoop_Galaxy_Design_Exploration.html`: self-contained version.
+- Repository `index.html`: self-contained working no-dependency reference implementation. The ZIP additionally includes split `index.html`, `styles.css`, and `app.js`.
+- `BananLoop_Galaxy_Design_Exploration.html`: standalone ZIP artifact.
 - `react-flow-spike/`: React Flow implementation starting point and source-owned shadcn-style Button.
 - `DESIGN_REVIEW.md`: comparison, critique, implementation recommendation.
 - `qa_browser.py`: screenshot + interaction checks on Chromium (using inline content to work around restricted file navigation).
 - `qa_persistence.py`: localStorage rehydration simulation on an opaque test origin.
-- `Design_Comparison.png`: three-theme contact sheet.
+- `Design_Comparison.png`: three-theme contact sheet (included in the downloadable ZIP; screenshots are not checked in to this draft PR).
 
 ## QA executed
 
