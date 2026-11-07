@@ -17,13 +17,11 @@ import subprocess
 import threading
 import urllib.request
 import zipfile
-from datetime import datetime, timezone
 from urllib.error import HTTPError
 
 import pytest
 
 from bananloop.api import create_server
-from bananloop.budget_ledger import BudgetLedger
 from bananloop.contracts import (
     AutonomyScopeV2, CapabilityPolicyV2, ExplorationCampaignSpecV2,
     ProtocolCase, ProtocolManifest,
@@ -34,10 +32,9 @@ from bananloop.evaluator_verification import (
     ProtocolVerifierOutputV1,
 )
 from bananloop.graph_store import AddNode, GraphRepository, MutateGraph
-from bananloop.migrations import create_v5_graph_schema
 from bananloop.registry import CampaignRegistry
 from bananloop.research_ledger import ResearchLedger
-from bananloop.cli import parser
+from bananloop.cli import cmd_v2_explore, parser
 from bananloop.roles import (
     PinnedRoleExecutorV1, RoleDefinitionV1, RoleRegistryV1, TeamManifestAuthority,
 )
@@ -85,7 +82,12 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
     ], check=True)
     base_commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
     researcher_roles = _role_registry()
-    researcher_role = researcher_roles.roles[0].model_copy(update={"min_instances": 0})
+    researcher_role = researcher_roles.roles[0].model_copy(update={
+        "min_instances": 0,
+        "capability_policy": researcher_roles.roles[0].capability_policy.model_copy(
+            update={"read_paths": ("README.md", "src/optimizer/model/ranker.py")},
+        ),
+    })
     integration_role = RoleDefinitionV1(
         role_id="integration_verifier", adapter="codex", provider="openai",
         model="gpt-6-luna", model_version="rpdi13-test-pin",
@@ -130,7 +132,8 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
     )
     policy = CapabilityPolicyV2(
         tools=("read_file", "list_files", "write_artifact", "commit_candidate"),
-        read_paths=("README.md",), write_paths=("**",), backend="LOCAL",
+        read_paths=("README.md", "src/optimizer/model/ranker.py"),
+        write_paths=("**",), backend="LOCAL",
     )
     scope = AutonomyScopeV2(
         version=1, allowed_paths=("src/optimizer",),
@@ -153,38 +156,27 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
         "evaluation": None,
     })
 
+    monkeypatch.setattr(
+        "bananloop.v2_campaign_cli._build_spec",
+        lambda *args, **kwargs: (spec, roles, policy),
+    )
     registry = CampaignRegistry(repo)
+    explore_command = [
+        "v2", "explore", "--repo", str(repo), "--request-id", "rpdi13-integrated",
+        "--goal", spec.goal, "--read-path", "README.md",
+        "--read-path", "src/optimizer/model/ranker.py",
+        "--optimization-write-path", "src/optimizer/model/ranker.py",
+        "--max-agent-calls", "20", "--max-model-tokens", "128",
+        "--max-iterations", "2", "--timeout-seconds", "60",
+    ]
+    preflight_args = parser().parse_args([*explore_command, "--approve-up-to-calls", "0"])
+    assert preflight_args.func is not None and preflight_args.func(preflight_args) == 0
+    preflight = json.loads(capsys.readouterr().out)
+    assert preflight["status"] == "READY_FOR_OWNER_APPROVAL"
+    assert preflight["live_model_called"] is False
     entry, state_root, created = registry.reserve(spec.goal, "rpdi13-integrated")
-    assert created
+    assert not created and entry.campaign_id == preflight["campaign_id"]
     database = state_root / "campaign.sqlite3"
-    conn = sqlite3.connect(database, isolation_level=None)
-    try:
-        conn.execute(
-            "CREATE TABLE events(seq INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT NOT NULL, "
-            "payload_json TEXT NOT NULL, created_at TEXT NOT NULL)"
-        )
-        conn.execute("BEGIN IMMEDIATE")
-        create_v5_graph_schema(conn)
-        conn.execute(
-            "CREATE TABLE campaigns(id INTEGER PRIMARY KEY,spec_json TEXT NOT NULL,"
-            "spec_hash TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL)"
-        )
-        created_at = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "INSERT INTO campaigns(id,spec_json,spec_hash,status,created_at,updated_at) VALUES(1,?,?,?, ?,?)",
-            (json.dumps(spec.model_dump(mode="json"), sort_keys=True, separators=(",", ":")),
-             spec.approved_hash(), "PAUSED_NEEDS_INPUT", created_at, created_at),
-        )
-        conn.execute("PRAGMA user_version=5")
-        conn.commit()
-    finally:
-        conn.close()
-
-    budget = BudgetLedger(registry.path)
-    budget.create_root(entry.campaign_id, {
-        "agent_calls": 100, "evaluator_calls": 100, "experiments": 50, "attempts": 80,
-    })
-    budget.close()
     queue = registry.worker_queue()
     graph = GraphRepository.open(str(database), campaign_id=entry.campaign_id)
     server = create_server(str(repo), port=0, token=TOKEN, poll_seconds=0.05)
@@ -193,13 +185,6 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
     root_url = f"http://127.0.0.1:{server.server_port}/v1/campaigns"
 
     try:
-        graph.mutate({
-            "command_id": "add-exploration-node", "idempotency_key": "add-exploration-node",
-            "expected_graph_revision": graph.graph_revision(),
-            "changes": [{"type": "AddNode", "node_id": "explore-1", "phase": "EXPLORATION"}],
-        })
-        from bananloop.v2_research_runtime import V2ResearchRuntime, make_researcher_invoke
-
         input_bytes = b'{"prompt":"closed deterministic evaluator case","label":"pass"}'
         input_digest = hashlib.sha256(input_bytes).hexdigest()
         holdout_input_bytes = b'{"prompt":"separate final holdout case","label":"holdout"}'
@@ -357,15 +342,73 @@ print(json.dumps({
                 }],
             }
 
-        research_runtime = V2ResearchRuntime(
-            graph=graph, queue=queue, campaign_id=entry.campaign_id,
-            state_root=state_root, role_registry=roles,
+        class OfflineAuth:
+            def status(self):
+                return {"connected": True}
+
+        class OfflineSIWCResearcher:
+            last_usage = "UNKNOWN"
+            last_request_id = "offline-integrated-researcher"
+
+            def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer=None):
+                assert approved_model == "gpt-6-luna" and timeout_seconds == 60
+                self.call_observer = call_observer
+                self.request_history = []
+
+            def check_model(self):
+                return None
+
+            def __call__(self, public_input, **_pinned):
+                receipt = {"request_id": self.last_request_id, "status": "COMPLETED",
+                           "dispatched": True, "usage": "UNKNOWN"}
+                self.request_history.append(receipt)
+                if self.call_observer:
+                    self.call_observer(receipt)
+                return mock_researcher(public_input)
+
+        protocol_checks = (
+            "protocol_identity", "evaluator_bundle_review", "metric_contract",
+            "tier_manifests", "frozen_case_scope", "no_hidden_data_dependency",
+            "fair_comparison", "error_semantics",
         )
-        exploration = research_runtime.run_campaign(
-            visible_paths=["README.md"],
-            invoke=make_researcher_invoke(mock_researcher), max_iterations=2,
-            worker_id="integrated-v2-researcher",
+
+        class OfflineSIWCProtocolVerifier:
+            def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer=None):
+                assert approved_model == "gpt-6-luna" and timeout_seconds == 60
+                self.call_observer = call_observer
+                self.request_history = []
+
+            def executor(self, manifest, instance_id):
+                def dispatch(request, gateway, **_pinned):
+                    assert gateway is None
+                    public_review = json.dumps(request["role_context"].get("public_task", ""))
+                    assert "closed deterministic evaluator case" not in public_review
+                    assert "separate final holdout case" not in public_review
+                    output = ProtocolVerifierOutputV1(
+                        proposal_digest=request["proposal_digest"], decision="APPROVE",
+                        checks=protocol_checks,
+                        rationale="Independent pinned review of the public protocol bundle.",
+                    ).model_dump(mode="json")
+                    receipt = {"request_id": "offline-verifier", "status": "COMPLETED",
+                               "dispatched": True, "usage": "UNKNOWN"}
+                    self.request_history.append(receipt)
+                    if self.call_observer:
+                        self.call_observer(receipt)
+                    return output
+
+                return PinnedRoleExecutorV1.from_manifest(manifest, instance_id, dispatch)
+
+        monkeypatch.setattr("bananloop.v2_campaign_cli.ChatGPTPlanAuth", OfflineAuth)
+        monkeypatch.setattr(
+            "bananloop.v2_campaign_cli.ChatGPTPlanResearcher", OfflineSIWCResearcher,
         )
+        monkeypatch.setattr(
+            "bananloop.v2_campaign_cli.ChatGPTPlanProtocolVerifier", OfflineSIWCProtocolVerifier,
+        )
+        explore_args = parser().parse_args([*explore_command, "--approve-up-to-calls", "3"])
+        assert explore_args.func is cmd_v2_explore
+        assert explore_args.func(explore_args) == 0
+        exploration = json.loads(capsys.readouterr().out)
         assert exploration["iterations_this_call"] == 2
         assert len(observed_turns) == 2
         assert observed_turns[1]["role_context"]["evidence_refs"]
@@ -434,50 +477,16 @@ print(json.dumps({
         verifier_instance = verifier_job["request"]["role_binding"]["role_instance_id"]
         verifier_member = pinned_team.member(verifier_instance)
         assert verifier_member.role.role_id == "independent_verifier"
-        checks = (
-            "protocol_identity", "evaluator_bundle_review", "metric_contract",
-            "tier_manifests", "frozen_case_scope", "no_hidden_data_dependency",
-            "fair_comparison", "error_semantics",
-        )
-
-        def invoke_protocol_verifier(request, _gateway, **_pinned):
-            assert request["proposal_digest"] == protocol_proposal.proposal_digest
-            return ProtocolVerifierOutputV1(
-                proposal_digest=request["proposal_digest"], decision="APPROVE",
-                checks=checks, rationale="Independent pinned review of the public protocol bundle.",
-            ).model_dump(mode="json")
-
-        class OfflineSIWCProtocolVerifier:
-            def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer=None):
-                assert approved_model == "gpt-6-luna" and timeout_seconds == 60
-                self.call_observer = call_observer
-                self.request_history = []
-
-            def executor(self, manifest, instance_id):
-                def dispatch(request, gateway, **_pin):
-                    assert gateway is None
-                    result = invoke_protocol_verifier(request, gateway)
-                    receipt = {"request_id": "offline-verifier", "status": "COMPLETED",
-                               "dispatched": True, "usage": "UNKNOWN"}
-                    self.request_history.append(receipt)
-                    if self.call_observer:
-                        self.call_observer(receipt)
-                    return result
-
-                return PinnedRoleExecutorV1.from_manifest(manifest, instance_id, dispatch)
-
-        monkeypatch.setattr(
-            "bananloop.v2_campaign_cli.ChatGPTPlanProtocolVerifier",
-            OfflineSIWCProtocolVerifier,
-        )
         from bananloop.v2_campaign_cli import _complete_pending_protocol_reviews
         review_result = _complete_pending_protocol_reviews(
             graph=graph, queue=queue, campaign_id=entry.campaign_id,
             published_root=parent_published, auth=object(), model="gpt-6-luna",
             timeout_seconds=60, remaining_calls=1, call_observer=None,
         )
-        assert review_result["calls_used"] == 1
+        assert review_result["calls_used"] == 0  # the parsed CLI already dispatched this pinned verifier
         assert review_result["pending_proposal_digests"] == []
+        assert any(item["role_id"] == "independent_verifier"
+                   for item in exploration["request_history"])
         receipt = verification.authority.record_completed_verifier_job(
             queue, verifier_job["job_id"],
         )
@@ -486,16 +495,7 @@ print(json.dumps({
         assert receipt.verifier_role_instance_id != protocol_proposal.proposer_role_instance_id
 
         from bananloop.contracts import PivotProposal
-        from bananloop.v2_campaign_cli import _record_verified_optimization_pivot
-
-        pivot_ready = _record_verified_optimization_pivot(
-            repo=repo, state_root=state_root, registry_root=registry.root,
-            campaign_id=entry.campaign_id,
-            parent_spec=spec, graph=graph, queue=queue, roles=roles,
-            visible_paths=("src/optimizer/model/ranker.py",),
-            write_paths=("src/optimizer/model/ranker.py",),
-            approval_digest=receipt.approval_digest,
-        )
+        pivot_ready = exploration["optimization_pivot"][0]
         assert pivot_ready["status"] == "PENDING_OWNER_PIVOT_DECISION"
         assert Path(pivot_ready["role_registry_path"]).is_file()
         proposal_row = sqlite3.connect(database).execute(
