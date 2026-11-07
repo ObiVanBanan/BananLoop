@@ -310,8 +310,7 @@ class V2OptimizationCandidateAdapter:
 
         team_request = TeamRequestV1(
             campaign_id=self.campaign_id, spec_hash=spec_hash,
-            requested_instances={role.role_id: role.min_instances
-                                 for role in self.role_registry.roles},
+            requested_instances={"optimizer": 1, "integration_verifier": 1},
             available_agent_calls=spec.budget.max_agent_calls,
             available_model_tokens=spec.budget.max_model_tokens,
         )

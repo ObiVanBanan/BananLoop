@@ -44,7 +44,6 @@ from bananloop.trusted_evaluator import TrustedEvaluatorRunner, _case_protocol_d
 
 from test_exploration_adapter import _role_registry, _source_repo
 from test_evaluator_verification import build_full_optimization_runtime
-from test_v2_pivot_saga import _proposal_for_child
 
 
 TOKEN = "rpdi13-integrated-test-token"
@@ -93,6 +92,7 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
         ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
     ).strip()
     researcher_roles = _role_registry()
+    researcher_role = researcher_roles.roles[0].model_copy(update={"min_instances": 0})
     integration_role = RoleDefinitionV1(
         role_id="integration_verifier", adapter="codex", provider="openai",
         model="gpt-6-luna", model_version="rpdi13-test-pin",
@@ -102,7 +102,7 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
             network_access=False,
         ),
         context_fields=("campaign_goal", "public_task"), priority=1,
-        min_instances=1, max_instances=1, calls_per_instance=3,
+        min_instances=0, max_instances=1, calls_per_instance=3,
         tokens_per_instance=100,
     )
     protocol_verifier_role = RoleDefinitionV1(
@@ -114,7 +114,7 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
             network_access=False,
         ),
         context_fields=("campaign_goal", "public_task"), priority=2,
-        min_instances=1, max_instances=1, calls_per_instance=3,
+        min_instances=0, max_instances=1, calls_per_instance=3,
         tokens_per_instance=100,
     )
     optimizer_role = RoleDefinitionV1(
@@ -128,12 +128,12 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
         ),
         context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
                         "constraints", "evidence_refs", "dev_summary"),
-        priority=1, min_instances=1, max_instances=1,
+        priority=1, min_instances=0, max_instances=1,
         calls_per_instance=3, tokens_per_instance=500,
     )
     roles = RoleRegistryV1(
         registry_id="rpdi13-integrated-roles", version=1,
-        roles=(*researcher_roles.roles, integration_role, protocol_verifier_role, optimizer_role),
+        roles=(researcher_role, integration_role, protocol_verifier_role, optimizer_role),
     )
     policy = CapabilityPolicyV2(
         tools=("read_file", "list_files", "write_artifact", "commit_candidate"),
@@ -454,35 +454,62 @@ print(json.dumps({
                 checks=checks, rationale="Independent pinned review of the public protocol bundle.",
             ).model_dump(mode="json")
 
-        verifier_executor = PinnedRoleExecutorV1.from_manifest(
-            pinned_team, verifier_instance, invoke_protocol_verifier,
+        class OfflineSIWCProtocolVerifier:
+            def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer=None):
+                assert approved_model == "gpt-6-luna" and timeout_seconds == 60
+                self.call_observer = call_observer
+                self.request_history = []
+
+            def executor(self, manifest, instance_id):
+                def dispatch(request, gateway, **_pin):
+                    assert gateway is None
+                    result = invoke_protocol_verifier(request, gateway)
+                    receipt = {"request_id": "offline-verifier", "status": "COMPLETED",
+                               "dispatched": True, "usage": "UNKNOWN"}
+                    self.request_history.append(receipt)
+                    if self.call_observer:
+                        self.call_observer(receipt)
+                    return result
+
+                return PinnedRoleExecutorV1.from_manifest(manifest, instance_id, dispatch)
+
+        monkeypatch.setattr(
+            "bananloop.v2_campaign_cli.ChatGPTPlanProtocolVerifier",
+            OfflineSIWCProtocolVerifier,
         )
-        receipt = verification.run_verifier_one(
-            verifier_job_id=verifier_job["job_id"], worker_id="integrated-protocol-verifier",
-            executor=verifier_executor,
+        from bananloop.v2_campaign_cli import _complete_pending_protocol_reviews
+        review_result = _complete_pending_protocol_reviews(
+            graph=graph, queue=queue, campaign_id=entry.campaign_id,
+            published_root=parent_published, auth=object(), model="gpt-6-luna",
+            timeout_seconds=60, remaining_calls=1, call_observer=None,
+        )
+        assert review_result["calls_used"] == 1
+        assert review_result["pending_proposal_digests"] == []
+        receipt = verification.authority.record_completed_verifier_job(
+            queue, verifier_job["job_id"],
         )
         assert receipt.decision == "APPROVE"
         assert receipt.verifier_role_instance_id == verifier_instance
         assert receipt.verifier_role_instance_id != protocol_proposal.proposer_role_instance_id
 
-        setup = {
-            "parent_spec": spec, "parent_id": entry.campaign_id,
-            "parent_db": database, "repo": repo,
-        }
-        child_spec = spec.model_dump(mode="json")
-        child_spec["mode"] = "OPTIMIZATION"
-        child_spec["autonomy"]["capability_policy"] = {
-            "policy_version": 1,
-            "tools": ["read_file", "write_file", "commit_candidate"],
-            "read_paths": ["src/**"], "write_paths": ["src/**"],
-            "backend": "LOCAL", "network_access": False,
-        }
-        child_spec["evaluation"] = {
-            "protocol_id": protocol.protocol_id, "version": protocol.version,
-            "content_sha256": protocol.content_digest(),
-            "approval_digest": receipt.approval_digest,
-        }
-        proposal = _proposal_for_child(setup, child_spec)
+        from bananloop.contracts import PivotProposal
+        from bananloop.v2_campaign_cli import _record_verified_optimization_pivot
+
+        pivot_ready = _record_verified_optimization_pivot(
+            repo=repo, state_root=state_root, registry_root=registry.root,
+            campaign_id=entry.campaign_id,
+            parent_spec=spec, graph=graph, queue=queue, roles=roles,
+            visible_paths=("src/optimizer/model/ranker.py",),
+            write_paths=("src/optimizer/model/ranker.py",),
+            approval_digest=receipt.approval_digest,
+        )
+        assert pivot_ready["status"] == "PENDING_OWNER_PIVOT_DECISION"
+        assert Path(pivot_ready["role_registry_path"]).is_file()
+        proposal_row = sqlite3.connect(database).execute(
+            "SELECT proposal_json FROM v2_pivot_proposals WHERE proposal_id=?",
+            (pivot_ready["proposal_id"],),
+        ).fetchone()
+        proposal = PivotProposal.model_validate_json(proposal_row[0])
         proposal_receipt = _api_json(
             root_url + f"/{entry.campaign_id}/v2/pivot-proposals", method="POST",
             payload=proposal.model_dump(mode="json"), key=proposal.proposal_id,

@@ -37,7 +37,8 @@ def _args(repo, state_dir, **overrides):
     values = {
         "repo": str(repo), "state_dir": str(state_dir), "request_id": "owner-request-1",
         "goal": "Investigate a controlled toy mechanism", "read_path": ["README.md"],
-        "max_agent_calls": 2, "max_model_tokens": 128, "max_iterations": 2,
+        "max_agent_calls": 6, "max_model_tokens": 128, "max_iterations": 2,
+        "optimization_write_path": [],
         "approve_up_to_calls": 0, "timeout_seconds": 60, "model": "gpt-6-luna",
     }
     values.update(overrides)
@@ -51,6 +52,35 @@ def test_cli_explore_is_a_separate_v2_route():
     assert args.func is cmd_v2_explore
     assert args.approve_up_to_calls == 0
     assert args.model == "gpt-6-luna"
+    assert args.max_agent_calls == 8
+
+
+def test_v2_exploration_budget_reserves_one_tool_free_protocol_review_call(tmp_path):
+    from bananloop.v2_campaign_cli import _build_spec
+
+    repo = _repo(tmp_path)
+    spec, roles, _policy = _build_spec(
+        repo, "Inspect a controlled task", ("README.md",),
+        max_agent_calls=6, max_model_tokens=128, model="gpt-6-luna",
+    )
+    researcher = roles.role("researcher")
+    verifier = roles.role("independent_verifier")
+    optimizer = roles.role("optimizer")
+    integration_verifier = roles.role("integration_verifier")
+    assert spec.budget.max_agent_calls == sum(
+        role.calls_per_instance for role in roles.roles
+    )
+    assert spec.budget.max_model_tokens == sum(role.tokens_per_instance for role in roles.roles)
+    assert researcher.calls_per_instance == 2
+    assert verifier.calls_per_instance == 1
+    assert optimizer.calls_per_instance == 2
+    assert integration_verifier.calls_per_instance == 1
+    assert researcher.min_instances == verifier.min_instances == 0
+    assert optimizer.min_instances == integration_verifier.min_instances == 0
+    assert verifier.capability_policy.tools == ()
+    assert verifier.capability_policy.read_paths == ()
+    assert verifier.capability_policy.write_paths == ()
+    assert verifier.capability_policy.network_access is False
 
 
 def test_cli_optimize_is_a_separate_owner_approved_v2_route():
@@ -325,8 +355,8 @@ def test_v2_cli_prepares_full_campaign_without_provider_call_and_resumes_same_sp
         nodes = graph.scheduling_snapshot()["nodes"]
         assert len(nodes) == 1 and nodes[0]["node_id"] == "explore-initial"
         assert queue.campaign_control(entry.campaign_id)["state"] == "RUNNING"
-        assert ledger.snapshot(entry.campaign_id)["agent_calls"]["cap"] == 2
-        assert ledger.snapshot(entry.campaign_id)["model_tokens"]["cap"] == 256
+        assert ledger.snapshot(entry.campaign_id)["agent_calls"]["cap"] == 6
+        assert ledger.snapshot(entry.campaign_id)["model_tokens"]["cap"] == 768
     finally:
         ledger.close()
         queue.close()
@@ -365,12 +395,19 @@ def test_v2_cli_live_allowance_uses_pinned_mock_transport_and_resumes(tmp_path, 
 
         def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer=None):
             assert approved_model == "gpt-6-luna" and timeout_seconds == 60
+            self.call_observer = call_observer
+            self.request_history = []
 
         def check_model(self):
             return None
 
         def __call__(self, public_input, **pin):
             calls.append(public_input)
+            receipt = {"request_id": None, "status": "COMPLETED",
+                       "dispatched": True, "usage": "UNKNOWN"}
+            self.request_history.append(receipt)
+            if self.call_observer:
+                self.call_observer(receipt)
             assert pin["provider"] == "openai" and pin["model"] == "gpt-6-luna"
             text = f"controlled public observation {len(calls)}"
             if public_input["role_context"].get("evidence_refs"):

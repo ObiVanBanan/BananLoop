@@ -11,12 +11,20 @@ from typing import Any
 
 from .budget_ledger import BudgetLedger
 from .chatgpt_plan import ChatGPTPlanAuth, SIWCError
-from .chatgpt_responses import ChatGPTPlanResearcher, INSTRUCTIONS
-from .contracts import ExplorationCampaignSpecV2, RuntimePaths, utc_now
+from .chatgpt_responses import (
+    ChatGPTPlanProtocolVerifier, ChatGPTPlanResearcher, INSTRUCTIONS,
+    INTEGRATION_VERIFIER_INSTRUCTIONS, OPTIMIZER_INSTRUCTIONS,
+    PROTOCOL_VERIFIER_INSTRUCTIONS,
+)
+from .contracts import (
+    AutonomyScopeV2, ExplorationCampaignSpecV2, OptimizationCampaignSpecV2,
+    PivotExecutionPlanV2, PivotProposal, PivotResourceRequest, RuntimePaths, utc_now,
+)
 from .graph_store import GraphRepository
 from .migrations import create_v5_graph_schema
 from .registry import CampaignRegistry
-from .roles import RoleDefinitionV1, RoleRegistryV1
+from .roles import RoleDefinitionV1, RoleRegistryV1, TeamManifestAuthority
+from .capabilities import CapabilityPolicyV2
 from .v2_research_runtime import V2ResearchRuntime, make_researcher_invoke
 from .worker_queue import DurableWorkerQueue
 
@@ -66,7 +74,12 @@ def _read_paths(repo: Path, paths: list[str]) -> tuple[str, ...]:
 
 
 def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
-                max_agent_calls: int, max_model_tokens: int, model: str):
+                max_agent_calls: int, max_model_tokens: int, model: str,
+                optimization_write_paths: tuple[str, ...] = ()):
+    if max_agent_calls < 4:
+        raise V2CampaignCLIError("--max-agent-calls must be at least 4 to fund the four pinned v2 roles")
+    if not set(optimization_write_paths) <= set(paths):
+        raise V2CampaignCLIError("optimization write paths must be included in the read-path allowlist")
     policy = {
         "policy_version": 1,
         "tools": ["read_file", "list_files", "write_artifact", "commit_candidate"],
@@ -75,18 +88,58 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
         "backend": "LOCAL",
         "network_access": False,
     }
+    optimizer_calls = max(1, max_agent_calls // 3)
+    researcher_calls = max_agent_calls - optimizer_calls - 2
+    optimizer_policy = CapabilityPolicyV2(
+        tools=("read_file", "write_file", "commit_candidate"),
+        read_paths=paths, write_paths=optimization_write_paths,
+        backend="LOCAL", network_access=False,
+    )
+    verifier_policy = CapabilityPolicyV2(
+        tools=(), read_paths=(), write_paths=(), backend="ISOLATED", network_access=False,
+    )
     roles = RoleRegistryV1(
         registry_id="bananloop-v2-owner-researcher", version=1,
-        roles=(RoleDefinitionV1(
-            role_id="researcher", adapter="codex", provider="openai", model=model,
-            model_version="siwc-responses-v1",
-            prompt_digest=hashlib.sha256(INSTRUCTIONS.encode("utf-8")).hexdigest(),
-            capability_policy=policy,
-            context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
-                            "evidence_refs", "dev_summary", "budget_remaining"),
-            min_instances=1, max_instances=1, calls_per_instance=max_agent_calls,
-            tokens_per_instance=max_agent_calls * max_model_tokens,
-        ),),
+        roles=(
+            RoleDefinitionV1(
+                role_id="researcher", adapter="codex", provider="openai", model=model,
+                model_version="siwc-responses-v1",
+                prompt_digest=hashlib.sha256(INSTRUCTIONS.encode("utf-8")).hexdigest(),
+                capability_policy=policy,
+                context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
+                                "evidence_refs", "dev_summary", "budget_remaining"),
+                min_instances=0, max_instances=1, calls_per_instance=researcher_calls,
+                tokens_per_instance=researcher_calls * max_model_tokens,
+            ),
+            RoleDefinitionV1(
+                role_id="independent_verifier", adapter="codex", provider="openai", model=model,
+                model_version="siwc-responses-v1",
+                prompt_digest=hashlib.sha256(PROTOCOL_VERIFIER_INSTRUCTIONS.encode("utf-8")).hexdigest(),
+                capability_policy=verifier_policy,
+                context_fields=("campaign_goal", "public_task"),
+                min_instances=0, max_instances=1, calls_per_instance=1,
+                tokens_per_instance=max_model_tokens,
+            ),
+            RoleDefinitionV1(
+                role_id="optimizer", adapter="codex", provider="openai", model=model,
+                model_version="siwc-responses-v1",
+                prompt_digest=hashlib.sha256(OPTIMIZER_INSTRUCTIONS.encode("utf-8")).hexdigest(),
+                capability_policy=optimizer_policy,
+                context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
+                                "constraints", "evidence_refs", "dev_summary", "budget_remaining"),
+                min_instances=0, max_instances=1, calls_per_instance=optimizer_calls,
+                tokens_per_instance=optimizer_calls * max_model_tokens,
+            ),
+            RoleDefinitionV1(
+                role_id="integration_verifier", adapter="codex", provider="openai", model=model,
+                model_version="siwc-responses-v1",
+                prompt_digest=hashlib.sha256(INTEGRATION_VERIFIER_INSTRUCTIONS.encode("utf-8")).hexdigest(),
+                capability_policy=verifier_policy,
+                context_fields=("campaign_goal", "public_task"),
+                min_instances=0, max_instances=1, calls_per_instance=1,
+                tokens_per_instance=max_model_tokens,
+            ),
+        ),
     )
     scope_digest = hashlib.sha256(json.dumps({
         "repo": str(repo), "goal": goal, "read_paths": paths,
@@ -164,6 +217,141 @@ def _write_live_report(state_root: Path, report: dict[str, Any]) -> str:
     return str(target)
 
 
+def _persist_role_registry(state_root: Path, roles: RoleRegistryV1) -> Path:
+    target = state_root / "role-registry.json"
+    encoded = roles.model_dump_json(indent=2) + "\n"
+    if target.exists():
+        try:
+            stored = RoleRegistryV1.load(target, expected_digest=roles.digest())
+        except Exception as exc:
+            raise V2CampaignCLIError("persisted role registry differs from the frozen campaign") from exc
+        if stored.digest() != roles.digest():
+            raise V2CampaignCLIError("persisted role registry differs from the frozen campaign")
+        return target
+    temporary = target.with_suffix(".json.tmp")
+    temporary.write_text(encoded, encoding="utf-8")
+    os.replace(temporary, target)
+    return target
+
+
+def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
+                                        registry_root: Path,
+                                        campaign_id: str, parent_spec: ExplorationCampaignSpecV2,
+                                        graph: GraphRepository, queue: DurableWorkerQueue,
+                                        roles: RoleRegistryV1,
+                                        visible_paths: tuple[str, ...],
+                                        write_paths: tuple[str, ...],
+                                        approval_digest: str) -> dict[str, Any]:
+    from .evaluator_verification import EvaluatorProtocolAuthority
+    from .v2_pivot_saga import V2PivotSaga, _budget_caps
+
+    if not write_paths:
+        return {"status": "NEEDS_EXPLICIT_OPTIMIZATION_WRITE_PATH"}
+    authority = EvaluatorProtocolAuthority(graph.conn)
+    proposal, receipt = authority.approved_protocol(approval_digest)
+    researcher_calls = roles.role("researcher").calls_per_instance
+    optimizer_calls = roles.role("optimizer").calls_per_instance
+    integration_calls = roles.role("integration_verifier").calls_per_instance
+    child_calls = optimizer_calls + integration_calls
+    if researcher_calls + roles.role("independent_verifier").calls_per_instance + child_calls > parent_spec.budget.max_agent_calls:
+        raise V2CampaignCLIError("frozen role call vector exceeds the parent budget")
+    scope = AutonomyScopeV2(
+        version=1, allowed_paths=write_paths, max_child_depth=0, max_child_campaigns=0,
+    )
+    child_policy = CapabilityPolicyV2(
+        tools=("read_file", "write_file", "commit_candidate"),
+        read_paths=visible_paths, write_paths=write_paths,
+        backend="LOCAL", network_access=False,
+    )
+    payload = parent_spec.model_dump(mode="json")
+    payload["mode"] = "OPTIMIZATION"
+    payload["goal"] = f"Optimize: {parent_spec.goal}"[:4000]
+    payload["evaluation"] = {
+        "protocol_id": proposal.protocol.protocol_id,
+        "version": proposal.protocol.version,
+        "content_sha256": proposal.protocol.content_digest(),
+        "approval_digest": receipt.approval_digest,
+    }
+    payload["autonomy"] = {
+        "mode": parent_spec.autonomy.mode,
+        "scope_digest": scope.content_digest(), "scope_version": scope.version,
+        "scope": scope.model_dump(mode="json"),
+        "capability_policy": child_policy.model_dump(mode="json"),
+    }
+    payload["budget"]["max_agent_calls"] = child_calls
+    if parent_spec.budget.max_model_tokens is not None:
+        per_call = parent_spec.budget.max_model_tokens // parent_spec.budget.max_agent_calls
+        payload["budget"]["max_model_tokens"] = child_calls * per_call
+    child = OptimizationCampaignSpecV2.model_validate(payload)
+    plan = PivotExecutionPlanV2.build(
+        child_spec=child.model_dump(mode="json"), changed_paths=write_paths,
+        resource_vector=_budget_caps(child),
+    )
+    completed_count = sum(
+        node.get("status") == "COMPLETED"
+        for node in graph.scheduling_snapshot()["nodes"]
+    )
+    pivot = PivotProposal.build(
+        spec_hash=parent_spec.approved_hash(),
+        trigger_experiment_ordinal=max(1, completed_count),
+        current_architecture="Exploration campaign without an Optimization child",
+        proposed_architecture="Protocol-backed v2 Optimization child",
+        rationale=("A distinct pinned independent_verifier approved the frozen public evaluator protocol "
+                   f"with approval digest {receipt.approval_digest}."),
+        expected_effect="Run bounded candidate edits against the frozen trusted evaluator.",
+        changed_scope=write_paths,
+        resources=PivotResourceRequest(
+            additional_agent_calls=child_calls,
+            additional_evaluator_calls=child.budget.max_evaluator_calls,
+            notes="Exact child limits are frozen in execution_plan.",
+        ),
+        execution_plan=plan,
+    )
+    queue.set_campaign_control(
+        campaign_id, "PAUSED", reason=f"verified Optimization pivot {pivot.proposal_id} requires owner decision",
+    )
+    with sqlite3.connect(state_root / "campaign.sqlite3", timeout=30) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT status FROM campaigns WHERE id=1").fetchone()
+        if row is None or row[0] not in {"READY", "PAUSED_NEEDS_INPUT"}:
+            conn.rollback()
+            raise V2CampaignCLIError("parent campaign cannot enter supervised pivot review from its current status")
+        if row[0] == "READY":
+            conn.execute(
+                "UPDATE campaigns SET status='PAUSED_NEEDS_INPUT',updated_at=? WHERE id=1",
+                (utc_now(),),
+            )
+            conn.execute(
+                "INSERT INTO events(event_type,payload_json,created_at) VALUES(?,?,?)",
+                ("V2_PIVOT_REVIEW_REQUIRED", json.dumps({
+                    "campaign_id": campaign_id, "proposal_id": pivot.proposal_id,
+                    "proposal_digest": pivot.digest,
+                }, sort_keys=True, separators=(",", ":")), utc_now()),
+            )
+        conn.commit()
+    saga = V2PivotSaga(repo=repo, parent_campaign_id=campaign_id, state_root=registry_root)
+    saga.record_pivot_proposal(pivot)
+    roles_path = _persist_role_registry(state_root, roles)
+    with sqlite3.connect(state_root / "campaign.sqlite3", timeout=30) as conn:
+        pivot_status = conn.execute(
+            "SELECT status FROM v2_pivot_proposals WHERE proposal_id=?", (pivot.proposal_id,),
+        ).fetchone()
+    if pivot_status is None:
+        raise V2CampaignCLIError("durable Optimization pivot proposal disappeared after recording")
+    status = {
+        "PENDING": "PENDING_OWNER_PIVOT_DECISION",
+        "APPROVED": "OWNER_APPROVED_CHILD_READY_TO_EXECUTE",
+        "REJECTED": "OWNER_REJECTED_PIVOT",
+        "STALE": "STALE_PIVOT_REQUIRES_REVIEW",
+    }[pivot_status[0]]
+    return {
+        "status": status, "proposal_id": pivot.proposal_id,
+        "proposal_digest": pivot.digest, "protocol_approval_digest": receipt.approval_digest,
+        "child_spec_hash": child.approved_hash(), "changed_paths": list(write_paths),
+        "child_agent_call_budget": child_calls, "role_registry_path": str(roles_path),
+    }
+
+
 def _record_provider_call(database: Path, receipt: dict[str, Any]) -> None:
     conn = sqlite3.connect(database, timeout=30)
     try:
@@ -182,12 +370,122 @@ def _record_provider_call(database: Path, receipt: dict[str, Any]) -> None:
         conn.close()
 
 
+def _complete_pending_protocol_reviews(*, graph: GraphRepository, queue: DurableWorkerQueue,
+                                       campaign_id: str, published_root: Path,
+                                       auth: ChatGPTPlanAuth, model: str, timeout_seconds: int,
+                                       remaining_calls: int,
+                                       call_observer: Any) -> dict[str, Any]:
+    """Recover proposal records and spend only the explicitly available verifier calls."""
+    from .evaluator_verification import EvaluatorProtocolAuthority, EvaluatorVerificationAdapter
+
+    authority = EvaluatorProtocolAuthority(graph.conn)
+    for row in queue.conn.execute(
+        "SELECT job_id FROM worker_jobs WHERE campaign_id=? AND state='COMPLETED' ORDER BY job_id",
+        (campaign_id,),
+    ):
+        job_id = row[0]
+        try:
+            durable = queue.get_result(job_id)
+        except Exception:
+            continue
+        output = durable.get("result") if isinstance(durable, dict) else None
+        if isinstance(output, dict) and output.get("protocol_draft") is not None:
+            authority.record_completed_proposal(graph, queue, job_id)
+
+    adapter = EvaluatorVerificationAdapter(
+        graph=graph, queue=queue, campaign_id=campaign_id,
+        published_artifact_root=published_root,
+    )
+    verifier = ChatGPTPlanProtocolVerifier(
+        auth, approved_model=model, timeout_seconds=timeout_seconds,
+        call_observer=call_observer,
+    )
+    results: list[dict[str, Any]] = []
+    used_calls = 0
+    for proposal in authority.pending_proposals(campaign_id):
+        job = adapter.enqueue_verifier(proposal.proposal_digest)
+        verifier_job_id = job["job_id"]
+        if job["state"] == "COMPLETED":
+            receipt = authority.record_completed_verifier_job(queue, verifier_job_id)
+            results.append({"proposal_digest": proposal.proposal_digest,
+                            "verifier_job_id": verifier_job_id, "decision": receipt.decision,
+                            "approval_digest": receipt.approval_digest})
+            continue
+        if job["state"] != "READY":
+            results.append({"proposal_digest": proposal.proposal_digest,
+                            "verifier_job_id": verifier_job_id, "status": job["state"]})
+            continue
+        if used_calls >= remaining_calls:
+            results.append({"proposal_digest": proposal.proposal_digest,
+                            "verifier_job_id": verifier_job_id,
+                            "status": "AWAITING_OWNER_CALL_APPROVAL"})
+            continue
+        binding = job["request"].get("role_binding")
+        manifest_authority = TeamManifestAuthority(queue.path)
+        try:
+            manifest = manifest_authority.load(
+                campaign_id, spec_hash=binding["spec_hash"],
+                registry_digest=binding["role_registry_digest"],
+            )
+        finally:
+            manifest_authority.close()
+        executor = verifier.executor(manifest, binding["role_instance_id"])
+        history_before = len(verifier.request_history)
+        receipt = adapter.run_verifier_one(
+            verifier_job_id=verifier_job_id, worker_id="v2-protocol-verifier",
+            executor=executor,
+        )
+        used_calls += sum(
+            bool(item.get("dispatched")) for item in verifier.request_history[history_before:]
+        )
+        results.append({"proposal_digest": proposal.proposal_digest,
+                        "verifier_job_id": verifier_job_id, "decision": receipt.decision,
+                        "approval_digest": receipt.approval_digest})
+    return {"calls_used": used_calls, "reviews": results,
+            "pending_proposal_digests": [item.proposal_digest
+                                          for item in authority.pending_proposals(campaign_id)],
+            "approved_protocols": [
+                {"proposal_digest": row[0],
+                 "approval_digest": json.loads(row[1])["approval_digest"]}
+                for row in graph.conn.execute(
+                    "SELECT proposal_digest,receipt_json FROM evaluator_verifier_receipts "
+                    "WHERE campaign_id=? AND decision='APPROVE' ORDER BY proposal_digest",
+                    (campaign_id,),
+                )
+            ]}
+
+
+def _remaining_researcher_calls(queue: DurableWorkerQueue, campaign_id: str,
+                                capacity: int) -> int:
+    used = queue.conn.execute(
+        "SELECT COALESCE(SUM(t.upper_bound),0) FROM team_role_call_jobs t "
+        "JOIN worker_jobs j USING(job_id) "
+        "WHERE t.campaign_id=? AND t.role_id='researcher' AND j.state!='READY' "
+        "AND t.job_id NOT IN (SELECT job_id FROM team_role_allocation_releases)",
+        (campaign_id,),
+    ).fetchone()[0]
+    return max(0, capacity - int(used))
+
+
+def _aggregate_reported_usage(call_history: list[dict[str, Any]]) -> dict[str, int] | str:
+    """Sum provider usage only when every dispatched request reports same-shaped counters."""
+    records = [item.get("usage") for item in call_history if item.get("dispatched")]
+    if not records or any(not isinstance(item, dict) or not item for item in records):
+        return "UNKNOWN"
+    keys = set(records[0])
+    if any(set(item) != keys for item in records):
+        return "UNKNOWN"
+    if any(type(value) is not int or value < 0 for item in records for value in item.values()):
+        return "UNKNOWN"
+    return {key: sum(item[key] for item in records) for key in sorted(keys)}
+
+
 def run_v2_explore(args: Any) -> dict[str, Any]:
     """Create/reopen one frozen Full v2 Exploration campaign and advance it."""
     goal = args.goal
     if not isinstance(goal, str) or not goal.strip() or len(goal) > 4000 or "\x00" in goal:
         raise V2CampaignCLIError("--goal must contain 1 to 4000 non-NUL characters")
-    if (isinstance(args.max_agent_calls, bool) or not 1 <= args.max_agent_calls <= 100
+    if (isinstance(args.max_agent_calls, bool) or not 4 <= args.max_agent_calls <= 100
             or isinstance(args.max_model_tokens, bool) or not 1 <= args.max_model_tokens <= 100_000
             or isinstance(args.approve_up_to_calls, bool)
             or not 0 <= args.approve_up_to_calls <= args.max_agent_calls
@@ -195,15 +493,20 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             or isinstance(args.timeout_seconds, bool) or not 1 <= args.timeout_seconds <= 300
             or not isinstance(args.model, str) or not args.model.strip() or len(args.model) > 200):
         raise V2CampaignCLIError("v2 call, token, or iteration bounds are invalid")
-    if args.approve_up_to_calls > args.max_iterations:
-        raise V2CampaignCLIError("--approve-up-to-calls cannot exceed --max-iterations")
+    if args.approve_up_to_calls > args.max_agent_calls:
+        raise V2CampaignCLIError("--approve-up-to-calls cannot exceed --max-agent-calls")
     repo = Path(args.repo).expanduser().resolve()
     if not repo.is_dir() or repo.is_symlink():
         raise V2CampaignCLIError("--repo must be a real local Git repository directory")
     paths = _read_paths(repo, args.read_path)
+    requested_write_paths = list(getattr(args, "optimization_write_path", ()) or ())
+    write_paths = _read_paths(repo, requested_write_paths) if requested_write_paths else ()
+    if not set(write_paths) <= set(paths):
+        raise V2CampaignCLIError("--optimization-write-path values must also appear in --read-path")
     spec, roles, _policy = _build_spec(
         repo, goal, paths, max_agent_calls=args.max_agent_calls,
         max_model_tokens=args.max_model_tokens, model=args.model,
+        optimization_write_paths=write_paths,
     )
     runtime_paths = RuntimePaths.for_repo(
         repo, Path(args.state_dir).expanduser() if args.state_dir else None,
@@ -212,13 +515,20 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
     entry, state_root, _created = registry.reserve(goal, args.request_id, activate=False)
     database = state_root / "campaign.sqlite3"
     _initialize_campaign(database, spec)
+    roles_path = _persist_role_registry(state_root, roles)
 
     ledger = registry.budget_ledger()
     try:
-        ledger.create_root(entry.campaign_id, {
+        root_caps = {
             "agent_calls": args.max_agent_calls,
+            "evaluator_calls": spec.budget.max_evaluator_calls,
+            "experiments": spec.budget.max_experiments,
+            "attempts": spec.budget.max_attempts,
             "model_tokens": args.max_agent_calls * args.max_model_tokens,
-        })
+        }
+        if spec.budget.max_evaluation_units is not None:
+            root_caps["evaluation_units"] = spec.budget.max_evaluation_units
+        ledger.create_root(entry.campaign_id, root_caps)
     finally:
         ledger.close()
 
@@ -245,6 +555,7 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
                 "profile": "FULL", "campaign_id": entry.campaign_id,
                 "spec_hash": spec.approved_hash(), "base_commit": spec.base_commit,
                 "read_paths": list(paths), "state_dir": str(state_root),
+                "role_registry_path": str(roles_path),
                 "live_model_called": False,
             }
 
@@ -255,27 +566,83 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             f"{entry.campaign_id}:{args.request_id}:{utc_now()}".encode(),
         ).hexdigest()[:24]
 
-        def observe_call(receipt: dict[str, Any]) -> None:
-            _record_provider_call(database, {"attempt_id": attempt_id, **receipt})
+        call_history: list[dict[str, Any]] = []
+
+        def observe_call(role_id: str, receipt: dict[str, Any]) -> None:
+            recorded = {"attempt_id": attempt_id, "role_id": role_id, **receipt}
+            call_history.append(recorded)
+            _record_provider_call(database, recorded)
 
         researcher = ChatGPTPlanResearcher(
             auth, approved_model=args.model, timeout_seconds=args.timeout_seconds,
-            call_observer=observe_call,
+            call_observer=lambda receipt: observe_call("researcher", receipt),
         )
         try:
             researcher.check_model()
         except SIWCError as exc:
             raise V2CampaignCLIError(str(exc)) from exc
         try:
-            result = runtime.run_campaign(
-                visible_paths=paths, invoke=make_researcher_invoke(researcher),
-                max_iterations=args.approve_up_to_calls,
+            verifier_calls = 0
+            reviews_before = _complete_pending_protocol_reviews(
+                graph=graph, queue=queue, campaign_id=entry.campaign_id,
+                published_root=state_root / "rpdi05" / "published", auth=auth,
+                model=args.model, timeout_seconds=args.timeout_seconds,
+                remaining_calls=args.approve_up_to_calls,
+                call_observer=lambda receipt: observe_call("independent_verifier", receipt),
             )
+            verifier_calls += int(reviews_before["calls_used"])
+            remaining_approved = max(0, args.approve_up_to_calls - verifier_calls)
+            researcher_capacity = _remaining_researcher_calls(
+                queue, entry.campaign_id, args.max_agent_calls - 1,
+            )
+            iterations = min(args.max_iterations, remaining_approved, researcher_capacity)
+            if iterations:
+                result = runtime.run_campaign(
+                    visible_paths=paths, invoke=make_researcher_invoke(researcher),
+                    max_iterations=iterations,
+                )
+            else:
+                result = {
+                    "status": ("PROTOCOL_REVIEW_PENDING" if reviews_before["pending_proposal_digests"]
+                               else "CALL_ALLOWANCE_EXHAUSTED" if remaining_approved == 0
+                               else "RESEARCH_ROLE_ALLOCATION_EXHAUSTED"),
+                    "campaign_id": entry.campaign_id, "iterations_this_call": 0,
+                    "completed": [],
+                }
+            researcher_calls = sum(
+                bool(item.get("dispatched")) for item in call_history
+                if item.get("role_id") == "researcher"
+            )
+            reviews_after = _complete_pending_protocol_reviews(
+                graph=graph, queue=queue, campaign_id=entry.campaign_id,
+                published_root=state_root / "rpdi05" / "published", auth=auth,
+                model=args.model, timeout_seconds=args.timeout_seconds,
+                remaining_calls=max(0, args.approve_up_to_calls - verifier_calls - researcher_calls),
+                call_observer=lambda receipt: observe_call("independent_verifier", receipt),
+            )
+            result["protocol_reviews"] = reviews_after["reviews"]
+            result["pending_protocol_proposals"] = reviews_after["pending_proposal_digests"]
+            if result["pending_protocol_proposals"] and result.get("status") == "ITERATION_LIMIT":
+                result["status"] = "PROTOCOL_REVIEW_PENDING"
+            result["optimization_pivot"] = []
+            approval_digests = {
+                item["approval_digest"]
+                for source in (reviews_before, reviews_after)
+                for item in source.get("approved_protocols", ())
+            }
+            for approval_digest in sorted(approval_digests):
+                result["optimization_pivot"].append(_record_verified_optimization_pivot(
+                    repo=repo, state_root=state_root, campaign_id=entry.campaign_id,
+                    registry_root=runtime_paths.root,
+                    parent_spec=spec, graph=graph, queue=queue, roles=roles,
+                    visible_paths=paths, write_paths=write_paths,
+                    approval_digest=approval_digest,
+                ))
         except Exception as exc:
             report = {
                 "attempt_id": attempt_id, "campaign_id": entry.campaign_id,
                 "status": "RUN_FAILED", "provider": "chatgpt_plan", "model": args.model,
-                "request_history": list(getattr(researcher, "request_history", [])),
+                "request_history": call_history,
                 "usage": "UNKNOWN", "failure_type": type(exc).__name__,
                 "automatic_replay": False,
             }
@@ -287,12 +654,13 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
         response = {
             **result, "mode": "EXPLORATION", "profile": "FULL",
             "spec_hash": spec.approved_hash(), "base_commit": spec.base_commit,
-            "read_paths": list(paths), "state_dir": str(state_root),
+            "read_paths": list(paths), "optimization_write_paths": list(write_paths),
+            "role_registry_path": str(roles_path), "state_dir": str(state_root),
             "provider": "chatgpt_plan", "model": args.model,
-            "live_model_called": bool(result.get("completed")),
-            "usage": researcher.last_usage if researcher.last_usage is not None else "UNKNOWN",
+            "live_model_called": any(item.get("dispatched") for item in call_history),
+            "usage": _aggregate_reported_usage(call_history),
             "request_id": researcher.last_request_id,
-            "request_history": list(getattr(researcher, "request_history", [])),
+            "request_history": call_history,
             "attempt_id": attempt_id,
             "automatic_replay": False,
         }

@@ -36,10 +36,16 @@ class CampaignApplication:
 
     def resolve(self) -> tuple[RuntimePaths, str]:
         if self.state_dir is not None:
-            if self.requested_campaign_id is not None:
-                raise RegistryError("state-dir and campaign-id cannot be used together")
             paths = RuntimePaths.for_repo(self.repo, self.state_dir)
-            campaign_id = "state-" + hashlib.sha256(str(paths.root).encode("utf-8")).hexdigest()[:32]
+            if self.requested_campaign_id is None:
+                campaign_id = "state-" + hashlib.sha256(str(paths.root).encode("utf-8")).hexdigest()[:32]
+            else:
+                _, selected = CampaignRegistry(self.repo, paths).resolve(
+                    self.requested_campaign_id, activate=False,
+                )
+                if selected != self.requested_campaign_id:
+                    raise RegistryError("requested campaign identity changed")
+                campaign_id = selected
         else:
             state_root, selected = CampaignRegistry(self.repo).resolve(
                 self.requested_campaign_id, activate=False,
@@ -799,7 +805,7 @@ class CampaignApplication:
         if self._schema_version(paths.db) != 5:
             raise StoreError("v2 pivot proposals require a graph campaign")
         saga = V2PivotSaga(
-            repo=self.repo, parent_campaign_id=campaign_id,
+            repo=self.repo, parent_campaign_id=campaign_id, state_root=self.state_dir,
         )
         saga.record_pivot_proposal(proposal)
         return {
@@ -820,7 +826,7 @@ class CampaignApplication:
         if command.campaign_id != campaign_id:
             raise StoreError("pivot decision targets a different campaign")
         saga = V2PivotSaga(
-            repo=self.repo, parent_campaign_id=campaign_id,
+            repo=self.repo, parent_campaign_id=campaign_id, state_root=self.state_dir,
         )
         saga.record_pivot_decision(command)
         return {
@@ -876,7 +882,8 @@ class CampaignApplication:
             raise StoreError("persisted pivot authorization could not be verified") from exc
         finally:
             conn.close()
-        saga = V2PivotSaga(repo=self.repo, parent_campaign_id=campaign_id)
+        saga = V2PivotSaga(repo=self.repo, parent_campaign_id=campaign_id,
+                           state_root=self.state_dir)
         return saga.create_child(
             idempotency_key=idempotency_key,
             proposal=proposal,

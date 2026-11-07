@@ -542,6 +542,19 @@ class EvaluatorProtocolAuthority:
         except Exception as exc:
             raise EvaluatorVerificationError("stored evaluator proposal is corrupt") from exc
 
+    def pending_proposals(self, campaign_id: str) -> tuple[MetricDiscoveryProposalV1, ...]:
+        """Return proposals without a durable verifier receipt for this campaign."""
+        rows = self.conn.execute(
+            "SELECT p.proposal_json FROM evaluator_protocol_proposals p "
+            "LEFT JOIN evaluator_verifier_receipts r ON r.proposal_digest=p.proposal_digest "
+            "WHERE p.campaign_id=? AND r.receipt_digest IS NULL ORDER BY p.proposal_digest",
+            (campaign_id,),
+        ).fetchall()
+        try:
+            return tuple(MetricDiscoveryProposalV1.model_validate_json(row[0]) for row in rows)
+        except Exception as exc:
+            raise EvaluatorVerificationError("stored pending evaluator proposal is corrupt") from exc
+
     def _append_verified_receipt(self, receipt: VerifierReceiptV1) -> VerifierReceiptV1:
         proposal = self.proposal(receipt.proposal_digest)
         if (receipt.campaign_id != proposal.campaign_id or receipt.spec_hash != proposal.spec_hash

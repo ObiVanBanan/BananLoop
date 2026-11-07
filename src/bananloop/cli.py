@@ -329,7 +329,8 @@ def cmd_campaigns_list(args: argparse.Namespace) -> int:
 
 def cmd_campaign_inspect(args: argparse.Namespace) -> int:
     """Print safe, application-backed read models for one selected campaign."""
-    app = CampaignApplication(args.repo, campaign_id=args.campaign_id)
+    app = CampaignApplication(args.repo, campaign_id=args.campaign_id,
+                              state_dir=getattr(args, "state_dir", None))
     snapshot = app.snapshot()
     campaign_id = snapshot["campaign_id"]
     project = CampaignApplication(args.repo)
@@ -647,7 +648,8 @@ def cmd_v2_pivot_proposal(args: argparse.Namespace) -> int:
     proposal = PivotProposal.model_validate_json(
         Path(args.input).read_text(encoding="utf-8")
     )
-    app = CampaignApplication(args.repo, campaign_id=args.campaign_id)
+    app = CampaignApplication(args.repo, campaign_id=args.campaign_id,
+                              state_dir=getattr(args, "state_dir", None))
     print(json.dumps(app.v2_record_pivot_proposal(proposal), sort_keys=True))
     return 0
 
@@ -663,6 +665,7 @@ def cmd_v2_pivot_decision(args: argparse.Namespace) -> int:
     )
     receipt = CampaignApplication(
         args.repo, campaign_id=args.campaign_id,
+        state_dir=getattr(args, "state_dir", None),
     ).v2_pivot_decision(command)
     print(json.dumps(receipt, sort_keys=True))
     return 0
@@ -671,6 +674,7 @@ def cmd_v2_pivot_decision(args: argparse.Namespace) -> int:
 def cmd_v2_pivot_execute(args: argparse.Namespace) -> int:
     receipt = CampaignApplication(
         args.repo, campaign_id=args.campaign_id,
+        state_dir=getattr(args, "state_dir", None),
     ).v2_execute_pivot(args.proposal_id, args.digest, args.idempotency_key)
     print(json.dumps(receipt, sort_keys=True))
     return 0
@@ -1133,8 +1137,11 @@ def parser() -> argparse.ArgumentParser:
     v2_explore.add_argument("--goal", required=True)
     v2_explore.add_argument("--read-path", action="append", required=True,
                             help="exact public source file path visible to the researcher; repeat as needed")
+    v2_explore.add_argument("--optimization-write-path", action="append", default=[],
+                            help="exact file eligible for a supervised Optimization child; must also be a read path")
     v2_explore.add_argument("--model", default="gpt-6-luna")
-    v2_explore.add_argument("--max-agent-calls", type=int, default=2)
+    v2_explore.add_argument("--max-agent-calls", type=int, default=8,
+                            help="total model calls budgeted across Exploration, verification, and a child run")
     v2_explore.add_argument("--max-model-tokens", type=int, default=2048,
                             help="per-call ledger ceiling; SIWC may not enforce this provider-side")
     v2_explore.add_argument("--max-iterations", type=int, default=2)
@@ -1166,11 +1173,13 @@ def parser() -> argparse.ArgumentParser:
     v2_pivot_sub = v2_pivot.add_subparsers(dest="v2_pivot_command", required=True)
     proposal_cmd = v2_pivot_sub.add_parser("proposal", help="persist one immutable v2 pivot proposal")
     proposal_cmd.add_argument("--repo", default=".")
+    proposal_cmd.add_argument("--state-dir")
     proposal_cmd.add_argument("--campaign-id", required=True)
     proposal_cmd.add_argument("--input", required=True, help="JSON file containing one PivotProposal")
     proposal_cmd.set_defaults(func=cmd_v2_pivot_proposal)
     decision_cmd = v2_pivot_sub.add_parser("decision", help="record one Supervised decision over an exact proposal digest")
     decision_cmd.add_argument("--repo", default=".")
+    decision_cmd.add_argument("--state-dir")
     decision_cmd.add_argument("--campaign-id", required=True)
     decision_cmd.add_argument("--request-id", required=True)
     decision_cmd.add_argument("--proposal-id", required=True)
@@ -1180,6 +1189,7 @@ def parser() -> argparse.ArgumentParser:
     decision_cmd.set_defaults(func=cmd_v2_pivot_decision)
     execute_cmd = v2_pivot_sub.add_parser("execute", help="execute or resume the exact persisted approved pivot plan")
     execute_cmd.add_argument("--repo", default=".")
+    execute_cmd.add_argument("--state-dir")
     execute_cmd.add_argument("--campaign-id", required=True)
     execute_cmd.add_argument("--proposal-id", required=True)
     execute_cmd.add_argument("--digest", required=True)
