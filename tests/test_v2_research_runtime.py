@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -316,6 +317,61 @@ def test_malformed_dispatched_response_is_durable_but_never_published(tmp_path):
         assert agent_calls["spent"] + agent_calls["unknown"] >= 1
     finally:
         queue.close()
+        graph.close()
+
+
+def test_expired_dispatched_job_is_not_redriven_after_runtime_restart(tmp_path):
+    runtime, graph, queue = _runtime(tmp_path)
+    calls = []
+    recovered_queue = None
+    recovered_graph = None
+    try:
+        job = runtime.adapter.enqueue(node_id="explore", visible_paths=["README.md"])
+        dispatch_time = time.time()
+        claim = queue.claim(
+            job["job_id"], "crashed-worker", lease_seconds=1, now=dispatch_time,
+        )
+        queue.mark_dispatched(
+            job["job_id"], "crashed-worker", claim["fence"], now=dispatch_time + 0.25,
+        )
+        assert queue.expire(now=dispatch_time + 2) == {"released": 0, "unknown": 1}
+
+        queue_path = queue.path
+        queue.close()
+        recovered_queue = DurableWorkerQueue(queue_path)
+        recovered_graph = GraphRepository.open(
+            str(tmp_path / "campaign.sqlite3"), campaign_id="campaign-test",
+        )
+        recovered = V2ResearchRuntime(
+            graph=recovered_graph, queue=recovered_queue, campaign_id="campaign-test",
+            state_root=tmp_path, role_registry=runtime.role_registry,
+        )
+        with pytest.raises(V2RuntimeError, match="UNKNOWN; uncertain work"):
+            recovered.run_campaign(
+                visible_paths=["README.md"],
+                invoke=make_researcher_invoke(
+                    lambda *_args, **_kwargs: calls.append("must-not-dispatch"),
+                ),
+                max_iterations=1,
+            )
+
+        assert calls == []
+        assert recovered_queue.get_job(job["job_id"])["state"] == "UNKNOWN"
+        assert recovered_graph.conn.execute(
+            "SELECT status FROM research_nodes WHERE node_id='explore'",
+        ).fetchone()[0] != "COMPLETED"
+        ledger = BudgetLedger(recovered_queue.path)
+        try:
+            assert ledger.snapshot("campaign-test")["agent_calls"]["unknown"] == 1
+        finally:
+            ledger.close()
+    finally:
+        if recovered_queue is not None:
+            recovered_queue.close()
+        else:
+            queue.close()
+        if recovered_graph is not None:
+            recovered_graph.close()
         graph.close()
 
 
