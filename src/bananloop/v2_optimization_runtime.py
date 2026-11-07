@@ -802,6 +802,12 @@ class V2OptimizationRuntime:
         worker_id: str = "v2-optimization",
     ) -> dict[str, Any]:
         """Advance one scheduler-selected v2 Optimization or Verification node."""
+        finalized = self.graph.conn.execute(
+            "SELECT receipt_json FROM evaluator_run_receipts WHERE campaign_id=?",
+            (self.campaign_id,),
+        ).fetchall()
+        if any(json.loads(row[0]).get("tier") == "holdout" for row in finalized):
+            raise V2OptimizationError("campaign is finalized; no work may follow HOLDOUT")
         plan = self.plan()
         if not plan.candidates:
             return {"status": plan.reason, "campaign_id": self.campaign_id}
@@ -892,6 +898,14 @@ class V2OptimizationRuntime:
         for _ in range(max_steps):
             plan = self.plan()
             if not plan.candidates:
+                if plan.reason == "ALL_NODES_COMPLETE":
+                    result = {
+                        "status": plan.reason, "campaign_id": self.campaign_id,
+                        "steps_this_call": len(steps), "steps": steps,
+                        "graph_revision": plan.graph_revision,
+                    }
+                    result["holdout"] = self._finalize_holdout(worker_id=worker_id)
+                    return self._finish_campaign_run(result)
                 return self._finish_campaign_run({
                     "status": plan.reason, "campaign_id": self.campaign_id,
                     "steps_this_call": len(steps), "steps": steps,
@@ -921,12 +935,89 @@ class V2OptimizationRuntime:
                 raise V2OptimizationError("durable Optimization worker failed") from exc
             steps.append(result)
         current = self.plan()
+        if current.reason == "ALL_NODES_COMPLETE":
+            result = {
+                "status": current.reason, "campaign_id": self.campaign_id,
+                "steps_this_call": len(steps), "steps": steps,
+                "graph_revision": current.graph_revision,
+            }
+            result["holdout"] = self._finalize_holdout(worker_id=worker_id)
+            return self._finish_campaign_run(result)
         return self._finish_campaign_run({
             "status": current.reason if not current.candidates else "STEP_LIMIT",
             "campaign_id": self.campaign_id,
             "steps_this_call": len(steps), "steps": steps,
             "graph_revision": current.graph_revision,
         })
+
+    def _finalize_holdout(self, *, worker_id: str) -> dict[str, Any]:
+        """Run trusted HOLDOUT once the scheduler has completed every node.
+
+        HOLDOUT receipts are returned only in the owner report. They never
+        become graph evidence or feed a scheduler, verifier, or agent context.
+        Deterministic evaluator job IDs make a retry after a process restart
+        reuse completed work; an indeterminate job fails closed.
+        """
+        from .champion_promotion import ChampionPromotionError, ChampionPromotionService
+        from .trusted_evaluator import TrustedEvaluatorError
+
+        spec = self.graph.campaign_spec()
+        authority = EvaluatorProtocolAuthority(self.graph.conn)
+        proposal, _ = authority.approved_protocol(spec.evaluation.approval_digest)
+        source_snapshot_id = proposal.protocol.source_snapshot_id
+        champion_service = ChampionPromotionService(self.graph.conn, authority)
+        try:
+            champion = champion_service.current()
+        except ChampionPromotionError:
+            champion = champion_service.initialize(
+                campaign_id=self.campaign_id, source_snapshot_id=source_snapshot_id,
+            )
+        if champion["campaign_id"] != self.campaign_id:
+            raise V2OptimizationError("HOLDOUT champion belongs to a different campaign")
+        try:
+            existing = self.graph.conn.execute(
+                "SELECT receipt_json FROM evaluator_run_receipts "
+                "WHERE campaign_id=? AND candidate_snapshot_id=? ORDER BY rowid DESC",
+                (self.campaign_id, champion["snapshot_id"]),
+            ).fetchall()
+            receipt = next((json.loads(row[0]) for row in existing
+                            if json.loads(row[0]).get("tier") == "holdout"), None)
+            if receipt is not None:
+                return {
+                    "status": "VERIFIED", "tier": "holdout",
+                    "candidate_snapshot_id": receipt["candidate_snapshot_id"],
+                    "receipt_digest": receipt["receipt_digest"],
+                    "case_count": receipt["case_count"],
+                    "repeatability_runs": receipt["repeatability_runs"],
+                    "tier_manifest_sha256": receipt["tier_manifest_sha256"],
+                    "replayed": True,
+                }
+            job_ids = self.trusted_evaluator.enqueue_repeatability(
+                candidate_snapshot_id=champion["snapshot_id"], tier="holdout",
+            )
+            for job_id in job_ids:
+                job = self.queue.get_job(job_id)
+                if job["state"] == "READY":
+                    self.trusted_evaluator.run_one(job_id, worker_id=worker_id)
+                elif job["state"] != "COMPLETED":
+                    raise V2OptimizationError(
+                        f"HOLDOUT job is {job['state']}; result is indeterminate"
+                    )
+            receipt = self.trusted_evaluator.finalize_repeatability(job_ids)
+        except (TrustedEvaluatorError, WorkerQueueError) as exc:
+            raise V2OptimizationError(
+                f"trusted HOLDOUT finalization failed closed: {exc}"
+            ) from exc
+        if receipt.tier != "holdout" or receipt.candidate_snapshot_id != champion["snapshot_id"]:
+            raise V2OptimizationError("HOLDOUT receipt is outside the final champion scope")
+        return {
+            "status": "VERIFIED", "tier": "holdout",
+            "candidate_snapshot_id": receipt.candidate_snapshot_id,
+            "receipt_digest": receipt.receipt_digest,
+            "case_count": receipt.case_count,
+            "repeatability_runs": receipt.repeatability_runs,
+            "tier_manifest_sha256": receipt.tier_manifest_sha256,
+        }
 
     def _finish_campaign_run(self, result: dict[str, Any]) -> dict[str, Any]:
         """Persist a bounded public Optimization outcome after each run call."""
@@ -942,6 +1033,14 @@ class V2OptimizationRuntime:
                 "evidence_refs": list(transition.get("evidence_refs", ())),
             })
         spec = self.graph.campaign_spec()
+        from .champion_promotion import ChampionPromotionError, ChampionPromotionService
+
+        try:
+            champion_report = ChampionPromotionService(
+                self.graph.conn, EvaluatorProtocolAuthority(self.graph.conn),
+            ).current()
+        except ChampionPromotionError:
+            champion_report = None
         evaluation_receipts = []
         for row in self.graph.conn.execute(
             "SELECT receipt_digest,candidate_snapshot_id,receipt_json "
@@ -974,7 +1073,7 @@ class V2OptimizationRuntime:
             "evaluation_receipts": evaluation_receipts,
             "integration_evidence": integration_evidence,
             "parent": spec.parent.model_dump(mode="json") if spec.parent else None,
-            "champion": result.get("steps", [{}])[-1].get("champion") if result.get("steps") else None,
+            "champion": champion_report,
             "verification": [step for step in result.get("steps", [])
                              if str(step.get("status", "")).startswith("INDEPENDENT_VERIFICATION_")],
             "limitations": [
@@ -983,6 +1082,8 @@ class V2OptimizationRuntime:
             ],
             "as_of": utc_now(),
         }
+        if result.get("holdout") is not None:
+            report["holdout"] = result["holdout"]
         reports = self.state_root / "reports"
         reports.mkdir(parents=True, exist_ok=True)
         target = reports / f"v2-optimization-{self.campaign_id}.json"

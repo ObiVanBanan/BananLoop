@@ -139,7 +139,7 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
             "scope_version": scope.version, "scope": scope.model_dump(mode="json"),
             "capability_policy": policy.model_dump(mode="json"),
         },
-        "budget": {"max_agent_calls": 10, "max_evaluator_calls": 10,
+        "budget": {"max_agent_calls": 10, "max_evaluator_calls": 20,
                    "max_experiments": 5, "max_attempts": 8},
         "role_registry_digest": roles.digest(),
         "evaluation": None,
@@ -313,6 +313,8 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
 
         input_bytes = b'{"prompt":"closed deterministic evaluator case","label":"pass"}'
         input_digest = hashlib.sha256(input_bytes).hexdigest()
+        holdout_input_bytes = b'{"prompt":"separate final holdout case","label":"holdout"}'
+        holdout_input_digest = hashlib.sha256(holdout_input_bytes).hexdigest()
         bundle_buffer = io.BytesIO()
         evaluator = b'''import json, os
 from pathlib import Path
@@ -341,6 +343,7 @@ print(json.dumps({
             aggregation="MEAN",
             tiers=(
                 EvaluatorTierManifestV1(tier="dev", manifest_sha256="0" * 64, case_count=1),
+                EvaluatorTierManifestV1(tier="holdout", manifest_sha256="0" * 64, case_count=1),
                 EvaluatorTierManifestV1(tier="validation", manifest_sha256="0" * 64, case_count=1),
             ),
             repeatability_runs=2,
@@ -354,9 +357,19 @@ print(json.dumps({
             evaluator_manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
         ).encode()
         manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+        holdout_manifest = ProtocolManifest(
+            protocol_sha256=_case_protocol_digest(preliminary),
+            cases=(ProtocolCase(case_id="integrated-holdout-case", repetition=0,
+                                input_sha256=holdout_input_digest),),
+        )
+        holdout_manifest_bytes = json.dumps(
+            holdout_manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
+        ).encode()
+        holdout_manifest_digest = hashlib.sha256(holdout_manifest_bytes).hexdigest()
         protocol = preliminary.model_copy(update={
             "tiers": (
                 EvaluatorTierManifestV1(tier="dev", manifest_sha256=manifest_digest, case_count=1),
+                EvaluatorTierManifestV1(tier="holdout", manifest_sha256=holdout_manifest_digest, case_count=1),
                 EvaluatorTierManifestV1(tier="validation", manifest_sha256=manifest_digest, case_count=1),
             ),
         })
@@ -395,7 +408,8 @@ print(json.dumps({
         parent_published.mkdir(parents=True, exist_ok=True)
         for data, digest in (
             (bundle_bytes, bundle_digest), (manifest_bytes, manifest_digest),
-            (input_bytes, input_digest),
+            (input_bytes, input_digest), (holdout_manifest_bytes, holdout_manifest_digest),
+            (holdout_input_bytes, holdout_input_digest),
         ):
             (parent_published / digest).write_bytes(data)
 
@@ -565,6 +579,9 @@ print(json.dumps({
             assert optimized["steps"][-1]["champion"]["snapshot_id"] == candidate[
                 "candidate_snapshot_id"
             ]
+            assert optimized["holdout"]["tier"] == "holdout"
+            assert optimized["holdout"]["candidate_snapshot_id"] == candidate["candidate_snapshot_id"]
+            assert optimized["holdout"]["status"] == "VERIFIED"
             final_report = json.loads(Path(optimized["final_report_path"]).read_text())
             assert final_report["campaign_id"] == entry.campaign_id
             assert final_report["optimization_campaign_id"] == child_id
@@ -578,6 +595,7 @@ print(json.dumps({
             assert {item["tier"] for item in final_report["optimization_report"]["evaluation_receipts"]} == {
                 "dev", "validation",
             }
+            assert final_report["optimization_report"]["holdout"]["tier_manifest_sha256"] == holdout_manifest_digest
         finally:
             child_queue.close()
             child_graph.close()

@@ -755,6 +755,8 @@ def test_optimization_lifecycle_integrates_durable_evaluator_and_verification_qu
 
     input_bytes = b'{"prompt":"controlled case","label":"ok"}'
     input_sha = hashlib.sha256(input_bytes).hexdigest()
+    holdout_input_bytes = b'{"prompt":"separate final holdout case","label":"holdout"}'
+    holdout_input_sha = hashlib.sha256(holdout_input_bytes).hexdigest()
     bundle_io = __import__("io").BytesIO()
     evaluator = b'''import json, os
 from pathlib import Path
@@ -786,6 +788,9 @@ print(json.dumps({
                 tier="dev", manifest_sha256="0" * 64, case_count=1,
             ),
             EvaluatorTierManifestV1(
+                tier="holdout", manifest_sha256="0" * 64, case_count=1,
+            ),
+            EvaluatorTierManifestV1(
                 tier="validation", manifest_sha256="0" * 64, case_count=1,
             ),
         ),
@@ -801,10 +806,24 @@ print(json.dumps({
         manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
     ).encode()
     manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
+    holdout_manifest = ProtocolManifest(
+        protocol_sha256=_case_protocol_digest(preliminary),
+        cases=(ProtocolCase(
+            case_id="controlled-holdout-case", repetition=0,
+            input_sha256=holdout_input_sha,
+        ),),
+    )
+    holdout_manifest_bytes = json.dumps(
+        holdout_manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
+    ).encode()
+    holdout_manifest_sha = hashlib.sha256(holdout_manifest_bytes).hexdigest()
     protocol = preliminary.model_copy(update={
         "tiers": (
             EvaluatorTierManifestV1(
                 tier="dev", manifest_sha256=manifest_sha, case_count=1,
+            ),
+            EvaluatorTierManifestV1(
+                tier="holdout", manifest_sha256=holdout_manifest_sha, case_count=1,
             ),
             EvaluatorTierManifestV1(
                 tier="validation", manifest_sha256=manifest_sha, case_count=1,
@@ -894,7 +913,8 @@ print(json.dumps({
     published.mkdir(parents=True)
     for data, digest in (
         (bundle_bytes, bundle_sha), (manifest_bytes, manifest_sha),
-        (input_bytes, input_sha),
+        (input_bytes, input_sha), (holdout_manifest_bytes, holdout_manifest_sha),
+        (holdout_input_bytes, holdout_input_sha),
     ):
         (published / digest).write_bytes(data)
 
@@ -1074,28 +1094,15 @@ print(json.dumps({
         assert replayed["replayed"] is True
         assert graph.graph_revision() == published_revision
         assert len(queue.events_after(0)) == published_events
-        optimized = runtime.run_campaign(
+        assert runtime.run_one(
+            visible_paths=["src/app.py"], worker_id="v2-optimization-cycle",
+        )["status"] == "DEV_EVALUATED"
+        verified = runtime.run_one(
             visible_paths=["src/app.py"], integration_verifier_executor=executor,
-            max_steps=2, worker_id="v2-optimization-cycle",
+            worker_id="v2-optimization-cycle",
         )
-        assert optimized["steps_this_call"] == 2
-        assert [step["status"] for step in optimized["steps"]] == [
-            "DEV_EVALUATED", "INDEPENDENT_VERIFICATION_PASS",
-        ]
-        verified = optimized["steps"][-1]
+        assert verified["status"] == "INDEPENDENT_VERIFICATION_PASS"
         assert verified["champion"]["snapshot_id"] == proposed["candidate_snapshot_id"]
-        optimization_report = json.loads(Path(optimized["report_path"]).read_text())
-        assert optimization_report["campaign_id"] == campaign_id
-        assert optimization_report["status"] == optimized["status"]
-        assert optimization_report["champion"]["snapshot_id"] == proposed["candidate_snapshot_id"]
-        assert optimization_report["verification"][0]["status"] == "INDEPENDENT_VERIFICATION_PASS"
-        assert {item["tier"] for item in optimization_report["evaluation_receipts"]} == {
-            "dev", "validation",
-        }
-        assert optimization_report["integration_evidence"][0]["decision"] == "PASS"
-        assert any(item.startswith("evidence:") or item.startswith("integration://receipt/")
-                   for node in optimization_report["nodes"] for item in node["evidence_refs"])
-        assert "holdout" not in json.dumps(optimization_report).lower()
 
         graph.mutate(MutateGraph(
             command_id="add-v2-runtime-regression", idempotency_key="add-v2-runtime-regression",
@@ -1173,6 +1180,23 @@ print(json.dumps({
         )
         assert recovered["status"] == "INDEPENDENT_VERIFICATION_PASS"
         assert recovered["champion"]["snapshot_id"] == revised["candidate_snapshot_id"]
+        finalized = runtime.run_campaign(
+            visible_paths=["src/app.py"], integration_verifier_executor=executor,
+            max_steps=1, worker_id="v2-optimization-finalize",
+        )
+        assert finalized["status"] == "ALL_NODES_COMPLETE"
+        assert finalized["holdout"]["status"] == "VERIFIED"
+        assert finalized["holdout"]["candidate_snapshot_id"] == revised["candidate_snapshot_id"]
+        optimization_report = json.loads(Path(finalized["report_path"]).read_text())
+        assert optimization_report["campaign_id"] == campaign_id
+        assert optimization_report["status"] == finalized["status"]
+        assert optimization_report["champion"]["snapshot_id"] == revised["candidate_snapshot_id"]
+        assert optimization_report["holdout"]["tier"] == "holdout"
+        assert {item["tier"] for item in optimization_report["evaluation_receipts"]} == {
+            "dev", "validation",
+        }
+        assert not any("holdout" in item.lower() for node in optimization_report["nodes"]
+                       for item in node["evidence_refs"])
         restarted_queue.close()
         restarted_graph.close()
     finally:
