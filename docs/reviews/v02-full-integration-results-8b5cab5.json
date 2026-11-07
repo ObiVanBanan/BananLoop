@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "campaign": "BananLoop v0.2 Full integration verification",
+  "verified_source_revision": "8b5cab50bbd3a917ed7fe99e221c59a5dc782d5b",
+  "pr": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "offline_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest -p isolate_home -o addopts='' -q -ra --tb=short",
+    "result": "passed",
+    "passed": 954,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "subtests_passed": 7,
+    "duration_seconds": 64.34,
+    "skips": [
+      "Pinned selector source commit cd753c97c62148c3ccd3f030251e96a4d19b23bd is unavailable",
+      "Windows ACL/reparse-point contract is deferred with Windows"
+    ]
+  },
+  "cli_campaign_smoke": {
+    "result": "passed",
+    "model_calls": 0,
+    "live_model_called": false,
+    "invocations": 2,
+    "both_status": "READY_FOR_OWNER_APPROVAL",
+    "campaign_id": "c-cfed02142d013322e83d0dc37ffee103",
+    "spec_hash": "ae435df1dde255318c35176eb7b20abcc9d3e2623bd104f59c927e3a24957375",
+    "idempotent_resume": true
+  },
+  "live_titanic": {
+    "holdout_correct": 153,
+    "holdout_total": 196,
+    "holdout_accuracy": 0.7806122448979592,
+    "target_accuracy": 0.95,
+    "target_met": false,
+    "new_calls": 0
+  },
+  "ci": {
+    "revision": "8b5cab50bbd3a917ed7fe99e221c59a5dc782d5b",
+    "status_at_report_creation": "queued_or_in_progress"
+  },
+  "goal_status": "active; Windows and remaining failure/recovery acceptance criteria remain open"
+}
