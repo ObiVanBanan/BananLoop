@@ -1,0 +1,73 @@
+{
+  "tested_runtime_commit": "c288f8bd205f3248aaacb4ee1aab7c0c6bc33641",
+  "tree": "7bd8b1a9e8a04baec51c7bf31a387d9eeb3fc108",
+  "branch": "codex/v02-full-integration",
+  "pull_request": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "full_acceptance": false,
+  "local_linux_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. /tmp/bananloop-check/bin/python -m pytest -p isolate_home -q -ra --tb=no",
+    "collected": 914,
+    "passed": 912,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "exit_code": 0,
+    "skip_reasons": [
+      "pinned selector source commit cd753c97c62148c3ccd3f030251e96a4d19b23bd unavailable",
+      "Windows ACL/reparse-point contract on Linux"
+    ],
+    "host_capabilities": ["loopback sockets", "Linux bubblewrap namespaces"]
+  },
+  "holdout_finalization": {
+    "trigger": "scheduler reason ALL_NODES_COMPLETE only",
+    "target": "durable campaign champion",
+    "evaluator": "trusted frozen protocol and tier manifest",
+    "repeatability_and_budget_receipts": true,
+    "durable_restart_replay": "deterministic job IDs reuse completed work; indeterminate jobs fail closed",
+    "owner_report": "aggregate metric, unit, sample count, tier manifest digest, receipt digest",
+    "case_level_or_raw_output_exposed": false,
+    "graph_or_agent_context_exposure": false,
+    "post_holdout_runtime_work_rejected": true,
+    "test": "tests/test_rpdi13_integrated_acceptance.py"
+  },
+  "bounded_live_chatgpt_memory_campaign": {
+    "campaign_id": "c-7f977d8bed30e14d2b5b061a723b296a",
+    "attempt_id": "a-00f7f6671225498b354609b8",
+    "model": "gpt-6-luna",
+    "provider": "existing Sign in with ChatGPT connection",
+    "synthetic_public_fixture_only": true,
+    "calls": 2,
+    "request_ids": [
+      "resp_03cc64d716a82c38016aeee9e78cd487d290b1c45404de1ad2",
+      "resp_0d48e83dfcddb021016aeee9f97ac087d29ef83da1ae9efad1"
+    ],
+    "call_tokens": [1895, 2269],
+    "total_tokens": 4164,
+    "spend_usd": "UNKNOWN",
+    "automatic_retries": 0,
+    "campaign_status": "ITERATION_LIMIT",
+    "completed_exploration_nodes": 2,
+    "first_finding_claim": "synthetic_readme_scope",
+    "first_finding_evidence_id": "f90e49ce7a025ebb86d3419f1df2e740f4f7bf0fae0cfd888b530bd2994ec443",
+    "second_turn_received_prior_memory": true,
+    "second_turn_candidate_cited_prior_evidence": true,
+    "core_selection_method": "CORE_PUBLIC_DEV_EVIDENCE_COVERAGE",
+    "experiment_executed": false,
+    "experiment_execution_limit": "The synthetic README contains no executable test definitions or configurations.",
+    "sqlite_provider_call_events": 2,
+    "report_path": "/tmp/bananloop-v2-live-memory-guard-20261107/state/campaigns/c-7f977d8bed30e14d2b5b061a723b296a/reports/v2-owner-run-a-00f7f6671225498b354609b8.json"
+  },
+  "reproduction": {
+    "full_linux": "PYTHONPATH=tests/plugins:tests:src:. python -m pytest -p isolate_home -q -ra --tb=no",
+    "integrated_acceptance": "PYTHONPATH=tests/plugins:tests:src:. python -m pytest -p isolate_home -q tests/test_rpdi13_integrated_acceptance.py"
+  },
+  "remaining_limits": [
+    "live ChatGPT test validates multi-turn Exploration memory handoff, but not live Optimization or experiment execution",
+    "subscription usage and monetary cost are unavailable from provider transport; cost is UNKNOWN",
+    "evidence ranking does not establish scientific truth or semantic relevance",
+    "pinned selector source commit unavailable in environment",
+    "Windows ACL/reparse behavior deferred and skipped on Linux",
+    "hosted CI for this commit pending at report creation"
+  ],
+  "pull_request_state": "open_draft_unmerged"
+}
