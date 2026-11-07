@@ -337,7 +337,8 @@ class V2ResearchRuntime:
     """Connect v2 scheduling, pinned roles, queue, gateway, and public ledger."""
 
     def __init__(self, *, graph: GraphRepository, queue: DurableWorkerQueue,
-                 campaign_id: str, state_root: str | Path, role_registry: RoleRegistryV1):
+                 campaign_id: str, state_root: str | Path, role_registry: RoleRegistryV1,
+                 trusted_artifact_digests: tuple[str, ...] = ()):
         self.graph = graph
         self.queue = queue
         self.campaign_id = campaign_id
@@ -347,6 +348,7 @@ class V2ResearchRuntime:
         self.adapter = EvidenceOnlyAttemptAdapter(
             graph=graph, queue=queue, campaign_id=campaign_id,
             state_root=state_root, role_registry=role_registry,
+            trusted_artifact_digests=trusted_artifact_digests,
         )
 
     def plan(self):

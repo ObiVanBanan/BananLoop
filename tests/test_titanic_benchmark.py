@@ -166,18 +166,24 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
         parse_campaign_spec_document,
     )
     from bananloop.evaluator_verification import (
-        EvaluatorProtocolAuthority, MetricDiscoveryProposalV1, _digest,
+        EvaluatorProtocolAuthority, EvaluatorProtocolDraftV1,
+        EvaluatorVerificationAdapter, ProtocolVerifierOutputV1,
     )
     from bananloop.graph_store import AddNode, GraphRepository, MutateGraph
     from bananloop.migrations import create_v5_graph_schema
     from bananloop.optimization_lifecycle import OptimizationAttemptCoordinator
-    from bananloop.roles import RoleDefinitionV1, RoleRegistryV1
+    from bananloop.roles import (
+        PinnedRoleExecutorV1, RoleDefinitionV1, RoleRegistryV1, TeamManifestAuthority,
+    )
     from bananloop.registry import CampaignRegistry
     from bananloop.trusted_evaluator import TrustedEvaluatorRunner
     from bananloop.v2_optimization_runtime import V2OptimizationRuntime
     from bananloop.worker_queue import DurableWorkerQueue
 
-    from test_evaluator_verification import _receipt, build_full_optimization_runtime
+    from bananloop.v2_research_runtime import V2ResearchRuntime, make_researcher_invoke
+
+    from test_evaluator_verification import build_full_optimization_runtime
+    from test_v2_pivot_saga import _campaign_db
 
     live_mode = os.environ.get("BANANLOOP_TITANIC_LIVE") == "1"
     state_root = tmp_path / "campaign-state"
@@ -232,7 +238,8 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
         (published / dev_ref.manifest_sha256).read_bytes(),
     )
 
-    parent_entry, parent_state, created = CampaignRegistry(source_repo).reserve(
+    registry = CampaignRegistry(source_repo)
+    parent_entry, parent_state, created = registry.reserve(
         "Freeze a leakage-aware Titanic survival evaluator",
         request_id="titanic-parent-e2e", activate=False,
     )
@@ -243,6 +250,32 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
         registry_id="titanic-v2-e2e", version=1,
         roles=(
             RoleDefinitionV1(
+                role_id="researcher", adapter="codex", provider="openai",
+                model="gpt-6-luna", model_version="titanic-protocol-e2e-v1",
+                prompt_digest="9" * 64,
+                capability_policy=CapabilityPolicyV2(
+                    tools=("read_file", "list_files", "write_artifact", "commit_candidate"),
+                    read_paths=("data/**",), write_paths=("**",),
+                    backend="LOCAL", network_access=False,
+                ),
+                context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
+                                "evidence_refs", "budget_remaining"),
+                min_instances=1, max_instances=1, calls_per_instance=2,
+                tokens_per_instance=200,
+            ),
+            RoleDefinitionV1(
+                role_id="independent_verifier", adapter="codex", provider="openai",
+                model="gpt-6-luna", model_version="titanic-protocol-e2e-v1",
+                prompt_digest="8" * 64,
+                capability_policy=CapabilityPolicyV2(
+                    tools=(), read_paths=(), write_paths=(), backend="ISOLATED",
+                    network_access=False,
+                ),
+                context_fields=("campaign_goal", "public_task"),
+                min_instances=1, max_instances=1, calls_per_instance=2,
+                tokens_per_instance=200,
+            ),
+            RoleDefinitionV1(
                 role_id="integration_verifier", adapter="codex", provider="openai",
                 model="gpt-6-luna", model_version="titanic-e2e-v1",
                 prompt_digest="a" * 64,
@@ -251,8 +284,8 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                     network_access=False,
                 ),
                 context_fields=("campaign_goal", "public_task"),
-                min_instances=1, max_instances=1, calls_per_instance=5,
-                tokens_per_instance=500,
+                min_instances=1, max_instances=1, calls_per_instance=3,
+                tokens_per_instance=300,
             ),
             RoleDefinitionV1(
                 role_id="optimizer", adapter="codex", provider="openai",
@@ -265,8 +298,8 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                 ),
                 context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
                                 "constraints", "evidence_refs", "dev_summary"),
-                min_instances=1, max_instances=1, calls_per_instance=5,
-                tokens_per_instance=500,
+                min_instances=1, max_instances=1, calls_per_instance=3,
+                tokens_per_instance=300,
             ),
         ),
     )
@@ -277,8 +310,9 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
         "autonomy": {
             "mode": "SUPERVISED", "scope_digest": "c" * 64, "scope_version": 1,
             "capability_policy": {
-                "tools": [], "read_paths": [], "write_paths": [],
-                "backend": "ISOLATED", "network_access": False,
+                "tools": ["read_file", "list_files", "write_artifact", "commit_candidate"],
+                "read_paths": ["data/**"], "write_paths": ["**"],
+                "backend": "LOCAL", "network_access": False,
             },
         },
         "budget": {
@@ -289,20 +323,148 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
         "role_registry_digest": roles.digest(), "evaluation": None,
     })
 
-    proposal_payload = {
-        "schema_version": 1, "campaign_id": parent_campaign_id,
-        "spec_hash": parent_spec.approved_hash(), "source_snapshot_id": source_snapshot,
-        "source_node_id": "titanic-protocol-discovery", "source_job_id": "research-job-titanic",
-        "source_fence": 1, "source_request_hash": "d" * 64,
-        "source_output_digest": "e" * 64, "source_event_cursor": 1,
-        "proposer_role_id": "researcher", "proposer_role_instance_id": "agent-" + "2" * 24,
-        "proposer_binding_digest": "f" * 64, "protocol": protocol.model_dump(mode="json"),
-        "evidence_refs": (f"artifact://sha256/{protocol.evaluator_bundle_sha256}",),
-    }
-    protocol_proposal = MetricDiscoveryProposalV1(
-        proposal_digest=_digest(proposal_payload), **proposal_payload,
+    _campaign_db(parent_state / "campaign.sqlite3", parent_spec)
+    parent_budget = BudgetLedger(registry.path)
+    parent_budget.create_root(parent_campaign_id, {
+        "agent_calls": 20, "evaluator_calls": 30, "experiments": 8, "attempts": 16,
+    })
+    parent_budget.close()
+    parent_graph = GraphRepository.open(
+        str(parent_state / "campaign.sqlite3"), campaign_id=parent_campaign_id,
     )
-    protocol_approval = _receipt(protocol_proposal)
+    parent_queue = registry.worker_queue()
+    parent_handoff = None
+    try:
+        parent_graph.mutate(MutateGraph(
+            command_id="add-titanic-protocol-discovery",
+            idempotency_key="add-titanic-protocol-discovery",
+            expected_graph_revision=parent_graph.graph_revision(),
+            changes=(AddNode(
+                type="AddNode", node_id="titanic-protocol-discovery", phase="EXPLORATION",
+                payload={"source_snapshot_id": source_snapshot},
+            ),),
+        ))
+        protocol_evidence_refs = (f"artifact://sha256/{protocol.evaluator_bundle_sha256}",)
+        protected_input_digests = {
+            case.input_sha256
+            for tier in protocol.tiers if tier.tier in {"validation", "holdout"}
+            for case in ProtocolManifest.model_validate_json(
+                (published / tier.manifest_sha256).read_bytes(),
+            ).cases
+        }
+
+        def protocol_researcher(public_input, **_pinned):
+            assert set(public_input["visible_documents"]) == {"data/train.csv"}
+            encoded_public_input = json.dumps(public_input)
+            assert all(digest not in encoded_public_input for digest in protected_input_digests)
+            return {
+                "next_experiment": "review the frozen Titanic metric contract",
+                "artifact_text": {
+                    "research/protocol-rationale.txt": (
+                        "Use the frozen source, grouped split, bounded features, and accuracy metric."
+                    ),
+                },
+                "limitations": ("protocol assets were frozen by trusted Core before research dispatch",),
+                "research_findings": ({
+                    "claim_key": "benchmark:protocol-integrity",
+                    "statement": "The public campaign context is sufficient to name the frozen accuracy contract.",
+                    "stance": "UNCERTAIN", "kind": "OBSERVATION", "confidence": 0.1,
+                },),
+                "protocol_draft": EvaluatorProtocolDraftV1(
+                    protocol=protocol, evidence_refs=protocol_evidence_refs,
+                ).model_dump(mode="json"),
+            }
+
+        research = V2ResearchRuntime(
+            graph=parent_graph, queue=parent_queue, campaign_id=parent_campaign_id,
+            state_root=state_root, role_registry=roles,
+            trusted_artifact_digests=tuple(frozen["asset_digests"]),
+        ).run_campaign(
+            visible_paths=["data/train.csv"],
+            invoke=make_researcher_invoke(protocol_researcher), max_iterations=1,
+            worker_id="titanic-protocol-researcher",
+        )
+        assert research["iterations_this_call"] == 1
+        protocol_job_id = research["completed"][0]["job_id"]
+        protocol_job_result = parent_queue.get_result(protocol_job_id)["result"]
+        assert set(protocol_job_result["core_artifact_digests"]) == set(frozen["asset_digests"])
+        source_completion = next(
+            json.loads(row["payload_json"])
+            for row in parent_graph.conn.execute(
+                "SELECT payload_json FROM events WHERE event_type='EXPLORATION_COMPLETED'"
+            )
+            if json.loads(row["payload_json"]).get("job_id") == protocol_job_id
+        )
+        assert set(source_completion["artifact_digests"]) >= set(frozen["asset_digests"])
+        assert not (
+            set(source_completion["evidence_refs"])
+            & {f"artifact://sha256/{digest}" for digest in protected_input_digests}
+        )
+        authority = EvaluatorProtocolAuthority(parent_graph.conn)
+        protocol_proposal = authority.record_completed_proposal(
+            parent_graph, parent_queue, protocol_job_id,
+        )
+        assert protocol_proposal.source_job_id == protocol_job_id
+        assert protocol_proposal.proposer_role_id == "researcher"
+        verification = EvaluatorVerificationAdapter(
+            graph=parent_graph, queue=parent_queue,
+            campaign_id=parent_campaign_id, published_artifact_root=published,
+        )
+        verifier_job = verification.enqueue_verifier(protocol_proposal.proposal_digest)
+        public_review = verifier_job["request"]["role_context"]["public_task"]
+        holdout_ref = next(tier for tier in protocol.tiers if tier.tier == "holdout")
+        holdout_manifest = ProtocolManifest.model_validate_json(
+            (published / holdout_ref.manifest_sha256).read_bytes(),
+        )
+        private_input_digest = holdout_manifest.cases[0].input_sha256
+        assert "titanic-holdout-" not in public_review
+        assert private_input_digest not in public_review
+        assert "separate final holdout case" not in public_review
+        team_authority = TeamManifestAuthority(parent_queue.path)
+        try:
+            pinned_team = team_authority.load(
+                parent_campaign_id, spec_hash=parent_spec.approved_hash(),
+                registry_digest=roles.digest(),
+            )
+        finally:
+            team_authority.close()
+        verifier_instance_id = verifier_job["request"]["role_binding"]["role_instance_id"]
+        verifier_member = pinned_team.member(verifier_instance_id)
+        assert verifier_member.role.role_id == "independent_verifier"
+
+        def verify_titanic_protocol(request, _gateway, **_pinned):
+            return ProtocolVerifierOutputV1(
+                proposal_digest=request["proposal_digest"], decision="APPROVE",
+                checks=(
+                    "protocol_identity", "evaluator_bundle_review", "metric_contract",
+                    "tier_manifests", "frozen_case_scope", "no_hidden_data_dependency",
+                    "fair_comparison", "error_semantics",
+                ),
+                rationale="Pinned verifier reviewed the frozen public evaluator source and tier contract.",
+            ).model_dump(mode="json")
+
+        verifier_executor = PinnedRoleExecutorV1.from_manifest(
+            pinned_team, verifier_instance_id, verify_titanic_protocol,
+        )
+        protocol_approval = verification.run_verifier_one(
+            verifier_job_id=verifier_job["job_id"],
+            worker_id="titanic-protocol-verifier", executor=verifier_executor,
+        )
+        assert protocol_approval.decision == "APPROVE"
+        assert protocol_approval.verifier_role_instance_id != protocol_proposal.proposer_role_instance_id
+        parent_handoff = authority.prepare_child_handoff(
+            parent_campaign_id=parent_campaign_id,
+            parent_spec_hash=parent_spec.approved_hash(),
+            allocation_id="alloc-titanic-e2e",
+            protocol_id=protocol.protocol_id, version=protocol.version,
+            protocol_digest=protocol.content_digest(),
+            approval_digest=protocol_approval.approval_digest,
+            published_artifact_root=published,
+        )
+    finally:
+        parent_queue.close()
+        parent_graph.close()
+    assert parent_handoff is not None
 
     db_path = state_root / "campaign.sqlite3"
     ledger = BudgetLedger(db_path)
@@ -331,17 +493,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
     queue = None
     try:
         authority = EvaluatorProtocolAuthority(conn)
-        authority._append_proposal(protocol_proposal)
-        authority._append_verified_receipt(protocol_approval)
-        handoff = authority.prepare_child_handoff(
-            parent_campaign_id=parent_campaign_id,
-            parent_spec_hash=parent_spec.approved_hash(),
-            allocation_id="alloc-titanic-e2e",
-            protocol_id=protocol.protocol_id, version=protocol.version,
-            protocol_digest=protocol.content_digest(),
-            approval_digest=protocol_approval.approval_digest,
-            published_artifact_root=published,
-        )
+        handoff = parent_handoff
 
         scope = AutonomyScopeV2(
             version=1, allowed_paths=("data", "src"),

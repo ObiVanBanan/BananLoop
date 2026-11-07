@@ -53,6 +53,7 @@ class EvidenceOnlyOutputV2(BaseModel):
     node_id: str = Field(min_length=1, max_length=200)
     evidence_refs: tuple[str, ...] = ()
     artifacts: tuple[ArtifactDigestV2, ...] = ()
+    core_artifact_digests: tuple[str, ...] = Field(default=(), max_length=4096)
     limitations: tuple[str, ...] = ()
     next_experiment: str = Field(min_length=1, max_length=4000)
     research_findings: tuple[ResearchFindingV1, ...] = Field(default=(), max_length=64)
@@ -65,6 +66,14 @@ class EvidenceOnlyOutputV2(BaseModel):
         if any(not x.strip() or len(x) > 2000 for x in values):
             raise ValueError("evidence text items must be nonempty and bounded")
         return tuple(sorted(set(values)))
+
+    @field_validator("core_artifact_digests")
+    @classmethod
+    def valid_core_artifact_digests(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if (len(set(values)) != len(values)
+                or any(not re.fullmatch(r"[0-9a-f]{64}", item) for item in values)):
+            raise ValueError("Core artifact bindings must be unique SHA-256 digests")
+        return tuple(sorted(values))
 
     @model_validator(mode="after")
     def unique_artifact_paths(self) -> "EvidenceOnlyOutputV2":
@@ -131,13 +140,20 @@ class EvidenceOnlyAttemptAdapter:
     """Build, execute, verify and replay an isolated exploration attempt."""
 
     def __init__(self, *, graph: GraphRepository, queue: DurableWorkerQueue,
-                 campaign_id: str, state_root: str | Path, role_registry: RoleRegistryV1):
+                 campaign_id: str, state_root: str | Path, role_registry: RoleRegistryV1,
+                 trusted_artifact_digests: tuple[str, ...] = ()):
         self.graph = graph
         self.queue = queue
         self.campaign_id = campaign_id
         self.graph.bind_campaign_id(campaign_id)
         self.state_root = Path(state_root).resolve()
         self.role_registry = role_registry
+        if (len(trusted_artifact_digests) > 4096
+                or any(not isinstance(item, str) or not re.fullmatch(r"[0-9a-f]{64}", item)
+                       for item in trusted_artifact_digests)
+                or len(set(trusted_artifact_digests)) != len(trusted_artifact_digests)):
+            raise EvidenceAdapterError("trusted artifact allowlist must contain unique SHA-256 digests")
+        self.trusted_artifact_digests = tuple(sorted(trusted_artifact_digests))
 
     def enqueue(self, *, node_id: str, visible_paths: tuple[str, ...] | list[str]) -> dict[str, Any]:
         spec = self.graph.campaign_spec()
@@ -471,6 +487,11 @@ class EvidenceOnlyAttemptAdapter:
             finally:
                 authority.close()
             output = EvidenceOnlyOutputV2.model_validate(raw)
+            if output.core_artifact_digests:
+                raise EvidenceAdapterError("worker output cannot declare Core-trusted artifact digests")
+            output = output.model_copy(update={
+                "core_artifact_digests": self.trusted_artifact_digests,
+            })
             if output.node_id != lease["request"]["node_id"]:
                 raise EvidenceAdapterError("worker output targets a different graph node")
             declared = {item.path: item.sha256 for item in output.artifacts}
@@ -512,6 +533,8 @@ class EvidenceOnlyAttemptAdapter:
         if job["state"] != "COMPLETED" or durable["result"] is None:
             raise EvidenceAdapterError("job has no durable evidence result")
         result = EvidenceOnlyOutputV2.model_validate(durable["result"])
+        if result.core_artifact_digests != self.trusted_artifact_digests:
+            raise EvidenceAdapterError("durable Core-trusted artifact binding differs from runtime configuration")
         # Hash the exact durable worker payload. Re-serializing through the
         # current model would add fields introduced after an older job was
         # committed and break crash-safe replay across schema additions.
@@ -556,7 +579,7 @@ class EvidenceOnlyAttemptAdapter:
             raise EvidenceAdapterError("job artifact directory is missing or escaped its state root")
         published_root = _ensure_state_dir(self.state_root, "rpdi05", "published")
         artifact_refs: list[str] = []
-        artifact_digests: list[str] = []
+        artifact_digests: list[str] = list(result.core_artifact_digests)
         aggregate_size = 0
         for item in result.artifacts:
             relative = _safe_relative(item.path)
@@ -593,6 +616,14 @@ class EvidenceOnlyAttemptAdapter:
                         temporary.unlink()
             artifact_digests.append(digest)
             artifact_refs.append(f"artifact://sha256/{digest}")
+        for digest in self.trusted_artifact_digests:
+            if digest not in result.core_artifact_digests:
+                raise EvidenceAdapterError("durable result lost its Core-trusted artifact binding")
+            trusted_file = published_root / digest
+            if (trusted_file.is_symlink() or not trusted_file.is_file()
+                    or _sha(trusted_file.read_bytes()) != digest):
+                raise EvidenceAdapterError("Core-trusted published artifact failed digest verification")
+            artifact_digests.append(digest)
         payload = {
             "command_id": f"complete-{job_id}-f{durable['fence']}",
             "idempotency_key": f"completion:{job_id}:f{durable['fence']}",
@@ -602,7 +633,7 @@ class EvidenceOnlyAttemptAdapter:
             "source_request_hash": job["request_hash"], "output_digest": durable["output_digest"],
             "spec_hash": request["spec_hash"],
             "evidence_refs": tuple(sorted((*result.evidence_refs, *artifact_refs))),
-            "artifact_digests": tuple(sorted(artifact_digests)), "limitations": result.limitations,
+            "artifact_digests": tuple(sorted(set(artifact_digests))), "limitations": result.limitations,
             "next_experiment": result.next_experiment,
             "human_decision_request": result.human_decision_request,
         }
