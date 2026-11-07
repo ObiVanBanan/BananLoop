@@ -1,0 +1,156 @@
+{
+  "campaign_status": "ALL_NODES_COMPLETE",
+  "holdout_metric": {
+    "direction": "MAXIMIZE",
+    "metric_field": "accuracy",
+    "metric_id": "accuracy",
+    "n": null,
+    "unit": null,
+    "value": 0.7806122448979592
+  },
+  "provider_request_receipts": [
+    {
+      "dispatched": true,
+      "request_id": "resp_03919cb951eec047016aef443035ec87d28562ebaa13404a1b",
+      "status": "COMPLETED",
+      "usage": {
+        "attribution": {
+          "items": {
+            "msg_03919cb951eec047016aef4430373087d29497e8e118c0cadd": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0,
+              "content": [
+                {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0,
+                  "input_tokens": 13612,
+                  "output_tokens": 0
+                }
+              ],
+              "input_tokens": 13612,
+              "output_tokens": 0
+            },
+            "msg_03919cb951eec047016aef4430373087d2bc2719d1a0b5daf6": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0,
+              "content": [
+                {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0,
+                  "input_tokens": 108,
+                  "output_tokens": 0
+                }
+              ],
+              "input_tokens": 108,
+              "output_tokens": 0
+            },
+            "msg_03919cb951eec047016aef4433c8d887d2a420c93c70f5669c": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0,
+              "content": [
+                {
+                  "cache_write_tokens": 0,
+                  "cached_tokens": 0,
+                  "input_tokens": 0,
+                  "output_tokens": 185
+                }
+              ],
+              "input_tokens": 0,
+              "output_tokens": 185
+            },
+            "rs_03919cb951eec047016aef4433b1dc87d29852e7f8279c04c4": {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0,
+              "input_tokens": 2,
+              "output_tokens": 152
+            }
+          }
+        },
+        "input_tokens": 13722,
+        "input_tokens_details": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0
+        },
+        "output_tokens": 337,
+        "output_tokens_details": {
+          "reasoning_tokens": 152
+        },
+        "total_tokens": 14059
+      }
+    }
+  ],
+  "provider_response": {
+    "changes": {
+      "src/model.json": "{\"coefficients\":{\"age_years\":0.0,\"embarked_C\":0.0,\"embarked_Q\":0.0,\"embarked_S\":0.0,\"fare_log1p\":0.0,\"male_pclass1_child\":1.0,\"parch\":0.0,\"pclass_1\":0.0,\"pclass_2\":0.0,\"pclass_3\":0.0,\"sex_female\":1.0,\"sibsp\":0.0},\"intercept\":-0.5,\"schema\":\"titanic-linear-v1\"}\n"
+    },
+    "hypothesis_id": "titanic-child-interaction",
+    "rationale": "Give the existing male_pclass1_child interaction a bounded positive weight so it can offset the male baseline for eligible young first-class passengers, without changing other model coefficients."
+  },
+  "provider_usage": {
+    "attribution": {
+      "items": {
+        "msg_03919cb951eec047016aef4430373087d29497e8e118c0cadd": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "content": [
+            {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0,
+              "input_tokens": 13612,
+              "output_tokens": 0
+            }
+          ],
+          "input_tokens": 13612,
+          "output_tokens": 0
+        },
+        "msg_03919cb951eec047016aef4430373087d2bc2719d1a0b5daf6": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "content": [
+            {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0,
+              "input_tokens": 108,
+              "output_tokens": 0
+            }
+          ],
+          "input_tokens": 108,
+          "output_tokens": 0
+        },
+        "msg_03919cb951eec047016aef4433c8d887d2a420c93c70f5669c": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "content": [
+            {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0,
+              "input_tokens": 0,
+              "output_tokens": 185
+            }
+          ],
+          "input_tokens": 0,
+          "output_tokens": 185
+        },
+        "rs_03919cb951eec047016aef4433b1dc87d29852e7f8279c04c4": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "input_tokens": 2,
+          "output_tokens": 152
+        }
+      }
+    },
+    "input_tokens": 13722,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 337,
+    "output_tokens_details": {
+      "reasoning_tokens": 152
+    },
+    "total_tokens": 14059
+  },
+  "retry_policy": "one optimizer inference maximum; no automatic retry",
+  "schema": "bananloop-titanic-live-smoke-v1",
+  "status": "COMPLETED"
+}

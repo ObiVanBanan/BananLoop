@@ -1,0 +1,41 @@
+{
+  "runtime_code_commit": "7f273b7a1aadca64881f96dc487481581c56f279",
+  "branch": "codex/v02-full-integration",
+  "base_main": "6c89975870b0da8060146953faea966e203ba857",
+  "suite": {
+    "command": "PYTHONPATH=tests/plugins python -m pytest -p isolate_home -q -ra --tb=no",
+    "collected": 933,
+    "passed": 931,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "skips": [
+      "pinned selector source commit unavailable",
+      "Windows ACL/reparse-point contract on non-Windows host"
+    ],
+    "host_permissions": "loopback and Linux namespace access enabled"
+  },
+  "offline_smoke": {
+    "command": "python examples/v2_research_diagnostic/run_offline.py --work-dir /tmp/bananloop-v2-offline-acceptance-7f273b7",
+    "revision": "7f273b7a1aadca64881f96dc487481581c56f279",
+    "status": "OFFLINE_V2_EXPLORATION_PASS",
+    "iterations": 2,
+    "public_memory_received_on_second_turn": true,
+    "live_model_called": false,
+    "worktree_clean_during_run": true
+  },
+  "core_candidate_ranking": {
+    "method": "distinct prior public evidence references for exact target claim",
+    "model_preference_overridden_in_e2e": true,
+    "truth_or_semantic_relevance_independently_verified": false
+  },
+  "semantic_convergence": {
+    "method": "conservative controlled-variable synonym map",
+    "opposite_directions_distinguished": true,
+    "general_semantic_inference": false
+  },
+  "windows_acl_repair_commit": "b8e9de82e444fb292c1b4349d63a2da62e00b397",
+  "windows_ci": "in progress on earlier head f0ebc4fdf25be476efc8a72d531fdc40150de18d",
+  "live_smoke": "not run; owner confirmation required",
+  "full_acceptance": false
+}

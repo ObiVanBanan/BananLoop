@@ -103,7 +103,7 @@ def test_hybrid_scheduler_runs_simultaneous_nodes_in_distinct_phases():
         routes = {item.node_id: (item.phase, item.lane, item.resource) for item in plan.candidates}
         assert routes == {
             "explore": ("EXPLORATION", "EVIDENCE_WORKER", "agent_calls"),
-            "optimize": ("OPTIMIZATION", "LEGACY_ENGINE_ADAPTER", "experiments"),
+            "optimize": ("OPTIMIZATION", "OPTIMIZATION_WORKER", "experiments"),
             "verify": ("VERIFICATION", "INDEPENDENT_VERIFIER", "evaluator_calls"),
         }
         assert plan.reason == "CONTINUE"

@@ -1119,11 +1119,20 @@ def _build_protocol_review_material(
                     "complete evaluator source exceeds the independent verifier source limit"
                 )
             source_files.append({"path": relative, "content": text})
-    entrypoint_path = next(
-        (token.replace("\\", "/") for token in protocol.entrypoint
-         if not token.startswith("-") and token.lower().endswith((".py", ".js", ".ts", ".mjs"))),
-        None,
-    )
+    entrypoint_path = None
+    for token in protocol.entrypoint:
+        if token.startswith("-") or not token.lower().endswith((".py", ".js", ".ts", ".mjs")):
+            continue
+        candidate = token.replace("\\", "/")
+        for prefix in ("{evaluator}/", "/workspace/evaluator/"):
+            if candidate.startswith(prefix):
+                candidate = candidate[len(prefix):]
+                break
+        relative = PurePosixPath(candidate)
+        if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+            continue
+        entrypoint_path = relative.as_posix()
+        break
     if entrypoint_path is None or not any(
             item["path"] == entrypoint_path or item["path"].endswith("/" + entrypoint_path)
             for item in source_files):

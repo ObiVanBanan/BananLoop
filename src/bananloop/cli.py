@@ -327,6 +327,55 @@ def cmd_campaigns_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_campaign_inspect(args: argparse.Namespace) -> int:
+    """Print safe, application-backed read models for one selected campaign."""
+    app = CampaignApplication(args.repo, campaign_id=args.campaign_id)
+    snapshot = app.snapshot()
+    campaign_id = snapshot["campaign_id"]
+    project = CampaignApplication(args.repo)
+    cursor = None
+    campaign_summary = None
+    for _ in range(1000):
+        page = project.list_campaigns(limit=100, cursor=cursor)
+        campaign_summary = next(
+            (item for item in page["campaigns"] if item["campaign_id"] == campaign_id), None,
+        )
+        if campaign_summary is not None or page["next_cursor"] is None:
+            break
+        cursor = page["next_cursor"]
+    if campaign_summary is None:
+        raise StoreError("campaign is not present in the safe project index")
+    result = {
+        "campaign_id": campaign_id,
+        "campaign": campaign_summary,
+        "snapshot": snapshot,
+        "observability": app.observability(),
+        "lifecycle": app.lifecycle_projection(),
+    }
+    if snapshot.get("schema_version") == 2:
+        result["graph"] = app.graph_snapshot()
+        result["research_scopes"] = app.research_scopes(limit=50)
+    else:
+        result["graph"] = None
+        result["research_scopes"] = {
+            "campaign_id": campaign_id, "scopes": [], "next_cursor": None,
+            "as_of": snapshot.get("as_of"), "source": "PERSISTED",
+        }
+    if args.json:
+        print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+    else:
+        print(f"campaign_id: {campaign_id}")
+        print(f"mode: {campaign_summary['mode'] or 'Unavailable'}")
+        print(f"profile: {campaign_summary['profile'] or 'Unavailable'}")
+        print(f"status: {snapshot.get('status', 'UNKNOWN')}")
+        if result["graph"] is not None:
+            print(f"graph_revision: {result['graph']['graph_revision']}")
+            print(f"research_scopes: {len(result['research_scopes']['scopes'])}")
+        print(f"scheduler: {result['observability']['scheduler']['reason'] or 'Unavailable'}")
+        print(f"lifecycle: {result['lifecycle']['source']}")
+    return 0
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     discovery = discover_project(repo)
@@ -541,6 +590,14 @@ def cmd_graph_mutate(args: argparse.Namespace) -> int:
     receipt = app.mutate_graph(document, args.idempotency_key)
     print(json.dumps(receipt, sort_keys=True))
     return 0
+
+
+def cmd_v2_explore(args: argparse.Namespace) -> int:
+    from .v2_campaign_cli import run_v2_explore
+
+    result = run_v2_explore(args)
+    print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
+    return 0 if result.get("status") not in {"BUDGET_EXHAUSTED", "STOP_REQUESTED", "RUN_FAILED"} else 2
 
 
 def _status_evaluation_summary(measurements: list[dict]) -> list[dict]:
@@ -1038,6 +1095,11 @@ def parser() -> argparse.ArgumentParser:
     list_cmd.add_argument("--repo", default=".")
     list_cmd.add_argument("--json", action="store_true")
     list_cmd.set_defaults(func=cmd_campaigns_list)
+    inspect_cmd = campaign_sub.add_parser("inspect", help="show safe persisted read models for one campaign")
+    inspect_cmd.add_argument("--repo", default=".")
+    inspect_cmd.add_argument("--campaign-id", required=True)
+    inspect_cmd.add_argument("--json", action="store_true")
+    inspect_cmd.set_defaults(func=cmd_campaign_inspect)
 
     graph = sub.add_parser("graph", help="inspect or mutate a v2 research graph")
     graph_sub = graph.add_subparsers(dest="graph_command", required=True)
@@ -1051,6 +1113,27 @@ def parser() -> argparse.ArgumentParser:
     graph_mutate.add_argument("--input", required=True, help="JSON file containing one canonical graph command")
     graph_mutate.add_argument("--idempotency-key", required=True)
     graph_mutate.set_defaults(func=cmd_graph_mutate)
+
+    v2 = sub.add_parser("v2", help="create and run a v2 Full campaign without the legacy Engine")
+    v2_sub = v2.add_subparsers(dest="v2_command", required=True)
+    v2_explore = v2_sub.add_parser(
+        "explore", help="create or resume a frozen v2 Exploration campaign through SIWC",
+    )
+    v2_explore.add_argument("--repo", default=".")
+    v2_explore.add_argument("--state-dir")
+    v2_explore.add_argument("--request-id", help="stable campaign identity used to resume this goal")
+    v2_explore.add_argument("--goal", required=True)
+    v2_explore.add_argument("--read-path", action="append", required=True,
+                            help="exact public source file path visible to the researcher; repeat as needed")
+    v2_explore.add_argument("--model", default="gpt-6-luna")
+    v2_explore.add_argument("--max-agent-calls", type=int, default=2)
+    v2_explore.add_argument("--max-model-tokens", type=int, default=2048,
+                            help="per-call ledger ceiling; SIWC may not enforce this provider-side")
+    v2_explore.add_argument("--max-iterations", type=int, default=2)
+    v2_explore.add_argument("--approve-up-to-calls", type=int, default=0,
+                            help="explicit consent to spend up to this many ChatGPT plan requests now")
+    v2_explore.add_argument("--timeout-seconds", type=int, default=120)
+    v2_explore.set_defaults(func=cmd_v2_explore)
 
     v2_pivot = sub.add_parser("v2-pivot", help="record a v2 pivot proposal or supervised operator decision")
     v2_pivot_sub = v2_pivot.add_subparsers(dest="v2_pivot_command", required=True)

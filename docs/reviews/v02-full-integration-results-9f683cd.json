@@ -1,0 +1,70 @@
+{
+  "runtime_code_commit": "9f683cd7da5b016612bcb59b42fcc0e7d5a2ab6b",
+  "branch": "codex/v02-full-integration",
+  "base_main": "6c89975870b0da8060146953faea966e203ba857",
+  "pull_request": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "full_acceptance": false,
+  "linux_ci": {
+    "workflow_run": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42354428626",
+    "head_sha": "9f683cd7da5b016612bcb59b42fcc0e7d5a2ab6b",
+    "python_3_11": {
+      "conclusion": "success",
+      "passed": 932,
+      "skipped": 5,
+      "subtests_passed": 7
+    },
+    "python_3_12": "success",
+    "python_3_13": "success",
+    "chromium": {
+      "conclusion": "success",
+      "workflow_run": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42354428523"
+    },
+    "mutation_policy": {
+      "conclusion": "success",
+      "workflow_run": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42354428590"
+    },
+    "skip_reasons": [
+      "host bubblewrap namespace restrictions",
+      "host loopback socket restrictions",
+      "unavailable pinned selector source commit",
+      "Windows ACL contract on Linux"
+    ]
+  },
+  "local_focused_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. /tmp/bananloop-check/bin/python -m pytest -p isolate_home -q tests/test_v2_research_runtime.py tests/test_exploration_adapter.py tests/test_research.py tests/test_graph_store.py",
+    "result": "passed",
+    "collected": 71
+  },
+  "human_in_loop_strategy_change": {
+    "test": "tests/test_v2_research_runtime.py::test_strategy_change_request_durably_pauses_until_owner_decision",
+    "result": "passed",
+    "request_id": "sha256 of canonical bounded proposal JSON",
+    "artifact": "research/strategy-change-request.json",
+    "artifact_written_via": "ToolGateway",
+    "durable_graph_evidence": true,
+    "campaign_paused": true,
+    "automatic_followup_suppressed": true,
+    "model_replayed_after_sqlite_restart": false
+  },
+  "live_smoke": {
+    "provider": "ChatGPT plan via existing Sign in with ChatGPT",
+    "model": "gpt-6-luna",
+    "calls": 2,
+    "separate_openai_api_used": false,
+    "automatic_retries": 0,
+    "total_tokens": 3336,
+    "spend_usd": "UNKNOWN",
+    "records": [
+      "docs/reviews/v02-live-smoke-first-invalid-ef428ae.json",
+      "docs/reviews/v02-live-smoke-second-complete-ef428ae.json"
+    ],
+    "full_live_campaign_proven": false
+  },
+  "remaining_limits": [
+    "trusted evidence-reference ranking does not prove scientific truth or semantic relevance",
+    "repeat detection uses bounded controlled-variable synonym matching",
+    "live smoke did not exercise a complete multi-iteration campaign or RPDI-14 accounting",
+    "Windows investigation deferred at owner direction"
+  ],
+  "pull_request_state": "open_draft_unmerged"
+}

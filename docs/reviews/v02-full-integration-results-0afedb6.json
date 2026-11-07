@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "tested_code_commit": "0afedb6473ea118b4e5522d7e93d64f82dc1bd10",
+  "branch": "codex/v02-full-integration",
+  "base_main_commit": "6c89975870b0da8060146953faea966e203ba857",
+  "paid_model_call_made": false,
+  "offline_exploration": {
+    "status": "OFFLINE_V2_EXPLORATION_PASS",
+    "complete_full_pipeline_proven": false,
+    "campaign_id": "c-71f28f9678fbd5d343a2195ac99f3302",
+    "campaign_loop_status": "ITERATION_LIMIT",
+    "jobs": [
+      "explore-5d23a78c07c39f5afc408724d4124052c2d7263d",
+      "explore-7eb7bb836145f004d7e437f077f68724ef5fce8f"
+    ],
+    "research_evidence_counts": [1, 1],
+    "second_turn_received_public_memory": true,
+    "live_model_called": false,
+    "source_state": "/tmp/bananloop-v2-offline-acceptance-0afedb6/state/campaigns/c-71f28f9678fbd5d343a2195ac99f3302"
+  },
+  "focused_tests": {
+    "result": "passed",
+    "passed": 145,
+    "command": "python3.12 -m pytest -q tests/test_chatgpt_plan.py tests/test_worker_queue.py tests/test_node_scheduler.py tests/test_optimization_lifecycle.py tests/test_evaluator_verification.py tests/test_v2_optimization_runtime.py tests/test_v2_research_runtime.py tests/test_exploration_adapter.py tests/test_research.py"
+  },
+  "repository_tests": {
+    "collected": 913,
+    "passed": 885,
+    "failed": 7,
+    "errors": 16,
+    "skipped": 5,
+    "failure_boundary": "Loopback socket creation is denied by the host (PermissionError: [Errno 1] Operation not permitted). API server setup and dependent API tests cannot bind."
+  },
+  "evaluator_isolation": {
+    "verified_in_host": false,
+    "reason": "bwrap cannot create the required network namespace: loopback: Failed to create NETLINK_ROUTE socket: Operation not permitted",
+    "security_checks_disabled": false
+  },
+  "open_acceptance_gates": [
+    "public v2 campaign create/run/resume CLI",
+    "multi-hypothesis generation and selection",
+    "convergence and final campaign report",
+    "one full Exploration-to-Optimization-to-Independent-Verification offline E2E",
+    "real bubblewrap evaluator execution on a host permitting namespaces",
+    "full API suite in an environment permitting loopback socket bind",
+    "owner-approved one-call ChatGPT live smoke (not run)"
+  ],
+  "ci": {
+    "status": "not_yet_created_for_this_head"
+  }
+}

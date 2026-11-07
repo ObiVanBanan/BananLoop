@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "tested_code_commit": "dbc9eae2445c8f3f355dbfd8691d4e98ab9c6ffb",
+  "branch": "codex/v02-full-integration",
+  "base_main_commit": "6c89975870b0da8060146953faea966e203ba857",
+  "paid_model_call_made": false,
+  "hypothesis_portfolio": {
+    "schema": "2-4 candidates with unique ids and selected_hypothesis_id",
+    "selection_validation": "passed",
+    "portfolio_persisted_as_content_addressed_evidence": true
+  },
+  "focused_tests": {
+    "passed": 135,
+    "failed": 0,
+    "command": "python3.12 -m pytest -q tests/test_v2_research_runtime.py tests/test_v2_campaign_cli.py tests/test_exploration_adapter.py tests/test_worker_queue.py tests/test_node_scheduler.py tests/test_trusted_evaluator.py tests/test_v2_optimization_runtime.py tests/test_optimization_lifecycle.py tests/test_evaluator_verification.py tests/test_chatgpt_plan.py"
+  },
+  "repository_tests": {
+    "collected": 923,
+    "passed": 895,
+    "failed": 7,
+    "errors": 16,
+    "skipped": 5,
+    "failure_boundary": "Loopback socket creation is denied by the host (PermissionError: [Errno 1] Operation not permitted), before application request handling."
+  },
+  "evaluator_isolation": {
+    "verified_in_host": false,
+    "reason": "bwrap cannot create the required network namespace: loopback: Failed to create NETLINK_ROUTE socket: Operation not permitted",
+    "security_checks_disabled": false
+  },
+  "open_acceptance_gates": [
+    "independent candidate ranking and convergence detection",
+    "one full Exploration-to-Optimization-to-Independent-Verification E2E with final report",
+    "real bubblewrap evaluator execution on a host permitting namespaces",
+    "full API suite and CI on a host permitting loopback socket bind",
+    "owner-approved one-call ChatGPT live smoke (not run)"
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "campaign": "BananLoop v0.2 Full integration follow-up",
+  "implementation_sha": "80c7981289d9aafd9be9797e61959ece57aaf479",
+  "pr": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "offline_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest -p isolate_home -o addopts='' -q -ra --tb=short",
+    "result": "passed",
+    "passed": 949,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "subtests_passed": 7,
+    "duration_seconds": 69.80,
+    "skips": [
+      "Pinned selector source commit cd753c97c62148c3ccd3f030251e96a4d19b23bd is unavailable",
+      "Windows ACL/reparse-point contract cannot run on Linux"
+    ]
+  },
+  "focused_acceptance": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest -q tests/test_v2_research_runtime.py::test_malformed_binary_artifact_is_unknown_spend_and_never_published tests/test_rpdi13_integrated_acceptance.py",
+    "result": "passed",
+    "passed": 3,
+    "coverage": [
+      "Malformed base64 artifact becomes UNKNOWN and is not published",
+      "Exploration protocol proposal is derived from durable completed job",
+      "Pinned independent verifier produces durable approval receipt",
+      "Public verifier context excludes private case contents and labels",
+      "Optimization child executes trusted evaluation and final HOLDOUT",
+      "API and CLI read models agree"
+    ]
+  },
+  "live_titanic": {
+    "run_id": "5104f22d00eb0adcf5105475f45b8cc88ee3c248",
+    "holdout_correct": 153,
+    "holdout_total": 196,
+    "holdout_accuracy": 0.7806122448979592,
+    "target_accuracy": 0.95,
+    "target_met": false,
+    "provider_tokens_reported": 14059,
+    "monetary_cost": "UNKNOWN",
+    "additional_calls_made_for_this_commit": 0
+  },
+  "ci": {
+    "new_revision": "80c7981289d9aafd9be9797e61959ece57aaf479",
+    "new_revision_status": "pending publication",
+    "previous_revision": "5036a1b5498ca36ae6c445de11303b774a94e88a",
+    "previous_revision_checks": {
+      "linux_python_3_11": "success",
+      "linux_python_3_12": "success",
+      "linux_python_3_13": "success",
+      "chromium_dashboard": "success",
+      "mutation_policy": "success",
+      "windows_python_3_12": "in_progress at last observation"
+    }
+  },
+  "goal_status": "active; remaining acceptance and CI verification are tracked in the Draft PR"
+}

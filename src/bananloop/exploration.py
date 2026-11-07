@@ -18,12 +18,14 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .budget_ledger import BudgetLedger
 from .capabilities import (
     BubblewrapBackend, CapabilityAuthority, CapabilityDenied, CapabilityGrantV1,
     LocalBackend, PermissionEngine, SandboxUnavailable, ToolGateway,
 )
 from .contracts import ExplorationCampaignSpecV2
 from .graph_store import ExplorationCompletionV2, GraphRepository, GraphStoreError
+from .human_decision import HumanDecisionRequestV1
 from .roles import (
     PinnedRoleExecutorV1, RoleContextSourceV1,
     RoleContractError, RoleContextV1, RoleRegistryV1, TeamFactoryV1,
@@ -55,6 +57,7 @@ class EvidenceOnlyOutputV2(BaseModel):
     next_experiment: str = Field(min_length=1, max_length=4000)
     research_findings: tuple[ResearchFindingV1, ...] = Field(default=(), max_length=64)
     protocol_draft: EvaluatorProtocolDraftV1 | None = None
+    human_decision_request: HumanDecisionRequestV1 | None = None
 
     @field_validator("evidence_refs", "limitations")
     @classmethod
@@ -172,11 +175,39 @@ class EvidenceOnlyAttemptAdapter:
             raise EvidenceAdapterError("approved base does not resolve to a Git commit") from exc
         if not _GIT_OID.fullmatch(resolved_commit):
             raise EvidenceAdapterError("Git returned an invalid full commit object ID")
+        action_id = f"exploration:{node_id}"
+        existing = self.queue.get_job_for_action(self.campaign_id, action_id)
+        if existing is not None:
+            request = existing["request"]
+            capability_manifest = request.get("capability_manifest")
+            if (request.get("schema") != "evidence-only-attempt-v1"
+                    or request.get("node_id") != node_id
+                    or request.get("spec_hash") != spec_hash
+                    or request.get("base_commit") != resolved_commit
+                    or request.get("role_registry_digest") != spec.role_registry_digest
+                    or not isinstance(capability_manifest, dict)
+                    or capability_manifest.get("visible_paths") != list(paths)
+                    or int(request.get("node_revision", -1)) != node_revision):
+                raise EvidenceAdapterError("persisted Exploration action differs from this replay request")
+            return existing
+        budget_ledger = BudgetLedger(self.queue.path)
+        try:
+            budget_snapshot = budget_ledger.snapshot(self.campaign_id)
+        finally:
+            budget_ledger.close()
+        budget_remaining = {
+            name: max(0, int(item["cap"]) - int(item["spent"])
+                      - int(item["reserved"]) - int(item["unknown"]))
+            for name, item in budget_snapshot.items()
+        }
         model_token_cap = spec.budget.max_model_tokens
+        requested_instances = {"researcher": 1}
+        if any(role.role_id == "independent_verifier" for role in self.role_registry.roles):
+            requested_instances["independent_verifier"] = 1
         team_request = TeamRequestV1(
             campaign_id=self.campaign_id,
             spec_hash=spec_hash,
-            requested_instances={"researcher": 1},
+            requested_instances=requested_instances,
             available_agent_calls=spec.budget.max_agent_calls,
             available_model_tokens=model_token_cap,
         )
@@ -204,17 +235,24 @@ class EvidenceOnlyAttemptAdapter:
         researcher = next((member for member in team_manifest.members if member.role.role_id == "researcher"), None)
         if researcher is None:
             raise EvidenceAdapterError("pinned team manifest has no researcher instance")
+        node_hypothesis = target_node["payload"].get("hypothesis")
+        if not isinstance(node_hypothesis, str) or not node_hypothesis.strip():
+            node_hypothesis = None
         try:
             context_fields = {
                     "node_id": {"value": node_id, "classification": "PUBLIC_NODE",
                                 "source_ref": f"graph://nodes/{node_id}"},
                     "node_phase": {"value": target_node["phase"], "classification": "PUBLIC_NODE",
                                    "source_ref": f"graph://nodes/{node_id}"},
-                    "public_task": {"value": spec.goal, "classification": "PUBLIC_SPEC",
-                                    "source_ref": "campaign://spec/goal"},
+                    "public_task": {
+                        "value": (node_hypothesis or spec.goal)[:4000],
+                        "classification": "PUBLIC_NODE" if node_hypothesis else "PUBLIC_SPEC",
+                        "source_ref": f"graph://nodes/{node_id}" if node_hypothesis
+                                      else "campaign://spec/goal",
+                    },
                     "evidence_refs": {"value": (), "classification": "PUBLIC_NODE",
                                       "source_ref": f"graph://nodes/{node_id}"},
-                    "budget_remaining": {"value": {"agent_calls": spec.budget.max_agent_calls},
+                    "budget_remaining": {"value": budget_remaining,
                                          "classification": "CORE_BUDGET",
                                          "source_ref": f"budget://campaign/{self.campaign_id}"},
             }
@@ -226,7 +264,7 @@ class EvidenceOnlyAttemptAdapter:
             role_context = build_role_context(researcher, role_context_source)
             protocol_digest = ResearchLedger.protocol_digest_for_binding(
                 team_manifest.job_binding(
-                    researcher.instance_id, action_id=f"exploration:{node_id}",
+                    researcher.instance_id, action_id=action_id,
                     context_digest=role_context.digest(),
                 )
             )
@@ -246,9 +284,14 @@ class EvidenceOnlyAttemptAdapter:
                     context_updated = True
                 if "dev_summary" in researcher.role.context_fields:
                     summary_lines = [
-                        f"{item.claim_key} [{item.status}]: " + " | ".join(item.statements)
-                        for item in projection.causal_memory
+                        f"{item.claim_key} [{item.stance}] evidence_ids={item.evidence_id}: {item.statement}"
+                        for item in projection.evidence
                     ]
+                    summary_lines.extend([
+                        f"{item.claim_key} [{item.status}] evidence_ids="
+                        f"{','.join(item.evidence_ids)}: " + " | ".join(item.statements)
+                        for item in projection.causal_memory
+                    ])
                     summary_lines.extend(
                         f"{item.signature} [{item.status}]: {item.intervention_type}/"
                         f"{item.algorithmic_layer}; paths={', '.join(item.affected_paths)}; "
@@ -273,7 +316,7 @@ class EvidenceOnlyAttemptAdapter:
         except Exception as exc:
             raise EvidenceAdapterError(f"cannot build isolated researcher context: {type(exc).__name__}") from exc
         role_binding = team_manifest.job_binding(
-            researcher.instance_id, action_id=f"exploration:{node_id}", context_digest=role_context.digest(),
+            researcher.instance_id, action_id=action_id, context_digest=role_context.digest(),
         )
         role_policy = researcher.role.capability_policy
         task_policy = policy.model_copy(update={"read_paths": paths})
@@ -332,7 +375,7 @@ class EvidenceOnlyAttemptAdapter:
                    "role_registry_digest": team_manifest.registry_digest}
         return self.queue.enqueue(
             job_id=job_id, enqueue_key=job_id, campaign_id=self.campaign_id,
-            action_id=f"exploration:{node_id}", resource="agent_calls", upper_bound=1,
+            action_id=action_id, resource="agent_calls", upper_bound=1,
             request=request,
             role_allocation={
                 "manifest_digest": team_manifest.manifest_digest,
@@ -561,6 +604,7 @@ class EvidenceOnlyAttemptAdapter:
             "evidence_refs": tuple(sorted((*result.evidence_refs, *artifact_refs))),
             "artifact_digests": tuple(sorted(artifact_digests)), "limitations": result.limitations,
             "next_experiment": result.next_experiment,
+            "human_decision_request": result.human_decision_request,
         }
         try:
             completion = ExplorationCompletionV2.model_validate(payload)
