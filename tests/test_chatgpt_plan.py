@@ -363,7 +363,8 @@ def test_optimizer_siwc_protocol_is_pinned_and_tool_free(tmp_path):
     )
     result = optimizer(
         {"protocol": "v2-optimizer-one-shot-v1", "role_context": {"public_task": "hyp-1"},
-         "visible_documents": {"src/app.py": "base\n"}, "instruction": "bounded"},
+         "visible_documents": {"src/app.py": "base\n"},
+         "writable_paths": ["src/app.py"], "instruction": "bounded"},
         provider="openai", model="gpt-6-luna", model_version="pin-v1",
         prompt_digest="a" * 64, max_model_tokens=100,
     )
@@ -373,6 +374,8 @@ def test_optimizer_siwc_protocol_is_pinned_and_tool_free(tmp_path):
     assert sent["store"] is False and sent["stream"] is True
     assert "commands" in sent["input"][0]["content"]
     assert "Authorization" not in json.dumps(sent)
+    user_input = json.loads(sent["input"][1]["content"])
+    assert user_input["writable_paths"] == ["src/app.py"]
 
 
 def test_integration_verifier_siwc_receives_only_core_summary(tmp_path):

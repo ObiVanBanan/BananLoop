@@ -302,7 +302,11 @@ class ChatGPTPlanOptimizer(ChatGPTPlanResearcher):
                          transport_factory=transport_factory,
                          protocol="v2-optimizer-one-shot-v1",
                          instructions=OPTIMIZER_INSTRUCTIONS,
-                         call_observer=call_observer)
+                         call_observer=call_observer,
+                         input_fields=frozenset({
+                             "protocol", "role_context", "visible_documents",
+                             "writable_paths", "instruction",
+                         }))
 
 
 class ChatGPTPlanIntegrationVerifier(ChatGPTPlanResearcher):
