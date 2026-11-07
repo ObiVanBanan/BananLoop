@@ -171,6 +171,31 @@ SHA are recorded in
 [`docs/reviews/v02-full-integration-status-ae3feb1.md`](../../docs/reviews/v02-full-integration-status-ae3feb1.md)
 and its JSON companion.
 
+## Continue an approved v2 Optimization child
+
+The owner-facing `bananloop v2 optimize` command runs a child campaign that was
+already created by the supervised Exploration-to-Optimization handoff. It
+requires the exact role registry whose digest is frozen in the child spec and
+separate read/write allowlists. The default is a no-auth preflight; only a
+positive `--approve-up-to-calls` value dispatches SIWC requests. The allowance
+is shared between optimizer and independent integration-verifier requests.
+
+```sh
+bananloop v2 optimize \
+  --repo . \
+  --campaign-id "$OPTIMIZATION_CHILD_ID" \
+  --role-registry ./roles.json \
+  --visible-path data/train.csv \
+  --visible-path src/model.json \
+  --write-path src/model.json
+```
+
+Review the `READY_FOR_OWNER_APPROVAL` result, then, only after explicit owner
+approval, repeat with a bounded `--approve-up-to-calls N`. Core continues to
+run the trusted evaluator and terminal HOLDOUT; the model does not receive
+private evaluator tiers. This command advances an approved Optimization child;
+it does not itself discover a protocol or create that child.
+
 Current verified Linux commands:
 
 ```sh

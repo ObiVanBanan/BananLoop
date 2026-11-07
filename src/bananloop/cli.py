@@ -600,6 +600,14 @@ def cmd_v2_explore(args: argparse.Namespace) -> int:
     return 0 if result.get("status") not in {"BUDGET_EXHAUSTED", "STOP_REQUESTED", "RUN_FAILED"} else 2
 
 
+def cmd_v2_optimize(args: argparse.Namespace) -> int:
+    from .v2_optimization_cli import run_v2_optimize
+
+    result = run_v2_optimize(args)
+    print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
+    return 0 if result.get("status") not in {"BUDGET_EXHAUSTED", "STOP_REQUESTED", "RUN_FAILED"} else 2
+
+
 def _status_evaluation_summary(measurements: list[dict]) -> list[dict]:
     """Keep status output aggregate-only; full reports have a separate command."""
     return [{
@@ -1134,6 +1142,25 @@ def parser() -> argparse.ArgumentParser:
                             help="explicit consent to spend up to this many ChatGPT plan requests now")
     v2_explore.add_argument("--timeout-seconds", type=int, default=120)
     v2_explore.set_defaults(func=cmd_v2_explore)
+
+    v2_optimize = v2_sub.add_parser(
+        "optimize", help="run an approved v2 Optimization child through SIWC and trusted evaluation",
+    )
+    v2_optimize.add_argument("--repo", default=".")
+    v2_optimize.add_argument("--state-dir")
+    v2_optimize.add_argument("--campaign-id", required=True,
+                             help="child campaign id returned by the approved v2 pivot handoff")
+    v2_optimize.add_argument("--role-registry", required=True,
+                             help="JSON/TOML role registry whose digest is frozen in the child spec")
+    v2_optimize.add_argument("--visible-path", action="append", required=True,
+                             help="exact candidate-visible source path; repeat as needed")
+    v2_optimize.add_argument("--write-path", action="append", required=True,
+                             help="exact candidate-writable path; repeat as needed")
+    v2_optimize.add_argument("--max-steps", type=int, default=8)
+    v2_optimize.add_argument("--approve-up-to-calls", type=int, default=0,
+                             help="explicit consent to spend up to this many ChatGPT plan requests now")
+    v2_optimize.add_argument("--timeout-seconds", type=int, default=120)
+    v2_optimize.set_defaults(func=cmd_v2_optimize)
 
     v2_pivot = sub.add_parser("v2-pivot", help="record a v2 pivot proposal or supervised operator decision")
     v2_pivot_sub = v2_pivot.add_subparsers(dest="v2_pivot_command", required=True)

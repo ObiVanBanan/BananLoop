@@ -4,15 +4,21 @@ import json
 import subprocess
 import sys
 from argparse import Namespace
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from bananloop.budget_ledger import BudgetLedger
-from bananloop.cli import cmd_v2_explore, parser
+from bananloop.cli import cmd_v2_explore, cmd_v2_optimize, parser
+from bananloop.capabilities import CapabilityPolicyV2
+from bananloop.contracts import OptimizationCampaignSpecV2
 from bananloop.contracts import RuntimePaths
 from bananloop.graph_store import GraphRepository
 from bananloop.registry import CampaignRegistry, RegistryError
 from bananloop.v2_campaign_cli import V2CampaignCLIError, run_v2_explore
+from bananloop.v2_optimization_cli import V2OptimizationCLIError, _safe_paths
+from bananloop.v2_optimization_cli import run_v2_optimize
 
 
 def _repo(tmp_path):
@@ -45,6 +51,236 @@ def test_cli_explore_is_a_separate_v2_route():
     assert args.func is cmd_v2_explore
     assert args.approve_up_to_calls == 0
     assert args.model == "gpt-6-luna"
+
+
+def test_cli_optimize_is_a_separate_owner_approved_v2_route():
+    args = parser().parse_args([
+        "v2", "optimize", "--campaign-id", "child-123", "--role-registry", "roles.json",
+        "--visible-path", "data/train.csv", "--visible-path", "src/model.json",
+        "--write-path", "src/model.json",
+    ])
+    assert args.func is cmd_v2_optimize
+    assert args.approve_up_to_calls == 0
+    assert args.max_steps == 8
+
+
+def test_v2_optimization_cli_paths_preserve_read_write_boundary():
+    visible, writable = _safe_paths(
+        ["src/model.json", "data/train.csv"], ["src/model.json"],
+    )
+    assert visible == ["data/train.csv", "src/model.json"]
+    assert writable == ["src/model.json"]
+
+    with pytest.raises(V2OptimizationCLIError, match="members of visible paths"):
+        _safe_paths(["data/train.csv"], ["src/model.json"])
+
+
+def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tmp_path, monkeypatch):
+    import json
+
+    from bananloop.roles import RoleDefinitionV1, RoleRegistryV1
+    from bananloop.graph_store import AddNode, GraphRepository, MutateGraph
+    from test_v2_pivot_saga import _campaign_db
+
+    repo = _repo(tmp_path)
+    (repo / "data").mkdir()
+    (repo / "src").mkdir()
+    (repo / "data" / "train.csv").write_text("x,target\n1,0\n", encoding="utf-8")
+    (repo / "src" / "model.json").write_text('{"weight":0}\n', encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "data/train.csv", "src/model.json"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "bounded optimization source"], check=True)
+    state_dir = tmp_path / "state"
+    paths = RuntimePaths.for_repo(repo, state_dir)
+    registry = CampaignRegistry(repo, paths=paths)
+    goal = "Improve the bounded toy ranker using the frozen evaluator"
+    entry, state_root, _ = registry.reserve(goal, "v2-optimize-preflight", activate=False)
+    roles = RoleRegistryV1(
+        registry_id="v2-optimize-preflight", version=1,
+        roles=(
+            RoleDefinitionV1(
+                role_id="optimizer", adapter="codex", provider="openai",
+                model="gpt-6-luna", model_version="offline-v1", prompt_digest="a" * 64,
+                capability_policy=CapabilityPolicyV2(
+                    tools=("read_file", "write_file", "commit_candidate"),
+                    read_paths=("data/**", "src/**"), write_paths=("src/**",),
+                    backend="LOCAL", network_access=False,
+                ),
+                context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
+                                "constraints", "evidence_refs", "dev_summary", "budget_remaining"),
+                calls_per_instance=4, tokens_per_instance=400,
+            ),
+            RoleDefinitionV1(
+                role_id="integration_verifier", adapter="codex", provider="openai",
+                model="gpt-6-luna", model_version="offline-v1", prompt_digest="b" * 64,
+                capability_policy=CapabilityPolicyV2(
+                    tools=(), read_paths=(), write_paths=(), backend="ISOLATED",
+                    network_access=False,
+                ),
+                context_fields=("campaign_goal", "public_task"),
+                calls_per_instance=4, tokens_per_instance=400,
+            ),
+        ),
+    )
+    spec = OptimizationCampaignSpecV2.model_validate({
+        "schema_version": 2, "mode": "OPTIMIZATION", "goal": goal,
+        "source_repo": str(repo),
+        "base_commit": subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+        ).strip(),
+        "autonomy": {
+            "mode": "SUPERVISED", "scope_digest": "c" * 64, "scope_version": 1,
+            "capability_policy": {
+                "tools": ["read_file", "write_file", "commit_candidate"],
+                "read_paths": ["data/**", "src/**"], "write_paths": ["src/**"],
+                "backend": "LOCAL", "network_access": False,
+            },
+        },
+        "budget": {"max_agent_calls": 12, "max_evaluator_calls": 20},
+        "role_registry_digest": roles.digest(),
+        "evaluation": {
+            "protocol_id": "preflight-protocol", "version": 1,
+            "content_sha256": "d" * 64, "approval_digest": "e" * 64,
+        },
+    })
+    _campaign_db(state_root / "campaign.sqlite3", spec)
+    graph = GraphRepository.open(str(state_root / "campaign.sqlite3"), campaign_id=entry.campaign_id)
+    try:
+        graph.mutate(MutateGraph(
+            command_id="add-cli-optimization-node", idempotency_key="add-cli-optimization-node",
+            expected_graph_revision=graph.graph_revision(),
+            changes=(AddNode(
+                type="AddNode", node_id="cli-optimization", phase="OPTIMIZATION",
+                payload={"source_snapshot_id": spec.base_commit,
+                         "hypothesis_id": "improve-weight", "hypothesis": "Adjust the bounded model weight."},
+            ),),
+        ))
+    finally:
+        graph.close()
+    budget = registry.budget_ledger()
+    try:
+        budget.create_root(entry.campaign_id, {
+            "agent_calls": 12, "evaluator_calls": 20, "experiments": 5, "attempts": 8,
+        })
+    finally:
+        budget.close()
+    role_path = tmp_path / "roles.json"
+    role_path.write_text(roles.model_dump_json(), encoding="utf-8")
+
+    class NoAuthAllowed:
+        def __init__(self):
+            raise AssertionError("preflight must not read ChatGPT auth or dispatch a call")
+
+    monkeypatch.setattr("bananloop.v2_optimization_cli.ChatGPTPlanAuth", NoAuthAllowed)
+    frozen_bindings = []
+
+    def accept_frozen_fixture(self, *args, **kwargs):
+        frozen_bindings.append((args, kwargs))
+
+    monkeypatch.setattr(
+        "bananloop.v2_optimization_cli.EvaluatorProtocolAuthority.require_frozen_reference",
+        accept_frozen_fixture,
+    )
+    result = run_v2_optimize(Namespace(
+        repo=str(repo), state_dir=str(state_dir), campaign_id=entry.campaign_id,
+        role_registry=str(role_path), visible_path=["data/train.csv", "src/model.json"],
+        write_path=["src/model.json"], approve_up_to_calls=0, max_steps=8,
+        timeout_seconds=60,
+    ))
+    assert result["status"] == "READY_FOR_OWNER_APPROVAL"
+    assert result["scheduler_status"] != "NO_REMAINING_WORK"
+    assert result["live_model_called"] is False
+    assert frozen_bindings[0][1]["campaign_id"] == entry.campaign_id
+    assert frozen_bindings[0][1]["spec_hash"] == spec.approved_hash()
+
+    class MockAuth:
+        def status(self):
+            return {"connected": True}
+
+    class MockOptimizer:
+        def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer):
+            assert approved_model == "gpt-6-luna" and timeout_seconds == 60
+            self.call_observer = call_observer
+            self.request_history = []
+
+        def check_model(self):
+            return None
+
+        def __call__(self, public_input, **_pin):
+            assert public_input == {"offline_cli_check": True}
+            receipt = {
+                "request_id": "resp_offline_cli_optimizer", "status": "COMPLETED",
+                "dispatched": True, "usage": {"total_tokens": 31},
+            }
+            self.request_history.append(receipt)
+            self.call_observer(receipt)
+            return {
+                "hypothesis_id": "improve-weight", "rationale": "Bounded offline CLI integration check.",
+                "changes": {"src/model.json": '{"weight":1}\n'},
+            }
+
+    class MockVerifier:
+        def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer):
+            assert approved_model == "gpt-6-luna" and timeout_seconds == 60
+            self.request_history = []
+
+        def check_model(self):
+            return None
+
+        def _dispatch_verifier(self, *_args, **_kwargs):
+            pytest.fail("the shared one-call allowance must stop before verifier dispatch")
+
+    class RuntimeAfterPreflight:
+        def __init__(self, **_kwargs):
+            pass
+
+        def plan(self):
+            return SimpleNamespace(reason="READY")
+
+        def run_campaign(self, **kwargs):
+            kwargs["model_reply"](
+                {"offline_cli_check": True}, adapter="codex", provider="openai",
+                model="gpt-6-luna", model_version="offline-v1",
+                prompt_digest="a" * 64, max_model_tokens=100,
+            )
+            executor = kwargs["integration_verifier_executor"]
+            member = executor.member
+            kwargs["integration_verifier_executor"].dispatch({
+                "role_binding": {
+                    "team_manifest_digest": executor.manifest_digest,
+                    "role_instance_id": member.instance_id,
+                    "role_id": member.role.role_id, "provider": member.role.provider,
+                    "model": member.role.model, "model_version": member.role.model_version,
+                    "adapter": member.role.adapter, "prompt_digest": member.role.prompt_digest,
+                },
+            }, None)
+            return {"status": "SHOULD_NOT_REACH"}
+
+    monkeypatch.setattr("bananloop.v2_optimization_cli.ChatGPTPlanAuth", MockAuth)
+    monkeypatch.setattr("bananloop.v2_optimization_cli.V2OptimizationRuntime", RuntimeAfterPreflight)
+    approved = run_v2_optimize(Namespace(
+        repo=str(repo), state_dir=str(state_dir), campaign_id=entry.campaign_id,
+        role_registry=str(role_path), visible_path=["data/train.csv", "src/model.json"],
+        write_path=["src/model.json"], approve_up_to_calls=1, max_steps=1,
+        timeout_seconds=60,
+    ), optimizer_factory=MockOptimizer, verifier_factory=MockVerifier)
+    assert approved["status"] == "OWNER_APPROVAL_REQUIRED"
+    assert approved["provider_call_attempts"] == 1
+    assert approved["live_model_called"] is True
+    assert approved["automatic_replay"] is False
+    assert Path(approved["report_path"]).is_file()
+    assert approved["request_history"]["optimizer"][0]["request_id"] == "resp_offline_cli_optimizer"
+    conn = __import__("sqlite3").connect(state_root / "campaign.sqlite3")
+    try:
+        receipt = json.loads(conn.execute(
+            "SELECT payload_json FROM events WHERE event_type='V2_PROVIDER_CALL'",
+        ).fetchone()[0])
+        assert receipt["role_id"] == "optimizer"
+        assert receipt["request_id"] == "resp_offline_cli_optimizer"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type='V2_PROVIDER_CALL'",
+        ).fetchone()[0] == 1
+    finally:
+        conn.close()
 
 
 def test_cli_entrypoint_creates_persisted_v2_campaign_without_auth(tmp_path):
