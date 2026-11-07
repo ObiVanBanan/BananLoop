@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from bananloop.budget_ledger import BudgetLedger
 from bananloop.contracts import ExplorationCampaignSpecV2
 from bananloop.exploration import EvidenceAdapterError
+from bananloop.graph_store import GraphRepository
 from bananloop.research_ledger import ResearchLedger
 from bananloop.v2_research_runtime import (
     V2ResearchRuntime, V2RuntimeError, make_researcher_invoke,
@@ -652,6 +653,7 @@ def test_strategy_change_request_durably_pauses_until_owner_decision(tmp_path):
         }}
 
     recovered_queue = None
+    recovered_graph = None
     try:
         result = runtime.run_campaign(
             visible_paths=["README.md"], invoke=make_researcher_invoke(proposal),
@@ -677,9 +679,13 @@ def test_strategy_change_request_durably_pauses_until_owner_decision(tmp_path):
 
         queue_path = queue.path
         queue.close()
+        graph.close()
         recovered_queue = DurableWorkerQueue(queue_path)
+        recovered_graph = GraphRepository.open(
+            str(tmp_path / "campaign.sqlite3"), campaign_id="campaign-test",
+        )
         recovered = V2ResearchRuntime(
-            graph=graph, queue=recovered_queue, campaign_id="campaign-test",
+            graph=recovered_graph, queue=recovered_queue, campaign_id="campaign-test",
             state_root=tmp_path, role_registry=runtime.role_registry,
         )
         replay = recovered.run_campaign(
@@ -688,10 +694,16 @@ def test_strategy_change_request_durably_pauses_until_owner_decision(tmp_path):
         )
         assert replay["status"] == "PAUSED_NEEDS_INPUT"
         assert replay["iterations_this_call"] == 0 and len(calls) == 1
-        assert len(graph.scheduling_snapshot()["nodes"]) == 1
+        recovered_nodes = recovered_graph.scheduling_snapshot()["nodes"]
+        assert len(recovered_nodes) == 1
+        recovered_request = recovered_nodes[0]["payload"]["completion_evidence"]["human_decision_request"]
+        assert recovered_request == request
     finally:
         if recovered_queue is not None:
             recovered_queue.close()
         else:
             queue.close()
-        graph.close()
+        if recovered_graph is not None:
+            recovered_graph.close()
+        else:
+            graph.close()
