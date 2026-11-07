@@ -81,7 +81,7 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
         "-c", "user.email=rpdi13@example.invalid", "commit", "-qm", "baseline optimizer",
     ], check=True)
     base_commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
-    researcher_roles = _role_registry()
+    researcher_roles = _role_registry(calls_per_instance=3)
     researcher_role = researcher_roles.roles[0].model_copy(update={
         "min_instances": 0,
         "capability_policy": researcher_roles.roles[0].capability_policy.model_copy(
@@ -167,7 +167,7 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
         "--read-path", "src/optimizer/model/ranker.py",
         "--optimization-write-path", "src/optimizer/model/ranker.py",
         "--max-agent-calls", "20", "--max-model-tokens", "128",
-        "--max-iterations", "2", "--timeout-seconds", "60",
+        "--max-iterations", "3", "--timeout-seconds", "60",
     ]
     preflight_args = parser().parse_args([*explore_command, "--approve-up-to-calls", "0"])
     assert preflight_args.func is not None and preflight_args.func(preflight_args) == 0
@@ -292,8 +292,8 @@ print(json.dumps({
                     "limitations": ["one deterministic public observation"],
                     "research_findings": [{
                         "claim_key": "effect:retrieval",
-                        "statement": "The deterministic observation supports retrieval effect.",
-                        "stance": "SUPPORTS", "kind": "CAUSAL_INFERENCE", "confidence": 0.4,
+                        "statement": "The matched control refutes persistence of the retrieval effect.",
+                        "stance": "REFUTES", "kind": "CAUSAL_INFERENCE", "confidence": 0.4,
                         "intervention_type": "feature_representation",
                         "algorithmic_layer": "features",
                         "affected_paths": ["src/optimizer/ranker.py"],
@@ -301,7 +301,7 @@ print(json.dumps({
                     }],
                 }
             evidence_id = public_input["role_context"]["evidence_refs"][0]
-            return {
+            response = {
                 "hypotheses": [
                     {
                         "id": "model-choice", "hypothesis": "An unrelated condition explains the outcome.",
@@ -311,36 +311,51 @@ print(json.dumps({
                         "expected_evidence": "A public outcome for the unrelated condition.",
                     },
                     {
-                        "id": "evidence-choice", "hypothesis": "The matched-control observation replicates.",
-                        "rationale": "This candidate directly follows the durable prior finding.",
-                        "next_experiment": "replicate the matched-control observation",
-                        "falsification_condition": "The matched-control result does not replicate.",
-                        "expected_evidence": "A replication result for the prior claim.",
+                        "id": "evidence-choice",
+                        "hypothesis": "The refutation is limited to the matched control; an independent condition may preserve the retrieval effect.",
+                        "rationale": "This candidate tests the scope of the durable prior refutation.",
+                        "next_experiment": "test a distinct retrieval condition after the matched-control refutation",
+                        "falsification_condition": "The independent condition also refutes the retrieval effect.",
+                        "expected_evidence": "A bounded result that narrows the refutation scope.",
                         "evidence_refs": [evidence_id],
                         "target_claim_key": "effect:retrieval",
                     },
                 ],
                 "selected_hypothesis_id": "model-choice",
                 "artifact_text": {"observation.txt": content},
-                "artifact_base64": {
-                    name: base64.b64encode(data).decode("ascii")
-                    for name, data in protocol_artifacts.items()
-                },
                 "limitations": ["one deterministic public replication"],
-                "protocol_draft": {
-                    "protocol": protocol.model_dump(mode="json"),
-                    "evidence_refs": protocol_evidence_refs,
-                },
-                "research_findings": [{
+            }
+            if len(observed_turns) == 2:
+                response["research_findings"] = [{
                     "claim_key": "effect:retrieval",
-                    "statement": "A second deterministic observation supports retrieval effect.",
-                    "stance": "SUPPORTS", "kind": "CAUSAL_INFERENCE", "confidence": 0.5,
+                    "statement": "A second matched-control observation refutes persistence of the retrieval effect.",
+                    "stance": "REFUTES", "kind": "CAUSAL_INFERENCE", "confidence": 0.5,
                     "intervention_type": "feature_representation",
                     "algorithmic_layer": "features",
                     "affected_paths": ["src/optimizer/ranker.py"],
                     "evidence_refs": [f"artifact://sha256/{artifact_digest}"],
-                }],
-            }
+                }]
+            else:
+                response.update({
+                    "artifact_base64": {
+                        name: base64.b64encode(data).decode("ascii")
+                        for name, data in protocol_artifacts.items()
+                    },
+                    "protocol_draft": {
+                        "protocol": protocol.model_dump(mode="json"),
+                        "evidence_refs": protocol_evidence_refs,
+                    },
+                    "research_findings": [{
+                        "claim_key": "effect:retrieval:independent_condition",
+                        "statement": "A distinct retrieval condition supports a narrower conditional effect.",
+                        "stance": "SUPPORTS", "kind": "CAUSAL_INFERENCE", "confidence": 0.5,
+                        "intervention_type": "feature_representation",
+                        "algorithmic_layer": "features",
+                        "affected_paths": ["src/optimizer/ranker.py"],
+                        "evidence_refs": [f"artifact://sha256/{artifact_digest}"],
+                    }],
+                })
+            return response
 
         class OfflineAuth:
             def status(self):
@@ -405,17 +420,21 @@ print(json.dumps({
         monkeypatch.setattr(
             "bananloop.v2_campaign_cli.ChatGPTPlanProtocolVerifier", OfflineSIWCProtocolVerifier,
         )
-        explore_args = parser().parse_args([*explore_command, "--approve-up-to-calls", "3"])
+        explore_args = parser().parse_args([*explore_command, "--approve-up-to-calls", "4"])
         assert explore_args.func is cmd_v2_explore
         assert explore_args.func(explore_args) == 0
         exploration = json.loads(capsys.readouterr().out)
-        assert exploration["iterations_this_call"] == 2
-        assert len(observed_turns) == 2
+        assert exploration["iterations_this_call"] == 3
+        assert len(observed_turns) == 3
         assert observed_turns[1]["role_context"]["evidence_refs"]
         assert "effect:retrieval" in observed_turns[1]["role_context"]["dev_summary"]
-        assert observed_turns[1]["role_context"]["public_task"] == (
-            "run a matched control observation"
+        assert observed_turns[1]["role_context"]["public_task"] == "run a matched control observation"
+        assert "REFUTES" in observed_turns[1]["role_context"]["dev_summary"]
+        assert observed_turns[2]["role_context"]["public_task"] == (
+            "test a distinct retrieval condition after the matched-control refutation"
         )
+        assert "REFUTES" in observed_turns[2]["role_context"]["dev_summary"]
+        assert observed_turns[2]["role_context"]["evidence_refs"]
         portfolio_files = (state_root / "rpdi05" / "artifacts").rglob("*")
         portfolios = [
             json.loads(path.read_text(encoding="utf-8")) for path in portfolio_files
@@ -432,6 +451,9 @@ print(json.dumps({
         protocol_digest = ledger.protocol_digest_for_binding(role_binding)
         evidence_ids = exploration["completed"][-1]["research_evidence_ids"]
         assert len(evidence_ids) == 1
+        refutation_ids = exploration["completed"][0]["research_evidence_ids"]
+        second_refutation_ids = exploration["completed"][1]["research_evidence_ids"]
+        assert len(refutation_ids) == len(second_refutation_ids) == 1
 
         scope_index = _api_json(root_url + f"/{entry.campaign_id}/research?limit=50")
         assert scope_index["source"] == "PERSISTED"
@@ -444,6 +466,17 @@ print(json.dumps({
             item for item in public_knowledge["evidence"]
             if item["evidence_id"] in evidence_ids
         )
+        refutation = next(
+            item for item in public_knowledge["evidence"]
+            if item["evidence_id"] in refutation_ids
+        )
+        second_refutation = next(
+            item for item in public_knowledge["evidence"]
+            if item["evidence_id"] in second_refutation_ids
+        )
+        assert refutation["stance"] == "REFUTES"
+        assert second_refutation["stance"] == "REFUTES"
+        assert current_evidence["stance"] == "SUPPORTS"
         assert current_evidence["verification_status"] == "UNVERIFIED_ROLE_FINDING"
         assert current_evidence["causal_status"] == "UNVERIFIED_INFERENCE"
 
@@ -700,8 +733,8 @@ print(json.dumps({
             assert final_report["campaign_id"] == entry.campaign_id
             assert final_report["optimization_campaign_id"] == child_id
             assert final_report["exploration_report"]["campaign_id"] == entry.campaign_id
-            assert final_report["exploration_report"]["status"] == "ITERATION_LIMIT"
-            assert len(final_report["exploration_report"]["completed_experiments"]) == 2
+            assert final_report["exploration_report"]["status"] == "CONVERGED_REPEATED_EXPERIMENT"
+            assert len(final_report["exploration_report"]["completed_experiments"]) == 3
             assert final_report["optimization_report"]["champion"]["snapshot_id"] == candidate[
                 "candidate_snapshot_id"
             ]
