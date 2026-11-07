@@ -423,11 +423,17 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
             integration_verifier=coordinator.integration_verifier,
         )
 
-        def offline_optimizer(public_input, **_pinned):
-            assert public_input["visible_documents"]["data/train.csv"]
+        def assert_optimizer_input_is_candidate_only(public_input):
+            assert set(public_input["visible_documents"]) == {
+                "data/train.csv", "src/model.json",
+            }
             assert public_input["writable_paths"] == ["src/model.json"]
             assert "validation" not in json.dumps(public_input).lower()
             assert "holdout" not in json.dumps(public_input).lower()
+
+        def offline_optimizer(public_input, **_pinned):
+            assert_optimizer_input_is_candidate_only(public_input)
+            assert public_input["visible_documents"]["data/train.csv"]
             return {
                 "hypothesis_id": "titanic-child-interaction",
                 "rationale": "The DEV diagnostic supports a bounded male first-class child interaction; the independent verifier will decide whether it generalizes.",
@@ -446,6 +452,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
 
             def one_shot_live_optimizer(public_input, **pinned):
                 nonlocal live_dispatch_count
+                assert_optimizer_input_is_candidate_only(public_input)
                 if live_dispatch_count:
                     raise RuntimeError(
                         "live smoke refuses a second optimizer dispatch; inspect persisted outcome"
