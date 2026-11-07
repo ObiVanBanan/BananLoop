@@ -1,0 +1,682 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#07111D" />
+  <title>BananLoop — Pixel Universe · UI-01.2</title>
+  <style>
+:root{color-scheme:dark;--space:#101522;--panel:#141c2b;--panel2:#1b2537;--panel3:#0f1522;--stroke:#334254;--gold:#f5c842;--gold-light:#ffe58c;--text:#f0efe5;--muted:#8da3b9;--success:#53d69a;--danger:#f06b75;--warning:#e9b95c;--font:Inter,system-ui,-apple-system,"Segoe UI",Arial,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}html,body{height:100%;margin:0}body{overflow:hidden;font-family:var(--font);font-size:14px;color:var(--text);background:var(--space)}button,input,textarea,select{font:inherit}button{cursor:pointer}button:disabled{opacity:.48;cursor:not-allowed}button:focus-visible,textarea:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--gold-light);outline-offset:2px}button{color:inherit}#workspace [hidden], [hidden]{display:none!important}.app-shell{height:100dvh;min-height:400px;display:grid;grid-template-rows:60px minmax(0,1fr);background:radial-gradient(ellipse at 76% -2%,#283a54 0,transparent 32%),radial-gradient(ellipse at 90% 105%,#151e38 0,transparent 44%),#0b111d}.topbar{height:60px;padding:0 15px;display:flex;align-items:center;gap:22px;position:relative;z-index:10;border-bottom:1px solid #4c4850;background:linear-gradient(115deg,#080d17,#121b2d 48%,#0a0e18 85%);box-shadow:0 3px 16px #0007}.topbar:after{content:"";position:absolute;bottom:-2px;left:20%;width:180px;height:2px;background:linear-gradient(90deg,transparent,var(--gold),transparent);pointer-events:none}.brand{display:flex;align-items:center;gap:8px;min-width:226px;white-space:nowrap}.brand-orbit{font-size:31px;line-height:1;color:var(--gold);font-weight:900;transform:rotate(-22deg)}.brand-name{font:900 23px/1 var(--mono);letter-spacing:-1.3px}.brand-name span{color:var(--gold)}.brand-rule{height:32px;border-left:1px solid #586079;margin-left:auto}.top-tabs{display:flex;gap:9px;align-items:center;flex:1;min-width:0}.top-tab{white-space:nowrap;border:1px solid #536075;color:#cad5e5;background:#101725;padding:10px 14px;min-height:38px;border-radius:7px;font:800 12px/1.1 var(--mono);letter-spacing:.3px;display:flex;align-items:center;gap:9px;transition:background .18s,border .18s}.top-tab span:first-child{font-size:17px}.top-tab:hover{border-color:var(--gold)}.top-tab.active{background:linear-gradient(#fce273,#e9b329);border-color:#ffe58c;color:#12150e;box-shadow:0 0 0 1px #805a18,0 0 18px #d9aa3270}.top-right{display:flex;align-items:center;gap:15px;margin-left:auto;white-space:nowrap}.proto-ribbon{font:700 10px var(--mono);letter-spacing:.5px;border:1px solid #8d7131;background:#392b13;color:#ffe6a5;padding:7px 9px;border-radius:5px}.top-sep{height:20px;border-left:1px solid #4c5869}.connection{color:#bcd0c5;font:600 11px var(--mono)}.connection i{display:inline-block;width:7px;height:7px;background:#e7bd60;border-radius:50%;box-shadow:0 0 8px #d2ad41;margin-right:5px}.icon-btn{background:transparent;border:1px solid #435267;width:29px;height:29px;border-radius:6px;display:inline-grid;place-items:center;font-size:18px;color:#c3d0dd}.icon-btn:hover{border-color:var(--gold);color:var(--gold)}.menu-toggle,.close-sidebar{display:none}.workspace{min-width:0;min-height:0;padding:12px;display:grid;grid-template-rows:minmax(0,1fr);gap:12px}.workspace.mode-mission{grid-template-columns:232px minmax(0,1fr) 296px}.workspace.mode-mission.dashboard-closed{grid-template-columns:232px minmax(0,1fr)}.workspace.mode-galaxy{grid-template-columns:232px minmax(0,1fr)}.workspace.mode-galaxy.inspector-open{grid-template-columns:232px minmax(0,1fr) 320px}.station-panel{min-width:0;min-height:0;border:1px solid #45546a;border-radius:12px;position:relative;overflow:hidden;background:linear-gradient(154deg,rgba(25,33,47,.97),rgba(11,16,27,.98) 78%);box-shadow:inset 0 1px #ffffff13,0 4px 22px #0006}.station-panel:before,.station-panel:after{position:absolute;content:"";width:19px;height:19px;pointer-events:none;z-index:2}.station-panel:before{top:0;left:0;border-top:2px solid #d8aa3b;border-left:2px solid #d8aa3b;border-top-left-radius:12px}.station-panel:after{bottom:0;right:0;border-bottom:2px solid #9f7c33;border-right:2px solid #9f7c33;border-bottom-right-radius:12px}.sidebar{display:flex;flex-direction:column;padding:17px 11px 13px}.sidebar-head{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #374454;padding:0 5px 13px;margin-bottom:13px}.section-label{font:800 16px/1.3 var(--mono);color:var(--gold);letter-spacing:.4px}.gold-button{border:1px solid #ffe492;background:linear-gradient(180deg,#ffe274,#f1bb35);box-shadow:inset 0 1px #fff7cf,0 0 11px #d9a12b36;border-radius:7px;color:#171509;font-weight:800}.gold-button:hover{filter:brightness(1.06)}.new-campaign{min-height:43px;display:flex;justify-content:center;align-items:center;gap:10px;margin:0 1px 13px}.plus{font:700 25px var(--mono)}.campaign-list{display:flex;flex-direction:column;gap:5px;overflow-y:auto;min-height:0}.campaign{display:flex;align-items:center;gap:9px;text-align:left;min-height:44px;padding:10px 11px;border:1px solid transparent;border-bottom-color:#ffffff13;background:transparent;border-radius:7px;color:#d7dfeb;font-size:13px;line-height:1.25}.campaign:hover{background:#1b273b}.campaign.active{border:1px solid var(--gold);background:linear-gradient(90deg,#3f3316b8,#22232ebc);color:#fff2bf;box-shadow:0 0 12px #e0b03424}.campaign .campaign-icon{flex:none;color:#f5c842;font-size:18px}.campaign-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sidebar-spacer{flex:1;min-height:10px}.sidebar-setting{border:0;border-top:1px solid #364152;background:transparent;padding:15px 10px 2px;text-align:left;display:flex;align-items:center;gap:11px;color:#e1e7f0}.sidebar-setting span:first-child{font-size:21px}.sidebar-setting:hover{color:var(--gold)}.mission{display:flex;flex-direction:column;isolation:isolate}.mission-heading{flex:none;padding:16px 22px 14px;border-bottom:1px solid #3a4555;background:linear-gradient(90deg,#171f2d,#141b28)}.eyebrow{font:700 10px var(--mono);color:#a9b9c7;letter-spacing:1px}.eyebrow.yellow{color:var(--gold)}.mission-heading-row{display:flex;gap:14px;align-items:center;justify-content:space-between;margin-top:7px}.title-wrap{min-width:0}.title-wrap h1,.galaxy-heading h1{font:800 clamp(17px,2vw,23px)/1.2 var(--font);letter-spacing:-.4px;margin:0}.title-wrap p,.galaxy-heading p{font-size:12px;color:#adbfce;margin:6px 0 0;line-height:1.35}.heading-actions,.galaxy-heading-actions{display:flex;gap:7px;align-items:center;flex-shrink:0}.subtle-button{min-height:31px;border-radius:6px;border:1px solid #54657c;background:#19243a;color:#c9d5e3;padding:5px 9px;font-size:12px}.subtle-button:hover{border-color:var(--gold);color:var(--gold)}.connection-banner{padding:9px 18px;background:#302719;border-bottom:1px solid #8e6431;color:#f6d58f;font-size:12px}.chat-feed{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:18px 22px 28px;display:flex;flex-direction:column;gap:15px;background-image:radial-gradient(#86a9e50a 1px,transparent 1px);background-size:26px 26px}.chat-item{display:flex;gap:12px;max-width:780px;width:100%;align-self:center}.chat-item.user{justify-content:flex-end}.chat-avatar{flex:none;width:30px;height:30px;border:1px solid #dcb642;border-radius:7px;display:grid;place-items:center;color:var(--gold);background:#252316;font-size:19px}.chat-bubble{background:linear-gradient(135deg,#242e40,#171e2f);border:1px solid #354255;border-radius:10px;padding:13px 15px;flex:1;min-width:0;box-shadow:0 2px 13px #0002}.chat-item.user .chat-bubble{flex:0 1 auto;max-width:78%;background:#303222;border-color:#7e6d36}.chat-title{font-size:13px;font-weight:750;line-height:1.35}.chat-time{font:500 11px var(--mono);color:#a2b2c5;margin-left:auto}.chat-meta{display:flex;align-items:center;gap:15px}.chat-text{font-size:13px;line-height:1.6;color:#d7e0ed;white-space:pre-wrap;margin:7px 0 0}.chat-item.user .chat-text{margin:0}.mini-kicker{font:700 10px var(--mono);letter-spacing:.5px;color:var(--muted);margin:12px 0 7px}.result-summary{margin-top:13px;padding:11px;border:1px solid #5f6b79;border-radius:7px;background:#0f1622}.result-head{display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:8px;font-size:11px;font-weight:700}.result-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}.result-value{font:800 16px var(--mono);color:#f7dd84;margin-top:5px}.result-value.good{color:var(--success)}.result-label{font-size:10px;color:var(--muted)}.decision-panel{border:1px solid #e6bb4a;background:linear-gradient(160deg,#27271e,#161c29);padding:12px;border-radius:8px;box-shadow:0 0 9px #dcb53b33;margin-top:12px}.decision-options{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}.decision-option{min-height:93px;text-align:left;padding:12px;border-radius:8px;background:#101622;border:1px solid #596576}.decision-option.selected{border:1px solid var(--gold);background:#372f1b;color:#ffe6a1}.decision-option:before{content:"◯";float:left;margin-right:9px;font-size:16px}.decision-option.selected:before{content:"◉";color:var(--gold)}.decision-option strong{font-size:12px;display:block}.decision-option small{font-size:11px;line-height:1.45;display:block;margin:6px 0 0;color:#b2bccc}.decision-footer{display:flex;justify-content:space-between;align-items:center;gap:10px}.ghost-note{color:#a1b0c3;font-size:10px;line-height:1.3}.mini-gold{border:1px solid #ffe18c;border-radius:6px;padding:8px 12px;background:#f4c346;color:#191609;font-size:11px;font-weight:800;white-space:nowrap}.mini-gold:hover{filter:brightness(1.08)}.mini-gold:disabled{filter:none}.setup-alert{padding:12px;margin-top:12px;border:1px dashed #b48c41;border-radius:7px;color:#f0c979;background:#3a301c44;font-size:12px}.composer-wrap{flex:none;padding:10px 15px 9px;background:linear-gradient(180deg,#161d2b,#111826);border-top:1px solid #334254}.composer{display:flex;align-items:center;gap:11px;background:#141c2a;border:1px solid #52627a;border-radius:9px;padding:8px 10px}.composer:focus-within{border-color:var(--gold)}.composer-spark{color:var(--gold);font-size:23px;line-height:1}.composer textarea{resize:none;flex:1;min-width:0;min-height:25px;max-height:145px;overflow-y:auto;background:none;border:none;outline:none;color:#e9f0f8;font-size:13px;line-height:1.6}.composer textarea::placeholder{color:#91a0b1}.send-btn{font-size:19px;line-height:1;color:#f5c842;background:transparent;border:0;padding:5px}.send-btn:hover{color:white}.composer-note{font-size:10px;color:#7d93aa;margin:6px 2px 0}.to-latest{position:absolute;bottom:102px;left:50%;transform:translateX(-50%);z-index:2;border:1px solid #b99c4e;background:#2d2a22;border-radius:20px;padding:7px 12px;color:#ffdb75;font-size:11px}.dashboard,.inspector{display:flex;flex-direction:column;padding:16px 13px 12px;overflow-y:auto}.panel-topline{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px}.panel-topline h2{font:800 15px var(--mono);color:var(--gold);letter-spacing:-.5px;margin:0}.dashboard-content,.inspector-content{min-height:0}.dashboard-card{border:1px solid #3c495b;border-radius:8px;margin-bottom:9px;background:linear-gradient(145deg,#171e2e,#0f1724);padding:12px}.dashboard-card:first-child{border-color:#927d3e}.dash-label{font:650 10px var(--mono);color:#a7b8c9;letter-spacing:.4px;display:flex;justify-content:space-between;gap:8px}.dash-value{font-size:15px;font-weight:760;margin-top:7px;overflow-wrap:anywhere}.dash-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 4px;border-bottom:1px solid #334254}.dash-row:last-child{border-bottom:0}.dash-row .k{font-size:12px;color:#bbc8d8}.dash-row .v{font-size:12px;text-align:right;font-weight:700;color:#e9eef5}.dash-row .v.ok{color:var(--success)}.dash-row .v.warn{color:var(--warning)}.progress{margin-top:9px;border-radius:9px;height:6px;background:#343f50;overflow:hidden}.progress b{display:block;background:linear-gradient(90deg,#e4aa29,#f8d757);height:100%;max-width:100%}.dash-subtext{font-size:10px;color:#9aacbf;margin-top:6px}.dash-warning{padding:10px;border:1px dashed #8e7242;border-radius:7px;color:#e1bc71;line-height:1.45;font-size:11px}.galaxy{display:flex;flex-direction:column}.galaxy-heading{flex:none;min-height:100px;padding:15px 17px;display:flex;align-items:center;justify-content:space-between;gap:8px;border-bottom:1px solid #38495f;background:linear-gradient(110deg,#121b2b,#0e1726)}.galaxy-heading h1{margin-top:6px}.galaxy-heading p{margin-top:4px}.graph-view{flex:1;min-height:0;position:relative;overflow:hidden;background:radial-gradient(ellipse at 35% 25%,#1a2f4e8c,transparent 47%),radial-gradient(ellipse at 75% 85%,#21294b66,transparent 42%),#0c1525;cursor:grab;touch-action:none}.graph-view:active{cursor:grabbing}.graph-view:after{pointer-events:none;content:"";position:absolute;bottom:-85%;left:-16%;width:130%;height:110%;border-radius:50%;border:1px solid #4a779473;background:radial-gradient(ellipse at top,#3c65913d,#081320 38%,transparent 68%);box-shadow:0 -10px 70px #2b659c28}.space-stars{position:absolute;inset:0;pointer-events:none;opacity:.6;background-image:radial-gradient(circle,#9bc6f4 1px,transparent 1.5px),radial-gradient(circle,#f1d28b 1px,transparent 1.5px);background-size:103px 97px,179px 167px;background-position:18px 26px,60px 41px}.graph-world{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform;z-index:1}.graph-edges{position:absolute;left:0;top:0;pointer-events:none;overflow:visible}.graph-nodes{position:absolute;left:0;top:0}.graph-node{position:absolute;width:214px;min-height:93px;padding:11px;border:1px solid #65809b;border-radius:11px;background:linear-gradient(155deg,#1c2b3e,#0e1a2b);box-shadow:0 7px 20px #0008;display:flex;flex-direction:column;text-align:left;gap:7px;color:#eaf3ff;transition:border-color .15s,box-shadow .15s;cursor:pointer}.graph-node:hover{border-color:#d4e5ff;box-shadow:0 0 15px #7ca3bc56}.graph-node.selected{border-color:#ffe280!important;box-shadow:0 0 0 2px #cda43b6b,0 0 21px #f7d96b6b!important}.graph-node.completed{border-color:#4bd093;background:linear-gradient(160deg,#183a33,#0d242c)}.graph-node.ready{border-color:#f4c842;box-shadow:0 0 9px #bfa04c6b}.graph-node.failed,.graph-node.blocked{border-color:#e7697a;border-style:dashed;background:linear-gradient(145deg,#36232f,#18202f)}.graph-node.pending{border-style:dashed}.node-row{display:flex;gap:8px;align-items:center}.node-id{font:700 10px var(--mono);color:#a7bdd0}.node-phase{font:600 9px var(--mono);color:#b5c9db;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:auto}.node-title{font-size:14px;font-weight:750;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}.node-state{font:700 10px var(--mono);color:#e5c56e}.graph-node.completed .node-state{color:var(--success)}.graph-node.failed .node-state,.graph-node.blocked .node-state{color:var(--danger)}.graph-gate{position:absolute;width:68px;height:42px;border:2px solid #f3c94c;clip-path:polygon(18% 0,82% 0,100% 50%,82% 100%,18% 100%,0 50%);background:#221e1a;color:#ffe89f;display:grid;place-items:center;font:800 13px var(--mono);box-shadow:0 0 15px #d8b64c;cursor:pointer}.graph-gate.satisfied{background:#183a33;border-color:#53d69a;color:#b4ffdb}.graph-gate.selected{outline:2px solid white;outline-offset:4px}.edge-path{fill:none;stroke:#7aa2c7;stroke-width:2;opacity:.72}.edge-path.knowledge{stroke:#94a0bd;stroke-width:1.6;stroke-dasharray:5 6;opacity:.6}.edge-path.gated{stroke:#e4c258;stroke-width:2}.edge-path.selected{stroke:#ffe58c;stroke-width:3;opacity:1}.graph-hud{position:absolute;z-index:3;top:14px;right:14px;display:flex;gap:11px;align-items:center;border:1px solid #455b76;background:#0b1423dd;padding:8px 11px;border-radius:8px;font:600 10px var(--mono);color:#d4deec}.graph-hud-divider{height:15px;border-left:1px solid #51657a}.graph-legend{position:absolute;left:12px;bottom:12px;z-index:3;display:flex;flex-wrap:wrap;gap:12px;padding:9px 12px;border:1px solid #354861;background:#0b1424e9;border-radius:7px;color:#bdccde;font-size:10px}.graph-legend span{display:flex;align-items:center;gap:6px}.legend-dot{width:9px;height:9px;border-radius:50%;border:1px solid currentColor}.legend-dot.completed{background:var(--success);color:var(--success)}.legend-dot.ready{background:var(--gold);color:var(--gold)}.legend-dot.pending{color:#91b0d1}.legend-dot.blocked{background:var(--danger);color:var(--danger)}.zoom-controls{position:absolute;right:12px;bottom:12px;z-index:3;display:flex;align-items:center;background:#0b1525ee;border:1px solid #50627a;border-radius:6px;overflow:hidden}.zoom-controls button{height:35px;min-width:33px;background:transparent;color:#dce7f5;border:0;border-right:1px solid #354456;font-size:21px}.zoom-controls button:hover{color:var(--gold);background:#243149}.zoom-controls span{font:700 11px var(--mono);padding:0 10px}.graph-message{position:absolute;z-index:2;left:50%;top:45%;transform:translate(-50%,-50%);background:#1a2130e6;border:1px solid #b69555;border-radius:10px;padding:18px 22px;text-align:center;color:#e8dcb9;min-width:220px;max-width:min(80%,410px);line-height:1.6}.inspector .panel-topline h2{font-size:13px}.inspector-section{border-bottom:1px solid #39495b;padding:12px 3px}.inspector-section:last-child{border-bottom:0}.inspector-label{font:700 10px var(--mono);letter-spacing:.4px;color:var(--muted)}.inspector-value{line-height:1.5;font-size:13px;margin-top:7px;overflow-wrap:anywhere}.inspector-title{font-size:20px;line-height:1.3;font-weight:760}.inspector-tag{display:inline-block;border:1px solid #937c42;border-radius:5px;padding:5px 7px;color:#ffda85;font:700 10px var(--mono);margin:8px 5px 0 0}.inspector-tag.done{border-color:#34765f;color:#8fe9bc}.inspector-list{margin:8px 0;padding-left:17px;color:#c9d6e4;font-size:12px;line-height:1.65}.backdrop{position:fixed;inset:60px 0 0;background:#0508118c;z-index:15}.modal-backdrop{position:fixed;inset:0;z-index:30;background:#040813c9;display:grid;place-items:center;padding:15px}.modal{width:min(520px,100%);max-height:min(90dvh,760px);overflow:auto;padding:18px 20px}.modal .panel-topline h2{font-size:17px}.modal-content{font-size:13px;color:#d2ddea;line-height:1.6}.modal-content label{display:block;font-size:12px;color:#b4c6d9;font-weight:650;margin-top:12px}.modal-content input,.modal-content textarea,.modal-content select{margin-top:5px;width:100%;border:1px solid #4c6078;border-radius:7px;background:#0f1828;color:#f1f5fc;padding:10px}.modal-content textarea{resize:vertical;min-height:74px}.modal-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:9px;margin-top:18px}.modal-note{border:1px dashed #836b3a;background:#242315;padding:10px;border-radius:7px;color:#efd38e;font-size:11px;margin-top:12px}.modal-secondary{background:#152135;border:1px solid #52667d;border-radius:6px;padding:9px 13px}.toast{position:fixed;z-index:40;bottom:16px;left:50%;transform:translateX(-50%);background:#1c2838;color:#f0e6c8;border:1px solid #d8b453;border-radius:8px;padding:12px 17px;box-shadow:0 8px 24px #0009;max-width:min(90vw,500px);text-align:center;font-size:12px}.app-shell.reduced-motion *, .app-shell.reduced-motion *:before,.app-shell.reduced-motion *:after{transition:none!important;animation:none!important}
+@media(min-width:1600px){.workspace.mode-mission{grid-template-columns:248px minmax(0,1fr) 312px}.workspace.mode-mission.dashboard-closed,.workspace.mode-galaxy{grid-template-columns:248px minmax(0,1fr)}.workspace.mode-galaxy.inspector-open{grid-template-columns:248px minmax(0,1fr) 340px}.mission-heading{padding:18px 25px 15px}}
+@media(max-width:1365px){.workspace.mode-mission,.workspace.mode-galaxy{grid-template-columns:200px minmax(0,1fr)}.workspace.mode-mission.dashboard-closed{grid-template-columns:200px minmax(0,1fr)}.workspace.mode-galaxy.inspector-open{grid-template-columns:200px minmax(0,1fr)}.dashboard,.inspector{position:absolute;right:12px;top:72px;bottom:12px;width:320px;z-index:18;box-shadow:0 5px 30px #000c}.workspace{position:relative}.dashboard[hidden],.inspector[hidden]{display:none}.sidebar{padding-left:8px;padding-right:8px}.proto-ribbon{font-size:9px}.brand{min-width:206px}.topbar{gap:15px}}
+@media(min-width:1100px) and (max-width:1365px){.workspace.mode-mission .dashboard:not([hidden]){display:flex}.panel-backdrop{z-index:16}}
+@media(max-width:1099px){.workspace.mode-mission,.workspace.mode-mission.dashboard-closed,.workspace.mode-galaxy,.workspace.mode-galaxy.inspector-open{grid-template-columns:64px minmax(0,1fr)}.sidebar{padding:10px 5px}.sidebar-head{justify-content:center;padding:6px 0}.sidebar-head .section-label{font-size:0}.sidebar-head .section-label:before{content:"▤";font-size:21px}.new-campaign{min-height:41px}.new-campaign .plus{font-size:24px}.sidebar-word,.campaign-name{display:none}.campaign{justify-content:center;padding:8px}.campaign .campaign-icon{font-size:20px}.sidebar-setting{justify-content:center;padding:12px 0}.brand{min-width:185px}.brand-name{font-size:20px}.top-tabs{gap:5px}.top-tab{padding:8px 10px;font-size:11px}.top-right .connection{display:none}}
+@media(max-width:899px){.workspace.mode-mission,.workspace.mode-mission.dashboard-closed,.workspace.mode-galaxy,.workspace.mode-galaxy.inspector-open{grid-template-columns:minmax(0,1fr)}.workspace{padding:8px}.sidebar{position:fixed;left:8px;top:68px;bottom:8px;width:235px;z-index:20;padding:14px 10px}.sidebar .sidebar-head{justify-content:space-between}.sidebar-head .section-label{font-size:16px}.sidebar-head .section-label:before{display:none}.sidebar-word,.campaign-name{display:inline}.campaign{justify-content:flex-start}.sidebar-setting{justify-content:flex-start}.menu-toggle,.close-sidebar{display:inline-grid}.sidebar:not(.mobile-open){display:none}.sidebar-backdrop:not([hidden]){display:block}.dashboard,.inspector{top:68px;bottom:8px;right:8px}.topbar{padding:0 10px;gap:8px}.brand{min-width:unset;gap:6px}.brand-rule{display:none}.brand-orbit{font-size:23px}.brand-name{font-size:17px}.top-right{gap:5px}.top-right .proto-ribbon{max-width:90px;white-space:normal;line-height:1.1}.top-sep{display:none}.top-tab span:first-child{display:none}.top-tab{padding:9px 7px;font-size:9px}.mission-heading{padding:12px 14px}.chat-feed{padding:13px 10px}.mission-heading h1{font-size:17px}.galaxy-heading{min-height:90px}.galaxy-heading h1{font-size:17px}}
+@media(max-width:590px){.brand-name{display:none}.top-tab{font-size:9px}.top-tabs{gap:3px}.top-right .icon-btn{display:none}.mission-heading-row{align-items:flex-start}.heading-actions .subtle-button span,.galaxy-heading-actions .subtle-button span{display:none}.decision-options{grid-template-columns:1fr}.decision-footer{flex-direction:column;align-items:stretch}.result-grid{grid-template-columns:1fr 1fr}.graph-legend{bottom:54px;font-size:9px}.dashboard,.inspector{width:min(320px,calc(100vw - 18px))}.galaxy-heading{padding:12px}.graph-hud{font-size:9px;top:6px;right:6px}}
+@media(max-height:720px){.chat-feed{padding-top:10px;gap:10px}.mission-heading{padding-top:10px;padding-bottom:9px}.composer-wrap{padding-top:7px}.dashboard-card{padding:9px;margin-bottom:7px}.dashboard{padding-top:10px}.galaxy-heading{min-height:80px}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+
+/**
+ * BananLoop Pixel Universe / Design System v1.1 — RPDI-UI-01.1
+ * The browser rendering layer only; no engine commands, business semantics or synthetic fixtures here.
+ * Pixel shell + contemporary working surfaces. Works offline with OS system fonts.
+ */
+:root {
+  --bg-base:#07111D;
+  --bg-panel:#0B1B2B;
+  --bg-raised:#172638;
+  --bg-glass:#112237;
+  --border-subtle:#27394B;
+  --border-strong:#425A72;
+  --accent-banana:#F4BD35;
+  --accent-focus:#FFCF57;
+  --accent-muted:#725B29;
+  --text-main:#EAF0F6;
+  --text-muted:#B9C9D8;
+  --text-quiet:#839AB0;
+  --state-verified:#29C77E;
+  --state-review:#E9B95C;
+  --state-error:#E57883;
+  --space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;
+  --space-6:24px;--space-8:32px;
+  --radius-sm:6px;--radius-md:10px;--radius-lg:14px;
+  --space:var(--bg-base);--panel:var(--bg-panel);--panel2:var(--bg-raised);
+  --stroke:var(--border-subtle);--gold:var(--accent-banana);--gold-light:var(--accent-focus);
+  --text:var(--text-main);--muted:var(--text-muted);
+  --success:var(--state-verified);--danger:var(--state-error);--warning:var(--state-review);
+  --font:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Arial,sans-serif;
+  --mono:"Cascadia Code","JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+html{background:var(--bg-base)}
+body{color:var(--text-main);font-family:var(--font);font-size:13px;font-weight:400;letter-spacing:.01em}
+::selection{background:#775b22;color:#fff}
+button:focus-visible,textarea:focus-visible,input:focus-visible,select:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent-focus);outline-offset:3px}
+.app-shell{background:radial-gradient(ellipse at 52% -30%,#15314d 0%,transparent 42%),#07111d;grid-template-rows:60px minmax(0,1fr)}
+.app-shell:before{content:"";position:absolute;inset:60px 0 0;pointer-events:none;background-image:linear-gradient(#6e8baa04 1px,transparent 1px),linear-gradient(90deg,#6e8baa04 1px,transparent 1px);background-size:64px 64px}
+.topbar{padding:0 20px;gap:25px;background:linear-gradient(90deg,#081320 0%,#0a1a2b 65%,#091422);border-bottom:1px solid #243647;box-shadow:0 8px 26px #02070d50}
+.topbar:after{height:1px;left:19px;width:230px;bottom:0;background:linear-gradient(90deg,transparent,#edbd4a70,transparent)}
+.brand{min-width:247px;gap:11px}
+.brand-pixel-planet{width:40px;height:40px;display:grid;place-items:center;filter:drop-shadow(0 0 8px #edba4250);flex:none}
+.brand-stack{display:flex;flex-direction:column;gap:3px;min-width:0}
+.brand-name{font:900 18px/1 var(--mono);letter-spacing:1.6px;color:#f2f4f1}
+.brand-name span,.brand-name b{color:#ffc84c}
+.brand-name b{font-weight:900;animation:none}
+.brand-sub{font:650 8px/1 var(--mono);letter-spacing:1.1px;color:#7191a7;white-space:nowrap}
+.brand-rule{border-color:#2b3b49;height:28px}
+.top-tabs{gap:4px;align-self:stretch}
+.top-tab{height:60px;min-height:60px;padding:0 15px;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:#8fa6bb;font:750 10.5px/1 var(--mono);letter-spacing:1px;gap:8px;position:relative;box-shadow:none;transition:color .18s,background .18s,border-color .18s}
+.top-tab span:first-child{font-size:16px;font-family:var(--mono);color:#71859a}
+.top-tab:hover{background:#162a3a80;border-color:#536d7e;color:#e7eff7}
+.top-tab.active{color:#ffcf57;background:linear-gradient(180deg,#152c3c80,#182c3908);border:0;border-bottom:2px solid #ffcf57;box-shadow:none;text-shadow:0 0 16px #f4bd3540}
+.top-tab.active span:first-child{color:#ffcf57}
+.decision-dot{display:inline-block;width:5px;height:5px;margin-left:2px;border-radius:1px;background:var(--state-review)}
+.top-right{gap:12px}
+.proto-ribbon{background:#352a18;border:1px solid #806637;color:#f2d390;font:750 9px/1 var(--mono);letter-spacing:.6px;border-radius:3px;padding:7px 9px}
+.top-sep{border-color:#283e4f;height:19px}
+.connection{font-size:9px;letter-spacing:.7px;color:#8da7b8!important}
+.connection i{width:6px;height:6px;border-radius:1px;background:#ffc857;box-shadow:0 0 10px #edb84e50}
+.icon-btn{border:1px solid #324758;background:#101f2f;border-radius:7px;min-width:30px;min-height:30px;color:#a2b8c9}
+.icon-btn:hover{border-color:#ccae5c;background:#182c40}
+.workspace{padding:10px;gap:10px}
+.workspace.mode-decisions{grid-template-columns:232px minmax(0,1fr)}
+.workspace.mode-galaxy{grid-template-columns:232px minmax(0,1fr)}
+.station-panel{border:1px solid #23394a;border-radius:12px;background:#0b1928;box-shadow:0 12px 30px #01070d3d}
+.station-panel:before,.station-panel:after{display:none}
+.sidebar{background:linear-gradient(145deg,#0d1b2a,#091625 90%);padding:19px 12px 14px}
+.sidebar-head{padding:0 10px 17px;border-bottom:1px solid #243a4c;margin-bottom:14px}
+.section-label{font:700 10px/1.3 var(--mono);letter-spacing:1.2px;color:#839caf}
+.new-campaign{background:#202c29;border:1px dashed #a58a48;border-radius:8px;min-height:40px;margin:0 4px 22px;color:#f4d580;font-size:12px;font-weight:650;box-shadow:none}
+.new-campaign:hover{background:#333923;filter:none;border-style:solid}
+.new-campaign .plus{font-size:21px;line-height:1}
+.campaign-list{gap:5px}
+.campaign{border:1px solid transparent;border-radius:7px;min-height:45px;padding:10px 10px;font-size:12px;color:#9eafc0}
+.campaign .campaign-icon{font-size:18px;color:#46637c}
+.campaign:hover{background:#193045;border-color:#304c60}
+.campaign.active{border-color:#5d542d;background:linear-gradient(90deg,#41391e8a,#1726357a 85%);color:#ffdea2;box-shadow:inset 2px 0 #f4bd35}
+.campaign.active .campaign-icon{color:#f2be4c}
+.sidebar-footer{border-top:1px solid #253d50;padding:22px 7px 18px;display:flex;flex-direction:column;gap:7px;align-items:center;margin-top:4px}
+.sidebar-footer .sidebar-orbit-mark{font:24px/1 var(--mono);color:#967b3e;letter-spacing:15px;padding-left:14px;opacity:.75}
+.sidebar-footer span,.sidebar-footer small{font:650 9px/1 var(--mono);letter-spacing:1px;color:#58758b}
+.sidebar-footer small{font-size:8px;color:#3f596e}
+.sidebar-setting{border-color:#26394a;color:#9eb4c5;padding-left:10px;font-size:12px}
+.sidebar-setting:hover{color:#ffcf57}
+/* modern content surfaces: intentionally no gold outline on all cards */
+.mission,.galaxy,.decision-center{background:#0c1928}
+.mission-heading,.galaxy-heading{background:linear-gradient(100deg,#101e2e,#0b1a29);border-color:#243a4d;padding:17px 24px 16px}
+.galaxy-heading{min-height:88px}
+.eyebrow{font:700 9px/1.3 var(--mono);letter-spacing:1.4px;color:#8099ab}
+.eyebrow.yellow{color:#dcb858}
+.title-wrap h1,.galaxy-heading h1{font:750 22px/1.25 var(--font);letter-spacing:-.5px;margin-top:7px;color:#eaf0f6}
+.galaxy-heading p,.title-wrap p{font-size:11px;color:#87a0b5;margin-top:5px}
+.subtle-button{border:1px solid #2d4458;background:#142639;border-radius:7px;color:#afc2d0;font-size:11px;min-height:33px}
+.subtle-button:hover{border-color:#c6a955;background:#223043}
+.chat-feed{background-color:#0c1929;background-image:radial-gradient(#93bde10d 1px,transparent 1px);background-size:28px 28px;padding:24px 28px 36px;gap:16px}
+.chat-avatar{border-color:#485b50;background:#162838;border-radius:8px;color:#d7b85b}
+.chat-bubble{background:#132437;border:1px solid #25394b;border-radius:12px;box-shadow:none;padding:15px 17px}
+.chat-item.user .chat-bubble{background:#292b23;border:1px solid #5b5236;color:#f2e7be}
+.chat-title{color:#ebf0f5}
+.chat-text{color:#b7c8d7}
+.result-summary{background:#0d1e2c;border-color:#284153}
+.result-value{color:#e6c777}
+.decision-panel{background:#152638;border:1px solid #695938;box-shadow:inset 2px 0 #d8aa49}
+.decision-option{background:#0a1927;border-color:#314457}
+.decision-option.selected{border-color:#c9a44c;background:#2b2a1c}
+.mini-gold,.gold-button{border-radius:7px}
+.composer-wrap{background:#0d1b2b;border-top:1px solid #263a4d;padding:16px 24px 10px}
+.composer{background:#142637;border-color:#354b5e;border-radius:9px;box-shadow:none}
+.composer:focus-within{border-color:#b59a54}
+.composer-note{color:#748ea3;font-size:10px}
+.dashboard,.inspector{background:#0c1a2a}
+.panel-topline{background:#0d1e2d;border-bottom:1px solid #294154}
+.panel-topline h2{font-size:11px;letter-spacing:1px;color:#b8c8d9;font-family:var(--mono)}
+.dashboard-card{background:#112337;border:1px solid #253c4e;border-radius:10px;box-shadow:none}
+.dashboard-card:first-child{border-color:#3c4a44;box-shadow:inset 2px 0 #d5af53}
+.dash-label{color:#8fa9b9;font-size:9px;letter-spacing:.8px}
+.dash-value{color:#e8eef4}
+.dash-row{border-color:#2b4050}
+.progress{background:#22374a;border-radius:2px;height:5px}
+.progress b{background:#e3b851;border-radius:2px}
+/* Research Galaxy shell */
+.galaxy{isolation:isolate}
+.graph-view{background:radial-gradient(ellipse at 66% 34%,#173250 0%,transparent 45%),radial-gradient(ellipse at 20% 75%,#162d48 0%,transparent 48%),linear-gradient(145deg,#081421,#091a2d 72%,#0b1c2d);}
+.graph-view:after{bottom:-105%;left:-30%;width:120%;height:120%;background:radial-gradient(ellipse at top,#27466528,#0b152100 58%);border-color:#28465d3e;box-shadow:none}
+.space-stars{opacity:1;background-image:radial-gradient(circle,#98bcd0a3 .9px,transparent 1.5px),radial-gradient(circle,#e6c981ad 1px,transparent 1.6px),radial-gradient(circle,#6b9ab477 .7px,transparent 1.4px);background-size:91px 91px,173px 137px,43px 53px;background-position:14px 35px,27px 88px,10px 30px;mask-image:linear-gradient(to bottom,transparent,#000 10%,#000 88%,transparent)}
+.graph-view:before{content:"";pointer-events:none;position:absolute;inset:0;background-image:linear-gradient(90deg,transparent 49.92%,#b5cae108 50%,transparent 50.08%),linear-gradient(transparent 49.85%,#b5cae107 50%,transparent 50.15%);background-size:190px 190px;opacity:.35}
+.galaxy-planet{position:absolute;right:10%;top:11%;width:320px;height:320px;opacity:.5;pointer-events:none;z-index:0;filter:saturate(.75)}
+.galaxy-planet-core{position:absolute;inset:32px;border-radius:50%;background:radial-gradient(circle at 34% 27%,#9b8673 0%,#414f64 10%,#172d49 32%,#0a1d35 55%,#071625 73%);box-shadow:inset -18px -20px 38px #02070bcc,0 0 80px #24507330;border:1px solid #60708536}
+.galaxy-planet-core:after{content:"";position:absolute;inset:20px;border-radius:50%;background:repeating-linear-gradient(170deg,transparent 0 25px,#ad8c5938 29px 31px,transparent 35px 50px);clip-path:circle(48%)}
+.galaxy-planet-ring{position:absolute;left:0;right:0;top:108px;height:94px;border:8px solid #b2a18b3e;border-right-color:#bba66b99;border-left-color:#7b96b233;border-radius:50%;transform:rotate(-25deg);box-shadow:0 0 0 1px #bba37622}
+.galaxy-coordinate{position:absolute;top:29px;left:29px;font:650 9px/1.7 var(--mono);letter-spacing:1px;color:#6c90a8;z-index:1;pointer-events:none}
+.galaxy-axes{position:absolute;right:40px;bottom:90px;font:30px var(--mono);color:#5877944d;display:flex;gap:54px;pointer-events:none}
+.graph-world{z-index:1}
+.graph-hud{right:18px;top:16px;padding:9px 12px;background:#0b1d2ce9;border-color:#2b485a;border-radius:6px;letter-spacing:.8px;color:#b7cddd;font-size:9px}
+.hud-eye{font-size:14px;color:#e8bb53}
+.graph-legend{left:20px;bottom:17px;border-color:#284255;background:#0c1e2deb;border-radius:6px;color:#a3bacb;padding:10px 14px;font:550 10px/1 var(--font)}
+.graph-node{border-color:#44627b;border-radius:8px;padding:11px 12px;background:linear-gradient(115deg,#162c3e,#0c1e30);box-shadow:0 12px 35px #0009,inset 3px 0 #6e85992b}
+.graph-node:hover{border-color:#f0d58b;box-shadow:0 12px 35px #0009,0 0 0 1px #ddbb6d55}
+.graph-node.selected{border-color:#ffdc77!important;box-shadow:0 0 0 2px #d0a23a65,0 0 24px #e7bf4c35!important}
+.graph-node.completed{background:linear-gradient(105deg,#13382f,#0b282d);border-color:#2a9873;box-shadow:inset 3px 0 #2dc883,0 12px 35px #0009}
+.graph-node.ready{border-color:#c2a14a;box-shadow:inset 3px 0 #edc759,0 12px 35px #0009}
+.graph-node.failed,.graph-node.blocked{border-color:#9c5664;border-style:solid;background:linear-gradient(115deg,#37232e,#191f30);box-shadow:inset 3px 0 #d8707d,0 12px 35px #0009}
+.graph-node.pending{border-style:solid;box-shadow:inset 3px 0 #5a738755,0 12px 35px #0009}
+.node-id,.node-phase{letter-spacing:.5px}
+.node-title{color:#f1f5f8;font-weight:750}
+.graph-gate{background:#28281e;border:2px solid #e8bd57;box-shadow:none;color:#ffcf64}
+.graph-gate.satisfied{background:#12362e;border-color:#31b77c;color:#84ebb1}
+.edge-path{stroke:#668ca7;opacity:.65}
+.edge-path.gated{stroke:#e0b957;opacity:.76}
+.edge-path.knowledge{stroke:#6386a2;opacity:.48}
+.zoom-controls{border:1px solid #30495e;background:#0c1e2cf0;border-radius:7px;bottom:16px;right:17px}
+.zoom-controls button{color:#abc0d0}
+.graph-message{background:#102539ed;border:1px solid #557087;border-radius:10px;color:#d9e5f0;box-shadow:0 22px 45px #0006}
+/* Decision Center — entirely visual, all actions deliberately disabled */
+.decision-center{display:flex;flex-direction:column;background:linear-gradient(125deg,#0e2031,#0a1826);min-width:0}
+.decision-head{padding:25px 29px 22px;border-bottom:1px solid #284155;background:radial-gradient(ellipse at 90% 0,#23415a66,transparent 55%)}
+.decision-headline{display:flex;justify-content:space-between;gap:18px;align-items:center;margin-top:10px}
+.decision-headline h1{font:750 clamp(22px,2vw,30px)/1.25 var(--font);letter-spacing:-.8px;margin:0;color:#f0f4f7}
+.decision-headline h1 .pixel-caret{color:#edbd59}
+.decision-headline p{color:#94acc1;line-height:1.5;margin:7px 0 0;font-size:12px}
+.decision-demo-status{font:700 9px var(--mono);letter-spacing:1px;white-space:nowrap;border:1px solid #695b38;padding:9px 11px;color:#e2c374;border-radius:4px;background:#2a281e}
+.decisions-workarea{display:grid;grid-template-columns:minmax(235px,315px) minmax(0,1fr);gap:0;min-height:0;flex:1;overflow:hidden}
+.decision-inbox{border-right:1px solid #294052;overflow:auto;background:#0c1b2b;padding:20px 14px}
+.inbox-title{display:flex;justify-content:space-between;font:700 10px/1 var(--mono);letter-spacing:.7px;color:#9eb5c5;padding:3px 5px 17px;border-bottom:1px solid #284051}
+.inbox-title strong{color:#edc565}
+.inbox-title span:last-child{font-size:9px;color:#6b8599}
+.inbox-group-label{margin:24px 8px 10px;font:750 9px var(--mono);letter-spacing:1.2px;color:#68839a}
+.decision-tile{padding:16px 14px 14px;background:#15293b;border:1px solid #334d61;border-radius:9px;margin-bottom:9px}
+.decision-tile.selected{border-color:#b19a58;box-shadow:inset 3px 0 #f0c15c;background:linear-gradient(120deg,#263143,#182a3c)}
+.decision-tile.is-historical{opacity:.73;background:#0e2233}
+.decision-tile-top{display:flex;align-items:center;justify-content:space-between;gap:7px}
+.tile-number{font:650 9px var(--mono);color:#819bb0;letter-spacing:.8px}
+.tile-pill{font:700 9px var(--mono);letter-spacing:.2px;border-radius:4px;padding:4px 6px;white-space:nowrap}
+.needs-review{color:#f8d687;background:#55452655}
+.resolved{color:#80d7ab;background:#16463888}
+.declined{color:#f5a0a7;background:#4b283688}
+.decision-tile h2{font:750 14px var(--font);margin:13px 0 5px;color:#ebf1f5}
+.decision-tile p{font-size:11px;color:#96acbe;margin:0;line-height:1.5}
+.tile-foot{margin-top:20px;display:flex;justify-content:space-between;gap:8px;color:#7795a9;font:700 9px var(--mono);padding-top:12px;border-top:1px solid #344a592a}
+.decision-detail{overflow:auto;padding:25px clamp(20px,3vw,42px) 16px;background:radial-gradient(ellipse at 73% 30%,#1e39545b,transparent 55%),#0b1c2b}
+.detail-kicker{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid #314759;padding-bottom:17px;font:700 10px var(--mono);letter-spacing:.8px;color:#89a6b8}
+.detail-kicker span:last-child{color:#e9c478}
+.detail-hero{display:flex;align-items:center;gap:22px;padding:26px 0}
+.detail-emblem{flex:none;width:84px;height:84px;display:grid;place-items:center;border:1px solid #745e37;border-radius:16px;background:radial-gradient(circle at 50% 30%,#69502b,#242b2b 60%,#142533);transform:rotate(-4deg)}
+.emblem-diamond{font:700 53px/1 var(--mono);color:#f3c65d;transform:rotate(4deg)}
+.detail-hero h2{font:750 clamp(22px,2.2vw,31px) var(--font);letter-spacing:-.8px;margin:9px 0 7px;color:#f2f5f7}
+.detail-hero p{color:#a4bacb;font-size:12px;max-width:520px;line-height:1.6;margin:0}
+.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.detail-stat{background:#142a3e;border:1px solid #2c485a;padding:18px;border-radius:9px;display:flex;flex-direction:column;gap:9px}
+.detail-stat span{font:750 9px var(--mono);letter-spacing:1px;color:#87a5b9}
+.detail-stat strong{font:750 13px var(--mono);letter-spacing:.5px;color:#e9eef1}
+.detail-stat:last-child{border-color:#766747;background:linear-gradient(120deg,#292c30,#19303e)}
+.detail-stat:last-child strong{color:#f1c76f}
+.decision-explanation{margin-top:16px;border:1px solid #2b475a;background:#0d2133;border-radius:9px;padding:20px 20px 17px}
+.decision-explanation-head{font:700 10px var(--mono);letter-spacing:.9px;color:#d8b968}
+.decision-explanation p{font-size:12px;line-height:1.75;color:#b3c6d4;margin:13px 0}
+.explanation-link{font:700 9px var(--mono);color:#a2bece;letter-spacing:.5px;border-top:1px solid #2b4152;padding-top:14px}
+.decision-evidence{display:grid;grid-template-columns:110px minmax(0,1fr);gap:10px;padding:20px 5px;border-bottom:1px solid #294253}
+.decision-evidence span{font:700 9px var(--mono);letter-spacing:.7px;color:#819caf}
+.decision-evidence code{font:550 10px var(--mono);color:#b8cbd7;overflow-wrap:anywhere}
+.decision-actions{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:18px 2px}
+.decision-actions p{margin:0;color:#8ca4b5;font-size:10px;line-height:1.5;max-width:310px}
+.decision-actions>div{display:flex;gap:9px}
+.decision-actions button{border:1px solid #3e5463;background:#182b3c;color:#8ba0b2;border-radius:7px;padding:11px 15px;font:750 10px var(--mono);letter-spacing:.4px}
+.decision-actions .decision-approve{background:#66542a66;border-color:#695c39;color:#ad9a6c}
+.decision-actions button:disabled{opacity:.74;cursor:not-allowed}
+/* Responsive */
+@media(min-width:1600px){.workspace.mode-decisions{grid-template-columns:248px minmax(0,1fr)}}
+@media(max-width:1365px){.workspace.mode-decisions{grid-template-columns:200px minmax(0,1fr)}.brand{min-width:205px}.brand-sub{font-size:7px}.topbar{gap:12px}.decision-detail{padding-left:24px;padding-right:24px}}
+@media(max-width:1099px){.workspace.mode-decisions{grid-template-columns:64px minmax(0,1fr)}.brand{min-width:195px}.sidebar-footer{display:none}.top-tab{padding:0 11px}.decisions-workarea{grid-template-columns:255px minmax(0,1fr)}.detail-hero{gap:15px}.detail-emblem{width:60px;height:60px}.emblem-diamond{font-size:40px}}
+@media(max-width:899px){.workspace.mode-decisions{grid-template-columns:minmax(0,1fr)}.brand{min-width:auto}.brand-sub{display:none}.brand-rule{display:none}.brand-pixel-planet{width:32px}.brand-pixel-planet svg{width:32px}.topbar{padding:0 10px}.decision-head{padding:17px}.decision-headline p{font-size:11px}.decision-demo-status{display:none}.decision-detail{padding:17px}.decision-inbox{padding:12px}.decisions-workarea{grid-template-columns:235px minmax(0,1fr)}}
+@media(max-width:680px){.top-tab{font-size:9px;padding:0 7px;gap:5px}.top-tabs{gap:0}.top-tab span:first-child{display:none}.brand-name{font-size:14px;letter-spacing:.7px}.brand-pixel-planet{width:24px}.brand-pixel-planet svg{width:24px}.decision-dot{display:none}.decisions-workarea{display:block;overflow:auto}.decision-inbox{border-right:0;border-bottom:1px solid #284052;max-height:245px}.decision-detail{overflow:visible}.detail-hero{padding:18px 0}.detail-grid{grid-template-columns:1fr}.decision-actions{flex-direction:column;align-items:stretch}.decision-actions>div{justify-content:stretch}.decision-actions button{flex:1}.galaxy-planet{right:-100px;opacity:.24}}
+@media(max-height:720px){.galaxy-heading{min-height:76px;padding:11px 18px}.decision-head{padding-top:14px;padding-bottom:14px}.decision-inbox{padding-top:12px}.inbox-group-label{margin-top:16px}.detail-hero{padding:15px 0}.detail-emblem{height:60px;width:60px}.emblem-diamond{font-size:38px}.decision-detail{padding-top:16px}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+
+/* Keep both approval controls visible within 1366x768 visual review; still fully disabled. */
+@media(min-height:701px) and (max-height:820px){.decision-head{padding-top:18px;padding-bottom:16px}.decision-headline{margin-top:6px}.decision-detail{padding-top:14px}.detail-hero{padding:14px 0}.detail-emblem{height:64px;width:64px}.emblem-diamond{font-size:41px}.detail-stat{padding:13px}.decision-explanation{margin-top:11px;padding:13px 16px}.decision-explanation p{margin:9px 0}.explanation-link{padding-top:9px}.decision-evidence{padding:12px 5px;gap:7px}.decision-actions{padding:9px 2px}}
+
+/* RPDI-UI-01.2 · Interactive Workspace + synthetic-only Motion Lab */
+:root { --mission-panel-width:296px; --interaction-ease:cubic-bezier(.18,.75,.25,1); }
+.layout-presets { display:inline-flex;align-items:center;gap:2px;border:1px solid #2d4557;background:#0a1928;border-radius:8px;padding:3px;white-space:nowrap; }
+.layout-presets button { border:0; background:transparent;color:#91aabe;font:750 9px/1.3 var(--mono);letter-spacing:.55px;border-radius:5px;padding:8px 10px;cursor:pointer; }
+.layout-presets button:hover {color:#f1d181;background:#1b3347;}
+.layout-presets button.active {background:#33404b;color:#f4cd74;box-shadow:inset 0 -2px #edbb54;}
+.mission-heading .heading-actions { display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end; }
+.workspace.mode-mission:not(.dashboard-closed) {grid-template-columns:232px minmax(0,1fr) var(--mission-panel-width);}
+.workspace.mode-mission.dashboard-closed {grid-template-columns:232px minmax(0,1fr);}
+.mission-splitter {position:absolute;right:calc(var(--mission-panel-width) + 6px);top:96px;bottom:36px;z-index:15;width:12px;display:grid;place-items:center;cursor:col-resize;touch-action:none;user-select:none;opacity:.65;transition:opacity .12s ease;background:transparent;border:0;}
+.mission-splitter:before {content:'';position:absolute;left:5px;width:2px;top:0;bottom:0;border-radius:2px;background:linear-gradient(transparent,#4c6882,transparent);}
+.mission-splitter span {position:relative;border:1px solid #56738b;color:#f2cd75;background:#14283a;padding:12px 1px;border-radius:5px;font:17px/1 var(--mono);}
+.mission-splitter:hover,.mission-splitter:focus-visible {opacity:1;}
+.hypothesis-section {margin:16px 0 5px;}
+.hypothesis-section-title {display:flex;justify-content:space-between;gap:8px;margin:8px 4px 11px;font:750 10px/1 var(--mono);color:#eac46d;letter-spacing:1px;}
+.hypothesis-section-title span:last-child{font-size:9px;color:#748fa6;}
+.hypothesis-card {border:1px solid #2d465a;border-radius:8px;overflow:hidden;margin-bottom:7px;background:#0f2334;}
+.hypothesis-summary {display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:5px 8px;width:100%;border:0;background:transparent;text-align:left;padding:10px 11px;color:#e7edf4;cursor:pointer;}
+.hypothesis-summary:hover {background:#1d3345;}
+.hypothesis-key{grid-column:1/-1;color:#87a8bc;font:650 9px var(--mono);}
+.hypothesis-summary strong{min-width:0;font-size:11px;font-weight:700;line-height:1.4;}
+.hypothesis-mini-state {font:750 8px var(--mono);color:#9fb9cc;align-self:center;white-space:nowrap;}
+.hypothesis-mini-state.completed{color:#61dda6;}.hypothesis-mini-state.failed{color:#f29e9e;}.hypothesis-mini-state.ready{color:#f8cc69;}
+.hypothesis-chevron{font-size:13px;align-self:center;color:#f3c35e;}
+.hypothesis-detail {border-top:1px solid #2d4557;padding:11px;color:#a4bdce;font-size:11px;line-height:1.6;}
+.hypothesis-detail p{margin:0 0 12px;}
+.hypothesis-detail dl{display:grid;grid-template-columns:74px 1fr;gap:5px 7px;margin:0 0 12px;}
+.hypothesis-detail dt{color:#718fa4;font:700 9px var(--mono);}.hypothesis-detail dd{margin:0;overflow-wrap:anywhere;}
+.hypothesis-detail button{font:700 10px var(--mono);border:1px solid #6b6245;border-radius:5px;background:#343021;color:#f7d78a;padding:8px 9px;cursor:pointer;}
+.hypothesis-detail button:hover{background:#483c25;}
+.decision-tile{display:block;width:100%;font-family:inherit;text-align:left;cursor:pointer;}
+.decision-tile:hover{border-color:#bd9550;}
+.decision-tile:focus-visible{outline:2px solid #f4c45d;outline-offset:2px;}
+.decision-galaxy-link{cursor:pointer;background:transparent;border:0;text-align:left;padding-left:0;font:750 10px var(--mono);}
+.decision-galaxy-link:hover{text-decoration:underline;}
+#motionLabToggle[aria-expanded=true]{border-color:#e5b95c;color:#fbe39d;}
+.motion-lab{position:absolute;left:24px;top:20px;width:min(302px,calc(100% - 48px));max-height:calc(100% - 130px);overflow-y:auto;padding:16px;z-index:12;border:1px solid #7b6745;border-radius:11px;background:linear-gradient(130deg,#172b3cf5,#101d2ef5);box-shadow:0 22px 60px #000c,0 0 35px #bc963d1e;pointer-events:auto;}
+.motion-lab-head {display:flex;align-items:center;justify-content:space-between;gap:10px;color:#f5d477;font:750 11px var(--mono);letter-spacing:1px;}
+.motion-lab-head button{background:transparent;border:0;color:#c0cad7;padding:0 4px;font-size:20px;cursor:pointer;}
+.motion-lab p{margin:9px 0 12px;font-size:11px;line-height:1.55;color:#b2c5d3;}
+.motion-lab small{display:block;color:#7895a9;font-size:10px;line-height:1.5;margin-top:11px;}
+.motion-options {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;margin-bottom:12px;}
+.motion-options button {padding:9px 4px;border:1px solid #345169;border-radius:5px;background:#0d2031;color:#9fb6c8;font:700 9px var(--mono);cursor:pointer;}
+.motion-options button.active {border-color:#d5ac4d;background:#3b3428;color:#ffd579;}
+.motion-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;}
+.motion-actions button {min-height:38px;background:#233b4c;border:1px solid #3c5a6d;border-radius:7px;text-align:left;font:650 10px/1.35 var(--font);color:#d1e0ec;padding:9px;cursor:pointer;}
+.motion-actions button:hover{border-color:#e2b450;color:#fff0b4;}
+.motion-actions button:disabled {opacity:.4;}
+/* All effects are cosmetic; no graph data or class representing a business status is mutated. */
+@keyframes uiNodeReveal{0%{opacity:.12;filter:brightness(2);transform:translateY(8px) scale(.93)}45%{opacity:1;filter:brightness(1.5)}100%{opacity:1;filter:brightness(1);transform:translateY(0) scale(1)}}
+@keyframes uiActivePulse{0%,100%{filter:brightness(1);box-shadow:0 0 0 0 #f7ca6a00}50%{filter:brightness(1.17);box-shadow:0 0 0 7px #f7ca6a33,0 0 28px #d5a14a77}}
+@keyframes uiVerifiedWave{0%{filter:brightness(1);box-shadow:0 0 0 0 #32d995a9}40%{filter:brightness(1.35);box-shadow:0 0 0 12px #32d99555}100%{filter:brightness(1);box-shadow:0 0 0 23px #32d99500}}
+@keyframes uiBranchReveal{0%{stroke-dasharray:1 700;stroke-dashoffset:90;opacity:1}100%{stroke-dasharray:700 0;stroke-dashoffset:0;opacity:.75}}
+.app-shell[data-motion=living] .graph-node.motion-reveal{animation:uiNodeReveal .85s var(--interaction-ease) both;}
+.app-shell[data-motion=living] .graph-node.motion-active{animation:uiActivePulse 1.45s ease-in-out 2;}
+.app-shell[data-motion=living] .graph-node.motion-verified{animation:uiVerifiedWave 1.3s ease-out 1;}
+.app-shell[data-motion=living] .edge-path.motion-branch{animation:uiBranchReveal 1.25s ease-out 1 both;}
+.app-shell[data-motion=subtle] .graph-node.motion-reveal{animation:uiNodeReveal .45s ease-out both;}
+.app-shell[data-motion=subtle] .graph-node.motion-active{animation:uiActivePulse .9s ease-in-out 1;}
+.app-shell[data-motion=subtle] .graph-node.motion-verified{animation:uiVerifiedWave .7s ease-out 1;}
+.app-shell[data-motion=subtle] .edge-path.motion-branch{animation:uiBranchReveal .65s ease-out 1 both;}
+.app-shell[data-motion=off] *, .app-shell[data-motion=off] *:before,.app-shell[data-motion=off] *:after{animation:none!important;transition:none!important;scroll-behavior:auto!important;}
+@media(min-width:1600px){.workspace.mode-mission:not(.dashboard-closed){grid-template-columns:248px minmax(0,1fr) var(--mission-panel-width)}.workspace.mode-mission.dashboard-closed{grid-template-columns:248px minmax(0,1fr)}}
+@media(max-width:1365px){.workspace.mode-mission,.workspace.mode-mission.dashboard-closed{grid-template-columns:200px minmax(0,1fr)}.mission-splitter{display:none!important}.layout-presets button{padding:8px 7px}}
+@media(max-width:1099px){.workspace.mode-mission,.workspace.mode-mission.dashboard-closed{grid-template-columns:64px minmax(0,1fr)}.layout-presets button{padding:7px 6px;font-size:8px}}
+@media(max-width:899px){.workspace.mode-mission,.workspace.mode-mission.dashboard-closed{grid-template-columns:minmax(0,1fr)}.layout-presets{max-width:100%;}.layout-presets button{padding:6px 7px;}.mission-heading .heading-actions{justify-content:flex-start}}
+@media(max-width:680px){.mission-heading-row{display:block}.mission-heading .heading-actions{margin-top:10px;gap:6px}.layout-presets button{font-size:8px;padding:7px 6px}.mission-heading .heading-actions .subtle-button{padding:5px}.motion-lab{left:10px;top:10px;max-height:calc(100% - 110px)}}
+@media(prefers-reduced-motion:reduce){.app-shell *, .app-shell *:before,.app-shell *:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+/* On compact screens the research drawer is modal over the feed, but preset controls stay operable. */
+@media(max-width:1365px){.workspace.mode-mission .mission{isolation:auto}.workspace.mode-mission .mission-heading{position:relative;z-index:17}}
+
+@media(max-width:1365px){.workspace.mode-mission[data-layout="research"] .dashboard{width:min(620px,calc(100vw - 24px))}}
+/* Keep the mode switcher reachable while the dashboard acts as a compact drawer. */
+@media(max-width:1365px){.workspace.mode-mission .dashboard{top:138px}.workspace.mode-mission .mission-heading{z-index:20}}
+@media(max-width:680px){.workspace.mode-mission .dashboard{top:175px}}
+/* Explicit specificity for all mission presets at responsive breakpoints. */
+@media (min-width:1100px) and (max-width:1365px){.workspace.mode-mission:not(.dashboard-closed),.workspace.mode-mission.dashboard-closed{grid-template-columns:200px minmax(0,1fr)}}
+@media (min-width:900px) and (max-width:1099px){.workspace.mode-mission:not(.dashboard-closed),.workspace.mode-mission.dashboard-closed{grid-template-columns:64px minmax(0,1fr)}}
+@media (max-width:899px){.workspace.mode-mission:not(.dashboard-closed),.workspace.mode-mission.dashboard-closed{grid-template-columns:minmax(0,1fr)}}
+
+</style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand"><button id="menuToggle" class="icon-btn menu-toggle" aria-label="Открыть список кампаний" title="Кампании">☰</button>
+        <span class="brand-pixel-planet" aria-hidden="true"><svg viewBox="0 0 48 48" width="38" height="38" shape-rendering="crispEdges"><path fill="#ffc857" d="M16 8h16v4h8v8h4v12h-4v8h-8v4H16v-4H8v-8H4V20h4v-8h8z"/><path fill="#293548" d="M16 12h16v4h4v4h4v12h-4v4h-4v4H16v-4h-4v-4H8V20h4v-4h4z"/><path fill="#ffc857" d="M0 26h12v4h12v4h12v-4h12v4H36v4H24v-4H12v-4H0z"/><path fill="#ffeeaa" d="M20 16h8v4h-8z"/></svg></span>
+        <div class="brand-stack"><span class="brand-name">BANAN<span>LOOP</span><b>_</b></span><span class="brand-sub">AUTONOMOUS RESEARCH / SYSTEM 01</span></div><span class="brand-rule" aria-hidden="true"></span></div>
+      <nav class="top-tabs" role="tablist" aria-label="Разделы BananLoop">
+        <button role="tab" id="galaxyTab" class="top-tab active" aria-controls="galaxyView" aria-selected="true"><span aria-hidden="true">✦</span><span>GALAXY</span></button>
+        <button role="tab" id="missionTab" class="top-tab" aria-controls="missionView" aria-selected="false"><span aria-hidden="true">▣</span><span>MISSION CONTROL</span></button>
+        <button role="tab" id="decisionsTab" class="top-tab" aria-controls="decisionsView" aria-selected="false"><span aria-hidden="true">◇</span><span>DECISIONS</span><i class="decision-dot" aria-hidden="true"></i></button>
+      </nav>
+      <div class="top-right"><span class="proto-ribbon" title="Данные не поступают из реального Engine">◆ SYNTHETIC / UI-01.2</span><span class="top-sep" aria-hidden="true"></span><span id="connectionTop" class="connection"><i aria-hidden="true"></i> DEMO · OFFLINE</span><button class="icon-btn" id="helpButton" title="О прототипе" aria-label="О прототипе">?</button></div>
+    </header>
+    <div id="workspace" class="workspace mode-galaxy">
+      <aside id="sidebar" class="sidebar station-panel" aria-label="Кампании">
+        <div class="sidebar-head"><div class="section-label">01 / MISSIONS</div><button id="closeSidebar" class="icon-btn close-sidebar" title="Закрыть меню" aria-label="Закрыть меню">✕</button></div>
+        <button id="createCampaign" class="gold-button new-campaign"><span class="plus">+</span><span class="sidebar-word">Новая кампания</span></button>
+        <div id="campaignList" class="campaign-list" role="list" aria-label="Список кампаний"></div>
+        <div class="sidebar-spacer"></div><div class="sidebar-footer"><div class="sidebar-orbit-mark" aria-hidden="true">✦ &nbsp; · &nbsp; ✧</div><span>LOCAL OBSERVATORY</span><small>BUILD / UI-01.2</small></div>
+        <button class="sidebar-setting" id="settingsButton" title="Настройки"><span aria-hidden="true">⚙</span><span class="sidebar-word">Настройки</span></button>
+      </aside>
+      <main id="missionView" class="mission station-panel" role="tabpanel" aria-labelledby="missionTab">
+        <div class="mission-heading"><div class="eyebrow">02 / OPERATIONS &nbsp;·&nbsp; MISSION CONTROL</div><div class="mission-heading-row"><div class="title-wrap"><h1 id="missionTitle"></h1><p id="missionGoal"></p></div><div class="heading-actions"><div class="layout-presets" role="group" aria-label="Режим Mission Control"><button type="button" data-workspace-preset="chat" aria-pressed="false" title="Chat Focus">CHAT</button><button type="button" data-workspace-preset="split" aria-pressed="true" title="Split View">SPLIT</button><button type="button" data-workspace-preset="research" aria-pressed="false" title="Research Focus">RESEARCH</button></div><button id="dashboardToggle" class="subtle-button" aria-expanded="true" aria-controls="dashboard">▤ <span>Dashboard</span></button><button id="campaignMenu" class="icon-btn" title="Сведения о кампании">···</button></div></div></div>
+        <div id="connectionBanner" class="connection-banner" hidden></div>
+        <div id="chatFeed" class="chat-feed" aria-label="Диалог оркестратора" aria-live="polite"></div>
+        <button id="scrollToLatest" class="to-latest" hidden>↓ К последним сообщениям</button>
+        <div class="composer-wrap"><form id="chatForm" class="composer"><span class="composer-spark" aria-hidden="true">✧</span><textarea id="chatInput" rows="1" maxlength="4000" placeholder="Написать оркестратору… (демо-чат)" aria-label="Сообщение оркестратору"></textarea><button id="sendButton" type="submit" class="send-btn" title="Добавить сообщение в демо-чат" aria-label="Отправить сообщение">➤</button></form><p class="composer-note">Локальный демонстрационный диалог · сообщения не отправляются агенту или Engine</p></div>
+      </main>
+      <main id="galaxyView" class="galaxy station-panel" role="tabpanel" aria-labelledby="galaxyTab" hidden>
+        <div class="galaxy-heading"><div><div class="eyebrow yellow">01 / OBSERVATORY &nbsp;·&nbsp; RESEARCH GALAXY</div><h1 id="galaxyTitle"></h1><p id="galaxyCaption">AND / OR dependency graph · synthetic dataset</p></div><div class="galaxy-heading-actions"><button type="button" id="motionLabToggle" class="subtle-button" aria-controls="motionLabPanel" aria-expanded="false">✧ <span>Motion Lab</span></button><button id="fitGraphTop" class="subtle-button">⌗ <span>Вместить граф</span></button><button id="inspectorToggle" class="subtle-button" aria-expanded="false" aria-controls="inspector">◧ <span>Details</span></button></div></div>
+        <div class="graph-view" id="graphViewport" tabindex="0" aria-label="Интерактивный граф. Перетаскивайте пустой фон; Ctrl + колесо для масштаба; Tab — выбор узла.">
+          <div class="space-stars" aria-hidden="true"></div><div class="galaxy-planet" aria-hidden="true"><span class="galaxy-planet-core"></span><span class="galaxy-planet-ring"></span></div><div class="galaxy-coordinate" aria-hidden="true">SECTOR / 07.21<br>ORBITAL RESEARCH MAP</div><div class="galaxy-axes" aria-hidden="true"><span>⊹</span><span>·</span><span>+</span></div>
+          <div id="graphWorld" class="graph-world"><svg id="graphEdges" class="graph-edges" aria-hidden="true"></svg><div id="graphNodes" class="graph-nodes"></div></div>
+          <section id="motionLabPanel" class="motion-lab" aria-label="Motion Lab — синтетические эффекты" hidden><div class="motion-lab-head"><strong>✧ MOTION LAB</strong><button id="closeMotionLab" type="button" aria-label="Закрыть Motion Lab">×</button></div><p>Только визуальные демо-эффекты. Статусы и связи графа не меняются.</p><div class="motion-options" role="group" aria-label="Интенсивность движения"><button type="button" data-motion-level="off">OFF</button><button type="button" data-motion-level="subtle">SUBTLE</button><button type="button" data-motion-level="living">LIVING</button></div><div class="motion-actions"><button type="button" data-motion-demo="reveal">Появление узла</button><button type="button" data-motion-demo="active">Активная ветка</button><button type="button" data-motion-demo="verified">Проверка</button><button type="button" data-motion-demo="branch">Раскрытие ветви</button></div><small>Демо запускается вручную; не отражает выполнение реальных агентов.</small></section><div class="graph-hud"><span class="hud-eye" aria-hidden="true">◈</span><span id="graphCount">—</span><span class="graph-hud-divider"></span><span id="gateCount">—</span></div>
+          <div id="graphMessage" class="graph-message" hidden></div>
+          <div class="graph-legend" aria-label="Легенда статусов"><span><i class="legend-dot completed"></i> Завершён</span><span><i class="legend-dot ready"></i> Готов</span><span><i class="legend-dot pending"></i> Ожидает</span><span><i class="legend-dot blocked"></i> Блокирован</span></div>
+          <div class="zoom-controls"><button id="fitGraph" title="Вместить граф" aria-label="Вместить граф">⌗</button><button id="zoomOut" title="Уменьшить масштаб" aria-label="Уменьшить масштаб">−</button><span id="zoomLabel">100%</span><button id="zoomIn" title="Увеличить масштаб" aria-label="Увеличить масштаб">+</button></div>
+        </div>
+      </main>
+      <main id="decisionsView" class="decision-center station-panel" role="tabpanel" aria-labelledby="decisionsTab" hidden>
+        <div class="decision-head">
+          <div class="eyebrow yellow">03 / HUMAN-IN-THE-LOOP &nbsp;·&nbsp; DECISION CENTER</div>
+          <div class="decision-headline"><div><h1>Awaiting your signal<span class="pixel-caret">_</span></h1><p>Все решения — в одном месте. Здесь показан только синтетический дизайн-макет.</p></div><span class="decision-demo-status">DEMO / READ ONLY</span></div>
+        </div>
+        <div class="decisions-workarea">
+          <section class="decision-inbox" aria-label="Очередь решений">
+            <div class="inbox-title"><span>INBOX / <strong>01</strong></span><span>FILTER: ALL ▾</span></div>
+            <div class="inbox-group-label">NEEDS ATTENTION</div>
+            <button type="button" class="decision-tile selected" data-decision-id="DEC-008" aria-pressed="true"><div class="decision-tile-top"><span class="tile-number">DEC-008</span><span class="tile-pill needs-review">● REVIEW</span></div><h2>Architecture pivot</h2><p>Hybrid retrieval → reranking experiments</p><div class="tile-foot"><span>RAG Quality Boost</span><span>14:19</span></div></button>
+            <div class="inbox-group-label">RECENT / DEMO EXAMPLES</div>
+            <button type="button" class="decision-tile is-historical" data-decision-id="DEC-007"><div class="decision-tile-top"><span class="tile-number">DEC-007</span><span class="tile-pill resolved">✓ APPROVED</span></div><h2>Metric protocol</h2><p>Freeze baseline measurement</p><div class="tile-foot"><span>Example only</span><span>YESTERDAY</span></div></button>
+            <button type="button" class="decision-tile is-historical" data-decision-id="DEC-006"><div class="decision-tile-top"><span class="tile-number">DEC-006</span><span class="tile-pill declined">× REJECTED</span></div><h2>Budget extension</h2><p>Additional evaluator calls</p><div class="tile-foot"><span>Example only</span><span>EARLIER</span></div></button>
+          </section>
+          <section class="decision-detail" aria-label="Обоснование решения">
+            <div class="detail-kicker"><span>DECISION / DEC-008</span><span>AWAITING OPERATOR</span></div>
+            <div class="detail-hero"><div class="detail-emblem" aria-hidden="true"><div class="emblem-diamond">◇</div></div><div><div class="eyebrow yellow">STRATEGY PROPOSAL</div><h2>Architecture pivot</h2><p>Агент предлагает исследовать другой подход после ограничения текущей стратегии.</p></div></div>
+            <div class="detail-grid"><div class="detail-stat"><span>CURRENT</span><strong>HYBRID SEARCH</strong></div><div class="detail-stat"><span>PROPOSED</span><strong>RERANK STRATEGY</strong></div></div>
+            <div class="decision-explanation"><div class="decision-explanation-head">◈ &nbsp; RESEARCH CONTEXT</div><p>Текущая ветка достигла ограничений по улучшению качества. Новый вариант требует проверки стоимости и latency перед выполнением.</p><div class="explanation-link">↗ СВЯЗАННАЯ ВЕТКА &nbsp; / &nbsp; H-014</div></div>
+            <div class="decision-evidence"><span>PROPOSAL ID</span><code>demo-pivot-008</code><span>DIGEST</span><code>NOT AVAILABLE IN UI-01.2</code><span>DATA SOURCE</span><code>SYNTHETIC FIXTURE</code></div>
+            <div class="decision-actions"><p>Подтверждение в этом срезе недоступно. Нужна проверенная команда Engine и receipt.</p><div><button disabled class="decision-reject">REJECT</button><button disabled class="decision-approve">APPROVE PIVOT →</button></div></div>
+          </section>
+        </div>
+      </main>
+      <div id="missionSplitter" class="mission-splitter" role="separator" tabindex="0" aria-label="Изменить ширину Research Dashboard" aria-orientation="vertical" aria-valuemin="240" aria-valuemax="760" aria-valuenow="296"><span aria-hidden="true">⋮</span></div><aside id="dashboard" class="dashboard station-panel" aria-label="Mission Dashboard">
+        <div class="panel-topline"><h2>MISSION DASHBOARD</h2><button id="hideDashboard" class="icon-btn" title="Скрыть панель" aria-label="Скрыть Dashboard">×</button></div>
+        <div id="dashboardContent" class="dashboard-content"></div>
+      </aside>
+      <aside id="inspector" class="inspector station-panel" aria-label="Информация об узле" hidden>
+        <div class="panel-topline"><h2>NODE INSPECTOR</h2><button id="closeInspector" class="icon-btn" title="Закрыть карточку узла" aria-label="Закрыть карточку">×</button></div>
+        <div id="inspectorContent" class="inspector-content"></div>
+      </aside>
+    </div>
+    <div id="sidebarBackdrop" class="backdrop sidebar-backdrop" hidden></div>
+    <div id="panelBackdrop" class="backdrop panel-backdrop" hidden></div>
+    <div id="modalBackdrop" class="modal-backdrop" hidden><section id="modal" class="modal station-panel" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="panel-topline"><h2 id="modalTitle"></h2><button id="closeModal" class="icon-btn" aria-label="Закрыть диалог">×</button></div><div id="modalContent" class="modal-content"></div></section></div>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  </div>
+  <script>
+/** Synthetic fixtures only. Never merge these into API responses or claim engine telemetry. */
+const sampleGraph = {
+  revision: 7,
+  nodes: [
+    { id: 'n-retrieval', title: 'Hybrid retrieval', phase: 'EXPLORATION', status: 'COMPLETED', verified: true, description: 'Проверка гибридной схемы поиска с объединением sparse и dense сигналов.' },
+    { id: 'n-dense', title: 'Dense retrieval', phase: 'EXPLORATION', status: 'COMPLETED', verified: true, description: 'Семантический поиск по dense embeddings.' },
+    { id: 'n-sparse', title: 'Sparse retrieval', phase: 'EXPLORATION', status: 'READY', verified: false, description: 'Лексический поиск по sparse индексу.' },
+    { id: 'n-rerank', title: 'Reranking quality', phase: 'OPTIMIZATION', status: 'PENDING', verified: false, description: 'Подобрать устойчивый reranker без нарушения ограничения по задержке.' },
+    { id: 'n-cross', title: 'Cross-encoder', phase: 'EXPLORATION', status: 'COMPLETED', verified: true, description: 'Проверка cross-encoder в независимом эксперименте.' },
+    { id: 'n-llm', title: 'LLM reranking', phase: 'EXPLORATION', status: 'PENDING', verified: false, description: 'Оценить LLM-reranker как альтернативу cross-encoder.' },
+    { id: 'n-integration', title: 'Integration check', phase: 'VERIFICATION', status: 'PENDING', verified: false, description: 'Собрать совместимый кандидат и выполнить независимую проверку.' },
+    { id: 'n-probe', title: 'Latency diagnostic', phase: 'METRIC_DISCOVERY', status: 'FAILED', verified: false, description: 'Отдельная диагностика задержки; ветка не соединена с остальными фиктивно.' },
+  ],
+  edges: [
+    { source: 'n-dense', target: 'n-retrieval', type: 'DERIVED_FROM' },
+    { source: 'n-retrieval', target: 'n-rerank', type: 'REQUIRES' },
+    { source: 'n-retrieval', target: 'n-integration', type: 'REQUIRES' },
+    { source: 'n-rerank', target: 'n-integration', type: 'RELATED_TO' },
+  ],
+  groups: [
+    { id: 'g-hybrid', owner: 'n-retrieval', kind: 'AND', members: ['n-dense','n-sparse'] },
+    { id: 'g-rerank', owner: 'n-rerank', kind: 'OR', members: ['n-cross','n-llm'] },
+    { id: 'g-integration', owner: 'n-integration', kind: 'AND', members: ['n-retrieval','n-rerank'] },
+  ],
+};
+
+const fixtureCampaigns = [
+  {
+    id: 'demo-rag', name: 'RAG Quality Boost', goal: 'Повысить качество RAG-ответов на тестовом наборе без деградации latency.', schema: 2,
+    status: 'RUNNING', stage: 'EXPLORATION', metric: { name: 'Quality Score', baseline: 0.61, champion: 0.677, direction: 'maximize', source: 'DEMO DEV' },
+    budget: { agent_calls: 9, agent_limit: 20, evaluator_calls: 4, evaluator_limit: 10 }, experiments: { complete: 3, limit: 8 },
+    graph: sampleGraph,
+    messages: [
+      { id:'a1', type:'engine', title:'Проверка зафиксирована', text:'Исследовательский граф содержит ветви EXPLORATION и OPTIMIZATION. Ниже приведены демонстрационные события, а не результаты реального запуска.', time:'14:12' },
+      { id:'a2', type:'result', title:'Независимая DEV-проверка', text:'Кандидат «Hybrid retrieval» зафиксирован в демонстрационном наборе. Измерения и решения не относятся к реальной кампании.', experiment:'E-003', before:0.61, after:0.677, unit:'Quality Score', time:'14:15' },
+      { id:'a3', type:'operator', title:'Следующий исследовательский шаг', text:'Reranking остаётся отдельным направлением. Для продолжения показана OR-группа: достаточно одного verified-подтверждения выбранной альтернативы. Эта карточка демонстрирует UX подтверждения, но не запускает Engine.', time:'14:19' },
+      { id:'a4', type:'decision', title:'Обсудить направление следующей проверки?', text:'Доступны два объяснимых варианта. В прототипе выбор остаётся локальным и не меняет утверждённый план.', options:[{id:'expand',title:'Углубить Reranking',description:'Проанализировать неопределённость текущих альтернатив.'},{id:'compare',title:'Сравнить новые подходы',description:'Подготовить новую гипотезу и оценку бюджета.'}], time:'14:19' },
+    ]
+  },
+  {
+    id:'demo-carps', name:'Carps Research', goal:'Исследовать стратегию улучшения star discrepancy при ограниченном числе оценок.', schema:1,
+    status:'PAUSED_USER', stage:'ANALYZE', metric:{ name:'Official Reward', baseline:0.39, champion:0.523, direction:'maximize', source:'DEMO DEV' },
+    budget:{ agent_calls:12,agent_limit:20,evaluator_calls:6,evaluator_limit:10 }, experiments:{complete:5,limit:10},graph:null,
+    messages:[{id:'b1',type:'engine',title:'Кампания приостановлена',text:'PAUSED_USER — демонстрационное состояние. Исходная версия кампании не содержит Research Galaxy v2.',time:'09:45'},{id:'b2',type:'operator',title:'Вопрос к оператору',text:'История этого чата привязана к кампании. При переключении между разделами сообщения и черновик сохраняются только в памяти браузерной сессии.',time:'09:46'}]
+  },
+  {
+    id:'demo-titanic', name:'Titanic ML', goal:'Спроектировать воспроизводимый эксперимент с независимым evaluator.', schema:2,
+    status:'DRAFT',stage:null,metric:null,budget:null,experiments:null,graph:{revision:0,nodes:[],edges:[],groups:[]},
+    messages:[{id:'c1',type:'setup',title:'Настройка кампании',text:'Не заданы evaluator, зафиксированный протокол оценки и лимиты. Запуск невозможен без backend-проверок.',time:'—'}]
+  }
+];
+
+function gateState(graph, group) {
+  const byId = new Map(graph.nodes.map(n=>[n.id,n]));
+  const verified = group.members.filter(id=>{const n=byId.get(id); return Boolean(n && n.status==='COMPLETED' && n.verified===true)}).length;
+  const satisfied= group.kind==='AND' ? group.members.length>0 && verified===group.members.length : verified>0;
+  return { verified, total:group.members.length, satisfied };
+}
+
+/** Dependency-only layout: edges are never added to canonical graph. */
+function layoutGraph(graph) {
+  const map = new Map(graph.nodes.map(n=>[n.id,{key:n.id,kind:'node',ref:n.id,title:n.title}]));
+  const arcs=[];
+  for(const group of graph.groups){
+    const gateId='visual:group:'+group.id;
+    map.set(gateId,{key:gateId,kind:'gate',ref:group.id,title:group.kind});
+    for(const member of group.members) if(map.has(member)) arcs.push({source:member,target:gateId,type:'GATE_IN'});
+    if(map.has(group.owner)) arcs.push({source:gateId,target:group.owner,type:'GATE_OUT'});
+  }
+  for(const edge of graph.edges) if(map.has(edge.source)&&map.has(edge.target)) arcs.push({source:edge.source,target:edge.target,type:edge.type});
+  // Only REQUIRES and gate relationships change rank; other knowledge links are visually dashed.
+  const causal=arcs.filter(a=>a.type==='REQUIRES'||a.type.startsWith('GATE_'));
+  const indegree=new Map([...map.keys()].map(x=>[x,0]));
+  for(const a of causal) indegree.set(a.target,(indegree.get(a.target)||0)+1);
+  const ranks=new Map([...map.keys()].map(x=>[x,0]));
+  const queue=[...indegree].filter(([,n])=>n===0).map(([key])=>key).sort();
+  while(queue.length){const source=queue.shift();for(const a of causal.filter(a=>a.source===source)){
+    ranks.set(a.target,Math.max(ranks.get(a.target),ranks.get(source)+1));
+    indegree.set(a.target,indegree.get(a.target)-1);
+    if(indegree.get(a.target)===0) {queue.push(a.target);queue.sort();}
+  }}
+  // Unexpected cycle: preserve nodes without fabricating a dependency order.
+  const byRank=new Map(); for(const item of map.values()){const r=ranks.get(item.key)||0; if(!byRank.has(r))byRank.set(r,[]);byRank.get(r).push(item);}
+  const MAX_IN_COLUMN=Math.max(1,Math.ceil(map.size/4));
+  const positions=new Map();
+  for(const [rank,items] of [...byRank.entries()].sort((a,b)=>a[0]-b[0])){
+    items.sort((a,b)=>a.kind.localeCompare(b.kind)||a.key.localeCompare(b.key));
+    items.forEach((item,i)=> positions.set(item.key, { x: 80+rank*230, y:100+i*132, width:item.kind==='gate'?68:214,height:item.kind==='gate'?42:93 }));
+  }
+  let right=660,bottom=360;
+  for(const p of positions.values()){ right=Math.max(right,p.x+p.width+95); bottom=Math.max(bottom,p.y+p.height+130); }
+  return { positions, arcs, width:right, height:bottom, cycle:[...indegree].some(([,v])=>v>0), MAX_IN_COLUMN };
+}
+
+
+
+const $ = (id) => document.getElementById(id);
+let demoSequence = 0;
+const localId = () => `${Date.now()}-${++demoSequence}`;
+const esc = (value='') => String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const state = {
+  campaigns: structuredClone(fixtureCampaigns), selectedId: 'demo-rag', tab: 'galaxy',
+  dashboardOpen: window.innerWidth>=1366, inspectorOpen:false, sidebarOpen:false,
+  demoMode:'normal', reducedMotion:false, selection:null, selections:{}, reviewed:{},
+  drafts:{}, graphViews:{}, nodeSelections:{}, workspaceLayouts:{}, hypothesisExpanded:{}, motionLevel:'living', motionLabOpen:false, decisionSelected:'DEC-008', modalAction:null, toastTimer:null,
+};
+const campaign=()=>state.campaigns.find(c=>c.id===state.selectedId);
+const lastView=()=>state.graphViews[state.selectedId]??{scale:1,tx:0,ty:0,userMoved:false};
+function setView(view){state.graphViews[state.selectedId]={...view};paintGraphTransform();saveUI();}
+function statusLabel(status){return ({RUNNING:'В работе',READY:'Готово к запуску',DRAFT:'Черновик',PAUSED_USER:'Пауза оператора',PAUSED_INFRA:'Пауза · инфраструктура',STOPPED:'Остановлена',COMPLETED:'Завершена',PENDING:'Ожидает',FAILED:'Ошибка',CANCELLED:'Отменён',UNKNOWN:'Неизвестно'})[status]??String(status||'Недоступно')}
+const formatNumber=(n)=>typeof n==='number'&&Number.isFinite(n)?n.toLocaleString('ru-RU',{maximumFractionDigits:4}):'Недоступно';
+function toast(message){let el=$('toast');el.textContent=message;el.hidden=false;clearTimeout(state.toastTimer);state.toastTimer=setTimeout(()=>el.hidden=true,3400)}
+function render(){renderHeader();renderSidebar();renderMission();renderDashboard();renderGalaxy();renderInspector();renderDecisionCenter();renderBackdrops();}
+function renderHeader(){
+  const galaxy=state.tab==='galaxy';
+  const mission=state.tab==='mission';
+  const decisions=state.tab==='decisions';
+  for(const [name,tab] of [['galaxy','galaxyTab'],['mission','missionTab'],['decisions','decisionsTab']]){
+    const active=state.tab===name;
+    $(tab).classList.toggle('active',active);
+    $(tab).setAttribute('aria-selected',String(active));
+  }
+  $('missionView').hidden=!mission;
+  $('galaxyView').hidden=!galaxy;
+  $('decisionsView').hidden=!decisions;
+  const narrow=window.innerWidth<1366;
+  const dockDashboard=state.dashboardOpen&&mission;
+  $('dashboard').hidden=!dockDashboard;
+  $('inspector').hidden=!(galaxy&&state.inspectorOpen);
+  $('dashboardToggle').setAttribute('aria-expanded',String(dockDashboard));
+  $('inspectorToggle').setAttribute('aria-expanded',String(galaxy&&state.inspectorOpen));
+  $('workspace').className='workspace '+(galaxy?'mode-galaxy':mission?'mode-mission':'mode-decisions')+(!dockDashboard?' dashboard-closed':'')+(galaxy&&state.inspectorOpen?' inspector-open':'');
+  renderLayoutControls();
+  const connection=$('connectionTop');
+  connection.innerHTML=state.demoMode==='disconnected'?'<i></i> DEMO · DISCONNECTED':state.demoMode==='stale'?'<i></i> DEMO · STALE':'<i></i> DEMO · OFFLINE';
+  connection.style.color=state.demoMode==='disconnected'?'#f0a6ad':'#bcd0c5';
+  $('panelBackdrop').hidden= !(narrow&&((mission&&state.dashboardOpen)||(galaxy&&state.inspectorOpen)));
+}
+function renderSidebar(){let list=$('campaignList');list.innerHTML='';for(const c of state.campaigns){const btn=document.createElement('button');btn.className='campaign'+(c.id===state.selectedId?' active':'');btn.type='button';btn.setAttribute('aria-current',c.id===state.selectedId?'page':'false');btn.title=c.name;btn.innerHTML=`<span class="campaign-icon" aria-hidden="true">⌾</span><span class="campaign-name">${esc(c.name)}</span>`;btn.addEventListener('click',()=>selectCampaign(c.id));list.append(btn);} $('sidebar').classList.toggle('mobile-open',state.sidebarOpen);$('sidebarBackdrop').hidden=!state.sidebarOpen;}
+function selectCampaign(id){if(id===state.selectedId){state.sidebarOpen=false;renderSidebar();return;}state.drafts[state.selectedId]=$('chatInput').value;state.nodeSelections[state.selectedId]=state.selection;state.selectedId=id;state.selection=state.nodeSelections[id]||null;state.inspectorOpen=Boolean(state.selection);state.sidebarOpen=false;state.dashboardOpen=getLayout().preset!=='chat';render();saveUI();$('chatInput').value=state.drafts[id]||'';sizeTextarea();requestAnimationFrame(()=>{const feed=$('chatFeed');feed.scrollTop=feed.scrollHeight;});}
+function renderMission(){const c=campaign();$('missionTitle').textContent=c.name;$('missionGoal').textContent='Цель: '+c.goal;
+  const banner=$('connectionBanner');const message=state.demoMode==='stale'?'DEMO STATE · STALE: показывается последнее локальное демонстрационное состояние.':state.demoMode==='disconnected'?'DEMO STATE · DISCONNECTED: Engine не подключен. Чат и навигация доступны только локально.':state.demoMode==='partial'?'DEMO STATE · PARTIAL: часть телеметрии скрыта для проверки состояний «Недоступно».':null;banner.hidden=!message;if(message)banner.textContent=message;
+  const feed=$('chatFeed');const wasNearBottom=(feed.scrollHeight-feed.scrollTop-feed.clientHeight)<95;feed.innerHTML='';for(const m of c.messages) feed.append(renderMessage(m));if(wasNearBottom||feed.dataset.campaign!==c.id)requestAnimationFrame(()=>feed.scrollTop=feed.scrollHeight);feed.dataset.campaign=c.id;
+  $('chatInput').value=state.drafts[c.id]||'';sizeTextarea();}
+function renderMessage(m){const wrap=document.createElement('article');wrap.className='chat-item'+(m.type==='user'?' user':'');wrap.dataset.messageId=m.id;const icon=m.type==='user'?'◉':m.type==='result'?'▤':m.type==='decision'?'◇':m.type==='setup'?'⚙':'✧';
+  const value=m.type==='user'?`<div class="chat-text">${esc(m.text)}</div>`:`<div class="chat-meta"><div class="chat-title">${esc(m.title??'Сообщение')}</div><span class="chat-time">${esc(m.time??'')}</span></div><p class="chat-text">${esc(m.text)}</p>`;
+  let extra='';if(m.type==='result'){const delta=(m.after-m.before);extra=`<div class="result-summary"><div class="result-head"><span>▥ &nbsp; ${esc(m.unit)} · ${esc(m.experiment)}</span><span class="mini-kicker">DEMO DEV ONLY</span></div><div class="result-grid"><div><div class="result-label">BASELINE</div><div class="result-value">${formatNumber(m.before)}</div></div><div><div class="result-label">CANDIDATE</div><div class="result-value good">${formatNumber(m.after)}</div></div><div><div class="result-label">Δ, ABSOLUTE</div><div class="result-value good">${delta>=0?'+':''}${formatNumber(Number(delta.toFixed(4)))}</div></div></div></div>`;}
+  if(m.type==='setup')extra='<div class="setup-alert">⚠ Evaluator: не настроен<br>Независимая проверка: не задана<br>Launch Campaign: заблокирован (нет backend-валидации)</div>';
+  if(m.type==='decision'){const options=m.options||[];const chosen=state.selections[m.id]||options[0]?.id;const approved=Boolean(state.reviewed[m.id]);extra=`<div class="decision-panel"><div class="mini-kicker">SIMULATED REVIEW · NO ENGINE ACTION</div><div class="decision-options">${options.map(o=>`<button type="button" class="decision-option ${chosen===o.id?'selected':''}" data-choice="${esc(o.id)}" aria-pressed="${chosen===o.id}" ${approved?'disabled':''}><strong>${esc(o.title)}</strong><small>${esc(o.description)}</small></button>`).join('')}</div><div class="decision-footer"><span class="ghost-note">${approved?'Выбор зафиксирован только в демо-чате':'Требуется явное подтверждение · только UI'}</span><button type="button" class="mini-gold" data-review="${esc(m.id)}" ${approved?'disabled':''}>${approved?'Локально подтверждено':'Рассмотреть выбор'}</button></div></div>`;}
+  wrap.innerHTML=`${m.type==='user'?'':`<div class="chat-avatar" aria-hidden="true">${icon}</div>`}<div class="chat-bubble">${value}${extra}</div>`;
+  wrap.querySelectorAll('[data-choice]').forEach(b=>b.addEventListener('click',()=>{state.selections[m.id]=b.dataset.choice;renderMission()}));wrap.querySelectorAll('[data-review]').forEach(b=>b.addEventListener('click',()=>openReview(m)));
+  return wrap;
+}
+function sizeTextarea(){const ta=$('chatInput');ta.style.height='24px';ta.style.height=Math.min(145,Math.max(24,ta.scrollHeight))+'px';}
+function sendMessage(){const text=$('chatInput').value.trim();if(!text)return;if(text.length>4000){toast('Сообщение слишком длинное');return;}const c=campaign();const stamp=new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});c.messages.push({id:'u-'+localId(),type:'user',text,time:stamp});
+  c.messages.push({id:'reply-'+localId(),type:'operator',title:'Демонстрационный оператор',text:'Сообщение сохранено только в локальной сессии интерфейса. Здесь не работает LLM и не выполняются команды BananLoop Engine. При интеграции RPDI-UI-06 ответ поступит от авторизованного операторского сервиса.',time:stamp});state.drafts[c.id]='';saveUI();renderMission();$('chatFeed').scrollTop=$('chatFeed').scrollHeight;}
+function renderDashboard(){const c=campaign();const target=$('dashboardContent');const metric=state.demoMode==='partial'?null:c.metric;const budget=state.demoMode==='partial'?null:c.budget;const exp=state.demoMode==='partial'?null:c.experiments;
+  const line=(k,v,cl='')=>`<div class="dash-row"><span class="k">${esc(k)}</span><span class="v ${cl}">${esc(v)}</span></div>`;
+  const progress=(a,b)=>b?`<div class="progress" role="progressbar" aria-valuenow="${a}" aria-valuemin="0" aria-valuemax="${b}" aria-label="Доля использованного лимита"><b style="width:${Math.min(100,Math.max(0,100*a/b))}%"></b></div><div class="dash-subtext">${a} / ${b} · ${Math.round(100*a/b)}% лимита</div>`:'<div class="dash-subtext">Недоступно</div>';
+  target.innerHTML=`<div class="dashboard-card"><div class="dash-label">SELECTED CAMPAIGN <span>DEMO</span></div><div class="dash-value">${esc(c.name)}</div></div>
+  <div class="dashboard-card">${line('Статус',statusLabel(c.status),c.status==='RUNNING'?'ok':'warn')}${line('Стадия',c.stage||'Не задана')}${line('Схема','v'+c.schema)}${line('Эксперименты',exp?`${exp.complete} / ${exp.limit}`:'Недоступно')}</div>
+  <div class="dashboard-card"><div class="dash-label">АГЕНТСКИЕ ВЫЗОВЫ · ДЕМО</div>${budget?progress(budget.agent_calls,budget.agent_limit):'<div class="dash-subtext">Недоступно</div>'}<div class="dash-label" style="margin-top:15px">ВЫЗОВЫ EVALUATOR · ДЕМО</div>${budget?progress(budget.evaluator_calls,budget.evaluator_limit):'<div class="dash-subtext">Недоступно</div>'}</div>
+  <div class="dashboard-card"><div class="dash-label">CHAMPION · ${metric?esc(metric.source):'НЕТ ДАННЫХ'}</div><div class="dash-value" style="color:${metric?'var(--success)':'var(--muted)'}">${metric?formatNumber(metric.champion):'Недоступно'}</div><div class="dash-subtext">${metric?esc(metric.name)+' · baseline '+formatNumber(metric.baseline):'Не интерпретируем отсутствие измерения как 0.'}</div></div>
+  <div class="dash-warning">Режим SYNTHETIC PROTOTYPE: все числовые показатели здесь — fixtures, а не результаты текущего BananLoop Engine.</div>`;
+  renderHypotheses();
+}
+function renderHypotheses(){
+  const target=$('dashboardContent'),c=campaign(),graph=c.graph;
+  if(c.schema!==2||!graph?.nodes?.length)return;
+  const expanded=state.hypothesisExpanded[c.id]||{};
+  target.insertAdjacentHTML('beforeend',`<section class="hypothesis-section" aria-label="Гипотезы исследовательского графа"><div class="hypothesis-section-title"><span>RESEARCH NODES</span><span>DEMO · ${graph.nodes.length}</span></div>${graph.nodes.map(n=>`<article class="hypothesis-card"><button class="hypothesis-summary" type="button" data-hypothesis-expand="${esc(n.id)}" aria-expanded="${!!expanded[n.id]}"><span class="hypothesis-key">${esc(n.id)}</span><strong>${esc(n.title)}</strong><span class="hypothesis-mini-state ${n.status.toLowerCase()}">${n.status==='COMPLETED'&&n.verified?'VERIFIED':esc(n.status)}</span><span class="hypothesis-chevron">${expanded[n.id]?'▴':'▾'}</span></button>${expanded[n.id]?`<div class="hypothesis-detail"><p>${esc(n.description||'Описание недоступно')}</p><dl><dt>PHASE</dt><dd>${esc(n.phase)}</dd><dt>STATUS</dt><dd>${esc(n.status)}</dd><dt>VERIFICATION</dt><dd>${n.status==='COMPLETED'&&n.verified?'Fixture: verified':'Не подтверждена'}</dd></dl><button type="button" data-hypothesis-open="${esc(n.id)}">Открыть в Galaxy ↗</button></div>`:''}</article>`).join('')}</section>`);
+}
+
+const UI_STORAGE_KEY='bananloop.ui-01.2.preferences';
+const defaultLayout=()=>({preset:'split',width:window.innerWidth>=1600?312:296});
+const getLayout=()=>state.workspaceLayouts[state.selectedId]||defaultLayout();
+function saveUI(){try{localStorage.setItem(UI_STORAGE_KEY,JSON.stringify({workspaceLayouts:state.workspaceLayouts,graphViews:state.graphViews,nodeSelections:state.nodeSelections,drafts:state.drafts,motionLevel:state.motionLevel,hypothesisExpanded:state.hypothesisExpanded}));}catch{/* file/about:blank storage may be unavailable */}}
+function loadUI(){try{const v=JSON.parse(localStorage.getItem(UI_STORAGE_KEY)||'{}');if(!v||typeof v!=='object')return;
+  if(v.workspaceLayouts&&typeof v.workspaceLayouts==='object')for(const [id,item] of Object.entries(v.workspaceLayouts)){if(item&&['chat','split','research','custom'].includes(item.preset)&&Number.isFinite(item.width))state.workspaceLayouts[id]={preset:item.preset,width:Math.max(240,Math.min(760,item.width))};}
+  if(v.graphViews&&typeof v.graphViews==='object')for(const [id,g] of Object.entries(v.graphViews)){if(g&&[g.scale,g.tx,g.ty].every(Number.isFinite)&&g.scale>=.35&&g.scale<=2.5)state.graphViews[id]={scale:g.scale,tx:g.tx,ty:g.ty,userMoved:!!g.userMoved};}
+  if(v.nodeSelections&&typeof v.nodeSelections==='object')for(const [id,key] of Object.entries(v.nodeSelections))if(key===null||typeof key==='string'&&key.length<220)state.nodeSelections[id]=key;
+  if(v.drafts&&typeof v.drafts==='object')for(const [id,d] of Object.entries(v.drafts))if(typeof d==='string')state.drafts[id]=d.slice(0,4000);
+  if(['off','subtle','living'].includes(v.motionLevel))state.motionLevel=v.motionLevel;
+  if(v.hypothesisExpanded&&typeof v.hypothesisExpanded==='object')state.hypothesisExpanded=v.hypothesisExpanded;
+ }catch{/* restricted storage or corrupted preferences */}}
+function maxLayoutWidth(){return Math.max(240,Math.min(760,window.innerWidth-660));}
+function targetWidth(layout){const proposed=layout.preset==='research'?Math.min(560,maxLayoutWidth()):layout.preset==='split'?(window.innerWidth>=1600?312:296):layout.width;return Math.min(maxLayoutWidth(),Math.max(240,proposed));}
+function renderLayoutControls(){const w=$('workspace'),preset=getLayout(),width=targetWidth(preset);w.style.setProperty('--mission-panel-width',width+'px');w.dataset.layout=preset.preset;
+  const wide=window.innerWidth>=1366,active=state.tab==='mission';
+  for(const b of document.querySelectorAll('[data-workspace-preset]')){const selected=preset.preset===b.dataset.workspacePreset;b.setAttribute('aria-pressed',String(selected));b.classList.toggle('active',selected);}
+  $('missionSplitter').hidden=!(active&&wide&&state.dashboardOpen);
+  $('missionSplitter').setAttribute('aria-valuenow',String(Math.round(width)));
+  $('missionSplitter').setAttribute('aria-valuemax',String(maxLayoutWidth()));
+  $('missionSplitter').setAttribute('aria-valuetext',Math.round(width)+' пикселей');
+}
+function applyPreset(preset){if(!['chat','split','research'].includes(preset))return;const layout={preset,width:targetWidth({preset,width:296})};state.workspaceLayouts[state.selectedId]=layout;state.dashboardOpen=preset!=='chat';renderHeader();saveUI();}
+function setCustomPanelWidth(width){state.workspaceLayouts[state.selectedId]={preset:'custom',width:Math.max(240,Math.min(maxLayoutWidth(),width))};state.dashboardOpen=true;renderHeader();saveUI();}
+function initSplitter(){const splitter=$('missionSplitter');let drag=null;
+ splitter.addEventListener('pointerdown',e=>{if(e.button!==0||window.innerWidth<1366)return;drag={x:e.clientX,width:targetWidth(getLayout()),id:e.pointerId};splitter.setPointerCapture(e.pointerId);e.preventDefault();});
+ splitter.addEventListener('pointermove',e=>{if(!drag||e.pointerId!==drag.id)return;setCustomPanelWidth(drag.width+drag.x-e.clientX);});
+ for(const type of ['pointerup','pointercancel'])splitter.addEventListener(type,e=>{if(!drag||drag.id!==e.pointerId)return;drag=null;try{splitter.releasePointerCapture(e.pointerId)}catch{}});
+ splitter.addEventListener('keydown',e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){setCustomPanelWidth(targetWidth(getLayout())+(e.key==='ArrowLeft'?24:-24));e.preventDefault();}else if(e.key==='Home'){applyPreset('chat');e.preventDefault();}else if(e.key==='End'){applyPreset('research');e.preventDefault();}});
+}
+function renderMotionUI(){const lab=$('motionLabPanel');lab.hidden=!state.motionLabOpen;$('motionLabToggle').setAttribute('aria-expanded',String(state.motionLabOpen));
+ document.querySelector('.app-shell').dataset.motion=state.motionLevel;
+ for(const b of document.querySelectorAll('[data-motion-level]')){const active=b.dataset.motionLevel===state.motionLevel;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));}
+}
+function clearMotionDemo(){document.querySelectorAll('.motion-reveal,.motion-active,.motion-verified,.motion-branch').forEach(e=>e.classList.remove('motion-reveal','motion-active','motion-verified','motion-branch'));}
+let motionTimer=null;
+function playMotionDemo(type){clearTimeout(motionTimer);clearMotionDemo();if(state.motionLevel==='off'||matchMedia('(prefers-reduced-motion: reduce)').matches){toast('Движение отключено в настройках');return;}
+ const c=campaign();if(c.schema!==2||!c.graph?.nodes?.length||state.demoMode==='empty'){toast('Нет графа для демонстрации');return;}
+ const nodes=[...document.querySelectorAll('#graphNodes .graph-node')],allEdges=[...document.querySelectorAll('#graphEdges .edge-path')];
+ const demoTarget=type==='verified'?c.graph.nodes.find(n=>n.status==='COMPLETED'&&n.verified):c.graph.nodes.find(n=>n.status!=='COMPLETED')||c.graph.nodes[0];
+ const target=nodes.find(e=>e.dataset.nodeId===demoTarget?.id);
+ if(type==='branch'){allEdges.forEach(e=>e.classList.add('motion-branch'));}
+ else if(target)target.classList.add(type==='reveal'?'motion-reveal':type==='active'?'motion-active':'motion-verified');
+ toast('Синтетическая анимация · данные Engine не изменены');
+ motionTimer=setTimeout(clearMotionDemo,type==='active'?3800:2500);
+}
+const DECISION_DEMOS={
+ 'DEC-008':{title:'Architecture pivot',kind:'STRATEGY PROPOSAL',caption:'Предложен новый способ исследования после ограничения текущей стратегии.',status:'AWAITING OPERATOR',current:'HYBRID SEARCH',proposed:'RERANK STRATEGY',context:'Демонстрационная ветка достигла ограничений. Новый подход требует оценки стоимости и latency.',node:'n-retrieval',resolved:false},
+ 'DEC-007':{title:'Metric protocol',kind:'PROTOCOL',caption:'В синтетической истории показано подтверждение фиксации базовой метрики.',status:'APPROVED · DEMO',current:'UNFROZEN METRIC',proposed:'FROZEN BASELINE',context:'Иллюстрация уже принятого решения. Настоящей записи в Engine нет.',node:null,resolved:true},
+ 'DEC-006':{title:'Budget extension',kind:'RESOURCE REQUEST',caption:'Демонстрационный запрос дополнительных evaluator calls был отклонён.',status:'REJECTED · DEMO',current:'CURRENT LIMIT',proposed:'MORE EVALUATIONS',context:'Это исторический синтетический пример; никаких бюджетных операций не выполнялось.',node:null,resolved:true}
+};
+function renderDecisionCenter(){const selected=state.decisionSelected,d=DECISION_DEMOS[selected];document.querySelectorAll('[data-decision-id]').forEach(el=>{const active=el.dataset.decisionId===selected;el.classList.toggle('selected',active);el.setAttribute('aria-pressed',String(active));});
+ const detail=document.querySelector('.decision-detail');if(!detail||!d)return;
+ detail.innerHTML=`<div class="detail-kicker"><span>DECISION / ${esc(selected)}</span><span>${esc(d.status)}</span></div><div class="detail-hero"><div class="detail-emblem" aria-hidden="true"><div class="emblem-diamond">◇</div></div><div><div class="eyebrow yellow">${esc(d.kind)}</div><h2>${esc(d.title)}</h2><p>${esc(d.caption)}</p></div></div><div class="detail-grid"><div class="detail-stat"><span>CURRENT</span><strong>${esc(d.current)}</strong></div><div class="detail-stat"><span>PROPOSED</span><strong>${esc(d.proposed)}</strong></div></div><div class="decision-explanation"><div class="decision-explanation-head">◈ &nbsp; RESEARCH CONTEXT</div><p>${esc(d.context)}</p>${d.node?'<button class="explanation-link decision-galaxy-link" type="button" data-decision-galaxy="'+esc(d.node)+'">↗ ОТКРЫТЬ УЗЕЛ В GALAXY / '+esc(d.node)+'</button>':''}</div><div class="decision-evidence"><span>PROPOSAL ID</span><code>synthetic-${esc(selected.toLowerCase())}</code><span>DIGEST</span><code>NOT AVAILABLE · DEMO</code><span>DATA SOURCE</span><code>SYNTHETIC FIXTURE</code></div><div class="decision-actions"><p>${d.resolved?'Пример завершённого решения. Engine не подключен.':'Подтверждение отключено: нет проверенного Engine receipt.'}</p><div><button disabled class="decision-reject">REJECT</button><button disabled class="decision-approve">APPROVE PIVOT →</button></div></div>`;
+}
+function renderGalaxy(){const c=campaign();$('galaxyTitle').textContent=c.name;$('galaxyCaption').textContent=c.schema===1?'Legacy campaign · graph v2 unavailable':'Dependency graph · AND/OR readiness · demo only';renderGraph();}
+function graphUnavailable(msg){$('graphWorld').innerHTML='<svg id="graphEdges" class="graph-edges" aria-hidden="true"></svg><div id="graphNodes" class="graph-nodes"></div>';$('graphMessage').textContent=msg;$('graphMessage').hidden=false;$('graphCount').textContent='Нет графа';$('gateCount').textContent='—';}
+function renderGraph(){const c=campaign();if(c.schema!==2){graphUnavailable('Research Galaxy доступна только для v2-графов. Для v1 не создаём искусственную топологию.');return;}if(state.demoMode==='empty'||!c.graph?.nodes?.length){graphUnavailable(state.demoMode==='empty'?'DEMO STATE: подтверждённо пустой граф. Узлов ещё нет.':'В этой демонстрационной кампании нет исследовательских узлов.');return;}
+  if(state.demoMode==='disconnected'){$('graphMessage').textContent='DEMO STATE · DISCONNECTED: виден последний сохранённый граф.';$('graphMessage').hidden=false;}else{$('graphMessage').hidden=true;}
+  const graph=c.graph;const rendered=layoutGraph(graph);const svg=$('graphEdges'), nodes=$('graphNodes'), world=$('graphWorld');world.style.width=rendered.width+'px';world.style.height=rendered.height+'px';svg.setAttribute('width',rendered.width);svg.setAttribute('height',rendered.height);svg.setAttribute('viewBox',`0 0 ${rendered.width} ${rendered.height}`);nodes.innerHTML='';svg.innerHTML='';
+  const active=state.selection;const gateById=new Map(graph.groups.map(g=>[g.id,g]));for(const a of rendered.arcs){const p1=rendered.positions.get(a.source),p2=rendered.positions.get(a.target);if(!p1||!p2)continue;const x1=p1.x+p1.width,y1=p1.y+p1.height/2,x2=p2.x,y2=p2.y+p2.height/2;const dx=Math.max(34,Math.abs(x2-x1)*.44);const d=`M${x1},${y1} C${x1+dx},${y1} ${x2-dx},${y2} ${x2},${y2}`;const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',d);path.setAttribute('class','edge-path'+(a.type==='RELATED_TO'||a.type==='DERIVED_FROM'?' knowledge':'')+(a.type.startsWith('GATE_')?' gated':'')+((a.source===active||a.target===active)?' selected':''));svg.append(path);}
+  for(const n of graph.nodes){const p=rendered.positions.get(n.id);if(!p)continue;const btn=document.createElement('button');btn.type='button';btn.className='graph-node '+(n.status.toLowerCase())+(state.selection===n.id?' selected':'');btn.style.left=p.x+'px';btn.style.top=p.y+'px';btn.title=`${n.id} · ${n.phase} · ${n.status}`;btn.dataset.nodeId=n.id;btn.setAttribute('aria-label',`${n.title}: ${n.phase}, ${n.status}`);btn.innerHTML=`<div class="node-row"><span class="node-id">${esc(n.id)}</span><span class="node-phase">${esc(n.phase)}</span></div><div class="node-title">${esc(n.title)}</div><div class="node-state">${n.status==='COMPLETED'&&n.verified?'✓ VERIFIED':esc(n.status)}${n.status==='COMPLETED'&&!n.verified?' · UNVERIFIED':''}</div>`;btn.addEventListener('click',e=>{e.stopPropagation();selectGraphItem(n.id)});nodes.append(btn);}
+  for(const g of graph.groups){const id='visual:group:'+g.id;const p=rendered.positions.get(id);if(!p)continue;const gs=gateState(graph,g);const btn=document.createElement('button');btn.type='button';btn.className='graph-gate'+(gs.satisfied?' satisfied':'')+(state.selection===id?' selected':'');btn.style.left=p.x+'px';btn.style.top=p.y+'px';btn.textContent=g.kind;btn.dataset.nodeId=id;btn.title=`${g.kind}: ${gs.verified} из ${gs.total} verified`;btn.setAttribute('aria-label',`${g.kind}-группа ${g.id}, проверено ${gs.verified} из ${gs.total}`);btn.addEventListener('click',e=>{e.stopPropagation();selectGraphItem(id)});nodes.append(btn);}
+  $('graphCount').textContent=`${graph.nodes.length} NODES · REV ${graph.revision}`;$('gateCount').textContent=`${graph.groups.length} AND/OR GATES`;
+  if(!state.graphViews[c.id]||!state.graphViews[c.id].userMoved)requestAnimationFrame(()=>fitGraph(false));else paintGraphTransform();
+}
+function selectGraphItem(key){state.selection=key;state.nodeSelections[state.selectedId]=key;saveUI();state.inspectorOpen=true;renderHeader();renderInspector();$('graphNodes').querySelectorAll('[data-node-id]').forEach(el=>el.classList.toggle('selected',el.dataset.nodeId===key));$('graphEdges').querySelectorAll('path').forEach(el=>el.classList.remove('selected'));if(window.innerWidth<1366)$('panelBackdrop').hidden=false;}
+function renderInspector(){const c=campaign();const key=state.selection;const target=$('inspectorContent');if(!key||!c.graph){target.innerHTML='<p class="inspector-value">Выберите узел или логическую группу.</p>';return;}
+  const info=(label,value)=>`<div class="inspector-section"><div class="inspector-label">${esc(label)}</div><div class="inspector-value">${esc(value)}</div></div>`;
+  if(key.startsWith('visual:group:')){const id=key.slice('visual:group:'.length);const g=c.graph.groups.find(x=>x.id===id);if(!g){target.innerHTML='Узел не найден.';return;}const gs=gateState(c.graph,g);target.innerHTML=`<div class="inspector-title">${g.kind} GATE</div><span class="inspector-tag">UI-ONLY GATE</span>${info('ГРУППА',g.id)}${info('ВЛАДЕЛЕЦ / OWNER',g.owner)}${info('УСЛОВИЕ',g.kind==='AND'?'Все участники должны быть завершены и верифицированы':'Хотя бы один участник должен быть завершён и верифицирован')}${info('ПРОВЕРЕНО',`${gs.verified} / ${gs.total}`)}${info('СОСТОЯНИЕ',gs.satisfied?'Условие выполнено':'Условие не выполнено')}<div class="inspector-section"><div class="inspector-label">УЧАСТНИКИ</div><ul class="inspector-list">${g.members.map(id=>`<li>${esc(id)}</li>`).join('')}</ul></div><p class="dash-warning">Группа является визуальным элементом. Её ID нельзя отправлять в Engine как node_id.</p>`;return;}
+  const n=c.graph.nodes.find(n=>n.id===key);if(!n){target.innerHTML='Узел не найден.';return;}const incoming=c.graph.edges.filter(e=>e.target===n.id);const owning=c.graph.groups.filter(g=>g.owner===n.id);target.innerHTML=`<div class="inspector-title">${esc(n.title)}</div><span class="inspector-tag">${esc(n.phase)}</span><span class="inspector-tag ${n.verified?'done':''}">${esc(n.status)}</span>${info('NODE ID',n.id)}${info('СТАТУС ВЕРИФИКАЦИИ',n.verified&&n.status==='COMPLETED'?'Verified (синтетическое поле)':'Нет подтверждённого завершения')}${info('ИССЛЕДОВАТЕЛЬСКАЯ ЗАДАЧА',n.description||'Недоступно')}${info('СВЯЗИ',incoming.length?incoming.map(e=>`${e.source} → ${e.target} · ${e.type}`).join('\n'):'Нет входящих связей')}${info('ОГРАНИЧЕНИЯ',owning.length?owning.map(g=>`${g.kind} ${g.id}`).join(', '):'Нет дополнительных групп')}<div class="dash-warning" style="margin-top:12px">Для этого узла нет достоверного score или отдельного бюджета. Не подставляем значения из общих метрик.</div>`;
+}
+function paintGraphTransform(){const view=lastView();$('graphWorld').style.transform=`translate(${view.tx}px,${view.ty}px) scale(${view.scale})`;$('zoomLabel').textContent=Math.round(view.scale*100)+'%';}
+function fitGraph(markMoved=true){const c=campaign();if(c.schema!==2||!c.graph?.nodes?.length)return;const viewport=$('graphViewport');const {width,height}=layoutGraph(c.graph);const w=viewport.clientWidth||800,h=viewport.clientHeight||450;const s=Math.max(.35,Math.min(1.2,Math.min((w-90)/width,(h-90)/height)));setView({scale:s,tx:(w-width*s)/2,ty:(h-height*s)/2,userMoved:markMoved});}
+function zoom(factor,cx,cy){const vp=$('graphViewport'),prev=lastView();const rect=vp.getBoundingClientRect();cx??=rect.width/2;cy??=rect.height/2;const s=Math.min(2.5,Math.max(.35,prev.scale*factor));setView({scale:s,tx:cx-(cx-prev.tx)*s/prev.scale,ty:cy-(cy-prev.ty)*s/prev.scale,userMoved:true});}
+function openModal(title,html,action){$('modalTitle').textContent=title;$('modalContent').innerHTML=html;state.modalAction=action;$('modalBackdrop').hidden=false;document.body.dataset.modal='open';$('closeModal').focus();}
+function closeModal(){if($('modalBackdrop').hidden)return;$('modalBackdrop').hidden=true;state.modalAction=null;document.body.dataset.modal='';}
+function openReview(m){const chosen=state.selections[m.id]||(m.options||[])[0]?.id;const opt=m.options.find(o=>o.id===chosen);openModal('Подтверждение действия — DEMO',`<p>Выбран вариант: <strong>${esc(opt?.title||'—')}</strong>.</p><p>${esc(opt?.description||'')}</p><div class="modal-note">В RPDI-UI-01 подтверждение меняет только состояние интерфейса. Engine, код, граф и бюджет не затрагиваются. Настоящие команды потребуют server receipt и явной проверки.</div><div class="modal-actions"><button class="modal-secondary" data-modal-action="cancel">Отмена</button><button class="mini-gold" data-modal-action="confirm-choice">Подтвердить локально</button></div>`,()=>{state.reviewed[m.id]=true;campaign().messages.push({id:'local-'+localId(),type:'engine',title:'Локальное подтверждение сохранено',text:`Выбран вариант «${opt.title}». Это состояние прототипа, не команда BananLoop Engine.`,time:new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})});closeModal();renderMission();toast('Локальный выбор подтверждён · Engine не затронут');});}
+function openNewCampaign(){openModal('Новая кампания — демо',`<p>Создайте локальный черновик. Запуск Engine намеренно недоступен на этом этапе.</p><label for="newName">Название кампании</label><input id="newName" maxlength="65" placeholder="Например, Retrieval Quality" autofocus><label for="newGoal">Цель кампании</label><textarea id="newGoal" maxlength="700" placeholder="Какой результат должен быть достигнут?"></textarea><div class="modal-note">Нет подключения к evaluator, бюджету или проекту. Черновик живёт только до перезагрузки страницы.</div><div class="modal-actions"><button class="modal-secondary" data-modal-action="cancel">Отмена</button><button class="mini-gold" data-modal-action="create">Создать черновик</button></div>`,()=>{const name=$('newName').value.trim(),goal=$('newGoal').value.trim();if(!name||!goal){toast('Укажите название и цель');return;}const id='draft-'+localId();state.campaigns.unshift({id,name,goal,schema:2,status:'DRAFT',stage:null,metric:null,budget:null,experiments:null,graph:{revision:0,nodes:[],edges:[],groups:[]},messages:[{id:'setup-'+id,type:'setup',title:'Новый черновик · требуется настройка',text:'Цель: '+goal,time:'локально'}]});closeModal();selectCampaign(id);toast('Черновик создан в памяти браузера')});}
+function openSettings(){openModal('Настройки прототипа',`<p>В RPDI-UI-01 эти параметры управляют исключительно состоянием интерфейса.</p><label for="demoState">Тестируемое состояние экрана</label><select id="demoState"><option value="normal">Обычный demo</option><option value="stale">Устаревший snapshot</option><option value="disconnected">Engine отключён</option><option value="partial">Частичная телеметрия</option><option value="empty">Пустой граф</option></select><label for="motionState">Анимация Pixel Universe</label><select id="motionState"><option value="off">Off — без анимаций</option><option value="subtle">Subtle — сдержанно</option><option value="living">Living — выразительно</option></select><div class="modal-note">Доступ к модели, плану подписки и токеновым лимитам нельзя показывать без надёжного источника. В прототипе подключений нет.</div><div class="modal-actions"><button class="modal-secondary" data-modal-action="cancel">Отмена</button><button class="mini-gold" data-modal-action="settings">Применить</button></div>`,()=>{state.demoMode=$('demoState').value;state.motionLevel=$('motionState').value;state.reducedMotion=state.motionLevel==='off';document.querySelector('.app-shell').classList.toggle('reduced-motion',state.reducedMotion);saveUI();renderMotionUI();closeModal();render();toast('Демонстрационное состояние обновлено')});$('demoState').value=state.demoMode;$('motionState').value=state.motionLevel;}
+function openCampaignInfo(){const c=campaign();openModal('Сведения о кампании',`<p><strong>${esc(c.name)}</strong></p><p>${esc(c.goal)}</p><div class="modal-note">Схема v${c.schema}; статус ${esc(c.status)}. Все данные синтетические.</div><p>Пауза, остановка и запуск не подключены к Engine. Для v2 отсутствует подтверждённый публичный контракт глобальных управляющих операций; кнопки намеренно отключены.</p><div class="modal-actions"><button disabled class="modal-secondary" title="Нет backend integration">Pause / Resume</button><button disabled class="modal-secondary" title="Нет backend integration">Stop</button><button class="mini-gold" data-modal-action="cancel">Понятно</button></div>`,()=>{});}
+function openHelp(){openModal('О RPDI-UI-01.2',`<p><strong>Это интерактивный UI-прототип без подключения к BananLoop Engine.</strong> Все метрики, кампании, графы и сообщения представлены синтетическими данными.</p><p>Mission Control: три режима CHAT/SPLIT/RESEARCH, перетаскиваемая граница и раскрываемые гипотезы. Motion Lab запускает только синтетические эффекты. Research Galaxy: узлы, направленные связи, AND/OR-группы, масштабирование, панорамирование и инспектор.</p><p>Управление: Ctrl+колесо — масштаб, перетаскивание пустого поля — панорамирование, клавиши +/- и Home в фокусе графа, Escape — закрыть карточку, Tab — обход доступных элементов.</p><div class="modal-note">В дальнейшем UI-02 подключает только авторизованные чтения snapshot/events. UI-03 требует безопасной серверной проекции рёбер и групп. Прототип не создаёт фальшивые API-вызовы.</div><div class="modal-actions"><button class="mini-gold" data-modal-action="cancel">Закрыть</button></div>`,()=>{});}
+function renderBackdrops(){$('sidebarBackdrop').hidden=!state.sidebarOpen;}
+function bindEvents(){
+  $('missionTab').onclick=()=>switchTab('mission');$('galaxyTab').onclick=()=>switchTab('galaxy');$('decisionsTab').onclick=()=>switchTab('decisions');$('createCampaign').onclick=openNewCampaign;$('settingsButton').onclick=openSettings;$('helpButton').onclick=openHelp;$('campaignMenu').onclick=openCampaignInfo;
+  document.querySelectorAll('[data-workspace-preset]').forEach(b=>b.onclick=()=>applyPreset(b.dataset.workspacePreset));initSplitter();
+  $('dashboardToggle').onclick=()=>{state.dashboardOpen?applyPreset('chat'):applyPreset('split')};$('hideDashboard').onclick=()=>applyPreset('chat');
+  $('inspectorToggle').onclick=()=>{state.inspectorOpen=!state.inspectorOpen;renderHeader();renderInspector();};$('closeInspector').onclick=closeInspector;
+  $('menuToggle').onclick=()=>{state.sidebarOpen=true;renderSidebar()};$('closeSidebar').onclick=closeSidebar;$('sidebarBackdrop').onclick=closeSidebar;$('panelBackdrop').onclick=()=>{state.inspectorOpen=false;state.dashboardOpen=false;renderHeader()};
+  $('chatInput').addEventListener('input',()=>{state.drafts[state.selectedId]=$('chatInput').value;sizeTextarea();saveUI()});$('chatInput').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();}});$('chatForm').addEventListener('submit',e=>{e.preventDefault();sendMessage()});
+  $('chatFeed').addEventListener('scroll',()=>{const f=$('chatFeed');$('scrollToLatest').hidden=(f.scrollHeight-f.scrollTop-f.clientHeight)<120});$('scrollToLatest').onclick=()=>{$('chatFeed').scrollTop=$('chatFeed').scrollHeight};
+  $('dashboardContent').addEventListener('click',e=>{const expand=e.target.closest('[data-hypothesis-expand]'),open=e.target.closest('[data-hypothesis-open]');if(expand){const c=state.selectedId;state.hypothesisExpanded[c]??={};state.hypothesisExpanded[c][expand.dataset.hypothesisExpand]=!state.hypothesisExpanded[c][expand.dataset.hypothesisExpand];renderDashboard();saveUI();}if(open){const key=open.dataset.hypothesisOpen;switchTab('galaxy');selectGraphItem(key);}});
+  document.querySelector('.decision-inbox').addEventListener('click',e=>{const tile=e.target.closest('[data-decision-id]');if(tile){state.decisionSelected=tile.dataset.decisionId;renderDecisionCenter();}});
+  document.querySelector('.decision-detail').addEventListener('click',e=>{const l=e.target.closest('[data-decision-galaxy]');if(!l)return;if(state.selectedId!=='demo-rag')selectCampaign('demo-rag');switchTab('galaxy');selectGraphItem(l.dataset.decisionGalaxy);});
+  $('motionLabToggle').onclick=()=>{state.motionLabOpen=!state.motionLabOpen;renderMotionUI()};$('closeMotionLab').onclick=()=>{state.motionLabOpen=false;renderMotionUI()};
+  document.querySelectorAll('[data-motion-level]').forEach(b=>b.onclick=()=>{state.motionLevel=b.dataset.motionLevel;state.reducedMotion=state.motionLevel==='off';document.querySelector('.app-shell').classList.toggle('reduced-motion',state.reducedMotion);renderMotionUI();saveUI();});
+  document.querySelectorAll('[data-motion-demo]').forEach(b=>b.onclick=()=>playMotionDemo(b.dataset.motionDemo));
+  $('fitGraph').onclick=()=>fitGraph();$('fitGraphTop').onclick=()=>fitGraph();$('zoomIn').onclick=()=>zoom(1.2);$('zoomOut').onclick=()=>zoom(1/1.2);
+  let drag=null;const viewport=$('graphViewport');viewport.addEventListener('pointerdown',e=>{if(e.button!==0||e.target.closest('button, .motion-lab'))return;drag={id:e.pointerId,x:e.clientX,y:e.clientY,tx:lastView().tx,ty:lastView().ty,moved:false};viewport.setPointerCapture(e.pointerId)});viewport.addEventListener('pointermove',e=>{if(!drag||e.pointerId!==drag.id)return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;if(Math.abs(dx)+Math.abs(dy)>4)drag.moved=true;setView({...lastView(),tx:drag.tx+dx,ty:drag.ty+dy,userMoved:true})});viewport.addEventListener('pointerup',e=>{if(!drag||e.pointerId!==drag.id)return;const moved=drag.moved;drag=null;try{viewport.releasePointerCapture(e.pointerId)}catch{}if(!moved&&!e.target.closest('.motion-lab'))closeInspector();});viewport.addEventListener('pointercancel',()=>drag=null);
+  viewport.addEventListener('wheel',e=>{if(!e.ctrlKey)return;e.preventDefault();const r=viewport.getBoundingClientRect();zoom(e.deltaY<0?1.1:1/1.1,e.clientX-r.left,e.clientY-r.top)},{passive:false});viewport.addEventListener('keydown',e=>{if(e.target!==viewport)return;if(e.key==='+'||e.key==='='){zoom(1.2);e.preventDefault()}else if(e.key==='-'){zoom(1/1.2);e.preventDefault()}else if(e.key==='Home'){fitGraph();e.preventDefault()}});
+  $('closeModal').onclick=closeModal;$('modalBackdrop').addEventListener('click',e=>{if(e.target===$('modalBackdrop'))closeModal()});$('modalContent').addEventListener('click',e=>{const b=e.target.closest('[data-modal-action]');if(!b)return;const action=b.dataset.modalAction;if(action==='cancel')closeModal();else if((action==='create'||action==='confirm-choice'||action==='settings')&&state.modalAction)state.modalAction();});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(!$('modalBackdrop').hidden)closeModal();else if(state.motionLabOpen){state.motionLabOpen=false;renderMotionUI()}else if(state.sidebarOpen)closeSidebar();else if(state.inspectorOpen)closeInspector();else if(state.dashboardOpen&&window.innerWidth<1366){state.dashboardOpen=false;renderHeader()}}if(!$('modalBackdrop').hidden&&e.key==='Tab'){const elements=[...$('modal').querySelectorAll('button:not([disabled]),input,textarea,select')];const first=elements[0],last=elements.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus()}}});
+  window.addEventListener('resize',()=>{if(window.innerWidth>=1366&&state.sidebarOpen)closeSidebar();renderHeader();if(state.tab==='galaxy'&&!lastView().userMoved)fitGraph(false)});
+}
+function switchTab(tab){if(tab===state.tab)return;state.drafts[state.selectedId]=$('chatInput').value;state.tab=tab;state.motionLabOpen=false;renderMotionUI();renderHeader();saveUI();if(tab==='galaxy'){renderGalaxy();requestAnimationFrame(()=>{if(!lastView().userMoved)fitGraph(false)});}else if(tab==='mission'){renderMission();requestAnimationFrame(()=>{$('chatFeed').scrollTop=$('chatFeed').scrollHeight})}}
+function closeSidebar(){state.sidebarOpen=false;renderSidebar()}
+function closeInspector(){state.inspectorOpen=false;state.selection=null;state.nodeSelections[state.selectedId]=null;saveUI();renderHeader();renderGraph();}
+loadUI();state.dashboardOpen=getLayout().preset!=='chat';render();renderMotionUI();bindEvents();requestAnimationFrame(()=>{if(state.tab==='galaxy')fitGraph(false);$('chatFeed').scrollTop=$('chatFeed').scrollHeight;});
+
+</script>
+</body>
+</html>
