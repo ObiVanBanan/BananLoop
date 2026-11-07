@@ -320,6 +320,36 @@ def test_malformed_dispatched_response_is_durable_but_never_published(tmp_path):
         graph.close()
 
 
+def test_malformed_binary_artifact_is_unknown_spend_and_never_published(tmp_path):
+    runtime, graph, queue = _runtime(tmp_path)
+    calls = []
+
+    def malformed_artifact(*_args, **_kwargs):
+        calls.append("dispatched")
+        return {
+            "next_experiment": "repeat with a valid public artifact",
+            "artifact_base64": {"payload.bin": "%%%not-base64%%%"},
+        }
+
+    try:
+        with pytest.raises(V2RuntimeError, match="base64 artifact is malformed"):
+            runtime.run_campaign(
+                visible_paths=["README.md"],
+                invoke=make_researcher_invoke(malformed_artifact),
+                max_iterations=1,
+            )
+        assert calls == ["dispatched"]
+        job = queue.get_job_for_action("campaign-test", "exploration:explore")
+        assert job is not None and job["state"] == "UNKNOWN"
+        assert not list((tmp_path / "rpdi05" / "published").glob("*"))
+        assert graph.conn.execute(
+            "SELECT status FROM research_nodes WHERE node_id='explore'",
+        ).fetchone()[0] != "COMPLETED"
+    finally:
+        queue.close()
+        graph.close()
+
+
 def test_expired_dispatched_job_is_not_redriven_after_runtime_restart(tmp_path):
     runtime, graph, queue = _runtime(tmp_path)
     calls = []

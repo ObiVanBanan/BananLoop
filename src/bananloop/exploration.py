@@ -201,10 +201,13 @@ class EvidenceOnlyAttemptAdapter:
             for name, item in budget_snapshot.items()
         }
         model_token_cap = spec.budget.max_model_tokens
+        requested_instances = {"researcher": 1}
+        if any(role.role_id == "independent_verifier" for role in self.role_registry.roles):
+            requested_instances["independent_verifier"] = 1
         team_request = TeamRequestV1(
             campaign_id=self.campaign_id,
             spec_hash=spec_hash,
-            requested_instances={"researcher": 1},
+            requested_instances=requested_instances,
             available_agent_calls=spec.budget.max_agent_calls,
             available_model_tokens=model_token_cap,
         )

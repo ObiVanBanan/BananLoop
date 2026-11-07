@@ -162,7 +162,7 @@ def build_full_optimization_runtime(
                 "integration_verifier": 1,
                 **({"optimizer": 1} if any(role.role_id == "optimizer" for role in registry.roles) else {}),
             }, specializations=(),
-            available_agent_calls=10, available_model_tokens=1000,
+            available_agent_calls=20, available_model_tokens=1000,
         ),
         expected_registry_digest=registry.digest(),
     )

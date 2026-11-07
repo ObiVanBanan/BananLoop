@@ -6,6 +6,8 @@ would bypass the capability boundary and is not a supported integration.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -20,6 +22,7 @@ from .budget_ledger import BudgetLedger
 from .contracts import ExplorationCampaignSpecV2, utc_now
 from .exploration import EvidenceAdapterError, EvidenceOnlyAttemptAdapter, EvidenceOnlyOutputV2
 from .experiment_intent import same_experiment_intent
+from .evaluator_verification import EvaluatorProtocolDraftV1
 from .graph_store import AddEdge, AddNode, GraphRepository, MutateGraph
 from .human_decision import HumanDecisionRequestV1, StrategyChangeProposalV1
 from .research_ledger import ResearchLedger
@@ -58,6 +61,8 @@ class ResearcherReplyV1(BaseModel):
     limitations: tuple[str, ...] = ()
     research_findings: tuple[dict[str, Any], ...] = ()
     artifact_text: dict[str, str] = Field(default_factory=dict)
+    artifact_base64: dict[str, str] = Field(default_factory=dict)
+    protocol_draft: EvaluatorProtocolDraftV1 | None = None
     strategy_change_request: StrategyChangeProposalV1 | None = None
 
 
@@ -68,7 +73,7 @@ ModelReply = Callable[..., dict[str, Any]]
 MAX_VISIBLE_FILES = 16
 MAX_FILE_CHARS = 64_000
 MAX_ALL_VISIBLE_CHARS = 160_000
-MAX_ARTIFACT_TEXT_BYTES = 96_000
+MAX_ARTIFACT_BYTES = 96_000
 
 
 def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, Any]]:
@@ -262,17 +267,32 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
                 raise V2RuntimeError("researcher must return a hypothesis portfolio or next experiment")
             next_experiment = reply.next_experiment
             portfolio = None
-        if len(reply.artifact_text) > MAX_VISIBLE_FILES:
+        if len(reply.artifact_text) + len(reply.artifact_base64) > MAX_VISIBLE_FILES:
             raise V2RuntimeError("too many researcher artifacts")
         artifacts: list[dict[str, str]] = []
         bytes_total = 0
-        for name, text in sorted(reply.artifact_text.items()):
+        artifact_bytes: dict[str, bytes] = {}
+        for name, text in reply.artifact_text.items():
             if not isinstance(name, str) or not isinstance(text, str):
                 raise V2RuntimeError("artifact text must use UTF-8 names and strings")
-            raw_bytes = text.encode("utf-8")
+            artifact_bytes[name] = text.encode("utf-8")
+        for name, encoded in reply.artifact_base64.items():
+            if (not isinstance(name, str) or not isinstance(encoded, str)
+                    or name in artifact_bytes):
+                raise V2RuntimeError("base64 artifacts require unique UTF-8 names and strings")
+            if len(encoded) > 4 * ((MAX_ARTIFACT_BYTES + 2) // 3):
+                raise V2RuntimeError("base64 artifact exceeds artifact budget")
+            try:
+                raw = base64.b64decode(encoded, validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise V2RuntimeError("base64 artifact is malformed") from exc
+            if base64.b64encode(raw).decode("ascii") != encoded:
+                raise V2RuntimeError("base64 artifact is not in canonical encoding")
+            artifact_bytes[name] = raw
+        for name, raw_bytes in sorted(artifact_bytes.items()):
             bytes_total += len(raw_bytes)
-            if bytes_total > MAX_ARTIFACT_TEXT_BYTES:
-                raise V2RuntimeError("researcher artifacts exceed text budget")
+            if bytes_total > MAX_ARTIFACT_BYTES:
+                raise V2RuntimeError("researcher artifacts exceed artifact budget")
             # ToolGateway is the only write authority.
             gateway.write_artifact(name, raw_bytes)
             artifacts.append({"path": name, "sha256": hashlib.sha256(raw_bytes).hexdigest()})
@@ -303,6 +323,8 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
             "limitations": reply.limitations,
             "next_experiment": next_experiment,
             "research_findings": findings,
+            "protocol_draft": (reply.protocol_draft.model_dump(mode="json")
+                               if reply.protocol_draft is not None else None),
         })
         if not output.artifacts and not output.research_findings and not output.evidence_refs:
             raise V2RuntimeError("researcher returned no auditable evidence")

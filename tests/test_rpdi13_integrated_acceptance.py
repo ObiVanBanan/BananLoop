@@ -7,9 +7,10 @@ and CLI read models.
 """
 from __future__ import annotations
 
-import json
+import base64
 import hashlib
 import io
+import json
 import os
 import sqlite3
 import subprocess
@@ -28,19 +29,21 @@ from bananloop.contracts import (
     ProtocolCase, ProtocolManifest,
 )
 from bananloop.evaluator_verification import (
-    EvaluatorProtocolAuthority, EvaluatorProtocolV1, EvaluatorTierManifestV1,
-    MetricDiscoveryProposalV1,
+    EvaluatorProtocolAuthority, EvaluatorProtocolDraftV1, EvaluatorProtocolV1,
+    EvaluatorTierManifestV1, EvaluatorVerificationAdapter, ProtocolVerifierOutputV1,
 )
 from bananloop.graph_store import AddNode, GraphRepository, MutateGraph, TransitionNodeStatus
 from bananloop.migrations import create_v5_graph_schema
 from bananloop.registry import CampaignRegistry
 from bananloop.research_ledger import ResearchLedger
 from bananloop.cli import parser
-from bananloop.roles import RoleDefinitionV1, RoleRegistryV1
+from bananloop.roles import (
+    PinnedRoleExecutorV1, RoleDefinitionV1, RoleRegistryV1, TeamManifestAuthority,
+)
 from bananloop.trusted_evaluator import TrustedEvaluatorRunner, _case_protocol_digest
 
 from test_exploration_adapter import _role_registry, _source_repo
-from test_evaluator_verification import _receipt, build_full_optimization_runtime
+from test_evaluator_verification import build_full_optimization_runtime
 from test_v2_pivot_saga import _proposal_for_child
 
 
@@ -102,6 +105,18 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
         min_instances=1, max_instances=1, calls_per_instance=3,
         tokens_per_instance=100,
     )
+    protocol_verifier_role = RoleDefinitionV1(
+        role_id="independent_verifier", adapter="codex", provider="openai",
+        model="gpt-6-luna", model_version="rpdi13-test-pin",
+        prompt_digest="c" * 64,
+        capability_policy=CapabilityPolicyV2(
+            tools=(), read_paths=(), write_paths=(), backend="ISOLATED",
+            network_access=False,
+        ),
+        context_fields=("campaign_goal", "public_task"), priority=2,
+        min_instances=1, max_instances=1, calls_per_instance=3,
+        tokens_per_instance=100,
+    )
     optimizer_role = RoleDefinitionV1(
         role_id="optimizer", adapter="codex", provider="openai",
         model="gpt-6-luna", model_version="rpdi13-test-pin",
@@ -118,7 +133,7 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
     )
     roles = RoleRegistryV1(
         registry_id="rpdi13-integrated-roles", version=1,
-        roles=(*researcher_roles.roles, integration_role, optimizer_role),
+        roles=(*researcher_roles.roles, integration_role, protocol_verifier_role, optimizer_role),
     )
     policy = CapabilityPolicyV2(
         tools=("read_file", "list_files", "write_artifact", "commit_candidate"),
@@ -139,7 +154,7 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
             "scope_version": scope.version, "scope": scope.model_dump(mode="json"),
             "capability_policy": policy.model_dump(mode="json"),
         },
-        "budget": {"max_agent_calls": 10, "max_evaluator_calls": 20,
+        "budget": {"max_agent_calls": 20, "max_evaluator_calls": 20,
                    "max_experiments": 5, "max_attempts": 8},
         "role_registry_digest": roles.digest(),
         "evaluation": None,
@@ -191,125 +206,6 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
             "changes": [{"type": "AddNode", "node_id": "explore-1", "phase": "EXPLORATION"}],
         })
         from bananloop.v2_research_runtime import V2ResearchRuntime, make_researcher_invoke
-
-        observed_turns = []
-
-        def mock_researcher(public_input, **_pinned):
-            observed_turns.append(public_input)
-            turn = len(observed_turns)
-            content = f"controlled observation {turn}\n"
-            artifact_digest = hashlib.sha256(content.encode()).hexdigest()
-            if turn == 1:
-                return {
-                    "hypotheses": [
-                        {
-                            "id": "matched-control", "hypothesis": "The effect survives a matched control.",
-                            "rationale": "A controlled comparison can expose the mechanism.",
-                            "next_experiment": "run a matched control observation",
-                            "falsification_condition": "The control has the same baseline response.",
-                            "expected_evidence": "A controlled observation under matched conditions.",
-                        },
-                        {
-                            "id": "unrelated-check", "hypothesis": "An unrelated condition explains the outcome.",
-                            "rationale": "A separate condition can check an alternative explanation.",
-                            "next_experiment": "test an unrelated condition",
-                            "falsification_condition": "The unrelated condition does not change the outcome.",
-                            "expected_evidence": "A public outcome for the unrelated condition.",
-                        },
-                    ],
-                    "selected_hypothesis_id": "matched-control",
-                    "artifact_text": {"observation.txt": content},
-                    "limitations": ["one deterministic public observation"],
-                    "research_findings": [{
-                        "claim_key": "effect:retrieval",
-                        "statement": "The deterministic observation supports retrieval effect.",
-                        "stance": "SUPPORTS", "kind": "CAUSAL_INFERENCE", "confidence": 0.4,
-                        "intervention_type": "feature_representation",
-                        "algorithmic_layer": "features",
-                        "affected_paths": ["src/optimizer/ranker.py"],
-                        "evidence_refs": [f"artifact://sha256/{artifact_digest}"],
-                    }],
-                }
-            evidence_id = public_input["role_context"]["evidence_refs"][0]
-            return {
-                "hypotheses": [
-                    {
-                        "id": "model-choice", "hypothesis": "An unrelated condition explains the outcome.",
-                        "rationale": "The researcher prefers a fresh condition.",
-                        "next_experiment": "test an unrelated condition",
-                        "falsification_condition": "The unrelated condition has no effect.",
-                        "expected_evidence": "A public outcome for the unrelated condition.",
-                    },
-                    {
-                        "id": "evidence-choice", "hypothesis": "The matched-control observation replicates.",
-                        "rationale": "This candidate directly follows the durable prior finding.",
-                        "next_experiment": "replicate the matched-control observation",
-                        "falsification_condition": "The matched-control result does not replicate.",
-                        "expected_evidence": "A replication result for the prior claim.",
-                        "evidence_refs": [evidence_id],
-                        "target_claim_key": "effect:retrieval",
-                    },
-                ],
-                "selected_hypothesis_id": "model-choice",
-                "artifact_text": {"observation.txt": content},
-                "limitations": ["one deterministic public replication"],
-                "research_findings": [{
-                    "claim_key": "effect:retrieval",
-                    "statement": "A second deterministic observation supports retrieval effect.",
-                    "stance": "SUPPORTS", "kind": "CAUSAL_INFERENCE", "confidence": 0.5,
-                    "intervention_type": "feature_representation",
-                    "algorithmic_layer": "features",
-                    "affected_paths": ["src/optimizer/ranker.py"],
-                    "evidence_refs": [f"artifact://sha256/{artifact_digest}"],
-                }],
-            }
-
-        research_runtime = V2ResearchRuntime(
-            graph=graph, queue=queue, campaign_id=entry.campaign_id,
-            state_root=state_root, role_registry=roles,
-        )
-        exploration = research_runtime.run_campaign(
-            visible_paths=["README.md"],
-            invoke=make_researcher_invoke(mock_researcher), max_iterations=2,
-            worker_id="integrated-v2-researcher",
-        )
-        assert exploration["iterations_this_call"] == 2
-        assert len(observed_turns) == 2
-        assert observed_turns[1]["role_context"]["evidence_refs"]
-        assert "effect:retrieval" in observed_turns[1]["role_context"]["dev_summary"]
-        assert observed_turns[1]["role_context"]["public_task"] == (
-            "run a matched control observation"
-        )
-        portfolio_files = (state_root / "rpdi05" / "artifacts").rglob("*")
-        portfolios = [
-            json.loads(path.read_text(encoding="utf-8")) for path in portfolio_files
-            if path.is_file() and b'"core_selection"' in path.read_bytes()
-        ]
-        assert any(item["researcher_preferred_hypothesis_id"] == "model-choice"
-                   and item["selected_hypothesis_id"] == "evidence-choice"
-                   for item in portfolios)
-        job_id = exploration["completed"][-1]["job_id"]
-        job = queue.get_job(job_id)
-        artifact_digest = hashlib.sha256(b"controlled observation 2\n").hexdigest()
-        ledger = ResearchLedger(graph.conn)
-        role_binding = job["request"]["role_binding"]
-        protocol_digest = ledger.protocol_digest_for_binding(role_binding)
-        evidence_ids = exploration["completed"][-1]["research_evidence_ids"]
-        assert len(evidence_ids) == 1
-
-        scope_index = _api_json(root_url + f"/{entry.campaign_id}/research?limit=50")
-        assert scope_index["source"] == "PERSISTED"
-        assert len(scope_index["scopes"]) >= 1
-        public_knowledge = _api_json(
-            root_url + f"/{entry.campaign_id}/research?source_snapshot_id={base_commit}"
-            f"&protocol_digest={protocol_digest}"
-        )
-        current_evidence = next(
-            item for item in public_knowledge["evidence"]
-            if item["evidence_id"] in evidence_ids
-        )
-        assert current_evidence["verification_status"] == "UNVERIFIED_ROLE_FINDING"
-        assert current_evidence["causal_status"] == "UNVERIFIED_INFERENCE"
 
         input_bytes = b'{"prompt":"closed deterministic evaluator case","label":"pass"}'
         input_digest = hashlib.sha256(input_bytes).hexdigest()
@@ -373,45 +269,201 @@ print(json.dumps({
                 EvaluatorTierManifestV1(tier="validation", manifest_sha256=manifest_digest, case_count=1),
             ),
         })
-        completed_job = queue.get_job(job_id)
-        completed_result = queue.get_result(job_id)
-        role_binding = job["request"]["role_binding"]
-        source_event_cursor = max(event["event_id"] for event in queue.events(job_id))
-        protocol_proposal_payload = {
-            "schema_version": 1, "campaign_id": entry.campaign_id,
-            "spec_hash": spec.approved_hash(), "source_snapshot_id": base_commit,
-            "source_node_id": job["request"]["node_id"], "source_job_id": job_id,
-            "source_fence": completed_job["fence"],
-            "source_request_hash": completed_job["request_hash"],
-            "source_output_digest": completed_result["output_digest"],
-            "source_event_cursor": source_event_cursor,
-            "proposer_role_id": role_binding["role_id"],
-            "proposer_role_instance_id": role_binding["role_instance_id"],
-            "proposer_binding_digest": hashlib.sha256(json.dumps(
-                role_binding, sort_keys=True, separators=(",", ":"),
-            ).encode()).hexdigest(),
-            "protocol": protocol.model_dump(mode="json"),
-            "evidence_refs": (f"artifact://sha256/{artifact_digest}",),
+        protocol_artifacts = {
+            "bundle.dat": bundle_bytes,
+            "tier1_manifest.json": manifest_bytes,
+            "tier1_input.json": input_bytes,
+            "tier3_manifest.json": holdout_manifest_bytes,
+            "tier3_input.json": holdout_input_bytes,
         }
-        protocol_proposal_digest = hashlib.sha256(json.dumps(
-            protocol_proposal_payload, sort_keys=True, separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode()).hexdigest()
-        protocol_proposal = MetricDiscoveryProposalV1(
-            proposal_digest=protocol_proposal_digest, **protocol_proposal_payload,
+        protocol_artifact_digests = {
+            name: hashlib.sha256(content).hexdigest()
+            for name, content in protocol_artifacts.items()
+        }
+        protocol_evidence_refs = tuple(
+            f"artifact://sha256/{protocol_artifact_digests[name]}"
+            for name in ("bundle.dat", "tier1_manifest.json", "tier1_input.json")
         )
-        receipt = _receipt(protocol_proposal)
-        authority = EvaluatorProtocolAuthority(graph.conn)
-        authority._append_proposal(protocol_proposal)
-        authority._append_verified_receipt(receipt)
+        observed_turns = []
+
+        def mock_researcher(public_input, **_pinned):
+            observed_turns.append(public_input)
+            turn = len(observed_turns)
+            content = f"controlled observation {turn}\n"
+            artifact_digest = hashlib.sha256(content.encode()).hexdigest()
+            if turn == 1:
+                return {
+                    "hypotheses": [
+                        {
+                            "id": "matched-control", "hypothesis": "The effect survives a matched control.",
+                            "rationale": "A controlled comparison can expose the mechanism.",
+                            "next_experiment": "run a matched control observation",
+                            "falsification_condition": "The control has the same baseline response.",
+                            "expected_evidence": "A controlled observation under matched conditions.",
+                        },
+                        {
+                            "id": "unrelated-check", "hypothesis": "An unrelated condition explains the outcome.",
+                            "rationale": "A separate condition can check an alternative explanation.",
+                            "next_experiment": "test an unrelated condition",
+                            "falsification_condition": "The unrelated condition does not change the outcome.",
+                            "expected_evidence": "A public outcome for the unrelated condition.",
+                        },
+                    ],
+                    "selected_hypothesis_id": "matched-control",
+                    "artifact_text": {"observation.txt": content},
+                    "limitations": ["one deterministic public observation"],
+                    "research_findings": [{
+                        "claim_key": "effect:retrieval",
+                        "statement": "The deterministic observation supports retrieval effect.",
+                        "stance": "SUPPORTS", "kind": "CAUSAL_INFERENCE", "confidence": 0.4,
+                        "intervention_type": "feature_representation",
+                        "algorithmic_layer": "features",
+                        "affected_paths": ["src/optimizer/ranker.py"],
+                        "evidence_refs": [f"artifact://sha256/{artifact_digest}"],
+                    }],
+                }
+            evidence_id = public_input["role_context"]["evidence_refs"][0]
+            return {
+                "hypotheses": [
+                    {
+                        "id": "model-choice", "hypothesis": "An unrelated condition explains the outcome.",
+                        "rationale": "The researcher prefers a fresh condition.",
+                        "next_experiment": "test an unrelated condition",
+                        "falsification_condition": "The unrelated condition has no effect.",
+                        "expected_evidence": "A public outcome for the unrelated condition.",
+                    },
+                    {
+                        "id": "evidence-choice", "hypothesis": "The matched-control observation replicates.",
+                        "rationale": "This candidate directly follows the durable prior finding.",
+                        "next_experiment": "replicate the matched-control observation",
+                        "falsification_condition": "The matched-control result does not replicate.",
+                        "expected_evidence": "A replication result for the prior claim.",
+                        "evidence_refs": [evidence_id],
+                        "target_claim_key": "effect:retrieval",
+                    },
+                ],
+                "selected_hypothesis_id": "model-choice",
+                "artifact_text": {"observation.txt": content},
+                "artifact_base64": {
+                    name: base64.b64encode(data).decode("ascii")
+                    for name, data in protocol_artifacts.items()
+                },
+                "limitations": ["one deterministic public replication"],
+                "protocol_draft": {
+                    "protocol": protocol.model_dump(mode="json"),
+                    "evidence_refs": protocol_evidence_refs,
+                },
+                "research_findings": [{
+                    "claim_key": "effect:retrieval",
+                    "statement": "A second deterministic observation supports retrieval effect.",
+                    "stance": "SUPPORTS", "kind": "CAUSAL_INFERENCE", "confidence": 0.5,
+                    "intervention_type": "feature_representation",
+                    "algorithmic_layer": "features",
+                    "affected_paths": ["src/optimizer/ranker.py"],
+                    "evidence_refs": [f"artifact://sha256/{artifact_digest}"],
+                }],
+            }
+
+        research_runtime = V2ResearchRuntime(
+            graph=graph, queue=queue, campaign_id=entry.campaign_id,
+            state_root=state_root, role_registry=roles,
+        )
+        exploration = research_runtime.run_campaign(
+            visible_paths=["README.md"],
+            invoke=make_researcher_invoke(mock_researcher), max_iterations=2,
+            worker_id="integrated-v2-researcher",
+        )
+        assert exploration["iterations_this_call"] == 2
+        assert len(observed_turns) == 2
+        assert observed_turns[1]["role_context"]["evidence_refs"]
+        assert "effect:retrieval" in observed_turns[1]["role_context"]["dev_summary"]
+        assert observed_turns[1]["role_context"]["public_task"] == (
+            "run a matched control observation"
+        )
+        portfolio_files = (state_root / "rpdi05" / "artifacts").rglob("*")
+        portfolios = [
+            json.loads(path.read_text(encoding="utf-8")) for path in portfolio_files
+            if path.is_file() and b'"core_selection"' in path.read_bytes()
+        ]
+        assert any(item["researcher_preferred_hypothesis_id"] == "model-choice"
+                   and item["selected_hypothesis_id"] == "evidence-choice"
+                   for item in portfolios)
+        job_id = exploration["completed"][-1]["job_id"]
+        job = queue.get_job(job_id)
+        artifact_digest = hashlib.sha256(b"controlled observation 2\n").hexdigest()
+        ledger = ResearchLedger(graph.conn)
+        role_binding = job["request"]["role_binding"]
+        protocol_digest = ledger.protocol_digest_for_binding(role_binding)
+        evidence_ids = exploration["completed"][-1]["research_evidence_ids"]
+        assert len(evidence_ids) == 1
+
+        scope_index = _api_json(root_url + f"/{entry.campaign_id}/research?limit=50")
+        assert scope_index["source"] == "PERSISTED"
+        assert len(scope_index["scopes"]) >= 1
+        public_knowledge = _api_json(
+            root_url + f"/{entry.campaign_id}/research?source_snapshot_id={base_commit}"
+            f"&protocol_digest={protocol_digest}"
+        )
+        current_evidence = next(
+            item for item in public_knowledge["evidence"]
+            if item["evidence_id"] in evidence_ids
+        )
+        assert current_evidence["verification_status"] == "UNVERIFIED_ROLE_FINDING"
+        assert current_evidence["causal_status"] == "UNVERIFIED_INFERENCE"
+
+        protocol_authority = EvaluatorProtocolAuthority(graph.conn)
+        protocol_proposal = protocol_authority.record_completed_proposal(
+            graph, queue, job_id,
+        )
+        assert protocol_proposal.protocol == protocol
+        assert protocol_proposal.proposer_role_instance_id == job["request"]["role_binding"][
+            "role_instance_id"
+        ]
         parent_published = state_root / "rpdi05" / "published"
-        parent_published.mkdir(parents=True, exist_ok=True)
-        for data, digest in (
-            (bundle_bytes, bundle_digest), (manifest_bytes, manifest_digest),
-            (input_bytes, input_digest), (holdout_manifest_bytes, holdout_manifest_digest),
-            (holdout_input_bytes, holdout_input_digest),
-        ):
-            (parent_published / digest).write_bytes(data)
+        verification = EvaluatorVerificationAdapter(
+            graph=graph, queue=queue, campaign_id=entry.campaign_id,
+            published_artifact_root=parent_published,
+        )
+        verifier_job = verification.enqueue_verifier(protocol_proposal.proposal_digest)
+        public_review = verifier_job["request"]["role_context"]["public_task"]
+        assert "closed deterministic evaluator case" not in public_review
+        assert "separate final holdout case" not in public_review
+        assert input_digest not in public_review
+        assert holdout_input_digest not in public_review
+        manifest_authority = TeamManifestAuthority(queue.path)
+        try:
+            pinned_team = manifest_authority.load(
+                entry.campaign_id, spec_hash=spec.approved_hash(),
+                registry_digest=roles.digest(),
+            )
+        finally:
+            manifest_authority.close()
+        verifier_instance = verifier_job["request"]["role_binding"]["role_instance_id"]
+        verifier_member = pinned_team.member(verifier_instance)
+        assert verifier_member.role.role_id == "independent_verifier"
+        checks = (
+            "protocol_identity", "evaluator_bundle_review", "metric_contract",
+            "tier_manifests", "frozen_case_scope", "no_hidden_data_dependency",
+            "fair_comparison", "error_semantics",
+        )
+
+        def invoke_protocol_verifier(request, _gateway, **_pinned):
+            assert request["proposal_digest"] == protocol_proposal.proposal_digest
+            return ProtocolVerifierOutputV1(
+                proposal_digest=request["proposal_digest"], decision="APPROVE",
+                checks=checks, rationale="Independent pinned review of the public protocol bundle.",
+            ).model_dump(mode="json")
+
+        verifier_executor = PinnedRoleExecutorV1.from_manifest(
+            pinned_team, verifier_instance, invoke_protocol_verifier,
+        )
+        receipt = verification.run_verifier_one(
+            verifier_job_id=verifier_job["job_id"], worker_id="integrated-protocol-verifier",
+            executor=verifier_executor,
+        )
+        assert receipt.decision == "APPROVE"
+        assert receipt.verifier_role_instance_id == verifier_instance
+        assert receipt.verifier_role_instance_id != protocol_proposal.proposer_role_instance_id
 
         setup = {
             "parent_spec": spec, "parent_id": entry.campaign_id,
