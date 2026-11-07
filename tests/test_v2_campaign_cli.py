@@ -137,9 +137,39 @@ def test_v2_cli_live_allowance_uses_pinned_mock_transport_and_resumes(tmp_path, 
             calls.append(public_input)
             assert pin["provider"] == "openai" and pin["model"] == "gpt-6-luna"
             text = f"controlled public observation {len(calls)}"
+            if public_input["role_context"].get("evidence_refs"):
+                evidence_id = public_input["role_context"]["evidence_refs"][0]
+                return {
+                    "hypotheses": [{
+                        "id": "evidence_followup", "hypothesis": "Follow up on the prior observation.",
+                        "rationale": "This candidate is tied to the available public finding.",
+                        "next_experiment": f"test a distinct condition after observation {len(calls)}",
+                        "falsification_condition": "The predicted follow-up observation is absent.",
+                        "expected_evidence": "A bounded follow-up result.",
+                        "evidence_refs": [evidence_id], "target_claim_key": "mock:observation",
+                    }, {
+                        "id": "independent_option", "hypothesis": "Test another public condition.",
+                        "rationale": "An independently bounded alternative.",
+                        "next_experiment": "test an independent condition",
+                        "falsification_condition": "The alternative prediction is absent.",
+                        "expected_evidence": "A bounded independent observation.",
+                    }],
+                    "selected_hypothesis_id": "evidence_followup",
+                    "artifact_text": {"observation.txt": text},
+                    "research_findings": [{
+                        "claim_key": "mock:observation",
+                        "statement": "An unverified mock follow-up observation; no result is asserted.",
+                        "stance": "UNCERTAIN", "kind": "OBSERVATION", "confidence": 0.1,
+                    }],
+                }
             return {
                 "next_experiment": f"test a distinct condition after observation {len(calls)}",
                 "artifact_text": {"observation.txt": text},
+                "research_findings": [{
+                    "claim_key": "mock:observation",
+                    "statement": "An unverified mock observation is recorded; no outcome is asserted.",
+                    "stance": "UNCERTAIN", "kind": "OBSERVATION", "confidence": 0.1,
+                }],
             }
 
     monkeypatch.setattr("bananloop.v2_campaign_cli.ChatGPTPlanAuth", MockAuth)

@@ -17,11 +17,63 @@ from bananloop.exploration import EvidenceAdapterError
 from bananloop.graph_store import GraphRepository
 from bananloop.research_ledger import ResearchLedger
 from bananloop.v2_research_runtime import (
-    V2ResearchRuntime, V2RuntimeError, make_researcher_invoke,
+    V2ResearchRuntime, V2RuntimeError,
+    make_researcher_invoke as _make_researcher_invoke,
 )
 from bananloop.worker_queue import DurableWorkerQueue
 
 from test_exploration_adapter import _graph, _pinned_executor, _role_registry, _source_repo
+
+
+def make_researcher_invoke(model_reply):
+    """Provide protocol-compliant mock findings and citations for ordinary fixtures."""
+    def compliant_reply(public_input, **pin):
+        raw = model_reply(public_input, **pin)
+        if not isinstance(raw, dict) or "strategy_change_request" in raw:
+            return raw
+        raw = dict(raw)
+        role_context = public_input.get("role_context", {})
+        refs = list(role_context.get("evidence_refs", ()))
+        summary = str(role_context.get("dev_summary") or "")
+        claim = summary.split(" [", 1)[0].splitlines()[0] if summary else "test:mock-memory"
+        if refs:
+            if raw.get("hypotheses"):
+                candidates = [dict(item) for item in raw["hypotheses"]]
+                if not any(item.get("evidence_refs") for item in candidates):
+                    candidates[0]["evidence_refs"] = [refs[0]]
+                    candidates[0]["target_claim_key"] = claim
+                raw["hypotheses"] = candidates
+            else:
+                task = raw.pop("next_experiment", "test an independent follow-up")
+                raw["hypotheses"] = [
+                    {
+                        "id": "memory_followup", "hypothesis": "Test the prior finding with a follow-up.",
+                        "rationale": "This fixture follows the available public evidence.",
+                        "next_experiment": task,
+                        "falsification_condition": "The predicted observation is absent.",
+                        "expected_evidence": "A bounded public follow-up observation.",
+                        "evidence_refs": [refs[0]], "target_claim_key": claim,
+                    },
+                    {
+                        "id": "independent_alternative", "hypothesis": "Test an alternative condition.",
+                        "rationale": "This is an independent mock candidate.",
+                        "next_experiment": task + " under an alternative condition",
+                        "falsification_condition": "The alternative prediction is absent.",
+                        "expected_evidence": "A bounded alternative observation.",
+                    },
+                ]
+                raw["selected_hypothesis_id"] = "memory_followup"
+        if not raw.get("research_findings"):
+            if not raw.get("artifact_text"):
+                raw["artifact_text"] = {"test-finding.txt": "Mock evidence; no outcome is asserted."}
+            raw["research_findings"] = [{
+                "claim_key": "test:mock-output",
+                "statement": "Mock response records an unverified public observation; no outcome is asserted.",
+                "stance": "UNCERTAIN", "kind": "OBSERVATION", "confidence": 0.1,
+            }]
+        return raw
+
+    return _make_researcher_invoke(compliant_reply)
 
 
 def _runtime(tmp_path, *, max_agent_calls=3, ledger_agent_calls=None,
@@ -150,6 +202,82 @@ def test_researcher_rejects_score_and_no_evidence(tmp_path):
         assert graph.conn.execute(
             "SELECT status FROM research_nodes WHERE node_id='explore'"
         ).fetchone()[0] != "COMPLETED"
+    finally:
+        queue.close()
+        graph.close()
+
+
+def test_researcher_cannot_complete_without_a_ledger_finding(tmp_path):
+    runtime, graph, queue = _runtime(tmp_path)
+    try:
+        with pytest.raises(V2RuntimeError, match="at least one evidence-linked finding"):
+            runtime.run_one(
+                node_id="explore", visible_paths=["README.md"],
+                invoke=_make_researcher_invoke(lambda *_args, **_kwargs: {
+                    "next_experiment": "test a controlled follow-up",
+                    "artifact_text": {"proposal.txt": "A proposal without any recorded finding."},
+                }),
+            )
+        assert graph.conn.execute(
+            "SELECT status FROM research_nodes WHERE node_id='explore'",
+        ).fetchone()[0] != "COMPLETED"
+    finally:
+        queue.close()
+        graph.close()
+
+
+def test_later_portfolio_must_use_available_research_memory(tmp_path):
+    runtime, graph, queue = _runtime(tmp_path, max_agent_calls=3)
+    observed = []
+    calls = 0
+
+    def forgetful_model(public_input, **_pin):
+        nonlocal calls
+        calls += 1
+        observed.append(public_input)
+        if calls == 1:
+            text = "The source proposes a test, but no result is reported."
+            digest = hashlib.sha256(text.encode()).hexdigest()
+            return {
+                "next_experiment": "define and run a bounded follow-up",
+                "artifact_text": {"observation.txt": text},
+                "research_findings": [{
+                    "claim_key": "source:test-status",
+                    "statement": "The source proposes a test and reports no outcome; it remains unexecuted.",
+                    "stance": "UNCERTAIN", "kind": "OBSERVATION", "confidence": 0.9,
+                    "evidence_refs": [f"artifact://sha256/{digest}"],
+                }],
+            }
+        return {
+            "hypotheses": [{
+                "id": "forgot_memory_a", "hypothesis": "Test one alternative.",
+                "rationale": "Distinct testable candidate.", "next_experiment": "test alternative A",
+                "falsification_condition": "The predicted change is absent.",
+                "expected_evidence": "A bounded public observation.",
+            }, {
+                "id": "forgot_memory_b", "hypothesis": "Test another alternative.",
+                "rationale": "Another distinct candidate.", "next_experiment": "test alternative B",
+                "falsification_condition": "The second prediction is absent.",
+                "expected_evidence": "A bounded public observation.",
+            }],
+            "selected_hypothesis_id": "forgot_memory_a",
+            "artifact_text": {"observation.txt": "The second response omitted prior references."},
+            "research_findings": [{
+                "claim_key": "source:follow-up", "statement": "Second unverified report.",
+                "stance": "UNCERTAIN", "kind": "OBSERVATION", "confidence": 0.1,
+            }],
+        }
+
+    try:
+        with pytest.raises((V2RuntimeError, EvidenceAdapterError), match="must cite available Research Memory"):
+            runtime.run_campaign(
+                visible_paths=["README.md"],
+                invoke=_make_researcher_invoke(forgetful_model), max_iterations=2,
+            )
+        assert len(observed) == 2
+        assert observed[1]["role_context"]["evidence_refs"]
+        assert "source:test-status" in observed[1]["role_context"]["dev_summary"]
+        assert graph.conn.execute("SELECT COUNT(*) FROM research_evidence").fetchone()[0] >= 1
     finally:
         queue.close()
         graph.close()
@@ -402,7 +530,7 @@ def test_completed_research_job_is_projected_after_runtime_restart_without_redel
         assert graph.conn.execute(
             "SELECT status FROM research_nodes WHERE node_id='explore'",
         ).fetchone()[0] == "COMPLETED"
-        assert len(projected["research_evidence_ids"]) == 0
+        assert len(projected["research_evidence_ids"]) == 1
 
         # Restart after graph publication but before automatic follow-up
         # creation; the durable completion record is sufficient to resume.

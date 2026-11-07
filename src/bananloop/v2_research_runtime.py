@@ -125,9 +125,14 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
                 "Return 2-4 materially different, bounded, falsifiable hypotheses, "
                 "each with id and hypothesis, plus selected_hypothesis_id identifying "
                 "the one best supported for the next experiment. Include a falsifiable "
-                "next_experiment for that selection and optional text artifacts. When "
-                "using prior findings, provide target_claim_key and cite its exact "
-                "evidence_ids in evidence_refs. "
+                "next_experiment for that selection and optional text artifacts. Always "
+                "provide at least one research_finding. If no experiment was executed, "
+                "state that as an UNCERTAIN OBSERVATION and do not report a result. "
+                "When using prior findings, provide target_claim_key and cite its exact "
+                "evidence_ids in evidence_refs; if prior findings are available, at least "
+                "one candidate must cite a matching target claim and exact evidence ID. "
+                "Use supplied memory to select a distinct "
+                "follow-up experiment unless replication is specifically justified. "
                 "Do not claim "
                 "independent evaluator approval, validation or HOLDOUT scores. "
                 "These observations are unverified PUBLIC_DEV evidence. If the evidence "
@@ -171,6 +176,11 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
                 "human_decision_request": request.model_dump(mode="json"),
             })
             return output.model_dump(mode="json")
+        if not reply.research_findings:
+            raise V2RuntimeError(
+                "ordinary research response must include at least one evidence-linked finding"
+            )
+        allowed_evidence_refs = set(role_context.get("evidence_refs", ()))
         if reply.hypotheses:
             if not 2 <= len(reply.hypotheses) <= 4:
                 raise V2RuntimeError("hypothesis portfolio must contain at least two candidates")
@@ -181,7 +191,6 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
             selected = next(item for item in reply.hypotheses if item.id == reply.selected_hypothesis_id)
             if reply.next_experiment is not None and reply.next_experiment != selected.next_experiment:
                 raise V2RuntimeError("next experiment must match the selected hypothesis candidate")
-            allowed_evidence_refs = set(role_context.get("evidence_refs", ()))
             claim_evidence: dict[str, set[str]] = {}
             for line in str(role_context.get("dev_summary", "")).splitlines():
                 match = re.match(
@@ -209,6 +218,10 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
                 else:
                     evidence_scores[candidate.id] = 0
             ranked = [item for item in reply.hypotheses if evidence_scores[item.id] > 0]
+            if allowed_evidence_refs and not ranked:
+                raise V2RuntimeError(
+                    "later hypothesis portfolio must cite available Research Memory on a candidate"
+                )
             if ranked:
                 # Candidate IDs and the model's preferred ID have no quality
                 # weight. Core ranks only references already present in the
@@ -241,6 +254,10 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
                 "core_selection": selection,
             }, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         else:
+            if allowed_evidence_refs:
+                raise V2RuntimeError(
+                    "later research response must return a hypothesis portfolio that uses available Research Memory"
+                )
             if not reply.next_experiment:
                 raise V2RuntimeError("researcher must return a hypothesis portfolio or next experiment")
             next_experiment = reply.next_experiment

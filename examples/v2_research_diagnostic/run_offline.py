@@ -125,6 +125,7 @@ def main() -> None:
         text = f"mock observation {len(requests)}"
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         selected = "control" if len(requests) == 1 else "replication"
+        memory_refs = public_input["role_context"].get("evidence_refs", [])
         return {
             "hypotheses": [
                 {
@@ -142,6 +143,8 @@ def main() -> None:
                     "next_experiment": "Repeat with an independent controlled sample",
                     "falsification_condition": "The independent sample does not reproduce the observation.",
                     "expected_evidence": "A second observation from a distinct sample.",
+                    **({"evidence_refs": [memory_refs[0]],
+                       "target_claim_key": "toy:mechanism"} if memory_refs else {}),
                 },
             ],
             "selected_hypothesis_id": selected,
