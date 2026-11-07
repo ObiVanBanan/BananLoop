@@ -58,7 +58,7 @@ INSTRUCTIONS = (
 )
 OPTIMIZER_INSTRUCTIONS = (
     "You are the pinned BananLoop v0.2 optimizer. Return one strict JSON object with "
-    "hypothesis_id, rationale, changes (a mapping of allowlisted relative paths to "
+    "hypothesis_id copied exactly from selected_hypothesis_id, rationale, changes (a mapping of allowlisted relative paths to "
     "complete UTF-8 replacement text), and optional limitations. Do not return commands, "
     "scores, tests, evaluator output, credentials, or private data. Make only the smallest "
     "change that tests the stated hypothesis."
@@ -203,6 +203,7 @@ class ChatGPTPlanResearcher:
         self.last_usage: dict[str, Any] | None = None
         self.last_request_id: str | None = None
         self.last_status = "NOT_STARTED"
+        self.last_response: dict[str, Any] | None = None
 
     def check_model(self) -> None:
         if self.approved_model not in {m["slug"] for m in self.auth.models()}:
@@ -239,6 +240,7 @@ class ChatGPTPlanResearcher:
             raise SIWCError("research request exceeds bounded input bytes")
         self.last_usage = None
         self.last_request_id = None
+        self.last_response = None
         self.last_status = "PREPARING"
         # Connection is never opened until local input and pinned identity validate.
         access_token = self.auth.access_token()
@@ -272,6 +274,7 @@ class ChatGPTPlanResearcher:
                 raise ChatGPTPlanResponseError("model did not produce strict JSON") from exc
             if not isinstance(parsed, dict):
                 raise ChatGPTPlanResponseError("model response must be a JSON object")
+            self.last_response = parsed
             self.last_status = "COMPLETED"
             return parsed
         except Exception:
@@ -300,11 +303,11 @@ class ChatGPTPlanOptimizer(ChatGPTPlanResearcher):
         super().__init__(auth, approved_model=approved_model,
                          timeout_seconds=timeout_seconds,
                          transport_factory=transport_factory,
-                         protocol="v2-optimizer-one-shot-v1",
+                         protocol="v2-optimizer-one-shot-v2",
                          instructions=OPTIMIZER_INSTRUCTIONS,
                          call_observer=call_observer,
                          input_fields=frozenset({
-                             "protocol", "role_context", "visible_documents",
+                             "protocol", "role_context", "selected_hypothesis_id", "visible_documents",
                              "writable_paths", "instruction",
                          }))
 

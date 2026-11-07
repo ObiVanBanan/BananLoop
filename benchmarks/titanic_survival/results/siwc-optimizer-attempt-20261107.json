@@ -1,0 +1,23 @@
+{
+  "schema": "bananloop-titanic-live-smoke-result-v1",
+  "date_utc": "2026-11-07",
+  "tested_code_sha": "e6ca86c9b61ce6a4fe51040fc4a7e1ed30d76d23",
+  "model": "gpt-6-luna",
+  "provider": "existing Sign in with ChatGPT connection",
+  "inference_dispatched": true,
+  "automatic_retries": 0,
+  "request_id": "resp_08572d0aad445633016aef3b7a682887d28ed8a28393dec4e7",
+  "provider_status": "COMPLETED",
+  "usage": {
+    "input_tokens": 13585,
+    "output_tokens": 329,
+    "total_tokens": 13914
+  },
+  "monetary_cost": "UNKNOWN",
+  "campaign_status": "FAILED_BEFORE_CANDIDATE_COMMIT",
+  "failure": "Optimizer reply hypothesis_id did not match Core's selected hypothesis ID; runtime rejected it.",
+  "raw_response_saved": false,
+  "raw_response_note": "The then-current SIWC adapter did not expose the completed JSON body for persistence. A follow-up fix now retains last_response and includes it in live-smoke-result.json; no second inference was made.",
+  "holdout_exposed_to_model": false,
+  "evaluator_or_private_data_exposed_to_model": false
+}

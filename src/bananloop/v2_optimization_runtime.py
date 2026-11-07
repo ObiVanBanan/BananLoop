@@ -148,8 +148,9 @@ def make_optimizer_invoke(model_reply: OptimizerModelReply) -> Callable[..., dic
         if not isinstance(context, dict):
             raise V2OptimizationError("pinned optimizer context is missing")
         public_input = {
-            "protocol": "v2-optimizer-one-shot-v1",
+            "protocol": "v2-optimizer-one-shot-v2",
             "role_context": context,
+            "selected_hypothesis_id": request["hypothesis_id"],
             "visible_documents": documents,
             "writable_paths": write_paths,
             "instruction": (

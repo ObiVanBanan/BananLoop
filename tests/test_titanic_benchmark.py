@@ -473,6 +473,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                         "error": str(exc)[:1000],
                         "provider_request_receipts": live_receipts,
                         "provider_usage": live_optimizer.last_usage or "UNKNOWN",
+                        "provider_response": live_optimizer.last_response,
                         "retry_policy": "no automatic or test-level retry",
                     }, indent=2, sort_keys=True) + "\n", encoding="utf-8",
                 )
@@ -484,6 +485,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                 "campaign_status": result.get("status"),
                 "provider_request_receipts": live_receipts,
                 "provider_usage": live_optimizer.last_usage or "UNKNOWN",
+                "provider_response": live_optimizer.last_response,
                 "holdout_metric": result.get("holdout", {}).get("metric"),
                 "retry_policy": "one optimizer inference maximum; no automatic retry",
             }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -527,6 +529,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                     "campaign_status": result["status"],
                     "provider_request_receipts": live_receipts,
                     "provider_usage": live_optimizer.last_usage or "UNKNOWN",
+                    "provider_response": live_optimizer.last_response,
                     "holdout_metric": result["holdout"]["metric"],
                     "retry_policy": "one optimizer inference maximum; no automatic retry",
                 }, indent=2, sort_keys=True) + "\n", encoding="utf-8",
