@@ -521,6 +521,49 @@ def sign_evidence(document: dict, *, key_id: str, principal_id: str,
     return canonical_bytes({**unsigned, "signature_ed25519": signature})
 
 
+def _create_protected_evidence(root: Path, filename: str, raw: bytes) -> None:
+    """Create one immutable artifact exclusively beneath a verified evidence root."""
+    if (not isinstance(filename, str) or not filename or Path(filename).name != filename
+            or filename in {".", ".."} or not isinstance(raw, bytes)):
+        raise EvidenceError("invalid protected evidence artifact name or bytes")
+    verify_protected_directory(root)
+    if os.name == "nt":
+        # Windows has no dir_fd/O_DIRECTORY API. The ACL and reparse-point
+        # verification plus CREATE_NEW semantics prevent overwrite and links.
+        target = root / filename
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        fd = os.open(target, flags, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            _verify_windows_path(target, final_is_directory=False)
+        except BaseException:
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        return
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    nofollow_flag = getattr(os, "O_NOFOLLOW", 0)
+    if (not directory_flag or not nofollow_flag
+            or os.open not in getattr(os, "supports_dir_fd", set())):
+        raise EvidenceError("platform cannot securely create protected evidence")
+    root_fd = os.open(root, os.O_RDONLY | directory_flag | nofollow_flag)
+    try:
+        fd = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow_flag,
+                     0o600, dir_fd=root_fd)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.fsync(root_fd)
+    finally:
+        os.close(root_fd)
+
+
 def _read_evidence_bounded(root: Path, relative: PurePosixPath, *, max_bytes: int = MAX_EVIDENCE_BYTES) -> bytes:
     """Open without following symlinks and cap bytes actually read."""
     directory_flag = getattr(os, "O_DIRECTORY", 0)

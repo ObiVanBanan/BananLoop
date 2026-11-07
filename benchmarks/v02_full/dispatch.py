@@ -28,7 +28,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from .accounting import ActionReceipt, ResourceUsage, make_receipt
 from .evidence import (
-    EvidenceArtifactRef, EvidenceError, TrustPolicy, canonical_bytes, load_trust_policy,
+    EvidenceArtifactRef, EvidenceError, TrustPolicy, _create_protected_evidence, canonical_bytes, load_trust_policy,
     sign_evidence, verify_protected_directory,
 )
 from .execution import (
@@ -465,24 +465,12 @@ class MeteredDispatchBoundary:
         )
         digest = _digest(raw)
         relative = f"worker-launch-{digest}.json"
-        verify_protected_directory(self.evidence_root)
-        root_fd = os.open(self.evidence_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            try:
-                fd = os.open(relative, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                             0o600, dir_fd=root_fd)
-            except FileExistsError:
-                from .evidence import _read_evidence_bounded
-                if _read_evidence_bounded(self.evidence_root, PurePosixPath(relative)) != raw:
-                    raise EvidenceError("existing worker-launch permit differs from its signed bytes")
-            else:
-                with os.fdopen(fd, "wb") as stream:
-                    stream.write(raw)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.fsync(root_fd)
-        finally:
-            os.close(root_fd)
+            _create_protected_evidence(self.evidence_root, relative, raw)
+        except FileExistsError:
+            from .evidence import _read_evidence_bounded
+            if _read_evidence_bounded(self.evidence_root, PurePosixPath(relative)) != raw:
+                raise EvidenceError("existing worker-launch permit differs from its signed bytes")
         return EvidenceArtifactRef(path=relative, artifact_sha256=digest)
 
     def _read_head(self) -> sqlite3.Row:

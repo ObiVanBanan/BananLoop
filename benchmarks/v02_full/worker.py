@@ -23,6 +23,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Literal
 
 from .evidence import (EvidenceArtifactRef, EvidenceError, load_trust_policy,
@@ -243,17 +244,19 @@ def worker_bundle_fingerprint(
     sandbox = Path(sandbox_binary).absolute()
     if sandbox.is_symlink() or not sandbox.is_file() or not os.access(sandbox, os.X_OK):
         raise ArmWorkerError("bubblewrap executable must be a trusted regular executable")
-    executable = Path(command[0])
-    if not executable.is_absolute():
+    virtual_executable = PurePosixPath(command[0])
+    if (not virtual_executable.is_absolute() or ".." in virtual_executable.parts
+            or "\\" in command[0]):
         raise ArmWorkerError("worker executable must use an absolute pinned path")
-    if str(executable).startswith("/workspace/"):
-        executable_path = root.joinpath(*Path(str(executable)[len("/workspace/"):]).parts)
+    if command[0].startswith("/workspace/"):
+        executable_path = root.joinpath(*virtual_executable.parts[2:])
         if not executable_path.is_relative_to(root) or executable_path.is_symlink():
             raise ArmWorkerError("worker executable escapes its frozen bundle")
         if not executable_path.is_file() or not os.access(executable_path, os.X_OK):
             raise ArmWorkerError("worker executable is missing from its frozen bundle")
-        executable_identity = {"path": str(executable), "bundle_file": executable_path.relative_to(root).as_posix()}
+        executable_identity = {"path": command[0], "bundle_file": executable_path.relative_to(root).as_posix()}
     else:
+        executable = Path(command[0])
         executable_path = executable.resolve()
         allowed_system_roots = tuple(Path(item).resolve() for item in ("/usr", "/bin", "/lib", "/lib64")
                                      if Path(item).exists())
@@ -261,7 +264,7 @@ def worker_bundle_fingerprint(
                 or not executable_path.is_file() or not os.access(executable_path, os.X_OK)):
             raise ArmWorkerError("worker executable is outside the read-only sandbox mounts")
         executable_identity = {
-            "path": str(executable), "resolved_path": str(executable_path),
+            "path": command[0], "resolved_path": str(executable_path),
             "sha256": hashlib.sha256(executable_path.read_bytes()).hexdigest(),
             "mode": stat.S_IMODE(executable_path.stat().st_mode),
         }

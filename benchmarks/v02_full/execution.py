@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .evidence import (
-    EvidenceArtifactRef, EvidenceError, SignedEvidence, load_trust_policy,
+    EvidenceArtifactRef, EvidenceError, SignedEvidence, _create_protected_evidence, load_trust_policy,
     sign_evidence, verify_evidence_artifact, verify_protected_directory,
 )
 from .prereg import (
@@ -437,22 +437,13 @@ def assign_tasks_after_run_authorization(
         }, key_id=signer.key_id, principal_id=signer.principal_id,
             private_key=assignment_private_key)
         digest = hashlib.sha256(raw).hexdigest()
-        verify_protected_directory(evidence_root)
         path = f"assignment-{digest}.json"
-        root_fd = os.open(evidence_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=root_fd)
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(raw)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.fsync(root_fd)
+            _create_protected_evidence(Path(evidence_root), path, raw)
         except FileExistsError:
             from .evidence import _read_evidence_bounded
             if _read_evidence_bounded(Path(evidence_root), PurePosixPath(path)) != raw:
                 raise EvidenceError("existing assignment evidence differs from deterministic artifact")
-        finally:
-            os.close(root_fd)
         reference = EvidenceArtifactRef(path=path, artifact_sha256=digest)
     except (EvidenceError, OSError, ValueError) as exc:
         raise RunStartError(f"cannot seal authorized task assignment: {exc}") from exc
