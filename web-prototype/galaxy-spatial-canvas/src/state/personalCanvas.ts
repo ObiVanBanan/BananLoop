@@ -1,7 +1,7 @@
 /** Separate, *non-authoritative* user canvas state. Never write this into Engine graph data. */
 export type Point = {x:number;y:number};
 export type PersonalNote = {id:string;x:number;y:number;text:string};
-export type PersonalArrow = {id:string;source:string;target:string};
+export type PersonalArrow = {id:string;source:string;target:string;label:string};
 export type ViewportState = {x:number;y:number;zoom:number};
 export type PersonalCanvas = {
   version:1;
@@ -13,6 +13,10 @@ export type PersonalCanvas = {
   railWidth:number;
 };
 const MAX_TEXT=2000;
+export const MAX_ARROW_LABEL=80;
+// Labels are plain text. Never write them into Engine graph dependencies.
+const cleanArrowLabel=(value:unknown):string=>typeof value==='string'
+  ?value.replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,MAX_ARROW_LABEL):'';
 const asObject=(input:unknown):Record<string,unknown>|null=>typeof input==='object'&&input!==null&&!Array.isArray(input)?input as Record<string,unknown>:null;
 const cleanCoord=(x:unknown):number|null=>typeof x==='number'&&Number.isFinite(x)&&Math.abs(x)<=100000?x:null;
 const cleanId=(id:unknown):string|null=>typeof id==='string'&&/^[a-zA-Z0-9_-]{1,90}$/.test(id)?id:null;
@@ -44,7 +48,7 @@ export function decodePersonalCanvas(raw:string|null,knownGraphIds:readonly stri
   for(const value of Array.isArray(obj.arrows)?obj.arrows.slice(0,150):[]){
     const item=asObject(value),id=cleanId(item?.id),source=cleanId(item?.source),target=cleanId(item?.target);
     if(!id||!source||!target||source===target||!validIds.has(source)||!validIds.has(target)||seen.has(source+':'+target))continue;
-    seen.add(source+':'+target);arrows.push({id,source,target});
+    seen.add(source+':'+target);arrows.push({id,source,target,label:cleanArrowLabel(item?.label)});
   }
   const view=asObject(obj.viewport);
   const viewport:ViewportState|null=view&&cleanCoord(view.x)!==null&&cleanCoord(view.y)!==null&&typeof view.zoom==='number'&&view.zoom>=.3&&view.zoom<=3
@@ -58,10 +62,19 @@ export function loadCanvas(storage:Pick<Storage,'getItem'>|null,campaignId:strin
 export function saveCanvas(storage:Pick<Storage,'setItem'>|null,campaignId:string,value:PersonalCanvas):boolean{
   try{storage?.setItem(storageKey(campaignId),JSON.stringify(value));return Boolean(storage)}catch{return false}
 }
-export function addPersonalArrow(canvas:PersonalCanvas,source:string,target:string,allowedIds:readonly string[]):PersonalCanvas{
+export function addPersonalArrow(canvas:PersonalCanvas,source:string,target:string,allowedIds:readonly string[],newId?:string):PersonalCanvas{
   if(source===target||!allowedIds.includes(source)||!allowedIds.includes(target)||canvas.arrows.length>=100||canvas.arrows.some(e=>e.source===source&&e.target===target))return canvas;
-  const id=`arrow-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
-  return {...canvas,arrows:[...canvas.arrows,{id,source,target}]};
+  const id=newId??`arrow-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
+  if(!cleanId(id)||!id.startsWith('arrow-')||canvas.arrows.some(a=>a.id===id))return canvas;
+  return {...canvas,arrows:[...canvas.arrows,{id,source,target,label:''}]};
+}
+export function renamePersonalArrow(canvas:PersonalCanvas,id:string,label:string):PersonalCanvas{
+  if(!canvas.arrows.some(a=>a.id===id))return canvas;
+  return {...canvas,arrows:canvas.arrows.map(a=>a.id===id?{...a,label:cleanArrowLabel(label)}:a)};
+}
+export function removePersonalArrow(canvas:PersonalCanvas,id:string):PersonalCanvas{
+  if(!canvas.arrows.some(a=>a.id===id))return canvas;
+  return {...canvas,arrows:canvas.arrows.filter(a=>a.id!==id)};
 }
 export function removePersonalNote(canvas:PersonalCanvas,noteId:string):PersonalCanvas{
   if(!noteId.startsWith('note-'))return canvas;
