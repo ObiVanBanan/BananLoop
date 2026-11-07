@@ -295,12 +295,14 @@ class ChatGPTPlanOptimizer(ChatGPTPlanResearcher):
 
     def __init__(self, auth: ChatGPTPlanAuth, *, approved_model: str,
                  timeout_seconds: int = 120,
-                 transport_factory: Callable[..., Any] = http.client.HTTPSConnection):
+                 transport_factory: Callable[..., Any] = http.client.HTTPSConnection,
+                 call_observer: Callable[[dict[str, Any]], None] | None = None):
         super().__init__(auth, approved_model=approved_model,
                          timeout_seconds=timeout_seconds,
                          transport_factory=transport_factory,
                          protocol="v2-optimizer-one-shot-v1",
-                         instructions=OPTIMIZER_INSTRUCTIONS)
+                         instructions=OPTIMIZER_INSTRUCTIONS,
+                         call_observer=call_observer)
 
 
 class ChatGPTPlanIntegrationVerifier(ChatGPTPlanResearcher):
@@ -308,12 +310,14 @@ class ChatGPTPlanIntegrationVerifier(ChatGPTPlanResearcher):
 
     def __init__(self, auth: ChatGPTPlanAuth, *, approved_model: str,
                  timeout_seconds: int = 120,
-                 transport_factory: Callable[..., Any] = http.client.HTTPSConnection):
+                 transport_factory: Callable[..., Any] = http.client.HTTPSConnection,
+                 call_observer: Callable[[dict[str, Any]], None] | None = None):
         super().__init__(auth, approved_model=approved_model,
                          timeout_seconds=timeout_seconds,
                          transport_factory=transport_factory,
                          protocol="v2-integration-verifier-one-shot-v1",
                          instructions=INTEGRATION_VERIFIER_INSTRUCTIONS,
+                         call_observer=call_observer,
                          input_fields=frozenset({
                              "protocol", "role_context", "candidate_snapshot_id",
                              "protocol_digest",

@@ -151,7 +151,7 @@ def test_titanic_evaluator_runs_in_trusted_bubblewrap_on_dev_only(tmp_path):
     assert not hasattr(result, "metric")
 
 
-def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path):
+def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, monkeypatch):
     import hashlib
     import sqlite3
     import subprocess
@@ -182,28 +182,26 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path):
     live_optimizer = None
     if live_mode:
         auth = ChatGPTPlanAuth()
-        if not auth.status().get("connected"):
-            state_root.mkdir(parents=True, exist_ok=True)
-            (state_root / "live-smoke-result.json").write_text(json.dumps({
-                "schema": "bananloop-titanic-live-smoke-v1",
-                "status": "NOT_DISPATCHED", "reason": "SIWC account is not connected",
-                "inference_calls": 0,
-            }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            pytest.fail("live smoke stopped before inference: SIWC account is not connected")
-        live_optimizer = ChatGPTPlanOptimizer(
-            auth, approved_model="gpt-6-luna", timeout_seconds=120,
-            call_observer=lambda receipt: live_receipts.append(dict(receipt)),
-        )
         try:
+            if not auth.status().get("connected"):
+                raise SIWCError("SIWC account is not connected")
+            live_optimizer = ChatGPTPlanOptimizer(
+                auth, approved_model="gpt-6-luna", timeout_seconds=120,
+                call_observer=lambda receipt: live_receipts.append(dict(receipt)),
+            )
             live_optimizer.check_model()
-        except SIWCError as exc:
+        except Exception as exc:
             state_root.mkdir(parents=True, exist_ok=True)
             (state_root / "live-smoke-result.json").write_text(json.dumps({
                 "schema": "bananloop-titanic-live-smoke-v1",
                 "status": "NOT_DISPATCHED", "reason": str(exc),
+                "error_type": type(exc).__name__,
                 "inference_calls": 0,
             }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             pytest.fail(f"live smoke stopped before inference: {exc}")
+    # Keep all BananLoop registry state in pytest's temporary home. In live
+    # mode SIWCVault has already captured the owner's real vault path above.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "test-home")
 
     optimizer_model_version = "siwc-responses-v1" if live_mode else "titanic-e2e-v1"
     optimizer_prompt_digest = (

@@ -84,7 +84,7 @@ campaign state.
 ```sh
 LIVE_ROOT="$(mktemp -d /tmp/bananloop-titanic-live.XXXXXX)"
 BANANLOOP_TITANIC_LIVE=1 PYTHONPATH=tests/plugins:tests:src:. \
-  .venv/bin/python -m pytest -p isolate_home -s \
+  .venv/bin/python -m pytest -s \
   --basetemp "$LIVE_ROOT/pytest" \
   tests/test_titanic_benchmark.py::test_titanic_v2_optimization_campaign_runs_to_terminal_holdout
 ```

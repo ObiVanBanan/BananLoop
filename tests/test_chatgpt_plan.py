@@ -356,8 +356,10 @@ def test_optimizer_siwc_protocol_is_pinned_and_tool_free(tmp_path):
         "changes": {"src/app.py": "candidate\n"}, "limitations": [],
     })
     conn = FakeConnection(_finished(body=body))
+    receipts = []
     optimizer = ChatGPTPlanOptimizer(
         auth, approved_model="gpt-6-luna", transport_factory=lambda *args, **kwargs: conn,
+        call_observer=receipts.append,
     )
     result = optimizer(
         {"protocol": "v2-optimizer-one-shot-v1", "role_context": {"public_task": "hyp-1"},
@@ -366,6 +368,7 @@ def test_optimizer_siwc_protocol_is_pinned_and_tool_free(tmp_path):
         prompt_digest="a" * 64, max_model_tokens=100,
     )
     assert result["hypothesis_id"] == "hyp-1"
+    assert len(receipts) == 1 and receipts[0]["status"] == "COMPLETED"
     sent = conn.sent[0][2]
     assert sent["store"] is False and sent["stream"] is True
     assert "commands" in sent["input"][0]["content"]
