@@ -301,6 +301,48 @@ def test_official_response_payload_is_subscription_only(tmp_path):
 def test_research_prompt_states_exact_lowercase_candidate_id_contract():
     assert "^[a-z0-9][a-z0-9_-]{0,79}$" in INSTRUCTIONS
     assert "never H1_mediated_effect" in INSTRUCTIONS
+    assert "top-level evidence_refs " in INSTRUCTIONS
+    assert "array of strings only" in INSTRUCTIONS
+    assert "Never put claim-key/evidence-ID objects" in INSTRUCTIONS
+
+
+def test_provider_call_observer_preserves_receipt_without_model_text(tmp_path):
+    auth, _ = _auth(tmp_path)
+    _connect(auth)
+    conn = FakeConnection(_finished(usage={"input_tokens": 9, "output_tokens": 3}))
+    receipts = []
+    researcher = ChatGPTPlanResearcher(
+        auth, approved_model="gpt-6-luna", transport_factory=lambda *args, **kwargs: conn,
+        call_observer=receipts.append,
+    )
+    public = {"protocol": "rpdi13r-researcher-one-shot-v1",
+              "role_context": {"public_task": "investigate"},
+              "visible_documents": {"README.md": "hello"}, "instruction": "test"}
+    researcher(public, provider="openai", model="gpt-6-luna", model_version="siwc-v1",
+               prompt_digest="a" * 64, max_model_tokens=100)
+    assert receipts == [{"request_id": "resp_mock", "status": "COMPLETED",
+                         "dispatched": True,
+                         "usage": {"input_tokens": 9, "output_tokens": 3}}]
+    assert "repeat" not in json.dumps(receipts)
+
+
+def test_provider_call_observer_records_completed_response_before_schema_failure(tmp_path):
+    auth, _ = _auth(tmp_path)
+    _connect(auth)
+    receipts = []
+    conn = FakeConnection(_finished(body="[]", usage={"input_tokens": 4}))
+    researcher = ChatGPTPlanResearcher(
+        auth, approved_model="gpt-6-luna", transport_factory=lambda *args, **kwargs: conn,
+        call_observer=receipts.append,
+    )
+    public = {"protocol": "rpdi13r-researcher-one-shot-v1",
+              "role_context": {"public_task": "investigate"},
+              "visible_documents": {"README.md": "hello"}, "instruction": "test"}
+    with pytest.raises(ChatGPTPlanResponseError):
+        researcher(public, provider="openai", model="gpt-6-luna", model_version="siwc-v1",
+                   prompt_digest="a" * 64, max_model_tokens=100)
+    assert receipts == [{"request_id": "resp_mock", "status": "FAILED",
+                         "dispatched": True, "usage": {"input_tokens": 4}}]
 
 
 def test_optimizer_siwc_protocol_is_pinned_and_tool_free(tmp_path):

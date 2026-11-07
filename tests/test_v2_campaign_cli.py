@@ -127,7 +127,7 @@ def test_v2_cli_live_allowance_uses_pinned_mock_transport_and_resumes(tmp_path, 
         last_usage = None
         last_request_id = None
 
-        def __init__(self, _auth, *, approved_model, timeout_seconds):
+        def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer=None):
             assert approved_model == "gpt-6-luna" and timeout_seconds == 60
 
         def check_model(self):
@@ -172,6 +172,56 @@ def test_v2_cli_live_allowance_uses_pinned_mock_transport_and_resumes(tmp_path, 
         ).fetchone()[0] == 2
     finally:
         queue.close()
+
+
+def test_v2_cli_persists_provider_receipt_when_runtime_rejects_reply(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    state_dir = tmp_path / "state"
+
+    class MockAuth:
+        def status(self):
+            return {"connected": True}
+
+    class MockResearcher:
+        last_usage = {"total_tokens": 17}
+        last_request_id = "resp_schema_rejected"
+
+        def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer=None):
+            receipt = {"request_id": "resp_schema_rejected", "status": "COMPLETED",
+                       "dispatched": True, "usage": {"total_tokens": 17}}
+            self.request_history = [receipt]
+            if call_observer:
+                call_observer(receipt)
+
+        def check_model(self):
+            return None
+
+        def __call__(self, *_args, **_kwargs):
+            return {}
+
+    def fail_campaign(self, **_kwargs):
+        raise ValueError("invalid researcher reply")
+
+    monkeypatch.setattr("bananloop.v2_campaign_cli.ChatGPTPlanAuth", MockAuth)
+    monkeypatch.setattr("bananloop.v2_campaign_cli.ChatGPTPlanResearcher", MockResearcher)
+    monkeypatch.setattr("bananloop.v2_campaign_cli.V2ResearchRuntime.run_campaign", fail_campaign)
+    result = run_v2_explore(_args(repo, state_dir, approve_up_to_calls=1))
+    assert result["status"] == "RUN_FAILED"
+    assert result["failure_type"] == "ValueError", result
+    assert result["automatic_replay"] is False
+    report = json.loads(__import__("pathlib").Path(result["report_path"]).read_text())
+    assert report["failure_type"] == "ValueError"
+    assert "invalid researcher reply" not in json.dumps(report)
+    assert report["request_history"][0]["request_id"] == "resp_schema_rejected"
+
+    campaign_db = __import__("pathlib").Path(result["state_dir"]) / "campaign.sqlite3"
+    conn = __import__("sqlite3").connect(campaign_db)
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type='V2_PROVIDER_CALL'",
+        ).fetchone()[0] == 1
+    finally:
+        conn.close()
 
 
 @pytest.mark.parametrize("path", ["../outside.txt", ".env", "tests/evaluator.py", "/etc/passwd"])

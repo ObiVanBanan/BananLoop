@@ -21,14 +21,20 @@ INSTRUCTIONS = (
     "to propose a portfolio of 2-4 materially different, bounded, falsifiable "
     "hypotheses and select one using the supplied evidence and research memory. "
     "Each candidate must have id, hypothesis, rationale, next_experiment, "
-    "falsification_condition, and expected_evidence. Return ONE strict JSON object, "
+    "falsification_condition, and expected_evidence; optional candidate "
+    "target_claim_key is one string and optional candidate evidence_refs is an array "
+    "of evidence ID strings. Never put claim-key/evidence-ID objects inside "
+    "evidence_refs. Return ONE strict JSON object, "
     "Candidate ids must match ^[a-z0-9][a-z0-9_-]{0,79}$ exactly; use lowercase "
     "letters only (for example, h1_mediated_effect, never H1_mediated_effect). "
     "with keys hypotheses (array of 2-4 such objects), selected_hypothesis_id, "
     "and optional next_experiment only if it exactly matches the selected candidate, "
     "artifact_text (mapping of relative file names to UTF-8 text, optional), "
-    "research_findings (array of objects, optional), evidence_refs (array, "
-    "optional), limitations (array, optional). If a fundamental strategy change "
+    "research_findings (array of objects, optional), top-level evidence_refs "
+    "(array of strings only, optional), limitations (array, optional). For prior "
+    "evidence, attach target_claim_key plus its exact evidence ID strings to the "
+    "candidate's fields; do not create object entries in top-level evidence_refs. "
+    "If a fundamental strategy change "
     "is needed, return only strategy_change_request with current_strategy, "
     "proposed_strategy, rationale, expected_effect, and changed_scope. This is "
     "a request for owner review, never authorization or execution. Findings need claim_key, "
@@ -167,6 +173,7 @@ class ChatGPTPlanResearcher:
                  transport_factory: Callable[..., Any] = http.client.HTTPSConnection,
                  protocol: str = "rpdi13r-researcher-one-shot-v1",
                  instructions: str = INSTRUCTIONS,
+                 call_observer: Callable[[dict[str, Any]], None] | None = None,
                  input_fields: frozenset[str] = frozenset({
                      "protocol", "role_context", "visible_documents", "instruction",
                  })):
@@ -180,6 +187,8 @@ class ChatGPTPlanResearcher:
         self.transport_factory = transport_factory
         self.protocol = protocol
         self.instructions = instructions
+        self.call_observer = call_observer
+        self.request_history: list[dict[str, Any]] = []
         self.input_fields = input_fields
         self.last_usage: dict[str, Any] | None = None
         self.last_request_id: str | None = None
@@ -225,6 +234,7 @@ class ChatGPTPlanResearcher:
         access_token = self.auth.access_token()
         connection = self.transport_factory("api.openai.com", timeout=self.timeout_seconds)
         self.last_status = "DISPATCHED"
+        dispatched = True
         try:
             connection.request(
                 "POST", "/v1/responses", body=payload,
@@ -244,14 +254,14 @@ class ChatGPTPlanResearcher:
             text, usage, request_id = collect_completed(
                 reply, deadline=time.monotonic() + self.timeout_seconds,
             )
+            self.last_usage = usage
+            self.last_request_id = request_id
             try:
                 parsed = json.loads(text)
             except (ValueError, UnicodeDecodeError) as exc:
                 raise ChatGPTPlanResponseError("model did not produce strict JSON") from exc
             if not isinstance(parsed, dict):
                 raise ChatGPTPlanResponseError("model response must be a JSON object")
-            self.last_usage = usage
-            self.last_request_id = request_id
             self.last_status = "COMPLETED"
             return parsed
         except Exception:
@@ -259,6 +269,15 @@ class ChatGPTPlanResearcher:
             raise
         finally:
             connection.close()
+            receipt = {
+                "request_id": self.last_request_id,
+                "status": self.last_status,
+                "dispatched": dispatched,
+                "usage": self.last_usage if self.last_usage is not None else "UNKNOWN",
+            }
+            self.request_history.append(receipt)
+            if self.call_observer is not None:
+                self.call_observer(dict(receipt))
 
 
 class ChatGPTPlanOptimizer(ChatGPTPlanResearcher):

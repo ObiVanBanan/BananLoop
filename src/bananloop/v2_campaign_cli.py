@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import subprocess
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -153,6 +154,34 @@ def _initialize_campaign(database: Path, spec: ExplorationCampaignSpecV2) -> Non
         conn.close()
 
 
+def _write_live_report(state_root: Path, report: dict[str, Any]) -> str:
+    reports = state_root / "reports"
+    reports.mkdir(parents=True, exist_ok=True)
+    target = reports / ("v2-owner-run-" + str(report["attempt_id"]) + ".json")
+    temporary = target.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, target)
+    return str(target)
+
+
+def _record_provider_call(database: Path, receipt: dict[str, Any]) -> None:
+    conn = sqlite3.connect(database, timeout=30)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT INTO events(event_type,payload_json,created_at) VALUES(?,?,?)",
+            ("V2_PROVIDER_CALL", json.dumps(receipt, sort_keys=True, separators=(",", ":")),
+             utc_now()),
+        )
+        conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def run_v2_explore(args: Any) -> dict[str, Any]:
     """Create/reopen one frozen Full v2 Exploration campaign and advance it."""
     goal = args.goal
@@ -222,18 +251,40 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
         auth = ChatGPTPlanAuth()
         if not auth.status()["connected"]:
             raise V2CampaignCLIError("ChatGPT is not connected; use bananloop-chatgpt status first")
+        attempt_id = "a-" + hashlib.sha256(
+            f"{entry.campaign_id}:{args.request_id}:{utc_now()}".encode(),
+        ).hexdigest()[:24]
+
+        def observe_call(receipt: dict[str, Any]) -> None:
+            _record_provider_call(database, {"attempt_id": attempt_id, **receipt})
+
         researcher = ChatGPTPlanResearcher(
             auth, approved_model=args.model, timeout_seconds=args.timeout_seconds,
+            call_observer=observe_call,
         )
         try:
             researcher.check_model()
         except SIWCError as exc:
             raise V2CampaignCLIError(str(exc)) from exc
-        result = runtime.run_campaign(
-            visible_paths=paths, invoke=make_researcher_invoke(researcher),
-            max_iterations=args.approve_up_to_calls,
-        )
-        return {
+        try:
+            result = runtime.run_campaign(
+                visible_paths=paths, invoke=make_researcher_invoke(researcher),
+                max_iterations=args.approve_up_to_calls,
+            )
+        except Exception as exc:
+            report = {
+                "attempt_id": attempt_id, "campaign_id": entry.campaign_id,
+                "status": "RUN_FAILED", "provider": "chatgpt_plan", "model": args.model,
+                "request_history": list(getattr(researcher, "request_history", [])),
+                "usage": "UNKNOWN", "failure_type": type(exc).__name__,
+                "automatic_replay": False,
+            }
+            report["report_path"] = _write_live_report(state_root, report)
+            return {
+                **report, "state_dir": str(state_root),
+                "live_model_called": bool(report["request_history"]),
+            }
+        response = {
             **result, "mode": "EXPLORATION", "profile": "FULL",
             "spec_hash": spec.approved_hash(), "base_commit": spec.base_commit,
             "read_paths": list(paths), "state_dir": str(state_root),
@@ -241,7 +292,14 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             "live_model_called": bool(result.get("completed")),
             "usage": researcher.last_usage if researcher.last_usage is not None else "UNKNOWN",
             "request_id": researcher.last_request_id,
+            "request_history": list(getattr(researcher, "request_history", [])),
+            "attempt_id": attempt_id,
+            "automatic_replay": False,
         }
+        response["report_path"] = _write_live_report(state_root, {
+            **response, "status": response.get("status", "UNKNOWN"),
+        })
+        return response
     finally:
         queue.close()
         graph.close()

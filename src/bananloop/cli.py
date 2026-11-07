@@ -597,7 +597,7 @@ def cmd_v2_explore(args: argparse.Namespace) -> int:
 
     result = run_v2_explore(args)
     print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
-    return 0 if result.get("status") not in {"BUDGET_EXHAUSTED", "STOP_REQUESTED"} else 2
+    return 0 if result.get("status") not in {"BUDGET_EXHAUSTED", "STOP_REQUESTED", "RUN_FAILED"} else 2
 
 
 def _status_evaluation_summary(measurements: list[dict]) -> list[dict]:
