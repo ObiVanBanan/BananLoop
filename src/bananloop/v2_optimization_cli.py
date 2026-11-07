@@ -209,7 +209,10 @@ def run_v2_optimize(args: Namespace, *,
 
         team_request = TeamRequestV1(
             campaign_id=args.campaign_id, spec_hash=spec.approved_hash(),
-            requested_instances={role.role_id: role.min_instances for role in role_registry.roles},
+            # This role registry is shared with the Exploration parent, where
+            # these roles are intentionally optional. The Optimization child
+            # must instantiate its two execution roles explicitly.
+            requested_instances={"optimizer": 1, "integration_verifier": 1},
             available_agent_calls=spec.budget.max_agent_calls,
             available_model_tokens=spec.budget.max_model_tokens,
         )

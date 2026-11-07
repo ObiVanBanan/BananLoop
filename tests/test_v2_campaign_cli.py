@@ -137,6 +137,7 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
                 ),
                 context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
                                 "constraints", "evidence_refs", "dev_summary", "budget_remaining"),
+                min_instances=0, max_instances=1,
                 calls_per_instance=4, tokens_per_instance=400,
             ),
             RoleDefinitionV1(
@@ -147,6 +148,7 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
                     network_access=False,
                 ),
                 context_fields=("campaign_goal", "public_task"),
+                min_instances=0, max_instances=1,
                 calls_per_instance=4, tokens_per_instance=400,
             ),
         ),
