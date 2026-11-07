@@ -51,17 +51,23 @@ verification → terminal HOLDOUT. It passed in this checkout with both its
 test-runner and real-`bubblewrap` variants. That E2E uses a synthetic evaluator;
 it is evidence for the runtime path, not a Titanic score.
 
-`tests/test_titanic_benchmark.py` now exercises the data protocol, evaluator
-asset freezer, and a complete v2 Optimization campaign. The E2E creates a
-candidate, runs the trusted DEV evaluator, asks a separate pinned integration
-verifier to accept/reject it, selects the champion, and runs independent
-VALIDATION and terminal HOLDOUT evaluation. The optimizer sees only
+`tests/test_titanic_benchmark.py` exercises the data protocol, evaluator asset
+freezer, parent Exploration protocol discovery, and a complete v2 Optimization
+campaign. Parent discovery runs through `V2ResearchRuntime`, the durable worker
+queue, `EvaluatorProtocolAuthority.record_completed_proposal`, and
+`EvaluatorVerificationAdapter` with a separate pinned `independent_verifier`.
+The actual handoff receipt is installed into the child campaign. Assertions
+check that the researcher sees only `data/train.csv`, while validation and
+HOLDOUT case identifiers and digests stay out of researcher and verifier
+contexts. The child test creates a candidate, runs the trusted DEV evaluator,
+uses a separate pinned integration verifier, selects the champion, and runs
+independent VALIDATION and terminal HOLDOUT evaluation. The optimizer sees only
 `data/train.csv` and can write only `src/model.json`; evaluator inputs stay
 outside its workspace. The evaluator uses the production Linux bubblewrap
 runner, and the test skips with a specific reason when host namespaces are
-unavailable. The parent protocol approval is fixture-seeded, and the optimizer
-proposal is deterministic/offline; this demonstrates actual v2 execution and
-isolation, not a live research/model call.
+unavailable. Model calls in this offline E2E are deterministic test doubles;
+the test proves the real v2 runtime, queue, verifier, handoff, and evaluator
+path, not a live autonomous model run.
 
 The frozen run (seed 2026) completed with **HOLDOUT accuracy 0.7806
 (153/196)** on code SHA `23242e577049046cf33b9722be5d11be706ae299`. This is below the requested 0.95
@@ -138,6 +144,32 @@ python benchmarks/titanic_survival/prepare.py \
   --source benchmarks/titanic_survival/openml-40945.arff \
   --output /tmp/bananloop-titanic-benchmark
 ```
+
+## Reproducible offline smoke commands
+
+Run the complete offline suite, including v2 Exploration, the RPDI-13
+cross-layer acceptance, and Titanic's production evaluator path:
+
+```sh
+PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest \
+  -p isolate_home -o addopts='' -q -ra --tb=short
+```
+
+For a shorter focused run of the two composed acceptance paths:
+
+```sh
+PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest \
+  -p isolate_home -q -ra --tb=short \
+  tests/test_titanic_benchmark.py \
+  tests/test_rpdi13_integrated_acceptance.py
+```
+
+The Linux commands need permission to create bubblewrap namespaces for the
+production evaluator cases. Without that host capability, the affected test
+reports a specific skip. The exact full-suite result and tested implementation
+SHA are recorded in
+[`docs/reviews/v02-full-integration-status-ae3feb1.md`](../../docs/reviews/v02-full-integration-status-ae3feb1.md)
+and its JSON companion.
 
 Current verified Linux commands:
 
