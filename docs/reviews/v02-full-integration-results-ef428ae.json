@@ -1,0 +1,85 @@
+{
+  "runtime_code_commit": "ef428ae9aa6ebe5f472e7b54cb97df3c8d4e7d47",
+  "branch": "codex/v02-full-integration",
+  "base_main": "6c89975870b0da8060146953faea966e203ba857",
+  "pull_request": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "linux_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. /tmp/bananloop-check/bin/python -m pytest -p isolate_home -q -ra --tb=no",
+    "collected": 936,
+    "passed": 934,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "exit_code": 0,
+    "skips": [
+      "pinned selector source commit unavailable",
+      "Windows ACL/reparse-point contract on Linux"
+    ],
+    "host_permissions": "loopback and Linux namespace access enabled"
+  },
+  "chatgpt_plan_live_smoke": {
+    "provider": "chatgpt_plan",
+    "model": "gpt-6-luna",
+    "separate_openai_api_used": false,
+    "api_key_used": false,
+    "automatic_retries": 0,
+    "spend_usd": "UNKNOWN",
+    "calls": [
+      {
+        "result_file": "docs/reviews/v02-live-smoke-first-invalid-ef428ae.json",
+        "response_request_id": "resp_090d2e9a7a550746016aeed27a5e9c87d2b38fd00afef1df6f",
+        "provider_request_status": "COMPLETED",
+        "runtime_status": "SIWC_ONE_SHOT_EXPLORATION_FAILED",
+        "durable_job_state": "UNKNOWN",
+        "error_type": "ValidationError",
+        "error_summary": "Three hypothesis IDs began with uppercase H and violated the lowercase schema pattern.",
+        "input_tokens": 580,
+        "output_tokens": 1110,
+        "total_tokens": 1690,
+        "campaign_state_path": "/tmp/bananloop-v2-live-one-call-9c5e603/state/campaigns/c-c6188d67dbb10ec974618d95c2863606",
+        "automatic_replay": false
+      },
+      {
+        "result_file": "docs/reviews/v02-live-smoke-second-complete-ef428ae.json",
+        "response_request_id": "resp_0b8d5819a6770a34016aeed4bf0e4c87d281c113038f5c303d",
+        "provider_request_status": "COMPLETED",
+        "runtime_status": "SIWC_ONE_SHOT_EXPLORATION_COMPLETED",
+        "campaign_node_state": "COMPLETED",
+        "public_hypothesis_portfolio_artifact_sha256": "c541e0447e38c02afcf841f75b33cf74bf136e7acf0a124849378b1011d7f9d9",
+        "input_tokens": 628,
+        "output_tokens": 1018,
+        "total_tokens": 1646,
+        "campaign_state_path": "/tmp/bananloop-v2-live-one-call-2-9c5e603/state/campaigns/c-c6188d67dbb10ec974618d95c2863606",
+        "complete_full_pipeline_proven": false,
+        "RPDI14_evidence": false
+      }
+    ],
+    "aggregate_usage": {
+      "input_tokens": 1208,
+      "output_tokens": 2128,
+      "total_tokens": 3336
+    },
+    "result_locations": [
+      "/tmp/bananloop-v2-live-one-call-9c5e603/state/campaigns/c-c6188d67dbb10ec974618d95c2863606/live-smoke-result.json",
+      "/tmp/bananloop-v2-live-one-call-2-9c5e603/state/campaigns/c-c6188d67dbb10ec974618d95c2863606/live-smoke-result.json"
+    ]
+  },
+  "prompt_schema_fix": {
+    "pattern": "^[a-z0-9][a-z0-9_-]{0,79}$",
+    "regression_test": "tests/test_chatgpt_plan.py::test_research_prompt_states_exact_lowercase_candidate_id_contract",
+    "focused_suite": "tests/test_chatgpt_plan.py passed"
+  },
+  "integrated_offline_e2e": {
+    "covered_by_full_suite": true,
+    "production_bubblewrap_mode": true,
+    "complete_full_pipeline_proven_offline": true
+  },
+  "ci_at_report_preparation": {
+    "head_sha": "ef428ae9aa6ebe5f472e7b54cb97df3c8d4e7d47",
+    "chromium": "success",
+    "mutation_policy": "success",
+    "linux_matrix": "queued after an overlapping run was cancelled; exact-SHA local suite passed",
+    "windows": "deferred by owner"
+  },
+  "full_acceptance": false
+}

@@ -1,0 +1,81 @@
+{
+  "RPDI14_evidence": false,
+  "campaign_id": "c-c6188d67dbb10ec974618d95c2863606",
+  "complete_full_pipeline_proven": false,
+  "goal": "What controlled test would distinguish a true mechanism behind an observed association from an unmeasured confounder? State one falsifiable hypothesis, a concrete control, the expected evidence and limitations.",
+  "job_id": "explore-909e3f89bc8f1b1689610276291696611e32310d",
+  "live_model_call": true,
+  "model": "gpt-6-luna",
+  "provider": "chatgpt_plan",
+  "recorded_at": "2026-11-07T07:35:46.303473+00:00",
+  "request_status": "COMPLETED",
+  "research_evidence_ids": [],
+  "response_request_id": "resp_0b8d5819a6770a34016aeed4bf0e4c87d281c113038f5c303d",
+  "result_path": "/tmp/bananloop-v2-live-one-call-2-9c5e603/state/campaigns/c-c6188d67dbb10ec974618d95c2863606/live-smoke-result.json",
+  "state_dir": "/tmp/bananloop-v2-live-one-call-2-9c5e603/state/campaigns/c-c6188d67dbb10ec974618d95c2863606",
+  "status": "SIWC_ONE_SHOT_EXPLORATION_COMPLETED",
+  "usage": {
+    "attribution": {
+      "items": {
+        "msg_0b8d5819a6770a34016aeed4bf0f2087d2aefa9aeed6a97bba": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "content": [
+            {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0,
+              "input_tokens": 308,
+              "output_tokens": 0
+            }
+          ],
+          "input_tokens": 308,
+          "output_tokens": 0
+        },
+        "msg_0b8d5819a6770a34016aeed4bf0f2487d2b81baf18b7cc754e": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "content": [
+            {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0,
+              "input_tokens": 318,
+              "output_tokens": 0
+            }
+          ],
+          "input_tokens": 318,
+          "output_tokens": 0
+        },
+        "msg_0b8d5819a6770a34016aeed4c393ac87d296cf565d4de29127": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "content": [
+            {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0,
+              "input_tokens": 0,
+              "output_tokens": 810
+            }
+          ],
+          "input_tokens": 0,
+          "output_tokens": 810
+        },
+        "rs_0b8d5819a6770a34016aeed4c3780c87d2b32ed64a355353e5": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "input_tokens": 2,
+          "output_tokens": 208
+        }
+      }
+    },
+    "input_tokens": 628,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 1018,
+    "output_tokens_details": {
+      "reasoning_tokens": 208
+    },
+    "total_tokens": 1646
+  }
+}
