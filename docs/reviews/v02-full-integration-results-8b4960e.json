@@ -1,0 +1,65 @@
+{
+  "tested_code_commit": "8b4960e5187691d8ffd689b849da93d3a5729bef",
+  "branch": "codex/v02-full-integration",
+  "base_main": "6c89975870b0da8060146953faea966e203ba857",
+  "pull_request": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "full_acceptance": false,
+  "local_linux_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. /tmp/bananloop-check/bin/python -m pytest -p isolate_home -q -ra --tb=no",
+    "collected": 938,
+    "passed": 936,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "exit_code": 0,
+    "skip_reasons": [
+      "pinned selector source commit cd753c97c62148c3ccd3f030251e96a4d19b23bd unavailable",
+      "Windows ACL/reparse-point contract on Linux"
+    ],
+    "host_capabilities": ["loopback sockets", "Linux bubblewrap namespaces"]
+  },
+  "live_chatgpt_plan_campaign": {
+    "campaign_id": "c-34411c3a982f04c2da19425f00b66365",
+    "attempt_id": "a-2a9bdad612092b619dde5127",
+    "model": "gpt-6-luna",
+    "provider": "existing Sign in with ChatGPT connection",
+    "synthetic_public_fixture_only": true,
+    "calls": 2,
+    "request_ids": [
+      "resp_022e0654f33d12f6016aeee43e71a087d2868658f2d9cd1a1e",
+      "resp_0c71f7fe973983bd016aeee44b6a6c87d281c7d9e2c1c19c5e"
+    ],
+    "call_tokens": [1386, 1539],
+    "total_tokens": 2925,
+    "spend_usd": "UNKNOWN",
+    "automatic_retries": 0,
+    "campaign_status": "CONVERGED_REPEATED_EXPERIMENT",
+    "both_turns_committed": true,
+    "sqlite_provider_receipts": 2,
+    "distinct_live_experiment_completed": false,
+    "report_path": "/tmp/bananloop-v2-live-synthetic-fixed-20261107/state/campaigns/c-34411c3a982f04c2da19425f00b66365/reports/v2-owner-run-a-2a9bdad612092b619dde5127.json"
+  },
+  "new_coverage": [
+    "provider request IDs and usage persist per request",
+    "completed provider receipt persists before response schema validation",
+    "runtime failure report excludes raw exception and model response text",
+    "CLI reports run failure with nonzero exit status",
+    "automatic replay remains disabled"
+  ],
+  "prior_hosted_ci_reference": {
+    "tested_head": "84035b58e8f83a29696c9102291a29f4ac5b5cde",
+    "status": "passed",
+    "linux_matrix_run": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42355436256",
+    "chromium_run": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42355436238",
+    "mutation_policy_run": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42355436235"
+  },
+  "remaining_limits": [
+    "live multi-turn exploration stopped on repeated experiment; distinct experiment is covered offline only",
+    "RPDI-14 authoritative usage/cost accounting unavailable",
+    "evidence ranking does not prove truth or semantic relevance",
+    "repeat matching uses bounded controlled-variable synonyms",
+    "Windows investigation deferred by owner",
+    "hosted CI for this new PR head pending"
+  ],
+  "pull_request_state": "open_draft_unmerged"
+}
