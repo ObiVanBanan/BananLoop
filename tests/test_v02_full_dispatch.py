@@ -83,7 +83,7 @@ def _bounds(**updates):
 
 @contextmanager
 def _test_provider_broker(boundary, intent):
-    from benchmarks.v02_full.provider_broker import OneShotProviderBroker
+    from benchmarks.v02_full.provider_broker import OneShotProviderBroker, ProviderBrokerError
 
     class Adapter:
         enforces_single_call = True
@@ -103,6 +103,10 @@ def _test_provider_broker(boundary, intent):
     )
     try:
         broker.__enter__()
+    except ProviderBrokerError as exc:
+        if not hasattr(__import__("socket"), "AF_UNIX"):
+            pytest.skip(f"host Python lacks required AF_UNIX transport: {exc}")
+        raise
     except OSError as exc:
         pytest.skip(f"host sandbox denies Unix socket bind: {exc}")
     try:
@@ -750,6 +754,9 @@ def test_one_shot_broker_binds_action_and_calls_provider_once(tmp_path):
 
 
 def test_one_shot_broker_unix_socket_roundtrip_when_host_allows_it(tmp_path):
+    import socket
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("host Python lacks AF_UNIX transport")
     from benchmarks.v02_full.provider_broker import (
         OneShotProviderBroker, ProviderInvocation, request_one_provider_action,
     )
@@ -791,6 +798,38 @@ def test_one_shot_broker_unix_socket_roundtrip_when_host_allows_it(tmp_path):
             broker.__exit__(None, None, None)
         finally:
             boundary.close()
+
+
+def test_one_shot_broker_fails_closed_when_unix_socket_is_unavailable(tmp_path, monkeypatch):
+    import socket
+    from benchmarks.v02_full.provider_broker import OneShotProviderBroker, ProviderBrokerError
+
+    boundary, _ = _setup(tmp_path)
+
+    class TestOnlyProvider:
+        enforces_single_call = True
+        enforces_timeout = True
+        enforces_provider_ceilings = True
+        enforces_cancellation = True
+
+        def invoke_once(self, *args, **kwargs):
+            raise AssertionError("provider must not be invoked")
+
+        def cancel_action(self, action_id):
+            return None
+
+    broker = OneShotProviderBroker(
+        TestOnlyProvider(), action_id=_helpers._sha("missing-af-unix"),
+        arm_config=boundary.arm_config, resource_bounds=_bounds(agent_calls=1),
+        timeout_seconds=1,
+    )
+    monkeypatch.delattr(socket, "AF_UNIX", raising=False)
+    try:
+        with pytest.raises(ProviderBrokerError, match="requires AF_UNIX"):
+            broker.__enter__()
+        assert broker._temp is None
+    finally:
+        boundary.close()
 
 
 def test_one_shot_broker_rejects_wrong_action_before_provider_call(tmp_path):

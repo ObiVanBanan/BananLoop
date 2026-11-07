@@ -145,6 +145,10 @@ class OneShotProviderBroker:
         self._calls = 0
 
     def __enter__(self) -> "OneShotProviderBroker":
+        if not hasattr(socket, "AF_UNIX"):
+            raise ProviderBrokerError(
+                "one-shot provider broker requires AF_UNIX; refusing an insecure fallback"
+            )
         self._temp = tempfile.TemporaryDirectory(prefix="rpdi14-provider-broker-")
         directory = Path(self._temp.name)
         os.chmod(directory, 0o700)
