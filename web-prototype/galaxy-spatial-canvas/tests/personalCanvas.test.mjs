@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   defaultPersonalCanvas,decodePersonalCanvas,addPersonalArrow,removePersonalNote,
-  saveCanvas,loadCanvas,storageKey
+  saveCanvas,loadCanvas,storageKey,renamePersonalArrow,removePersonalArrow
 } from '../src/state/personalCanvas.ts';
 const graph=['dense','cross','gate-or'];
 test('invalid and future versions do not break the canvas',()=>{
@@ -44,4 +44,33 @@ test('reject giant inputs and unknown graph node references',()=>{
   assert.deepEqual(decodePersonalCanvas(' '.repeat(240001),graph),defaultPersonalCanvas());
   const x=decodePersonalCanvas('{"version":1,"positions":{"unknown":{"x":1,"y":2}}}',graph);
   assert.equal(Object.keys(x.positions).length,0);
+});
+
+test('personal arrow label is editable, bounded, persisted and independent of Engine',()=>{
+  const initial=defaultPersonalCanvas();
+  const added=addPersonalArrow(initial,'dense','cross',graph,'arrow-custom');
+  assert.equal(added.arrows[0].label,'');
+  assert.equal(initial.arrows.length,0);
+  const renamed=renamePersonalArrow(added,'arrow-custom','Нужна повторная проверка');
+  assert.equal(renamed.arrows[0].label,'Нужна повторная проверка');
+  assert.equal(added.arrows[0].label,'');
+  const storage=new Map();
+  const bridge={getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,v)};
+  assert.equal(saveCanvas(bridge,'c-arrows',renamed),true);
+  assert.equal(loadCanvas(bridge,'c-arrows',graph).arrows[0].label,'Нужна повторная проверка');
+  assert.equal(renamePersonalArrow(renamed,'engine-edge','x'),renamed);
+  const removed=removePersonalArrow(renamed,'arrow-custom');
+  assert.equal(removed.arrows.length,0);
+  assert.equal(removePersonalArrow(renamed,'engine-edge'),renamed);
+});
+test('legacy unlabeled arrows migrate safely and labels are sanitized',()=>{
+  const legacy=decodePersonalCanvas(JSON.stringify({version:1,arrows:[{id:'arrow-old',source:'dense',target:'cross'}]}),graph);
+  assert.equal(legacy.arrows[0].label,'');
+  const renamed=renamePersonalArrow(legacy,'arrow-old','hello\n<script>alert(1)</script>');
+  assert.equal(renamed.arrows[0].label,'hello <script>alert(1)</script>');
+  assert.equal(renamePersonalArrow(legacy,'arrow-old','z'.repeat(150)).arrows[0].label.length,80);
+  const reloaded=decodePersonalCanvas(JSON.stringify({version:1,arrows:[{id:'arrow-old',source:'dense',target:'cross',label:'x'.repeat(200)}]}),graph);
+  assert.equal(reloaded.arrows[0].label.length,80);
+  assert.equal(addPersonalArrow(legacy,'dense','cross',graph,'arrow-new'),legacy);
+  assert.equal(addPersonalArrow(defaultPersonalCanvas(),'dense','cross',graph,'../../bad').arrows.length,0);
 });
