@@ -4,9 +4,9 @@ import {
   applyNodeChanges,Background,Controls,MarkerType,MiniMap,ReactFlow,
   ReactFlowProvider,useReactFlow
 } from '@xyflow/react';
-import type {Edge,NodeChange,NodeMouseHandler,OnNodeDrag,Viewport} from '@xyflow/react';
+import type {Edge,EdgeMouseHandler,NodeChange,NodeMouseHandler,OnNodeDrag,Viewport} from '@xyflow/react';
 import {researchFixture,statusCopy} from './domain/graph';
-import {addPersonalArrow,defaultPersonalCanvas,loadCanvas,removePersonalNote,saveCanvas} from './state/personalCanvas';
+import {addPersonalArrow,loadCanvas,removePersonalArrow,renamePersonalArrow,removePersonalNote,saveCanvas} from './state/personalCanvas';
 import type {PersonalCanvas} from './state/personalCanvas';
 import {Button} from './components/ui';
 import {nodeTypes} from './components/CanvasNodes';
@@ -36,6 +36,7 @@ function GalaxyBody(){
   const [personal,setPersonal]=useState<PersonalCanvas>(initial);
   const [nodes,setNodes]=useState<GalaxyNode[]>(()=>initialNodes(initial));
   const [selectedId,setSelectedId]=useState<string|null>(null);
+  const [selectedArrowId,setSelectedArrowId]=useState<string|null>(null);
   const [arrowMode,setArrowMode]=useState(false);
   const [arrowSource,setArrowSource]=useState<string|null>(null);
   const [hint,setHint]=useState('');
@@ -66,7 +67,12 @@ function GalaxyBody(){
     return {...n,data:{...n.data,text:note?.text??'',onEdit:noteEdit,onRemove:noteDelete}} as NoteFlowNode;
   }),[nodes,personal.notes,noteEdit,noteDelete]);
   const allowedIds=useMemo(()=>[...graphIds,...personal.notes.map(n=>n.id)],[personal.notes]);
-  const personalEdges=useMemo<Edge[]>(()=>personal.arrows.map(e=>({id:e.id,source:e.source,target:e.target,type:'smoothstep',className:'personal-edge',deletable:false,markerEnd:{type:MarkerType.ArrowClosed,width:13,height:13}})),[personal.arrows]);
+  const personalEdges=useMemo<Edge[]>(()=>personal.arrows.map(e=>({
+    id:e.id,source:e.source,target:e.target,type:'smoothstep',className:'personal-edge',deletable:false,
+    markerEnd:{type:MarkerType.ArrowClosed,width:13,height:13},interactionWidth:25,
+    label:e.label||undefined,labelStyle:{fill:'#b7e5ec',fontSize:11,fontWeight:600},
+    labelBgStyle:{fill:'#0e2737',fillOpacity:.98},labelBgPadding:[9,5],labelBgBorderRadius:5,
+  })),[personal.arrows]);
   const allEdges=useMemo(()=>[...researchEdges,...personalEdges],[personalEdges]);
   const onNodesChange=useCallback((changes:NodeChange<GalaxyNode>[])=>{
     // Only UI positions/selection may change. No node removal or Engine-side mutations.
@@ -90,15 +96,27 @@ function GalaxyBody(){
     setNodes(old=>[...old,{id,type:'note',position,draggable:true,deletable:false,data:{text:'',onEdit:noteEdit,onRemove:noteDelete}}]);
     setSelectedId(id);setHint('Новая заметка · только на этом устройстве');
   },[personal.notes.length,screenToFlowPosition,noteEdit,noteDelete]);
-  const onPaneClick=useCallback((event:MouseEvent)=>{if(event.detail===2){addNote(event.clientX,event.clientY)}else if(!arrowMode){setSelectedId(null)}},[addNote,arrowMode]);
+  const onPaneClick=useCallback((event:MouseEvent)=>{
+    if(event.detail===2){addNote(event.clientX,event.clientY)}
+    else if(!arrowMode){setSelectedId(null);setSelectedArrowId(null)}
+  },[addNote,arrowMode]);
   const onNodeClick:NodeMouseHandler<GalaxyNode>=useCallback((_event,node)=>{
     if(arrowMode){
       if(!arrowSource){setArrowSource(node.id);setHint('Выбери конечную ноду для личной стрелки');return}
-      setPersonal(current=>addPersonalArrow(current,arrowSource,node.id,[...graphIds,...current.notes.map(n=>n.id)]));
-      setArrowMode(false);setArrowSource(null);setHint('Личная стрелка добавлена (не связь Engine)');return;
+      const id=`arrow-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
+      const next=addPersonalArrow(personal,arrowSource,node.id,allowedIds,id);
+      setArrowMode(false);setArrowSource(null);
+      if(next===personal){setHint('Стрелка не добавлена: повтор, неверный выбор или достигнут лимит');return}
+      setPersonal(next);setSelectedId(null);setSelectedArrowId(id);
+      setHint('Добавлена личная стрелка · подпиши её в инспекторе');return;
     }
-    setSelectedId(node.id);setHint('');
-  },[arrowMode,arrowSource]);
+    setSelectedArrowId(null);setSelectedId(node.id);setHint('');
+  },[arrowMode,arrowSource,personal,allowedIds]);
+  const onEdgeClick:EdgeMouseHandler=useCallback((_event,edge)=>{
+    if(!personal.arrows.some(a=>a.id===edge.id))return; // Engine edges are always read-only.
+    setArrowMode(false);setArrowSource(null);setSelectedId(null);setSelectedArrowId(edge.id);setHint('');
+  },[personal.arrows]);
+  const selectedArrow=personal.arrows.find(a=>a.id===selectedArrowId);
   const selectedNode=visibleNodes.find(n=>n.id===selectedId);
   const selectedResearch=selectedNode?.type==='research'?selectedNode.data:null;
   const selectedGate=selectedNode?.type==='gate'?selectedNode.data:null;
@@ -118,7 +136,7 @@ function GalaxyBody(){
     const onKey=(event:KeyboardEvent)=>{
       const active=document.activeElement?.tagName;
       if(active==='TEXTAREA'||active==='INPUT'||active==='SELECT'||(document.activeElement as HTMLElement)?.isContentEditable)return;
-      if(event.key==='Escape'){setSelectedId(null);setArrowMode(false);setArrowSource(null);setHint('')}
+      if(event.key==='Escape'){setSelectedId(null);setSelectedArrowId(null);setArrowMode(false);setArrowSource(null);setHint('')}
       if(event.key.toLowerCase()==='f'&&!event.metaKey&&!event.ctrlKey){event.preventDefault();void fitView({padding:.18,duration:300})}
     };
     document.addEventListener('keydown',onKey);return()=>document.removeEventListener('keydown',onKey);
@@ -131,15 +149,29 @@ function GalaxyBody(){
       {!personal.railCollapsed&&<div className="rail-resize" role="separator" aria-label="Ширина левой панели" aria-orientation="vertical" tabIndex={0} aria-valuemin={212} aria-valuemax={360} aria-valuenow={personal.railWidth} onPointerDown={onRailPointerDown} onPointerMove={onRailPointerMove} onPointerUp={onRailPointerUp} onPointerCancel={onRailPointerUp} onKeyDown={e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();setPersonal(current=>({...current,railWidth:Math.max(212,Math.min(360,current.railWidth+(e.key==='ArrowRight'?12:-12))) }))}}}/>}
     </aside>
     <main className="workspace"><div className="work-intro"><div><div className="eyebrow"><span>―</span> GALAXY / EXPERIMENT 004 · RESEARCH GRAPH</div><h1>Ideas, in motion<span>.</span></h1><p>Explore hypotheses. Arrange the space. Leave yourself a note.</p></div><div className="study-info"><small>CURRENT STUDY</small><strong>{fixture.title}</strong><span>DEV dataset · illustrative graph</span></div></div>
-      <div className="workspace-actions"><div className="workspace-title">RESEARCH GALAXY <span className="workspace-caption">/ BANANA NOIR</span></div><div className="tools"><Button variant="outline" onClick={()=>{setArrowMode(false);setArrowSource(null);addNote(window.innerWidth/2,window.innerHeight/2)}} title="Создать личную заметку">▣ <span>Note</span></Button><Button variant={arrowMode?'primary':'outline'} onClick={()=>{setArrowMode(x=>!x);setArrowSource(null);setHint('Выбери начальную ноду для личной стрелки')}} title="Нарисовать личную стрелку">↗ <span>{arrowMode?'Cancel':'Arrow'}</span></Button><Button variant="outline" onClick={()=>void fitView({padding:.17,duration:300})} title="Показать все узлы (F)">⤢ <span>Fit</span></Button></div></div>
+      <div className="workspace-actions"><div className="workspace-title">RESEARCH GALAXY <span className="workspace-caption">/ BANANA NOIR</span></div><div className="tools"><Button variant="outline" onClick={()=>{setArrowMode(false);setArrowSource(null);addNote(window.innerWidth/2,window.innerHeight/2)}} title="Создать личную заметку">▣ <span>Note</span></Button><Button variant={arrowMode?'primary':'outline'} onClick={()=>{setArrowMode(x=>!x);setArrowSource(null);setSelectedArrowId(null);setHint('Выбери начальную ноду для личной стрелки')}} title="Нарисовать личную стрелку">↗ <span>{arrowMode?'Cancel':'Arrow'}</span></Button><Button variant="outline" onClick={()=>void fitView({padding:.17,duration:300})} title="Показать все узлы (F)">⤢ <span>Fit</span></Button></div></div>
       <div className="flow-shell"><div className="canvas-meta"><span className="orbital-pip"/> ORBITAL RESEARCH / PERSONAL VIEW <small>Rev {String(fixture.revision).padStart(2,'0')} · drag to rearrange</small></div><div className="counter">◇ {String(fixture.nodes.length).padStart(2,'0')} NODES <i/> {String(fixture.gates.length).padStart(2,'0')} LOGIC GATES</div>
-        <ReactFlow<GalaxyNode,Edge> nodes={visibleNodes} edges={allEdges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onNodeDragStop={onNodeDragStop} onNodeClick={onNodeClick} onPaneClick={onPaneClick} onMoveEnd={onMoveEnd} defaultViewport={personal.viewport??{x:65,y:60,zoom:.8}} fitView={!personal.viewport} fitViewOptions={{padding:.15}} nodesDraggable nodesConnectable={false} elementsSelectable={true} nodesDeletable={false} edgesReconnectable={false} zoomOnScroll zoomOnDoubleClick={false} panOnDrag panOnScroll={false} zoomOnPinch minZoom={.35} maxZoom={2.5} proOptions={{hideAttribution:false}}>
+        <ReactFlow<GalaxyNode,Edge> nodes={visibleNodes} edges={allEdges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onNodeDragStop={onNodeDragStop} onNodeClick={onNodeClick} onEdgeClick={onEdgeClick} onPaneClick={onPaneClick} onMoveEnd={onMoveEnd} defaultViewport={personal.viewport??{x:65,y:60,zoom:.8}} fitView={!personal.viewport} fitViewOptions={{padding:.15}} nodesDraggable nodesConnectable={false} elementsSelectable={true} nodesDeletable={false} edgesReconnectable={false} zoomOnScroll zoomOnDoubleClick={false} panOnDrag panOnScroll={false} zoomOnPinch minZoom={.35} maxZoom={2.5} proOptions={{hideAttribution:false}}>
           <Background gap={31} size={1} color="#294358"/><MiniMap pannable zoomable position="bottom-right" nodeColor={n=>n.type==='gate'?'#d4b16e':n.type==='note'?'#d8c493':'#648b9a'}/><Controls showInteractive={false} position="bottom-right"/>
         </ReactFlow>
         {arrowMode&&<div className="tool-hint">{arrowSource?`FROM ${arrowSource.toUpperCase()} · SELECT DESTINATION`:'ARROW TOOL · SELECT SOURCE NODE'}</div>}
         {hint&&!arrowMode&&<div className="action-hint" role="status">{hint}</div>}
         <div className="canvas-legend"><span className="legend-status"><i className="dot-verified"/> Завершено</span><span className="legend-status"><i className="dot-ready"/> Готово</span><span className="legend-status"><i className="dot-pending"/> Ожидает</span><span className="legend-status"><i className="dot-failed"/> Не прошло</span><span className="legend-split"/><span className="legend-engine">━ Engine</span><span className="legend-user">┄ Personal</span></div>
         <div className="canvas-shortcuts">Wheel to zoom <span>·</span> Drag nodes to arrange <span>·</span> Double-click for a note</div>
+        {selectedArrow&&<section className="inspector" key={selectedArrowId} aria-label="Редактор личной стрелки">
+          <div className="inspector-label">PERSONAL ARROW <button aria-label="Закрыть редактор стрелки" onClick={()=>setSelectedArrowId(null)}>×</button></div>
+          <div className="inspector-id">ANNOTATION · NOT ENGINE</div>
+          <h2>Подпись стрелки</h2>
+          <p>Сохраняется только на этом устройстве и не меняет зависимости исследований.</p>
+          <label htmlFor="personal-arrow-label">НАЗВАНИЕ СТРЕЛКИ</label>
+          <input id="personal-arrow-label" className="arrow-label-input" autoFocus maxLength={80}
+            placeholder="Например: проверить альтернативу"
+            value={selectedArrow.label} onChange={event=>setPersonal(current=>renamePersonalArrow(current,selectedArrow.id,event.target.value))}/>
+          <div className="inspector-rule"/>
+          <label>ОТКУДА → КУДА</label>
+          <p>{selectedArrow.source} → {selectedArrow.target}</p>
+          <Button variant="outline" onClick={()=>{setPersonal(current=>removePersonalArrow(current,selectedArrow.id));setSelectedArrowId(null)}}>Удалить личную стрелку</Button>
+        </section>}
         {selectedNode&&<section className="inspector" key={selectedId} aria-label="Инспектор объекта"><div className="inspector-label">NODE INSPECTOR <button aria-label="Закрыть инспектор" onClick={()=>setSelectedId(null)}>×</button></div><div className="inspector-id">{selectedId?.toUpperCase()}</div><h2>{selectedResearch?.title??(selectedGate?`${selectedGate.kind} · logic gate`:'Personal note')}</h2>{selectedResearch?<><p>{selectedResearch.description}</p><span className={`inspector-status status-${selectedResearch.status.toLowerCase()}`}>{statusCopy[selectedResearch.status].name}</span><div className="inspector-rule"/><label>ЧТО ОЗНАЧАЕТ СТАТУС</label><p>{statusCopy[selectedResearch.status].detail}</p><label>PHASE</label><p>{selectedResearch.phase}</p></>:selectedGate?<><p>{selectedGate.detail}</p><label>LOGIC</label><p>{selectedGate.kind==='AND'?'Всё необходимое должно быть подтверждено.':'Достаточно одного подтверждённого входа.'}</p></>:selectedNote?<><p>Личная заметка. Она не меняет граф, исследовательские статусы или бюджет.</p><Button variant="outline" onClick={()=>selectedId&&noteDelete(selectedId)}>Удалить заметку</Button></>:null}</section>}
       </div><div className="workspace-footer"><span><i/> DESIGN MODE · NO ENGINE WRITES</span><span>SPACE TO PAN · F TO FIT · DOUBLE CLICK TO NOTE</span></div>
     </main>
