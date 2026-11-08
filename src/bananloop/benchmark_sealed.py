@@ -65,8 +65,8 @@ def seal_suite(*, authored_suite_path: str, registry_path: str, team_path: str,
         if not isinstance(authored, dict) or set(authored) != _REQUIRED:
             raise BenchmarkError("authored case missing explicit public/private fields")
         cid, role, split = authored["case_id"], authored["role_id"], authored["split"]
-        if (not isinstance(cid, str) or not cid or cid in oracle_cases
-                or role not in role_ids or split not in _SPLITS
+        if (not isinstance(cid, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,127}", cid)
+                or cid in oracle_cases or role not in role_ids or split not in _SPLITS
                 or not isinstance(authored["agent_input"], dict)):
             raise BenchmarkError("invalid/duplicate case, role or split in private source")
         if authored["license_status"] not in _RIGHTS:
