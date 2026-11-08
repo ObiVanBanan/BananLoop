@@ -200,7 +200,8 @@ def run_api(*, cases_path: str, registry_path: str, team_path: str,
         for case in cases:
             prompt = canonical({
                 "role_protocol": "v0.2-model-reply-api-diagnostic",
-                "role_id": case["role_id"], "task": case["agent_input"],
+                "role_id": case["role_id"], "case_id": case["case_id"],
+                "task": case["agent_input"],
                 "instruction": ("Return only a JSON object matching the pinned role's model reply contract. "
                                 "Do not infer private oracle results."),
             })
@@ -268,11 +269,14 @@ def run_api(*, cases_path: str, registry_path: str, team_path: str,
     finally:
         _write(output / "run-status.json", {
             "schema_version": 1, "status": state,
+            "suite_sha256": digest(public),
+            "registry_sha256": registry.digest(),
+            "team_manifest_sha256": team.manifest_digest,
             "attempted_calls": len(receipts), "completed_calls": len(responses),
             "measured_priced_cost_microusd": used_microusd,
             "actual_provider_invoice_verified": False,
-            "provider_reported_usage_observed": True,
-            "usage_receipts_operator_signed": True,
+            "provider_reported_usage_observed": len(responses) > 0,
+            "usage_receipts_operator_signed": len(receipts) > 0,
             "release_eligible": False,
         })
     return read_json(output / "run-status.json")
