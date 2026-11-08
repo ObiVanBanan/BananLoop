@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 
 from .agent_benchmark import BenchmarkError, _write, canonical, digest, read_json, run_suite
