@@ -82,13 +82,11 @@ def test_v2_exploration_budget_reserves_one_tool_free_protocol_review_call(tmp_p
     verifier = roles.role("independent_verifier")
     optimizer = roles.role("optimizer")
     integration_verifier = roles.role("integration_verifier")
-    assert spec.budget.max_agent_calls == sum(
-        role.calls_per_instance for role in roles.roles
-    )
-    assert spec.budget.max_model_tokens == sum(role.tokens_per_instance for role in roles.roles)
+    assert sum(role.calls_per_instance for role in roles.roles) <= spec.budget.max_agent_calls
+    assert sum(role.tokens_per_instance for role in roles.roles) <= spec.budget.max_model_tokens
     assert researcher.calls_per_instance == 2
     assert verifier.calls_per_instance == 1
-    assert optimizer.calls_per_instance == 2
+    assert optimizer.calls_per_instance == 1
     assert integration_verifier.calls_per_instance == 1
     assert researcher.min_instances == verifier.min_instances == 0
     assert optimizer.min_instances == integration_verifier.min_instances == 0
@@ -96,6 +94,38 @@ def test_v2_exploration_budget_reserves_one_tool_free_protocol_review_call(tmp_p
     assert verifier.capability_policy.read_paths == ()
     assert verifier.capability_policy.write_paths == ()
     assert verifier.capability_policy.network_access is False
+
+
+def test_v2_default_call_budget_preserves_exploration_and_funds_two_paired_epochs(tmp_path):
+    from bananloop.v2_campaign_cli import _build_spec
+
+    repo = _repo(tmp_path)
+    spec, roles, _policy = _build_spec(
+        repo, "Explore then optimize", ("README.md",),
+        max_agent_calls=8, max_model_tokens=128, model="gpt-6-luna",
+    )
+    assert spec.budget.max_agent_calls == 8
+    assert roles.role("researcher").calls_per_instance == 2
+    assert roles.role("independent_verifier").calls_per_instance == 1
+    assert roles.role("optimizer").calls_per_instance == 2
+    assert roles.role("integration_verifier").calls_per_instance == 2
+    assert sum(role.calls_per_instance for role in roles.roles) == 7
+
+
+def test_v2_nine_call_budget_funds_three_paired_optimization_epochs(tmp_path):
+    from bananloop.v2_campaign_cli import _build_spec
+
+    repo = _repo(tmp_path)
+    spec, roles, _policy = _build_spec(
+        repo, "Explore then optimize", ("README.md",),
+        max_agent_calls=9, max_model_tokens=128, model="gpt-6-luna",
+    )
+    assert spec.budget.max_agent_calls == 9
+    assert roles.role("researcher").calls_per_instance == 2
+    assert roles.role("independent_verifier").calls_per_instance == 1
+    assert roles.role("optimizer").calls_per_instance == 3
+    assert roles.role("integration_verifier").calls_per_instance == 3
+    assert sum(role.calls_per_instance for role in roles.roles) == 9
 
 
 def test_cli_optimize_is_a_separate_owner_approved_v2_route():

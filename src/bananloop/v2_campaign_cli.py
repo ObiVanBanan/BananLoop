@@ -75,6 +75,7 @@ def _read_paths(repo: Path, paths: list[str]) -> tuple[str, ...]:
 
 def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
                 max_agent_calls: int, max_model_tokens: int, model: str,
+                max_iterations: int = 2,
                 optimization_write_paths: tuple[str, ...] = ()):
     if max_agent_calls < 4:
         raise V2CampaignCLIError("--max-agent-calls must be at least 4 to fund the four pinned v2 roles")
@@ -88,8 +89,13 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
         "backend": "LOCAL",
         "network_access": False,
     }
-    optimizer_calls = max(1, max_agent_calls // 3)
-    researcher_calls = max_agent_calls - optimizer_calls - 2
+    # A bounded Optimization epoch needs one optimizer call and one independent
+    # integration-verifier call. Allocate these as matched pairs, while keeping
+    # room for the requested Exploration iterations and one protocol verifier.
+    researcher_calls = min(max_iterations, max_agent_calls - 3)
+    optimization_pair_budget = max_agent_calls - researcher_calls - 1
+    optimizer_calls = max(1, optimization_pair_budget // 2)
+    integration_calls = optimizer_calls
     optimizer_policy = CapabilityPolicyV2(
         tools=("read_file", "write_file", "commit_candidate"),
         read_paths=paths, write_paths=optimization_write_paths,
@@ -136,8 +142,8 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
                 prompt_digest=hashlib.sha256(INTEGRATION_VERIFIER_INSTRUCTIONS.encode("utf-8")).hexdigest(),
                 capability_policy=verifier_policy,
                 context_fields=("campaign_goal", "public_task"),
-                min_instances=0, max_instances=1, calls_per_instance=1,
-                tokens_per_instance=max_model_tokens,
+                min_instances=0, max_instances=1, calls_per_instance=integration_calls,
+                tokens_per_instance=integration_calls * max_model_tokens,
             ),
         ),
     )
@@ -510,6 +516,7 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
     spec, roles, _policy = _build_spec(
         repo, goal, paths, max_agent_calls=args.max_agent_calls,
         max_model_tokens=args.max_model_tokens, model=args.model,
+        max_iterations=args.max_iterations,
         optimization_write_paths=write_paths,
     )
     runtime_paths = RuntimePaths.for_repo(

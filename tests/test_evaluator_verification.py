@@ -115,6 +115,7 @@ def _receipt(proposal, *, decision="APPROVE", verifier_instance="agent-" + "5" *
 def build_full_optimization_runtime(
     *, graph, queue, campaign_id, state_root, source_snapshot_id,
     candidate_snapshot_id, protocol, manifest, registry, runner=None,
+    available_model_tokens=1000,
 ):
     """Build the real evaluator/integration adapters used by lifecycle E2E tests."""
     class DeterministicRunner(TrustedEvaluatorRunner):
@@ -162,7 +163,7 @@ def build_full_optimization_runtime(
                 "integration_verifier": 1,
                 **({"optimizer": 1} if any(role.role_id == "optimizer" for role in registry.roles) else {}),
             }, specializations=(),
-            available_agent_calls=20, available_model_tokens=1000,
+            available_agent_calls=20, available_model_tokens=available_model_tokens,
         ),
         expected_registry_digest=registry.digest(),
     )

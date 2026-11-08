@@ -1,0 +1,80 @@
+{
+  "schema": "bananloop-live-titanic-optimization-evidence-v1",
+  "date": "2026-11-08",
+  "source": {
+    "git_head": "a7e93aae719bf3a7c5fbeb5f9c53380357c47063",
+    "worktree_dirty": true,
+    "tracked_diff_sha256": "765b0f04947b85bbd10a75900eb59ec425bfd7b442d4b792020b7c5ef1ecc5a5"
+  },
+  "test": {
+    "command": "BANANLOOP_TITANIC_LIVE=1 python -m pytest tests/test_titanic_benchmark.py::test_titanic_v2_optimization_campaign_runs_to_terminal_holdout -ra",
+    "result": "PASSED",
+    "pytest_summary": "1 passed in 12.96s",
+    "live_model_inferences": 1,
+    "automatic_retries": 0,
+    "test_level_retries": 0
+  },
+  "campaign": {
+    "campaign_id": "c-22222222222222222222222222222222",
+    "status": "ALL_NODES_COMPLETE",
+    "mode": "TITANIC_V2_OPTIMIZATION_E2E",
+    "live_role": "optimizer",
+    "protocol_researcher_and_verifier": "deterministic_test_code",
+    "dataset_md5": "60ac7205eee0ba5045c90b3bba95b1c4",
+    "seed": 2026,
+    "source_snapshot_id": "ee8e356aa17ce44f2a3feef312c7f209e04f0709"
+  },
+  "provider": {
+    "method": "Sign in with ChatGPT",
+    "model": "gpt-6-luna",
+    "request_id": "resp_0335d554bba82d03016af063244b5887d2a96dc8f6da39e24f",
+    "status": "COMPLETED",
+    "usage": {
+      "input_tokens": 13722,
+      "output_tokens": 343,
+      "reasoning_tokens": 164,
+      "total_tokens": 14065
+    },
+    "monetary_cost": "UNKNOWN"
+  },
+  "evaluation": {
+    "tier": "holdout",
+    "status": "VERIFIED",
+    "case_count": 196,
+    "repeatability_runs": 2,
+    "metric_id": "accuracy",
+    "value": 0.7806122448979592,
+    "stretch_target": 0.95,
+    "stretch_target_met": false,
+    "candidate_snapshot_id": "6ddd258f93032e3bd509dbcf6a4389ae21a40d66",
+    "receipt_digest": "d56f66a0a6c8d08333eb8353d71ff70877e6191396ed00551f286778edd6dfe2",
+    "tier_manifest_sha256": "b3fdbfd126f04f3a42738274a42d0db74930bb3c26fc7bd2220ac32812cf188a"
+  },
+  "offline_multi_epoch_check": {
+    "pytest_summary": "1 passed in 2.25s",
+    "live_model_inferences": 0,
+    "optimization_epochs": 2,
+    "first_candidate": "REJECTED",
+    "rejection_evidence_in_second_context": true,
+    "second_candidate": "ACCEPTED",
+    "trusted_holdout_verified": true
+  },
+  "budget_observation": {
+    "local_model_token_budget": 65000,
+    "per_call_reserved_tokens": 20000,
+    "provider_reported_total_tokens": 14065,
+    "ledger_model_tokens_spent": 14065,
+    "ledger_model_tokens_unknown": 0,
+    "model_token_usage_recorded_in_ledger": true,
+    "provider_enforced_output_cap": false,
+    "budget_breached": false,
+    "regression_fix": "Child spec and one-shot wrapper now preserve the allowance and provider usage; this run verified exact SQLite settlement."
+  },
+  "scope_limitations": [
+    "One live Optimization epoch only; multiple live LLM epochs not tested.",
+    "Two offline Optimization epochs were verified: rejected candidate, rejection memory in next context, then accepted candidate.",
+    "Exploration and protocol verification used deterministic test code, not live model calls.",
+    "The run did not reach the 0.95 Titanic stretch target.",
+    "Provider monetary cost is unknown."
+  ]
+}

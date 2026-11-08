@@ -1,6 +1,6 @@
 # BananLoop v0.2 — live role diagnostics, private sealed evaluation, and accounting
 
-**State: EXPLICIT-OPT-IN DIAGNOSTIC IMPLEMENTATION. No live paid/subscription trials have been started by this PR.** Neither this harness nor its synthetic dataset satisfies the independent RPDI-14 Full-vs-iterative-Codex release gate.
+**State: EXPLICIT-OPT-IN DIAGNOSTIC IMPLEMENTATION. Manual ChatGPT subscription diagnostics were run by the PR author on 2026-11-08; CI does not make model calls.** Results are documented in the [role diagnostic](../reviews/pr141-codex-live-role-diagnostic-20261108.md), [Exploration smoke](../reviews/pr141-live-smoke-acceptance-e73c061.md), and [Titanic Optimization smoke](../reviews/pr141-live-titanic-optimization-20261108.md). These runs and the synthetic dataset do not satisfy the independent RPDI-14 Full-vs-iterative-Codex release gate.
 
 The code is stacked on [PR #140](https://github.com/ObiVanBanan/BananLoop/pull/140), which itself targets [PR #135](https://github.com/ObiVanBanan/BananLoop/pull/135). Nothing here automatically merges a branch, launches a model or authorizes spending.
 
@@ -223,4 +223,4 @@ The scorer includes **missing cases as `INCOMPLETE`**, keeps all originally froz
 - Codex subscription usage is not a signed provider billing receipt; API estimates are not reconciled against official invoices and API timeout/cancellation cannot unspend an in-flight request.
 - Independent operator/scorer attestations, full isolated runtime verification, matched budgets/iterative Codex Direct baseline, preregistered power/precision and frozen scoring remain mandatory before a quantitative release claim.
 
-**No token-consuming model run has been executed in CI or by the PR author.**
+Manual token-consuming model runs have been executed by the PR author. Their subscription usage is recorded where available; monetary cost and provider billing reconciliation remain `UNKNOWN`. CI runs only offline tests and never calls a model.

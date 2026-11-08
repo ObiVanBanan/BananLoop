@@ -299,7 +299,9 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                 context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
                                 "constraints", "evidence_refs", "dev_summary"),
                 min_instances=1, max_instances=1, calls_per_instance=3,
-                tokens_per_instance=300,
+                # Provider-side output caps are unavailable, so reserve a
+                # realistic amount and settle against the observed receipt.
+                tokens_per_instance=60_000,
             ),
         ),
     )
@@ -469,7 +471,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
     db_path = state_root / "campaign.sqlite3"
     ledger = BudgetLedger(db_path)
     ledger.create_root(child_campaign_id, {
-        "agent_calls": 20, "model_tokens": 12000, "evaluator_calls": 30,
+        "agent_calls": 20, "model_tokens": 65_000, "evaluator_calls": 30,
         "experiments": 8, "attempts": 16,
     })
     ledger.close()
@@ -514,6 +516,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
             },
             "budget": {
                 "max_experiments": 5, "max_attempts": 8, "max_agent_calls": 20,
+                "max_model_tokens": 65_000,
                 "max_evaluator_calls": 30, "deadline_seconds": 3600,
                 "plateau_experiments": 3,
             },
@@ -553,6 +556,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
             state_root=state_root, source_snapshot_id=source_snapshot,
             candidate_snapshot_id=source_snapshot, protocol=protocol,
             manifest=dev_manifest, registry=roles, runner=runner,
+            available_model_tokens=65_000,
         )
         graph.mutate(MutateGraph(
             command_id="add-titanic-optimization-node",
@@ -583,9 +587,28 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
             assert "validation" not in json.dumps(public_input).lower()
             assert "holdout" not in json.dumps(public_input).lower()
 
+        offline_dispatch_count = 0
+
         def offline_optimizer(public_input, **_pinned):
+            nonlocal offline_dispatch_count
+            offline_dispatch_count += 1
             assert_optimizer_input_is_candidate_only(public_input)
             assert public_input["visible_documents"]["data/train.csv"]
+            if offline_dispatch_count == 1:
+                return {
+                    "hypothesis_id": "titanic-child-interaction",
+                    "rationale": "Deliberately poor first candidate to verify rejection and research-memory handoff.",
+                    "changes": {
+                        "src/model.json": json.dumps({
+                            "schema": "titanic-linear-v1", "intercept": 100.0,
+                            "coefficients": {"sex_female": 0.0},
+                        }, sort_keys=True, separators=(",", ":")),
+                    },
+                    "limitations": ["The first candidate intentionally predicts survival for everyone."],
+                }
+            assert "previous candidate did not pass independent verification" in json.dumps(
+                public_input["role_context"], ensure_ascii=False,
+            ).lower()
             return {
                 "hypothesis_id": "titanic-child-interaction",
                 "rationale": "The DEV diagnostic supports a bounded male first-class child interaction; the independent verifier will decide whether it generalizes.",
@@ -610,7 +633,15 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                         "live smoke refuses a second optimizer dispatch; inspect persisted outcome"
                     )
                 live_dispatch_count += 1
-                return live_optimizer(public_input, **pinned)
+                try:
+                    return live_optimizer(public_input, **pinned)
+                finally:
+                    # make_optimizer_invoke reads usage from the callable
+                    # that it dispatched, so preserve the SIWC receipt on
+                    # this one-shot guard as well.
+                    one_shot_live_optimizer.last_usage = live_optimizer.last_usage
+
+            one_shot_live_optimizer.last_usage = None
 
             selected_optimizer = one_shot_live_optimizer
             worker_id = "titanic-live-smoke"
@@ -623,7 +654,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                 write_paths=["src/model.json"],
                 model_reply=selected_optimizer,
                 integration_verifier_executor=integration_executor,
-                max_steps=3, worker_id=worker_id,
+                    max_steps=3 if live_mode else 9, worker_id=worker_id,
             )
         except Exception as exc:
             if live_mode:
@@ -653,6 +684,10 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
             }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             assert len(live_receipts) == 1
         assert result["status"] == "ALL_NODES_COMPLETE"
+        if not live_mode:
+            assert offline_dispatch_count == 2
+            assert sum(item.get("status") == "CANDIDATE_CREATED"
+                       for item in result["steps"]) == 2
         assert result["holdout"]["status"] == "VERIFIED"
         assert result["holdout"]["tier"] == "holdout"
         assert 0.0 <= result["holdout"]["metric"]["value"] <= 1.0
@@ -660,6 +695,29 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
             "SELECT COUNT(*) FROM evaluator_run_receipts WHERE campaign_id=?",
             (child_campaign_id,),
         ).fetchone()[0] >= 3
+        optimization_job = graph.conn.execute(
+            "SELECT r.response_json FROM worker_results r JOIN worker_jobs j USING(job_id) "
+            "WHERE j.campaign_id=? AND j.resource='agent_calls' AND j.job_id LIKE 'opt-%' "
+            "ORDER BY j.created_at DESC LIMIT 1",
+            (child_campaign_id,),
+        ).fetchone()
+        assert optimization_job is not None
+        optimization_result = json.loads(optimization_job["response_json"])
+        actual_tokens = optimization_result.get("actual_usage", {}).get("model_tokens")
+        assert "model_tokens" in optimization_result.get("actual_usage", {})
+        if live_mode:
+            assert isinstance(actual_tokens, int) and actual_tokens > 0
+            assert actual_tokens <= 20_000
+            assert optimization_result["budget_breached_by_resource"]["model_tokens"] is False
+            token_account = graph.conn.execute(
+                "SELECT cap,spent,unknown FROM budget_accounts "
+                "WHERE campaign_id=? AND resource='model_tokens'",
+                (child_campaign_id,),
+            ).fetchone()
+            assert token_account is not None
+            assert (token_account["cap"], token_account["spent"], token_account["unknown"]) == (
+                65_000, actual_tokens, 0,
+            )
         report = json.loads(Path(result["final_report_path"]).read_text(encoding="utf-8"))
         assert report["optimization_report"]["holdout"]["metric"]["metric_id"] == "accuracy"
         assert report["optimization_report"]["champion"]["snapshot_id"]
@@ -693,6 +751,8 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                     "provider_usage": live_optimizer.last_usage or "UNKNOWN",
                     "provider_response": live_optimizer.last_response,
                     "holdout_metric": result["holdout"]["metric"],
+                    "budget_actual_usage": optimization_result.get("actual_usage", {}),
+                    "budget_breached": optimization_result.get("budget_breached"),
                     "retry_policy": "one optimizer inference maximum; no automatic retry",
                 }, indent=2, sort_keys=True) + "\n", encoding="utf-8",
             )
