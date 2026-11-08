@@ -16,7 +16,7 @@ from .evaluator_verification import (
     EvaluatorVerificationError, EvaluatorProtocolAuthority,
     IntegrationVerificationAdapter,
 )
-from .graph_store import GraphRepository
+from .graph_store import AddNode, GraphRepository, MutateGraph
 from .registry import CampaignRegistry, RegistryError
 from .roles import (
     PinnedRoleExecutorV1, RoleContractError, RoleRegistryV1, TeamFactoryV1,
@@ -76,6 +76,55 @@ def _role_transport(role: Any, role_id: str) -> None:
         raise V2OptimizationCLIError(
             f"pinned {role_id} must use the official OpenAI Codex transport",
         )
+
+
+def _ensure_researcher_selected_task(graph: GraphRepository,
+                                    spec: OptimizationCampaignSpecV2) -> None:
+    """Seed the child graph from the Researcher task frozen by owner approval."""
+    task = spec.optimization_task
+    if task is None:
+        return  # Backward-compatible for existing hand-created Optimization specs.
+    authority = EvaluatorProtocolAuthority(graph.conn)
+    proposal, _receipt = authority.approved_protocol(spec.evaluation.approval_digest)
+    if task.source_snapshot_id != proposal.protocol.source_snapshot_id:
+        raise V2OptimizationCLIError(
+            "approved Researcher task is pinned to a different Optimization source snapshot",
+        )
+    node_id = f"optimization-task-{task.hypothesis_id}"
+    nodes = graph.scheduling_snapshot()["nodes"]
+    existing = [node for node in nodes if node["phase"] == "OPTIMIZATION"]
+    if existing:
+        if len(existing) != 1:
+            raise V2OptimizationCLIError("approved child has multiple initial Optimization tasks")
+        payload = existing[0]["payload"]
+        if (existing[0]["node_id"] != node_id
+                or payload.get("hypothesis_id") != task.hypothesis_id
+                or payload.get("hypothesis") != task.hypothesis
+                or payload.get("source_snapshot_id") != task.source_snapshot_id):
+            raise V2OptimizationCLIError(
+                "child Optimization node differs from its owner-approved Researcher task",
+            )
+        return
+    graph.mutate(MutateGraph(
+        command_id=f"seed-approved-optimization-task-{task.hypothesis_id}",
+        idempotency_key=f"seed-approved-optimization-task-{task.hypothesis_id}",
+        expected_graph_revision=graph.graph_revision(),
+        changes=(AddNode(
+            type="AddNode", node_id=node_id, phase="OPTIMIZATION",
+            payload={
+                "source_snapshot_id": task.source_snapshot_id,
+                "hypothesis_id": task.hypothesis_id,
+                "hypothesis": task.hypothesis,
+                "evidence_refs": list(task.evidence_refs),
+                "research_source": {
+                    "campaign_id": task.source_campaign_id,
+                    "node_id": task.source_node_id,
+                    "job_id": task.source_job_id,
+                    "portfolio_sha256": task.source_artifact_sha256,
+                },
+            },
+        ),),
+    ))
 
 
 def _safe_paths(visible_paths: list[str], write_paths: list[str]) -> tuple[list[str], list[str]]:
@@ -176,6 +225,8 @@ def run_v2_optimize(args: Namespace, *,
                 "live_model_called": False,
             }
 
+        _ensure_researcher_selected_task(graph, spec)
+        plan = runtime.plan()
         try:
             auth = ChatGPTPlanAuth()
             if not auth.status()["connected"]:

@@ -145,6 +145,10 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
                 "return only strategy_change_request with current_strategy, proposed_strategy, "
                 "rationale, expected_effect, and changed_scope. This creates a request for "
                 "owner review only; it does not authorize a pivot or run another experiment."
+                + ("\nTrusted frozen source_snapshot_id: "
+                   + str(request.get("base_commit", ""))
+                   + ". Copy this exact value into any requested protocol_draft; do not "
+                   "guess or derive a different snapshot ID.")
             ),
         }
         # The broker controls provider/model selection; worker content cannot.

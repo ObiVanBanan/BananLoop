@@ -692,9 +692,14 @@ def test_hypothesis_portfolio_rejects_action_not_bound_to_selected_candidate(tmp
 def test_completed_research_job_is_projected_after_runtime_restart_without_redelivery(tmp_path):
     runtime, graph, queue = _runtime(tmp_path)
     calls = []
+    frozen_snapshot_id = []
 
-    def model_reply(*_args, **_kwargs):
+    def model_reply(public_input, **_kwargs):
         calls.append("called")
+        assert (
+            f"Trusted frozen source_snapshot_id: {frozen_snapshot_id[0]}."
+            in public_input["instruction"]
+        )
         return {
             "next_experiment": "repeat with a matched control",
             "artifact_text": {"observation.txt": "observed once"},
@@ -703,6 +708,7 @@ def test_completed_research_job_is_projected_after_runtime_restart_without_redel
     try:
         invoke = make_researcher_invoke(model_reply)
         job = runtime.adapter.enqueue(node_id="explore", visible_paths=["README.md"])
+        frozen_snapshot_id.append(job["request"]["base_commit"])
         _manifest, _member, executor = _pinned_executor(
             queue, graph, "campaign-test", runtime.role_registry, job, invoke,
         )

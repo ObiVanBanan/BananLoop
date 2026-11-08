@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-09",
+  "kind": "OFFLINE_INTEGRATED_ACCEPTANCE",
+  "base_commit": "a7e93aae719bf3a7c5fbeb5f9c53380357c47063",
+  "code_test_diff_sha256": "ab47e36a6a2ce0ef419581797fa357c95accb230900fceb4d13d9242b34692a1",
+  "command": "BANANLOOP_LIVE_INTEGRATED_OPTIMIZATION=0 .venv/bin/python -m pytest -o addopts= -q tests/test_v2_campaign_cli.py tests/test_v2_optimization_runtime.py tests/test_rpdi13_integrated_acceptance.py -k 'not live'",
+  "result": {
+    "passed": 34,
+    "failed": 0,
+    "deselected": 1
+  },
+  "live_model_calls": 0,
+  "checks": [
+    "Core-ranked Researcher hypothesis bound into the frozen Optimization child",
+    "Research evidence IDs resolved through persisted PUBLIC_DEV evidence rows",
+    "Source durable job fence, output digest, and graph event checked",
+    "Content-addressed evidence artifact SHA-256 checked",
+    "Deterministic test-runner and production bubblewrap acceptance variants passed",
+    "Baseline/candidate/delta report assertion passed in the integrated test"
+  ],
+  "remaining_gap": "The test harness still uses deterministic Researcher protocol drafting and deterministic Integration Verifier output; no autonomous full live campaign was demonstrated."
+}

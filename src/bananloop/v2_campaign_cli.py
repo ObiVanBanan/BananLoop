@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -18,6 +19,7 @@ from .chatgpt_responses import (
 )
 from .contracts import (
     AutonomyScopeV2, ExplorationCampaignSpecV2, OptimizationCampaignSpecV2,
+    OptimizationTaskV2,
     PivotExecutionPlanV2, PivotProposal, PivotResourceRequest, RuntimePaths, utc_now,
 )
 from .graph_store import GraphRepository
@@ -240,6 +242,124 @@ def _persist_role_registry(state_root: Path, roles: RoleRegistryV1) -> Path:
     return target
 
 
+def _selected_optimization_task(*, proposal: Any, graph: GraphRepository,
+                                state_root: Path,
+                                queue: DurableWorkerQueue,
+                                campaign_id: str) -> OptimizationTaskV2:
+    """Load the Core-ranked Researcher hypothesis that this approved protocol came with."""
+    job = queue.get_job(proposal.source_job_id)
+    durable = queue.get_result(proposal.source_job_id)
+    if (job.get("campaign_id") != campaign_id or job.get("state") != "COMPLETED"
+            or int(durable.get("fence", -1)) != int(job.get("fence", -2))
+            or durable.get("output_digest") != hashlib.sha256(json.dumps(
+                durable.get("result"), sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, allow_nan=False,
+            ).encode("utf-8")).hexdigest()):
+        raise V2CampaignCLIError("approved protocol source Researcher job has no current durable receipt")
+    result = durable.get("result")
+    if not isinstance(result, dict):
+        raise V2CampaignCLIError("approved protocol source Researcher output is missing")
+    artifact = next((item for item in result.get("artifacts", ())
+                     if item.get("path") == "research/hypothesis-portfolio.json"), None)
+    if not isinstance(artifact, dict) or not isinstance(artifact.get("sha256"), str):
+        raise V2CampaignCLIError("approved protocol source has no Core-ranked hypothesis portfolio")
+    artifact_ref = f"artifact://sha256/{artifact['sha256']}"
+    row = graph.conn.execute(
+        "SELECT payload_json FROM events WHERE seq=? AND event_type='EXPLORATION_COMPLETED'",
+        (proposal.source_event_cursor,),
+    ).fetchone()
+    if row is None:
+        raise V2CampaignCLIError("Researcher portfolio has no committed completion event")
+    graph_event = json.loads(row[0])
+    if (graph_event.get("job_id") != proposal.source_job_id
+            or artifact["sha256"] not in graph_event.get("artifact_digests", ())):
+        raise V2CampaignCLIError("Researcher portfolio is absent from its committed evidence event")
+    artifact_path = (state_root / "rpdi05" / "artifacts"
+                     / f"{proposal.source_job_id}-f{durable['fence']}"
+                     / "research" / "hypothesis-portfolio.json")
+    if (artifact_path.is_symlink() or not artifact_path.is_file()
+            or not artifact_path.resolve().is_relative_to(
+                (state_root / "rpdi05" / "artifacts").resolve(),
+            )):
+        raise V2CampaignCLIError("Researcher hypothesis portfolio escaped its artifact root")
+    raw = artifact_path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != artifact["sha256"]:
+        raise V2CampaignCLIError("Researcher hypothesis portfolio digest changed after completion")
+    try:
+        portfolio = json.loads(raw)
+        selected_id = portfolio["core_selection"]["selected_hypothesis_id"]
+        selected = next(item for item in portfolio["candidates"] if item["id"] == selected_id)
+        resolved_evidence_refs: set[str] = {artifact_ref}
+        for evidence_id in selected.get("evidence_refs", ()):
+            if isinstance(evidence_id, str) and evidence_id.startswith("artifact://sha256/"):
+                resolved_evidence_refs.add(evidence_id)
+                continue
+            if not isinstance(evidence_id, str) or not re.fullmatch(r"[0-9a-f]{64}", evidence_id):
+                raise V2CampaignCLIError("selected hypothesis cites an invalid research evidence id")
+            evidence = graph.conn.execute(
+                "SELECT campaign_id, source_job_id, source_fence, output_digest, event_cursor, "
+                "evidence_refs_json, classification FROM research_evidence WHERE evidence_id=?",
+                (evidence_id,),
+            ).fetchone()
+            if evidence is None or evidence["campaign_id"] != campaign_id or evidence["classification"] != "PUBLIC_DEV":
+                raise V2CampaignCLIError("selected hypothesis cites evidence outside public DEV scope")
+            evidence_job = queue.get_job(evidence["source_job_id"])
+            evidence_result = queue.get_result(evidence["source_job_id"])
+            if (evidence_job.get("campaign_id") != campaign_id
+                    or evidence_job.get("state") != "COMPLETED"
+                    or int(evidence_job.get("fence", -1)) != int(evidence["source_fence"])
+                    or int(evidence_result.get("fence", -1)) != int(evidence["source_fence"])
+                    or evidence_result.get("output_digest") != evidence["output_digest"]):
+                raise V2CampaignCLIError("selected hypothesis evidence has no current durable job receipt")
+            evidence_event_row = graph.conn.execute(
+                "SELECT payload_json FROM events WHERE seq=? AND event_type='EXPLORATION_COMPLETED'",
+                (evidence["event_cursor"],),
+            ).fetchone()
+            evidence_event = json.loads(evidence_event_row[0]) if evidence_event_row else None
+            if (not isinstance(evidence_event, dict)
+                    or evidence_event.get("job_id") != evidence["source_job_id"]
+                    or evidence_event.get("output_digest") != evidence["output_digest"]):
+                raise V2CampaignCLIError("selected hypothesis evidence is absent from committed graph history")
+            evidence_result_body = evidence_result.get("result")
+            if not isinstance(evidence_result_body, dict):
+                raise V2CampaignCLIError("selected hypothesis evidence job has no durable result body")
+            source_artifacts = {
+                item.get("sha256"): item.get("path")
+                for item in evidence_result_body.get("artifacts", ())
+                if isinstance(item, dict)
+            }
+            evidence_refs = json.loads(evidence["evidence_refs_json"])
+            if not isinstance(evidence_refs, list):
+                raise V2CampaignCLIError("selected hypothesis evidence references are malformed")
+            for evidence_ref in evidence_refs:
+                match = re.fullmatch(r"artifact://sha256/([0-9a-f]{64})", evidence_ref)
+                if not match or match.group(1) not in source_artifacts:
+                    raise V2CampaignCLIError("selected hypothesis evidence does not resolve to a source artifact")
+                evidence_job_id = evidence["source_job_id"]
+                evidence_fence = evidence["source_fence"]
+                source_path = (state_root / "rpdi05" / "artifacts"
+                               / f"{evidence_job_id}-f{evidence_fence}"
+                               / source_artifacts[match.group(1)])
+                artifact_root = (state_root / "rpdi05" / "artifacts").resolve()
+                if (source_path.is_symlink() or not source_path.is_file()
+                        or not source_path.resolve().is_relative_to(artifact_root)
+                        or hashlib.sha256(source_path.read_bytes()).hexdigest() != match.group(1)):
+                    raise V2CampaignCLIError("selected hypothesis evidence artifact failed integrity check")
+                resolved_evidence_refs.add(evidence_ref)
+        task = OptimizationTaskV2(
+            hypothesis_id=selected_id, hypothesis=selected["hypothesis"],
+            source_campaign_id=campaign_id,
+            source_node_id=proposal.source_node_id,
+            source_job_id=proposal.source_job_id,
+            source_snapshot_id=proposal.source_snapshot_id,
+            source_artifact_sha256=artifact["sha256"],
+            evidence_refs=tuple(resolved_evidence_refs),
+        )
+    except Exception as exc:
+        raise V2CampaignCLIError("Core-ranked Researcher hypothesis portfolio is malformed") from exc
+    return task
+
+
 def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
                                         registry_root: Path,
                                         campaign_id: str, parent_spec: ExplorationCampaignSpecV2,
@@ -255,6 +375,10 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
         return {"status": "NEEDS_EXPLICIT_OPTIMIZATION_WRITE_PATH"}
     authority = EvaluatorProtocolAuthority(graph.conn)
     proposal, receipt = authority.approved_protocol(approval_digest)
+    optimization_task = _selected_optimization_task(
+        proposal=proposal, graph=graph, state_root=state_root, queue=queue,
+        campaign_id=campaign_id,
+    )
     researcher_calls = roles.role("researcher").calls_per_instance
     optimizer_calls = roles.role("optimizer").calls_per_instance
     integration_calls = roles.role("integration_verifier").calls_per_instance
@@ -271,7 +395,11 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
     )
     payload = parent_spec.model_dump(mode="json")
     payload["mode"] = "OPTIMIZATION"
-    payload["goal"] = f"Optimize: {parent_spec.goal}"[:4000]
+    payload["goal"] = (
+        f"Optimize Researcher hypothesis {optimization_task.hypothesis_id}: "
+        f"{optimization_task.hypothesis}"
+    )[:4000]
+    payload["optimization_task"] = optimization_task.model_dump(mode="json")
     payload["evaluation"] = {
         "protocol_id": proposal.protocol.protocol_id,
         "version": proposal.protocol.version,
@@ -303,7 +431,9 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
         current_architecture="Exploration campaign without an Optimization child",
         proposed_architecture="Protocol-backed v2 Optimization child",
         rationale=("A distinct pinned independent_verifier approved the frozen public evaluator protocol "
-                   f"with approval digest {receipt.approval_digest}."),
+                   f"with approval digest {receipt.approval_digest}. The child is bound to the "
+                   f"Core-selected Researcher hypothesis {optimization_task.hypothesis_id}: "
+                   f"{optimization_task.hypothesis}"),
         expected_effect="Run bounded candidate edits against the frozen trusted evaluator.",
         changed_scope=write_paths,
         resources=PivotResourceRequest(

@@ -24,6 +24,7 @@ import pytest
 from bananloop.api import create_server
 from bananloop.chatgpt_responses import (
     INTEGRATION_VERIFIER_INSTRUCTIONS, OPTIMIZER_INSTRUCTIONS,
+    PROTOCOL_VERIFIER_INSTRUCTIONS,
 )
 from bananloop.contracts import (
     AutonomyScopeV2, CapabilityPolicyV2, ExplorationCampaignSpecV2,
@@ -34,7 +35,7 @@ from bananloop.evaluator_verification import (
     EvaluatorTierManifestV1, EvaluatorVerificationAdapter, IntegrationVerifierOutputV1,
     ProtocolVerifierOutputV1,
 )
-from bananloop.graph_store import AddNode, GraphRepository, MutateGraph
+from bananloop.graph_store import GraphRepository
 from bananloop.registry import CampaignRegistry
 from bananloop.research_ledger import ResearchLedger
 from bananloop.cli import cmd_v2_explore, parser
@@ -86,7 +87,12 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
     _source_repo(repo)
     (repo / "src" / "optimizer" / "model").mkdir(parents=True)
     ranker = repo / "src" / "optimizer" / "model" / "ranker.py"
-    ranker.write_text("baseline ranker = 0\n", encoding="utf-8")
+    ranker.write_text(
+        "THRESHOLD = 2\n\n"
+        "def ranker(case):\n"
+        "    return int(case['value'] >= THRESHOLD)\n",
+        encoding="utf-8",
+    )
     subprocess.run(["git", "-C", str(repo), "add", "src/optimizer/model/ranker.py"], check=True)
     subprocess.run([
         "git", "-C", str(repo), "-c", "user.name=RPDI-13 test",
@@ -114,15 +120,18 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
     )
     protocol_verifier_role = RoleDefinitionV1(
         role_id="independent_verifier", adapter="codex", provider="openai",
-        model="gpt-6-luna", model_version="rpdi13-test-pin",
-        prompt_digest="c" * 64,
+        model="gpt-6-luna",
+        model_version=("siwc-responses-v1" if live_child_models else "rpdi13-test-pin"),
+        prompt_digest=(hashlib.sha256(PROTOCOL_VERIFIER_INSTRUCTIONS.encode()).hexdigest()
+                       if live_child_models else "c" * 64),
         capability_policy=CapabilityPolicyV2(
             tools=(), read_paths=(), write_paths=(), backend="ISOLATED",
             network_access=False,
         ),
         context_fields=("campaign_goal", "public_task"), priority=2,
-        min_instances=0, max_instances=1, calls_per_instance=3,
-        tokens_per_instance=100,
+        min_instances=0, max_instances=1,
+        calls_per_instance=1 if live_child_models else 3,
+        tokens_per_instance=2048 if live_child_models else 100,
     )
     optimizer_role = RoleDefinitionV1(
         role_id="optimizer", adapter="codex", provider="openai",
@@ -178,7 +187,8 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
         "--goal", spec.goal, "--read-path", "README.md",
         "--read-path", "src/optimizer/model/ranker.py",
         "--optimization-write-path", "src/optimizer/model/ranker.py",
-        "--max-agent-calls", "20", "--max-model-tokens", "128",
+        "--max-agent-calls", "20", "--max-model-tokens",
+        "2048" if live_child_models else "128",
         "--max-iterations", "3", "--timeout-seconds", "60",
     ]
     preflight_args = parser().parse_args([*explore_command, "--approve-up-to-calls", "0"])
@@ -197,27 +207,115 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
     root_url = f"http://127.0.0.1:{server.server_port}/v1/campaigns"
 
     try:
-        input_bytes = b'{"prompt":"closed deterministic evaluator case","label":"pass"}'
-        input_digest = hashlib.sha256(input_bytes).hexdigest()
-        holdout_input_bytes = b'{"prompt":"separate final holdout case","label":"holdout"}'
-        holdout_input_digest = hashlib.sha256(holdout_input_bytes).hexdigest()
+        tier_inputs = {
+            "dev": (
+                ("dev-boundary", b'{"value":1,"target":1,"tier":"dev"}'),
+                ("dev-positive", b'{"value":3,"target":1,"tier":"dev"}'),
+            ),
+            "validation": (
+                ("validation-boundary", b'{"value":1,"target":1,"tier":"validation"}'),
+                ("validation-positive", b'{"value":3,"target":1,"tier":"validation"}'),
+            ),
+            "holdout": (
+                ("holdout-boundary", b'{"value":1,"target":1,"tier":"holdout"}'),
+                ("holdout-positive", b'{"value":3,"target":1,"tier":"holdout"}'),
+            ),
+        }
+        all_input_digests = {
+            hashlib.sha256(data).hexdigest()
+            for cases in tier_inputs.values() for _, data in cases
+        }
         bundle_buffer = io.BytesIO()
-        evaluator = b'''import json, os
+        evaluator = b'''import json, os, subprocess
 from pathlib import Path
 tier = Path(os.environ["BANANLOOP_TIER"])
 manifest = json.loads((tier / "manifest.json").read_text())
 cases = json.loads((tier / "input-map.json").read_text())
-candidate = Path(os.environ["BANANLOOP_CANDIDATE"])
-ranker = (candidate / "src/optimizer/model/ranker.py").read_text()
-quality = 0.9 if "ranker = 2" in ranker else 0.8 if "ranker = 1" in ranker else 0.5
+# Core invokes this whole evaluator twice for repeatability. Within each
+# invocation this script scores every frozen case exactly once.
+worker_command = ["bwrap", "--die-with-parent", "--new-session", "--unshare-user",
+                  "--unshare-pid", "--unshare-net", "--clearenv"]
+for system in ("/usr", "/bin", "/lib", "/lib64"):
+    if Path(system).exists():
+        worker_command.extend(["--ro-bind", system, system])
+worker_command.extend([
+    "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+    "--ro-bind", "/workspace/candidate", "/workspace/candidate",
+    "--ro-bind", "/workspace/evaluator", "/workspace/evaluator",
+    "--chdir", "/workspace/candidate", "--setenv", "PATH", "/usr/bin:/bin",
+    "--setenv", "HOME", "/tmp", "--setenv", "LANG", "C.UTF-8",
+    "--setenv", "LC_ALL", "C.UTF-8", "--setenv", "PYTHONPATH", "/workspace/evaluator",
+    "python3", "/workspace/evaluator/candidate_worker.py",
+])
+# Each candidate process has a 30-second ceiling. With two cases per tier,
+# the protocol's 120-second evaluator timeout also bounds aggregate startup.
+correct = 0
+for case in cases:
+    item = json.loads((tier / case["path"]).read_text())
+    target = item.get("target")
+    if type(target) is not int or target not in (0, 1):
+        raise SystemExit("case target must be an integer label 0 or 1")
+    features = {"value": item.get("value")}
+    if type(features["value"]) is not int:
+        raise SystemExit("case value must be an integer feature")
+    try:
+        completed = subprocess.run(
+            worker_command, input=json.dumps(features).encode("utf-8"),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=False,
+            env={"PATH": "/usr/bin:/bin", "HOME": "/tmp", "LANG": "C.UTF-8",
+                 "LC_ALL": "C.UTF-8"},
+        )
+    except Exception as exc:
+        raise SystemExit("isolated candidate ranker execution failed") from exc
+    if completed.returncode != 0:
+        raise SystemExit("isolated candidate ranker returned a nonzero exit status")
+    try:
+        prediction_result = json.loads(completed.stdout)
+        prediction = prediction_result["prediction"]
+    except Exception as exc:
+        raise SystemExit("isolated candidate ranker returned invalid JSON") from exc
+    if type(prediction) is not int or prediction not in (0, 1):
+        raise SystemExit("candidate ranker must return integer label 0 or 1")
+    correct += int(prediction == target)
+quality = correct / len(cases)
 print(json.dumps({
     "status": "ok", "metrics": {"quality": quality},
     "protocol_sha256": manifest["protocol_sha256"],
-    "cases": [{key: item[key] for key in ("case_id", "repetition", "input_sha256")} for item in cases],
+    "cases": [{
+        "case_id": item["case_id"], "repetition": item["repetition"],
+        "input_sha256": item["input_sha256"], "metrics": {},
+    } for item in cases],
 }))
+'''
+        candidate_worker = b'''import contextlib, importlib.util, json, sys
+from pathlib import Path
+ranker_path = Path("/workspace/candidate/src/optimizer/model/ranker.py")
+if not ranker_path.is_file():
+    raise SystemExit("candidate ranker file is missing")
+spec = importlib.util.spec_from_file_location("candidate_ranker", ranker_path)
+if spec is None or spec.loader is None:
+    raise SystemExit("candidate ranker module cannot be loaded")
+module = importlib.util.module_from_spec(spec)
+try:
+    spec.loader.exec_module(module)
+except Exception as exc:
+    raise SystemExit("candidate ranker module failed to load") from exc
+predict = getattr(module, "ranker", None)
+if not callable(predict):
+    raise SystemExit("candidate ranker must expose callable ranker(case)")
+features = json.loads(sys.stdin.buffer.read())
+try:
+    with contextlib.redirect_stdout(sys.stderr):
+        prediction = predict(features)
+except Exception as exc:
+    raise SystemExit("candidate ranker failed on a case") from exc
+if type(prediction) is not int or prediction not in (0, 1):
+    raise SystemExit("candidate ranker must return integer label 0 or 1")
+sys.stdout.write(json.dumps({"prediction": prediction}, separators=(",", ":")))
 '''
         with zipfile.ZipFile(bundle_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("evaluate.py", evaluator)
+            archive.writestr("candidate_worker.py", candidate_worker)
         bundle_bytes = bundle_buffer.getvalue()
         bundle_digest = hashlib.sha256(bundle_bytes).hexdigest()
         preliminary = EvaluatorProtocolV1(
@@ -227,52 +325,56 @@ print(json.dumps({
             entrypoint=("python3", "{evaluator}/evaluate.py"),
             metric_id="quality", metric_field="quality", direction="MAXIMIZE",
             aggregation="MEAN",
+            timeout_seconds=120,
             tiers=(
-                EvaluatorTierManifestV1(tier="dev", manifest_sha256="0" * 64, case_count=1),
-                EvaluatorTierManifestV1(tier="holdout", manifest_sha256="0" * 64, case_count=1),
-                EvaluatorTierManifestV1(tier="validation", manifest_sha256="0" * 64, case_count=1),
+                EvaluatorTierManifestV1(tier="dev", manifest_sha256="0" * 64, case_count=2),
+                EvaluatorTierManifestV1(tier="holdout", manifest_sha256="0" * 64, case_count=2),
+                EvaluatorTierManifestV1(tier="validation", manifest_sha256="0" * 64, case_count=2),
             ),
             repeatability_runs=2,
         )
-        evaluator_manifest = ProtocolManifest(
-            protocol_sha256=_case_protocol_digest(preliminary),
-            cases=(ProtocolCase(case_id="integrated-case", repetition=0,
-                                input_sha256=input_digest),),
-        )
-        manifest_bytes = json.dumps(
-            evaluator_manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
-        ).encode()
-        manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
-        holdout_manifest = ProtocolManifest(
-            protocol_sha256=_case_protocol_digest(preliminary),
-            cases=(ProtocolCase(case_id="integrated-holdout-case", repetition=0,
-                                input_sha256=holdout_input_digest),),
-        )
-        holdout_manifest_bytes = json.dumps(
-            holdout_manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
-        ).encode()
-        holdout_manifest_digest = hashlib.sha256(holdout_manifest_bytes).hexdigest()
+        tier_manifest_data = {}
+        for tier, items in tier_inputs.items():
+            manifest = ProtocolManifest(
+                protocol_sha256=_case_protocol_digest(preliminary),
+                cases=tuple(ProtocolCase(
+                    case_id=case_id, repetition=0,
+                    input_sha256=hashlib.sha256(case_bytes).hexdigest(),
+                ) for case_id, case_bytes in items),
+            )
+            manifest_bytes = json.dumps(
+                manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
+            ).encode()
+            tier_manifest_data[tier] = (
+                manifest_bytes, hashlib.sha256(manifest_bytes).hexdigest(),
+            )
+        manifest_bytes, manifest_digest = tier_manifest_data["dev"]
+        validation_manifest_bytes, validation_manifest_digest = tier_manifest_data["validation"]
+        holdout_manifest_bytes, holdout_manifest_digest = tier_manifest_data["holdout"]
         protocol = preliminary.model_copy(update={
             "tiers": (
-                EvaluatorTierManifestV1(tier="dev", manifest_sha256=manifest_digest, case_count=1),
-                EvaluatorTierManifestV1(tier="holdout", manifest_sha256=holdout_manifest_digest, case_count=1),
-                EvaluatorTierManifestV1(tier="validation", manifest_sha256=manifest_digest, case_count=1),
+                EvaluatorTierManifestV1(tier="dev", manifest_sha256=manifest_digest, case_count=2),
+                EvaluatorTierManifestV1(tier="holdout", manifest_sha256=holdout_manifest_digest, case_count=2),
+                EvaluatorTierManifestV1(tier="validation", manifest_sha256=validation_manifest_digest, case_count=2),
             ),
         })
         protocol_artifacts = {
             "bundle.dat": bundle_bytes,
             "tier1_manifest.json": manifest_bytes,
-            "tier1_input.json": input_bytes,
+            "tier2_manifest.json": validation_manifest_bytes,
             "tier3_manifest.json": holdout_manifest_bytes,
-            "tier3_input.json": holdout_input_bytes,
         }
+        for tier_name, tier_number in (("dev", 1), ("validation", 2), ("holdout", 3)):
+            for index, (_case_id, case_bytes) in enumerate(tier_inputs[tier_name]):
+                protocol_artifacts[f"tier{tier_number}_input_{index}.json"] = case_bytes
         protocol_artifact_digests = {
             name: hashlib.sha256(content).hexdigest()
             for name, content in protocol_artifacts.items()
         }
         protocol_evidence_refs = tuple(
             f"artifact://sha256/{protocol_artifact_digests[name]}"
-            for name in ("bundle.dat", "tier1_manifest.json", "tier1_input.json")
+            for name in ("bundle.dat", "tier1_manifest.json", "tier1_input_0.json",
+                         "tier1_input_1.json")
         )
         observed_turns = []
 
@@ -281,6 +383,7 @@ print(json.dumps({
             turn = len(observed_turns)
             content = f"controlled observation {turn}\n"
             artifact_digest = hashlib.sha256(content.encode()).hexdigest()
+            finding_key = "ranker:threshold"
             if turn == 1:
                 return {
                     "hypotheses": [
@@ -303,11 +406,11 @@ print(json.dumps({
                     "artifact_text": {"observation.txt": content},
                     "limitations": ["one deterministic public observation"],
                     "research_findings": [{
-                        "claim_key": "effect:retrieval",
-                        "statement": "The matched control refutes persistence of the retrieval effect.",
+                        "claim_key": finding_key,
+                        "statement": "The baseline ranker threshold misses the boundary case.",
                         "stance": "REFUTES", "kind": "CAUSAL_INFERENCE", "confidence": 0.4,
-                        "intervention_type": "feature_representation",
-                        "algorithmic_layer": "features",
+                        "intervention_type": "threshold",
+                        "algorithmic_layer": "inference",
                         "affected_paths": ["src/optimizer/ranker.py"],
                         "evidence_refs": [f"artifact://sha256/{artifact_digest}"],
                     }],
@@ -316,34 +419,35 @@ print(json.dumps({
             response = {
                 "hypotheses": [
                     {
-                        "id": "model-choice", "hypothesis": "An unrelated condition explains the outcome.",
-                        "rationale": "The researcher prefers a fresh condition.",
-                        "next_experiment": "test an unrelated condition",
-                        "falsification_condition": "The unrelated condition has no effect.",
-                        "expected_evidence": "A public outcome for the unrelated condition.",
+                        "id": "alternative-threshold",
+                        "hypothesis": "Raise the ranker threshold to 3.",
+                        "rationale": "A higher threshold is a competing explanation to test.",
+                        "next_experiment": "test a higher ranker threshold",
+                        "falsification_condition": "The higher threshold does not change the boundary prediction.",
+                        "expected_evidence": "A bounded boundary-case prediction.",
                     },
                     {
-                        "id": "evidence-choice",
-                        "hypothesis": "The refutation is limited to the matched control; an independent condition may preserve the retrieval effect.",
-                        "rationale": "This candidate tests the scope of the durable prior refutation.",
-                        "next_experiment": "test a distinct retrieval condition after the matched-control refutation",
-                        "falsification_condition": "The independent condition also refutes the retrieval effect.",
-                        "expected_evidence": "A bounded result that narrows the refutation scope.",
+                        "id": "improve-ranker",
+                        "hypothesis": "Lower THRESHOLD to 1 so ranker(case) classifies value=1 as positive.",
+                        "rationale": "The durable boundary-case refutation supports testing the lower threshold.",
+                        "next_experiment": "test ranker threshold 1 on the public boundary case",
+                        "falsification_condition": "The boundary case remains negative at threshold 1.",
+                        "expected_evidence": "A bounded boundary-case prediction at the lower threshold.",
                         "evidence_refs": [evidence_id],
-                        "target_claim_key": "effect:retrieval",
+                        "target_claim_key": finding_key,
                     },
                 ],
-                "selected_hypothesis_id": "model-choice",
+                "selected_hypothesis_id": "alternative-threshold",
                 "artifact_text": {"observation.txt": content},
                 "limitations": ["one deterministic public replication"],
             }
             if len(observed_turns) == 2:
                 response["research_findings"] = [{
-                    "claim_key": "effect:retrieval",
-                    "statement": "A second matched-control observation refutes persistence of the retrieval effect.",
+                    "claim_key": finding_key,
+                    "statement": "A second public boundary check supports lowering the threshold.",
                     "stance": "REFUTES", "kind": "CAUSAL_INFERENCE", "confidence": 0.5,
-                    "intervention_type": "feature_representation",
-                    "algorithmic_layer": "features",
+                    "intervention_type": "threshold",
+                    "algorithmic_layer": "inference",
                     "affected_paths": ["src/optimizer/ranker.py"],
                     "evidence_refs": [f"artifact://sha256/{artifact_digest}"],
                 }]
@@ -358,11 +462,11 @@ print(json.dumps({
                         "evidence_refs": protocol_evidence_refs,
                     },
                     "research_findings": [{
-                        "claim_key": "effect:retrieval:independent_condition",
-                        "statement": "A distinct retrieval condition supports a narrower conditional effect.",
+                        "claim_key": finding_key,
+                        "statement": "The public boundary evidence supports the lower-threshold hypothesis.",
                         "stance": "SUPPORTS", "kind": "CAUSAL_INFERENCE", "confidence": 0.5,
-                        "intervention_type": "feature_representation",
-                        "algorithmic_layer": "features",
+                        "intervention_type": "threshold",
+                        "algorithmic_layer": "inference",
                         "affected_paths": ["src/optimizer/ranker.py"],
                         "evidence_refs": [f"artifact://sha256/{artifact_digest}"],
                     }],
@@ -409,8 +513,10 @@ print(json.dumps({
                 def dispatch(request, gateway, **_pinned):
                     assert gateway is None
                     public_review = json.dumps(request["role_context"].get("public_task", ""))
-                    assert "closed deterministic evaluator case" not in public_review
-                    assert "separate final holdout case" not in public_review
+                    assert all(case_id not in public_review
+                               for cases in tier_inputs.values() for case_id, _ in cases)
+                    assert all(data.decode() not in public_review
+                               for cases in tier_inputs.values() for _, data in cases)
                     output = ProtocolVerifierOutputV1(
                         proposal_digest=request["proposal_digest"], decision="APPROVE",
                         checks=protocol_checks,
@@ -425,12 +531,19 @@ print(json.dumps({
 
                 return PinnedRoleExecutorV1.from_manifest(manifest, instance_id, dispatch)
 
-        monkeypatch.setattr("bananloop.v2_campaign_cli.ChatGPTPlanAuth", OfflineAuth)
+        if live_child_models:
+            monkeypatch.setattr(
+                "bananloop.v2_campaign_cli.ChatGPTPlanAuth", lambda: live_auth,
+            )
+        else:
+            monkeypatch.setattr("bananloop.v2_campaign_cli.ChatGPTPlanAuth", OfflineAuth)
+        if not live_child_models:
+            monkeypatch.setattr(
+                "bananloop.v2_campaign_cli.ChatGPTPlanProtocolVerifier",
+                OfflineSIWCProtocolVerifier,
+            )
         monkeypatch.setattr(
             "bananloop.v2_campaign_cli.ChatGPTPlanResearcher", OfflineSIWCResearcher,
-        )
-        monkeypatch.setattr(
-            "bananloop.v2_campaign_cli.ChatGPTPlanProtocolVerifier", OfflineSIWCProtocolVerifier,
         )
         explore_args = parser().parse_args([*explore_command, "--approve-up-to-calls", "4"])
         assert explore_args.func is cmd_v2_explore
@@ -439,11 +552,11 @@ print(json.dumps({
         assert exploration["iterations_this_call"] == 3
         assert len(observed_turns) == 3
         assert observed_turns[1]["role_context"]["evidence_refs"]
-        assert "effect:retrieval" in observed_turns[1]["role_context"]["dev_summary"]
+        assert "ranker:threshold" in observed_turns[1]["role_context"]["dev_summary"]
         assert observed_turns[1]["role_context"]["public_task"] == "run a matched control observation"
         assert "REFUTES" in observed_turns[1]["role_context"]["dev_summary"]
         assert observed_turns[2]["role_context"]["public_task"] == (
-            "test a distinct retrieval condition after the matched-control refutation"
+            "test ranker threshold 1 on the public boundary case"
         )
         assert "REFUTES" in observed_turns[2]["role_context"]["dev_summary"]
         assert observed_turns[2]["role_context"]["evidence_refs"]
@@ -452,8 +565,8 @@ print(json.dumps({
             json.loads(path.read_text(encoding="utf-8")) for path in portfolio_files
             if path.is_file() and b'"core_selection"' in path.read_bytes()
         ]
-        assert any(item["researcher_preferred_hypothesis_id"] == "model-choice"
-                   and item["selected_hypothesis_id"] == "evidence-choice"
+        assert any(item["researcher_preferred_hypothesis_id"] == "alternative-threshold"
+                   and item["selected_hypothesis_id"] == "improve-ranker"
                    for item in portfolios)
         job_id = exploration["completed"][-1]["job_id"]
         job = queue.get_job(job_id)
@@ -507,10 +620,11 @@ print(json.dumps({
         )
         verifier_job = verification.enqueue_verifier(protocol_proposal.proposal_digest)
         public_review = verifier_job["request"]["role_context"]["public_task"]
-        assert "closed deterministic evaluator case" not in public_review
-        assert "separate final holdout case" not in public_review
-        assert input_digest not in public_review
-        assert holdout_input_digest not in public_review
+        assert all(case_id not in public_review
+                   for cases in tier_inputs.values() for case_id, _ in cases)
+        assert all(data.decode() not in public_review
+                   for cases in tier_inputs.values() for _, data in cases)
+        assert all(digest not in public_review for digest in all_input_digests)
         manifest_authority = TeamManifestAuthority(queue.path)
         try:
             pinned_team = manifest_authority.load(
@@ -583,7 +697,7 @@ print(json.dumps({
                 class DeterministicRunner(TrustedEvaluatorRunner):
                     def __init__(self):
                         super().__init__(bwrap_binary="not-used-in-test")
-                        self.protocol_hash = evaluator_manifest.protocol_sha256
+                        self.protocol_hash = json.loads(manifest_bytes)["protocol_sha256"]
 
                     def _sandbox_available(self):
                         return True
@@ -607,9 +721,11 @@ print(json.dumps({
                                 child_state / "s" / child_id / snapshot_key / "src"
                                 / "optimizer" / "model" / "ranker.py"
                             )
+                            content = candidate_file.read_text()
                             score = (
-                                0.5 if "regression candidate" in candidate_file.read_text()
-                                else 0.8
+                                0.5 if "THRESHOLD = 2" in content
+                                else 1.0 if "THRESHOLD = 1" in content
+                                else 0.0
                             )
                         return json.dumps({
                             "status": "ok", "metrics": {"quality": score},
@@ -653,9 +769,13 @@ print(json.dumps({
                     }
                     assert public_input["selected_hypothesis_id"] == "improve-ranker"
                     assert public_input["visible_documents"]["src/optimizer/model/ranker.py"] == (
-                        "baseline ranker = 0\n"
+                        "THRESHOLD = 2\n\n"
+                        "def ranker(case):\n"
+                        "    return int(case['value'] >= THRESHOLD)\n"
                     )
-                    assert "closed deterministic evaluator case" not in json.dumps(public_input).lower()
+                    rendered_input = json.dumps(public_input).lower()
+                    assert all(data.decode() not in rendered_input
+                               for cases in tier_inputs.values() for _, data in cases)
                     receipt = {
                         "request_id": "resp_integrated_optimizer", "status": "COMPLETED",
                         "dispatched": True, "usage": {"total_tokens": 31},
@@ -665,7 +785,11 @@ print(json.dumps({
                     return {
                         "hypothesis_id": "improve-ranker",
                         "rationale": "Apply the research-selected ranker improvement.",
-                        "changes": {"src/optimizer/model/ranker.py": "candidate ranker = 2\n"},
+                        "changes": {"src/optimizer/model/ranker.py": (
+                            "THRESHOLD = 1\n\n"
+                            "def ranker(case):\n"
+                            "    return int(case['value'] >= THRESHOLD)\n"
+                        )},
                     }
 
             class MockVerifier:
@@ -681,7 +805,9 @@ print(json.dumps({
                     assert gateway is None
                     assert request["role_binding"]["role_id"] == "integration_verifier"
                     public_evidence = json.loads(request["role_context"]["public_task"])
-                    assert "closed deterministic evaluator case" not in json.dumps(public_evidence).lower()
+                    rendered_evidence = json.dumps(public_evidence).lower()
+                    assert all(data.decode() not in rendered_evidence
+                               for cases in tier_inputs.values() for _, data in cases)
                     output = IntegrationVerifierOutputV1(
                         candidate_snapshot_id=request["candidate_snapshot_id"],
                         protocol_digest=request["protocol_digest"],
@@ -704,17 +830,35 @@ print(json.dumps({
                 monkeypatch.setattr(
                     "bananloop.v2_optimization_cli.ChatGPTPlanIntegrationVerifier", MockVerifier,
                 )
-            child_graph.mutate(MutateGraph(
-                command_id="add-v2-optimizer-proposal",
-                idempotency_key="add-v2-optimizer-proposal",
-                expected_graph_revision=child_graph.graph_revision(),
-                changes=(AddNode(
-                    type="AddNode", node_id="v2-optimizer-proposal", phase="OPTIMIZATION",
-                    payload={"source_snapshot_id": base_commit,
-                             "hypothesis_id": "improve-ranker",
-                             "hypothesis": "Improve the bounded deterministic ranker."},
-                ),),
-            ))
+            child_spec = child_graph.campaign_spec()
+            task = child_spec.optimization_task
+            assert task is not None
+            assert task.hypothesis_id == "improve-ranker"
+            assert "Lower THRESHOLD to 1" in task.hypothesis
+            assert task.source_campaign_id == entry.campaign_id
+            assert task.source_job_id == job_id
+            assert task.source_snapshot_id == base_commit
+            assert task.source_artifact_sha256 in {
+                artifact["sha256"] for artifact in queue.get_result(job_id)["result"]["artifacts"]
+            }
+            selected_portfolio = next(
+                item for item in portfolios
+                if item["core_selection"]["selected_hypothesis_id"] == task.hypothesis_id
+            )
+            expected_task_evidence = {
+                f"artifact://sha256/{task.source_artifact_sha256}"
+            }
+            for cited_evidence_id in next(
+                item for item in selected_portfolio["candidates"]
+                if item["id"] == task.hypothesis_id
+            )["evidence_refs"]:
+                evidence_row = graph.conn.execute(
+                    "SELECT evidence_refs_json FROM research_evidence WHERE evidence_id=?",
+                    (cited_evidence_id,),
+                ).fetchone()
+                assert evidence_row is not None
+                expected_task_evidence.update(json.loads(evidence_row[0]))
+            assert set(task.evidence_refs) == expected_task_evidence
 
             optimize_args = parser().parse_args([
                 "v2", "optimize", "--repo", str(repo), "--campaign-id", child_id,
@@ -745,10 +889,11 @@ print(json.dumps({
             assert holdout_metric["metric_id"] == "quality"
             assert holdout_metric["metric_field"] == "quality"
             assert holdout_metric["direction"] == "MAXIMIZE"
-            assert holdout_metric["value"] in {0.8, 0.9}
+            assert holdout_metric["value"] == 1.0
             assert holdout_metric["unit"] is None
             assert holdout_metric["n"] is None
             final_report = json.loads(Path(optimized["final_report_path"]).read_text())
+            final_markdown = Path(optimized["final_report_markdown_path"]).read_text()
             assert final_report["campaign_id"] == entry.campaign_id
             assert final_report["optimization_campaign_id"] == child_id
             assert final_report["exploration_report"]["campaign_id"] == entry.campaign_id
@@ -758,6 +903,32 @@ print(json.dumps({
                 "candidate_snapshot_id"
             ]
             assert final_report["optimization_report"]["integration_evidence"][-1]["decision"] == "PASS"
+            comparison = final_report["optimization_report"]["baseline_candidate_delta"]
+            assert comparison["status"] == "VERIFIED"
+            assert comparison["tier"] == "validation"
+            assert comparison["baseline_snapshot_id"] == base_commit
+            assert comparison["candidate_snapshot_id"] == candidate["candidate_snapshot_id"]
+            assert comparison["baseline_metric"]["value"] < comparison["candidate_metric"]["value"]
+            assert comparison["delta"]["absolute"] == pytest.approx(
+                comparison["candidate_metric"]["value"] - comparison["baseline_metric"]["value"]
+            )
+            assert comparison["delta"]["directional_improvement"] > 0
+            assert comparison["comparison_table"] == [{
+                "tier": "VALIDATION",
+                "metric_id": "quality",
+                "metric_field": "quality",
+                "unit": None,
+                "direction": "MAXIMIZE",
+                "baseline": comparison["baseline_metric"]["value"],
+                "candidate": comparison["candidate_metric"]["value"],
+                "delta": comparison["delta"]["absolute"],
+                "directional_improvement": comparison["delta"]["directional_improvement"],
+            }]
+            assert "## Validation baseline / candidate / delta" in final_markdown
+            assert "| Tier | Metric | Baseline | Candidate | Delta | Directional improvement |" in final_markdown
+            assert f"| VALIDATION | quality | {comparison['baseline_metric']['value']} | " in final_markdown
+            assert f"{comparison['candidate_metric']['value']} | " in final_markdown
+            assert f"{comparison['delta']['absolute']:+}" in final_markdown
             assert {item["tier"] for item in final_report["optimization_report"]["evaluation_receipts"]} == {
                 "dev", "validation",
             }

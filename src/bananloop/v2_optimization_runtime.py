@@ -43,6 +43,77 @@ class V2OptimizationError(RuntimeError):
     """A v2 candidate cannot safely be proposed, executed, or published."""
 
 
+def _format_report_metric(metric: dict[str, Any] | None) -> str:
+    if not isinstance(metric, dict) or metric.get("value") is None:
+        return "UNKNOWN"
+    value = metric["value"]
+    unit = metric.get("unit")
+    return f"{value} {unit}" if unit else str(value)
+
+
+def _render_final_report_markdown(report: dict[str, Any]) -> str:
+    """Render a public, owner-readable campaign summary beside the JSON report."""
+    optimization = report.get("optimization_report", report)
+    comparison = optimization.get("baseline_candidate_delta", {})
+    lines = [
+        f"# BananLoop campaign {report.get('campaign_id', optimization.get('campaign_id', 'unknown'))}",
+        "",
+        f"- Status: `{report.get('status', optimization.get('status', 'UNKNOWN'))}`",
+        f"- Goal: {optimization.get('goal', 'Not recorded.')}",
+        "",
+        "## Validation baseline / candidate / delta",
+        "",
+    ]
+    rows = comparison.get("comparison_table", []) if isinstance(comparison, dict) else []
+    if comparison.get("status") == "VERIFIED" and rows:
+        lines.extend([
+            "| Tier | Metric | Baseline | Candidate | Delta | Directional improvement |",
+            "| --- | --- | ---: | ---: | ---: | ---: |",
+        ])
+        for row in rows:
+            baseline = row.get("baseline")
+            candidate = row.get("candidate")
+            delta = row.get("delta")
+            directional = row.get("directional_improvement")
+            lines.append(
+                f"| {row.get('tier', 'VALIDATION')} | {row.get('metric_id', 'unknown')} "
+                f"| {baseline} | {candidate} | {delta:+} | {directional:+} |"
+            )
+    else:
+        lines.append(
+            f"Comparison `{comparison.get('status', 'INCOMPLETE')}`: "
+            f"{comparison.get('reason', 'validation receipts are unavailable.')}"
+        )
+    holdout = optimization.get("holdout")
+    if isinstance(holdout, dict):
+        lines.extend([
+            "", "## Trusted HOLDOUT", "",
+            f"- Status: `{holdout.get('status', 'UNKNOWN')}`",
+            f"- Metric: {_format_report_metric(holdout.get('metric'))}",
+            f"- Cases: {holdout.get('case_count', 'UNKNOWN')}",
+            f"- Repeatability runs: {holdout.get('repeatability_runs', 'UNKNOWN')}",
+        ])
+    limitations = report.get("limitations", optimization.get("limitations", []))
+    if limitations:
+        lines.extend(["", "## Limitations", ""])
+        lines.extend(f"- {item}" for item in limitations)
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _atomic_write_report(path: Path, raw: bytes) -> None:
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(raw)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 class OptimizationCandidateProposalV1(BaseModel):
     """Untrusted optimizer output: complete file replacements, never commands."""
 
@@ -1109,6 +1180,7 @@ class V2OptimizationRuntime:
             ).current()
         except ChampionPromotionError:
             champion_report = None
+        baseline_candidate_delta = self._build_baseline_candidate_delta(champion_report)
         evaluation_receipts = []
         for row in self.graph.conn.execute(
             "SELECT receipt_digest,candidate_snapshot_id,receipt_json "
@@ -1139,6 +1211,7 @@ class V2OptimizationRuntime:
             "status": result["status"], "graph_revision": snapshot["graph_revision"],
             "steps": result.get("steps", []), "nodes": nodes,
             "evaluation_receipts": evaluation_receipts,
+            "baseline_candidate_delta": baseline_candidate_delta,
             "integration_evidence": integration_evidence,
             "parent": spec.parent.model_dump(mode="json") if spec.parent else None,
             "champion": champion_report,
@@ -1156,16 +1229,12 @@ class V2OptimizationRuntime:
         reports.mkdir(parents=True, exist_ok=True)
         target = reports / f"v2-optimization-{self.campaign_id}.json"
         raw = (json.dumps(report, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-        descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=reports)
-        try:
-            with os.fdopen(descriptor, "wb") as output:
-                output.write(raw)
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temporary, target)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+        _atomic_write_report(target, raw)
+        markdown_target = target.with_suffix(".md")
+        _atomic_write_report(
+            markdown_target, _render_final_report_markdown(report).encode("utf-8"),
+        )
+        result["report_markdown_path"] = str(markdown_target)
         if spec.parent is not None:
             from .registry import CampaignRegistry
 
@@ -1230,20 +1299,116 @@ class V2OptimizationRuntime:
             final_target = parent_reports / f"v2-final-{spec.parent.parent_campaign_id}.json"
             final_raw = (json.dumps(final_report, sort_keys=True, indent=2,
                                     ensure_ascii=False) + "\n").encode("utf-8")
-            final_fd, final_temporary = tempfile.mkstemp(
-                prefix=f".{final_target.name}.", dir=parent_reports,
+            _atomic_write_report(final_target, final_raw)
+            final_markdown_target = final_target.with_suffix(".md")
+            _atomic_write_report(
+                final_markdown_target,
+                _render_final_report_markdown(final_report).encode("utf-8"),
             )
-            try:
-                with os.fdopen(final_fd, "wb") as output:
-                    output.write(final_raw)
-                    output.flush()
-                    os.fsync(output.fileno())
-                os.replace(final_temporary, final_target)
-            finally:
-                if os.path.exists(final_temporary):
-                    os.unlink(final_temporary)
             result["final_report_path"] = str(final_target)
-        return {**result, "report_path": str(target)}
+            result["final_report_markdown_path"] = str(final_markdown_target)
+        return {**result, "report_path": str(target),
+                "report_markdown_path": str(markdown_target)}
+
+    def _build_baseline_candidate_delta(self, champion_report: dict[str, Any] | None) -> dict[str, Any]:
+        """Build an owner-only baseline/candidate comparison from VALIDATION receipts."""
+        incomplete = {
+            "status": "INCOMPLETE", "tier": "validation",
+            "comparison_table": [],
+        }
+        if not isinstance(champion_report, dict):
+            return {**incomplete, "reason": "campaign has no pinned champion"}
+        champion_id = champion_report.get("snapshot_id")
+        if not isinstance(champion_id, str):
+            return {**incomplete, "reason": "champion snapshot identity is unavailable"}
+
+        from .evaluator_verification import EvaluatorProtocolAuthority
+        from .trusted_evaluator import EvaluatorRunReceiptV1
+
+        spec = self.graph.campaign_spec()
+        authority = EvaluatorProtocolAuthority(self.graph.conn)
+        proposal, _ = authority.approved_protocol(spec.evaluation.approval_digest)
+        protocol = proposal.protocol
+        if champion_id != protocol.source_snapshot_id:
+            self.trusted_evaluator._snapshot_files(
+                spec, protocol.source_snapshot_id, champion_id,
+            )
+        receipt_rows = self.graph.conn.execute(
+            "SELECT receipt_json FROM evaluator_run_receipts "
+            "WHERE campaign_id=? ORDER BY rowid",
+            (self.campaign_id,),
+        ).fetchall()
+        receipts = []
+        for row in receipt_rows:
+            try:
+                receipt = EvaluatorRunReceiptV1.model_validate_json(row["receipt_json"])
+            except Exception:
+                raise V2OptimizationError("durable evaluator receipt is malformed while building final comparison") from None
+            if receipt.tier == "validation":
+                receipts.append(receipt)
+        baseline = next((item for item in reversed(receipts)
+                         if item.candidate_snapshot_id == protocol.source_snapshot_id), None)
+        candidate = next((item for item in reversed(receipts)
+                          if item.candidate_snapshot_id == champion_id), None)
+        if baseline is None or candidate is None:
+            missing = []
+            if baseline is None:
+                missing.append("baseline VALIDATION receipt")
+            if candidate is None:
+                missing.append("champion VALIDATION receipt")
+            return {**incomplete, "reason": " and ".join(missing) + " unavailable"}
+
+        baseline_metric = self.trusted_evaluator.owner_validation_metric_summary(baseline)
+        candidate_metric = self.trusted_evaluator.owner_validation_metric_summary(candidate)
+        if (baseline.tier_manifest_sha256 != candidate.tier_manifest_sha256
+                or baseline.case_count != candidate.case_count
+                or baseline.protocol_digest != candidate.protocol_digest
+                or baseline_metric["metric_id"] != candidate_metric["metric_id"]
+                or baseline_metric["direction"] != candidate_metric["direction"]
+                or baseline_metric["unit"] != candidate_metric["unit"]):
+            raise V2OptimizationError("baseline and champion VALIDATION receipts have different frozen scopes")
+        absolute_delta = candidate_metric["value"] - baseline_metric["value"]
+        directional_improvement = (
+            absolute_delta if candidate_metric["direction"] == "MAXIMIZE" else -absolute_delta
+        )
+        relative_improvement = (
+            directional_improvement / abs(baseline_metric["value"]) * 100
+            if baseline_metric["value"] != 0 else None
+        )
+        row = {
+            "tier": "VALIDATION",
+            "metric_id": candidate_metric["metric_id"],
+            "metric_field": candidate_metric["metric_field"],
+            "unit": candidate_metric["unit"],
+            "direction": candidate_metric["direction"],
+            "baseline": baseline_metric["value"],
+            "candidate": candidate_metric["value"],
+            "delta": absolute_delta,
+            "directional_improvement": directional_improvement,
+        }
+        return {
+            "status": "VERIFIED",
+            "tier": "validation",
+            "protocol_digest": protocol.content_digest(),
+            "tier_manifest_sha256": baseline.tier_manifest_sha256,
+            "case_count": baseline.case_count,
+            "repeatability_runs": {
+                "baseline": baseline.repeatability_runs,
+                "candidate": candidate.repeatability_runs,
+            },
+            "baseline_receipt_digest": baseline.receipt_digest,
+            "candidate_receipt_digest": candidate.receipt_digest,
+            "baseline_snapshot_id": baseline.candidate_snapshot_id,
+            "candidate_snapshot_id": candidate.candidate_snapshot_id,
+            "baseline_metric": baseline_metric,
+            "candidate_metric": candidate_metric,
+            "delta": {
+                "absolute": absolute_delta,
+                "directional_improvement": directional_improvement,
+                "relative_improvement_percent": relative_improvement,
+            },
+            "comparison_table": [row],
+        }
 
     def _baseline_validation_receipt(self, *, worker_id: str):
         spec = self.graph.campaign_spec()

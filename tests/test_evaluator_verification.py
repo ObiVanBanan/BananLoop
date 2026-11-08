@@ -12,6 +12,9 @@ from dataclasses import replace
 import pytest
 from pydantic import ValidationError
 
+from bananloop.chatgpt_responses import (
+    INSTRUCTIONS, INTEGRATION_VERIFIER_INSTRUCTIONS, PROTOCOL_VERIFIER_INSTRUCTIONS,
+)
 from bananloop.evaluator_verification import (
     EvaluatorProtocolAuthority,
     EvaluatorProtocolDraftV1,
@@ -68,6 +71,13 @@ def _protocol() -> EvaluatorProtocolV1:
             tier="validation", manifest_sha256="9" * 64, case_count=16,
         )), repeatability_runs=3,
     )
+
+
+def test_researcher_protocol_draft_instructions_preserve_private_tier_boundary():
+    assert "protocol_draft" in INSTRUCTIONS
+    assert "source_snapshot_id must copy the exact trusted value" in INSTRUCTIONS
+    assert "never include, request, infer, or generate validation or HOLDOUT case data" in INSTRUCTIONS
+    assert "omit protocol_draft" in INSTRUCTIONS
 
 
 def _proposal() -> MetricDiscoveryProposalV1:
@@ -193,6 +203,36 @@ def build_full_optimization_runtime(
         graph=graph, trusted_evaluator=trusted, integration_verifier=integration,
     )
     return coordinator, trusted, executor
+
+
+def test_integration_verifier_prompt_matches_strict_check_array_contract():
+    assert "JSON array of check-name strings" in INTEGRATION_VERIFIER_INSTRUCTIONS
+    assert "never an object/map of names to booleans" in INTEGRATION_VERIFIER_INSTRUCTIONS
+    for name in (
+        "candidate_identity", "protocol_identity", "evaluation_receipt",
+        "budget_receipt", "artifact_integrity", "regression_policy",
+    ):
+        assert name in INTEGRATION_VERIFIER_INSTRUCTIONS
+
+
+def test_protocol_verifier_prompt_matches_strict_output_schema():
+    assert "schema_version (integer 1)" in PROTOCOL_VERIFIER_INSTRUCTIONS
+    assert "public_diagnostics (array of strings)" in PROTOCOL_VERIFIER_INSTRUCTIONS
+    assert "Do not use a diagnostics key or add other keys" in PROTOCOL_VERIFIER_INSTRUCTIONS
+    digest = "a" * 64
+    checks = (
+        "protocol_identity", "evaluator_bundle_review", "metric_contract", "tier_manifests",
+        "frozen_case_scope", "no_hidden_data_dependency", "fair_comparison", "error_semantics",
+    )
+    output = {
+        "schema_version": 1, "proposal_digest": digest, "decision": "APPROVE",
+        "checks": checks, "rationale": "All required protocol evidence is present.",
+        "public_diagnostics": [],
+    }
+    assert ProtocolVerifierOutputV1.model_validate(output).proposal_digest == digest
+    output["diagnostics"] = []
+    with pytest.raises(ValidationError, match="diagnostics"):
+        ProtocolVerifierOutputV1.model_validate(output)
 
 
 def test_protocol_digest_is_canonical_and_protected_tiers_have_manifest_identity():
