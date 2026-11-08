@@ -1,0 +1,114 @@
+# PR #135 adaptation: DESIGN TEMPLATE ONLY, not an RPDI-14 run manifest.
+# Bind RoleRegistryV1.version (integer 1) and digest, TeamManifestV1.manifest_digest,
+# RoleDefinitionV1 content digest (there is no separate runtime role_version field),
+# exact source SHA, model_version, prompt_digest and capability_policy before any role trial.
+# `resource` proposal below does NOT replace RPDI-14 ResourceCaps and signed spend gates.
+schema_version: 1
+benchmark:
+  id: "bananloop-agent-capability"
+  version: "0.2-draft"
+  status: "PREREGISTERED_NOT_RUN"
+  layer: "role_capability" # role_contribution | team_system
+  protocol_revision: null # required immutable revision before a scored run
+
+source:
+  repository: "ObiVanBanan/BananLoop"
+  commit_sha: null
+  working_tree_clean: null
+  feature_profile: "FULL"
+  feature_flag_hash: null
+
+role_registry:
+  version: null
+  digest_sha256: null
+  role_id: null
+  role_version: null # legacy optional label; canonical role identity is its pinned content digest
+  output_contract_version: null
+  output_contract_sha256: null
+
+team_manifest:
+  version: null
+  digest_sha256: null
+  # For isolated role trials, this still records the frozen team/role environment.
+  # The evaluated role must not receive unrelated private team state.
+
+agent:
+  provider: null
+  model_id: null
+  model_revision: null
+  reasoning_effort: null
+  prompt_sha256: null
+  adapter_version: null
+
+capabilities:
+  campaign_grant_sha256: null
+  role_profile_sha256: null
+  task_profile_sha256: null
+  tools_allowlist: []
+  read_paths_allowlist_sha256: null
+  write_paths_allowlist_sha256: null
+  network_access: false
+  isolation_backend: null
+  isolation_backend_version: null
+
+dataset:
+  source_id: null
+  source_revision: null
+  license_review: "PENDING"
+  case_manifest_sha256: null
+  split: "DEV" # DEV | VALIDATION | HOLDOUT
+  case_ids: []
+  seed_list: []
+
+evaluator:
+  id: null
+  version: null
+  sha256: null
+  oracle_store_ref: null # private evaluator-side reference; never an agent-visible path
+  agent_can_read_evaluator: false
+  agent_can_read_oracle: false
+
+resources:
+  max_wall_clock_seconds: null
+  max_agent_calls: null
+  max_tool_calls: null
+  max_input_tokens: null
+  max_output_tokens: null
+  max_total_tokens: null
+  max_cost_usd: null
+  subscription_quota_policy: "OWNER_APPROVED_SMALL_BATCH_ONLY"
+  # Hard dispatch limits must count every underlying model request, including retries
+  # and automatic bootstrap. If metering is unavailable, fail closed.
+  max_codex_model_invocations_whole_pilot: 8
+  max_codex_model_invocations_per_batch: 2
+  hard_pre_dispatch_invocation_counter_required: true
+  subscription_quota_remaining_check_before_batch: true
+  on_unknown_or_low_quota: "DO_NOT_DISPATCH"
+  parallel_codex_invocations: 1
+  automatic_codex_retries: 0
+  cost_meter: null
+  unknown_cost_policy: "UNKNOWN_NOT_ZERO"
+
+execution:
+  repetitions_per_case: 1 # Plus-safe live smoke only; confirmatory runs need a separately frozen protocol
+  arm_order_seed: null
+  randomized_arm_order: true
+  retry_policy: "no_automatic_retry_record_failure"
+  evaluator_timeout_seconds: null
+
+analysis:
+  primary_metric: null
+  direction: null # maximize | minimize
+  secondary_metrics: []
+  aggregation: "per_task_then_per_domain"
+  cross_role_pooling: false
+  confidence_interval_method: null
+  preregistration_sha256: null
+
+eligibility:
+  require_clean_source: true
+  require_verified_isolation: true
+  require_independent_evaluator: true
+  require_complete_identity_hashes: true
+  require_known_budget_ceiling: true
+  policy_violation_disqualifies: true
