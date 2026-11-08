@@ -32,6 +32,25 @@ credentials, shell, or network tools.
 
 Machine-readable result: [acceptance JSON](pr141-live-smoke-acceptance-e73c061.json).
 
+## Separate two-iteration live Exploration
+
+A second, independent SIWC run exercised two real GPT-6 Luna Researcher jobs
+through the v2 Exploration runtime:
+
+- Both requests completed; 2 research evidence records were persisted.
+- The second worker received the prior evidence reference and a 339-character
+  Research Memory summary.
+- Aggregate SIWC usage was 2,156 input and 2,108 output tokens (4,264 total).
+- The campaign stopped at its configured two-iteration limit, as expected;
+  automatic replay was false and SQLite integrity was `ok`.
+- No dataset or experiment was supplied. The report therefore asserts no
+  scientific conclusion; this verifies real multi-step Exploration and memory
+  handoff, not Optimization or the full campaign-to-final-report loop.
+
+The archived run contains the campaign SQLite database, published evidence,
+and machine-readable summary. The aggregate verification is also captured in
+the acceptance JSON below.
+
 ## Offline suite
 
 Full Linux offline suite on the source tree matching the runtime SHA above:

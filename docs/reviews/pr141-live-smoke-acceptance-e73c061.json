@@ -24,6 +24,28 @@
     "rpdi14_score": false,
     "monetary_cost": "UNKNOWN"
   },
+  "live_multi_iteration_exploration": {
+    "status": "ITERATION_LIMIT",
+    "provider": "chatgpt_plan",
+    "model": "gpt-6-luna",
+    "iterations_completed": 2,
+    "inference_calls": 2,
+    "request_statuses": ["COMPLETED", "COMPLETED"],
+    "automatic_replay": false,
+    "research_evidence_count": 2,
+    "second_iteration_received_prior_evidence_ref": true,
+    "second_iteration_memory_summary_chars": 339,
+    "usage_tokens": {
+      "input": 2156,
+      "output": 2108,
+      "total": 4264
+    },
+    "sqlite_integrity": "ok",
+    "scientific_conclusion_asserted": false,
+    "optimization_proven": false,
+    "complete_full_pipeline_proven": false,
+    "campaign_id": "c-9cf01dce60858d13386a1d818426dbdb"
+  },
   "offline_suite": {
     "python": "3.12.15",
     "passed": 1015,
