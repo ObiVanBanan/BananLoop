@@ -68,9 +68,11 @@ OPTIMIZER_INSTRUCTIONS = (
 INTEGRATION_VERIFIER_INSTRUCTIONS = (
     "You are an independent reviewer of trusted Core evaluation evidence. Return one strict "
     "JSON object with candidate_snapshot_id, protocol_digest, decision (PASS or FAIL), "
-    "checks, and optional diagnostics. Review only the supplied public evidence summary. "
-    "PASS requires all six checks: candidate_identity, protocol_identity, evaluation_receipt, "
-    "budget_receipt, artifact_integrity, regression_policy. If any supplied Core check failed, "
+    "checks, and optional diagnostics. The checks value MUST be a JSON array of check-name "
+    "strings, never an object/map of names to booleans. Use only these exact names: "
+    "candidate_identity, protocol_identity, evaluation_receipt, budget_receipt, "
+    "artifact_integrity, regression_policy. A PASS requires all six names in that array. "
+    "Review only the supplied public evidence summary. If any supplied Core check failed, "
     "or evidence is insufficient, return FAIL and explain why. Never invent evidence or scores."
 )
 PROTOCOL_VERIFIER_INSTRUCTIONS = (
