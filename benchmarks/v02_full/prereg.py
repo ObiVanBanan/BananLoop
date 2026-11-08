@@ -591,6 +591,10 @@ def validate_run_gate(
     if manifest.track == "OPTIMIZATION":
         if evidence.exploration_verification is None or manifest.exploration_anchor is None:
             raise PreregError("Optimization run gate requires verified Full Exploration campaign evidence")
+        if evidence.exploration_verification.reviewer_role != "EXPLORATION_GATE_VERIFIER":
+            raise PreregError("Optimization run gate requires an Exploration gate verifier")
+        if evidence.exploration_verification.conclusion != "PASS":
+            raise PreregError("Optimization run gate requires a passing Exploration verification")
         anchor_sha = hashlib.sha256(canonical_bytes(manifest.exploration_anchor)).hexdigest()
         if evidence.exploration_verification.subject_sha != anchor_sha:
             raise PreregError("Exploration verification is for a different campaign/spec/evaluator handoff")
