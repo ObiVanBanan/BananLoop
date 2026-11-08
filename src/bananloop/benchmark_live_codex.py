@@ -349,6 +349,44 @@ def run_live(*, cases_path: str, registry_path: str, team_path: str,
     return read_json(output / "run-status.json")
 
 
+def verify_codex_observation(path: str) -> dict:
+    """Check local hash-chain integrity, NOT upstream signature or actual billing."""
+    document = read_json(path)
+    records = document.get("records") if isinstance(document, dict) else None
+    if (not isinstance(records, list)
+            or document.get("usage_authority") != "UNSIGNED_OBSERVATION_NOT_PROVIDER_RECEIPT"):
+        raise LiveBenchmarkError("Codex usage ledger is not a completed observation archive")
+    previous = "0" * 64
+    seen = set()
+    observed_input = observed_output = unknown = 0
+    for entry in records:
+        if not isinstance(entry, dict) or entry.get("previous_sha256") != previous:
+            raise LiveBenchmarkError("Codex usage chain is incomplete or reordered")
+        sha = entry.get("entry_sha256")
+        if sha != digest({k: v for k, v in entry.items() if k != "entry_sha256"}):
+            raise LiveBenchmarkError("Codex observation digest mismatch")
+        if entry.get("case_id") in seen:
+            raise LiveBenchmarkError("Codex meter repeats a case identity")
+        seen.add(entry.get("case_id"))
+        usage = entry.get("usage")
+        if usage is None:
+            unknown += 1
+        else:
+            if any(type(usage.get(key)) is not int or usage[key] < 0
+                   for key in ("input_tokens", "output_tokens", "cached_input_tokens")):
+                raise LiveBenchmarkError("Codex observed token counts are malformed")
+            observed_input += usage["input_tokens"]
+            observed_output += usage["output_tokens"]
+        previous = sha
+    if document.get("chain_head_sha256") != previous:
+        raise LiveBenchmarkError("Codex observation head digest differs")
+    return {"observed_calls": len(records), "known_token_calls": len(records) - unknown,
+            "unknown_token_calls": unknown,
+            "observed_input_tokens": observed_input, "observed_output_tokens": observed_output,
+            "operator_signed": False, "provider_signed": False,
+            "upstream_billing_verified": False, "tamper_evident_without_external_anchor": False}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Opt-in Codex CLI (non-qualifying) v0.2 role diagnostic")
     for arg in ("cases", "registry", "team", "authorization", "out"):
