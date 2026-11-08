@@ -22,6 +22,9 @@ from urllib.error import HTTPError
 import pytest
 
 from bananloop.api import create_server
+from bananloop.chatgpt_responses import (
+    INTEGRATION_VERIFIER_INSTRUCTIONS, OPTIMIZER_INSTRUCTIONS,
+)
 from bananloop.contracts import (
     AutonomyScopeV2, CapabilityPolicyV2, ExplorationCampaignSpecV2,
     ProtocolCase, ProtocolManifest,
@@ -69,6 +72,15 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
     tmp_path, capsys, monkeypatch, real_isolation,
 ):
     from pathlib import Path
+    live_child_models = os.environ.get("BANANLOOP_LIVE_INTEGRATED_OPTIMIZATION") == "1"
+    if live_child_models and not real_isolation:
+        pytest.skip("live integrated mode uses the production bubblewrap evaluator")
+    live_auth = None
+    if live_child_models:
+        # Capture the owner's existing SIWC vault before isolating campaign
+        # paths under pytest's temporary HOME below.
+        from bananloop.chatgpt_plan import ChatGPTPlanAuth
+        live_auth = ChatGPTPlanAuth()
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     repo = tmp_path / "source"
     _source_repo(repo)
@@ -90,15 +102,15 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
     })
     integration_role = RoleDefinitionV1(
         role_id="integration_verifier", adapter="codex", provider="openai",
-        model="gpt-6-luna", model_version="rpdi13-test-pin",
-        prompt_digest="a" * 64,
+        model="gpt-6-luna", model_version="siwc-responses-v1",
+        prompt_digest=hashlib.sha256(INTEGRATION_VERIFIER_INSTRUCTIONS.encode()).hexdigest(),
         capability_policy=CapabilityPolicyV2(
             tools=(), read_paths=(), write_paths=(), backend="ISOLATED",
             network_access=False,
         ),
         context_fields=("campaign_goal", "public_task"), priority=1,
-        min_instances=0, max_instances=1, calls_per_instance=3,
-        tokens_per_instance=100,
+        min_instances=0, max_instances=1, calls_per_instance=2,
+        tokens_per_instance=6000,
     )
     protocol_verifier_role = RoleDefinitionV1(
         role_id="independent_verifier", adapter="codex", provider="openai",
@@ -114,8 +126,8 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
     )
     optimizer_role = RoleDefinitionV1(
         role_id="optimizer", adapter="codex", provider="openai",
-        model="gpt-6-luna", model_version="rpdi13-test-pin",
-        prompt_digest="b" * 64,
+        model="gpt-6-luna", model_version="siwc-responses-v1",
+        prompt_digest=hashlib.sha256(OPTIMIZER_INSTRUCTIONS.encode()).hexdigest(),
         capability_policy=CapabilityPolicyV2(
             tools=("read_file", "write_file", "commit_candidate"),
             read_paths=("src/**",), write_paths=("src/**",), backend="LOCAL",
@@ -124,7 +136,7 @@ def test_exploration_research_handoff_child_agrees_through_api_and_cli(
         context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
                         "constraints", "evidence_refs", "dev_summary"),
         priority=1, min_instances=0, max_instances=1,
-        calls_per_instance=3, tokens_per_instance=500,
+        calls_per_instance=2, tokens_per_instance=6000,
     )
     roles = RoleRegistryV1(
         registry_id="rpdi13-integrated-roles", version=1,
@@ -612,12 +624,18 @@ print(json.dumps({
                 "bananloop.v2_optimization_cli.TrustedEvaluatorAdapter",
                 lambda **kwargs: TrustedEvaluatorAdapter(**kwargs, runner=evaluator_runner),
             )
-            monkeypatch.setattr(
-                "bananloop.v2_optimization_cli.ChatGPTPlanAuth",
-                lambda: type("MockAuth", (), {
-                    "status": lambda self: {"connected": True},
-                })(),
-            )
+            if live_child_models:
+                monkeypatch.setattr(
+                    "bananloop.v2_optimization_cli.ChatGPTPlanAuth",
+                    lambda: live_auth,
+                )
+            else:
+                monkeypatch.setattr(
+                    "bananloop.v2_optimization_cli.ChatGPTPlanAuth",
+                    lambda: type("MockAuth", (), {
+                        "status": lambda self: {"connected": True},
+                    })(),
+                )
 
             class MockOptimizer:
                 def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer):
@@ -681,10 +699,11 @@ print(json.dumps({
                     self.call_observer(receipt)
                     return output
 
-            monkeypatch.setattr("bananloop.v2_optimization_cli.ChatGPTPlanOptimizer", MockOptimizer)
-            monkeypatch.setattr(
-                "bananloop.v2_optimization_cli.ChatGPTPlanIntegrationVerifier", MockVerifier,
-            )
+            if not live_child_models:
+                monkeypatch.setattr("bananloop.v2_optimization_cli.ChatGPTPlanOptimizer", MockOptimizer)
+                monkeypatch.setattr(
+                    "bananloop.v2_optimization_cli.ChatGPTPlanIntegrationVerifier", MockVerifier,
+                )
             child_graph.mutate(MutateGraph(
                 command_id="add-v2-optimizer-proposal",
                 idempotency_key="add-v2-optimizer-proposal",
