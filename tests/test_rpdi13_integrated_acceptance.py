@@ -591,7 +591,7 @@ print(json.dumps({
                             score = 0.6
                         else:
                             candidate_file = (
-                                child_state / "v2_optimization" / "snapshots"
+                                child_state / "s"
                                 / child_id / candidate_snapshot_id / "src"
                                 / "optimizer" / "model" / "ranker.py"
                             )

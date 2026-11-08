@@ -1269,8 +1269,7 @@ class TrustedEvaluatorAdapter:
                 stderr=subprocess.PIPE, timeout=15,
             )
         except (OSError, subprocess.SubprocessError):
-            snapshot_root = (self.state_root / "v2_optimization" / "snapshots"
-                             / self.campaign_id).resolve()
+            snapshot_root = (self.state_root / "s" / self.campaign_id).resolve()
             candidate_repo = snapshot_root / candidate_snapshot_id
             try:
                 candidate_resolved = candidate_repo.resolve(strict=True)

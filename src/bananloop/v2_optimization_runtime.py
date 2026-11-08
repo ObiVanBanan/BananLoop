@@ -638,8 +638,10 @@ class V2OptimizationCandidateAdapter:
         build = builds / hashlib.sha256(build_id.encode("utf-8")).hexdigest()[:24]
         if build.exists():
             raise V2OptimizationError("candidate build workspace already exists")
-        snapshots = _safe_mkdir(self.state_root, "v2_optimization", "snapshots",
-                                self.campaign_id)
+        # Keep the durable repository path short too: publish_completed later
+        # asks Git to open it, and Git for Windows rejects deep paths even
+        # when `core.longpaths` is enabled for the transient clone.
+        snapshots = _safe_mkdir(self.state_root, "s", self.campaign_id)
         try:
             # pytest and user campaign state can be nested deeply on Windows;
             # Git for Windows otherwise fails while materializing template
@@ -704,9 +706,8 @@ class V2OptimizationCandidateAdapter:
                 or result.get("source_snapshot_id") != job["request"].get("source_snapshot_id")):
             raise V2OptimizationError("durable optimizer result failed integrity or scope validation")
         candidate_id = result.get("candidate_snapshot_id")
-        snapshot_repo = (self.state_root / "v2_optimization" / "snapshots"
-                         / self.campaign_id / str(candidate_id)).resolve()
-        expected_root = (self.state_root / "v2_optimization" / "snapshots" / self.campaign_id).resolve()
+        snapshot_repo = (self.state_root / "s" / self.campaign_id / str(candidate_id)).resolve()
+        expected_root = (self.state_root / "s" / self.campaign_id).resolve()
         if (not snapshot_repo.is_relative_to(expected_root) or snapshot_repo.is_symlink()
                 or not snapshot_repo.is_dir()):
             raise V2OptimizationError("durable candidate repository is unavailable")

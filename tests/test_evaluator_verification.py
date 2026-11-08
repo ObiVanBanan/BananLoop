@@ -139,7 +139,7 @@ def build_full_optimization_runtime(
             if candidate_snapshot_id == source_snapshot_id:
                 score = 0.6
             else:
-                candidate_file = (state_root / "v2_optimization" / "snapshots"
+                candidate_file = (state_root / "s"
                                   / campaign_id / candidate_snapshot_id / "src" / "app.py")
                 try:
                     score = 0.5 if "regression candidate" in candidate_file.read_text() else 0.8
