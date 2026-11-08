@@ -216,9 +216,10 @@ def test_integration_verifier_prompt_matches_strict_check_array_contract():
 
 
 def test_protocol_verifier_prompt_matches_strict_output_schema():
-    assert "schema_version (integer 1)" in PROTOCOL_VERIFIER_INSTRUCTIONS
-    assert "public_diagnostics (array of strings)" in PROTOCOL_VERIFIER_INSTRUCTIONS
-    assert "Do not use a diagnostics key or add other keys" in PROTOCOL_VERIFIER_INSTRUCTIONS
+    assert "no markdown, prose outside JSON, nulls, or extra keys" in PROTOCOL_VERIFIER_INSTRUCTIONS
+    assert "The exact keys are schema_version, proposal_digest, decision, checks, rationale, and public_diagnostics" in PROTOCOL_VERIFIER_INSTRUCTIONS
+    assert "64-character lowercase hexadecimal digest" in PROTOCOL_VERIFIER_INSTRUCTIONS
+    assert "checks is an array of strings, never an object" in PROTOCOL_VERIFIER_INSTRUCTIONS
     digest = "a" * 64
     checks = (
         "protocol_identity", "evaluator_bundle_review", "metric_contract", "tier_manifests",
@@ -339,10 +340,18 @@ def test_rejection_is_durable_but_never_yields_an_approval_digest():
     receipt = _receipt(proposal, decision="REJECT")
     assert receipt.decision == "REJECT"
     assert receipt.approval_digest is None
+    assert receipt.rationale == "Protocol bytes and tier-specific evaluator behavior verified."
+    assert receipt.public_diagnostics == ()
     conn, authority = _authority()
     try:
         authority._append_proposal(proposal)
         authority._append_verified_receipt(receipt)
+        stored = json.loads(conn.execute(
+            "SELECT receipt_json FROM evaluator_verifier_receipts WHERE receipt_digest=?",
+            (receipt.receipt_digest,),
+        ).fetchone()[0])
+        assert stored["rationale"] == receipt.rationale
+        assert stored["public_diagnostics"] == []
         with pytest.raises(EvaluatorVerificationError, match="no independent verifier approval"):
             authority.approved_protocol("a" * 64)
     finally:
@@ -1509,6 +1518,7 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
     assert input_sha not in public_task
     assert "CASE_BYTES_SENTINEL" not in public_task
     assert input_ref not in public_task
+    assert '"protocol_binding":{"researcher_intent_bound_by_core":false' in public_task
     (published_root / input_sha).write_bytes(b"tampered private input")
     with pytest.raises(EvaluatorVerificationError, match="do not match their digest"):
         verification.enqueue_verifier(proposal.proposal_digest)

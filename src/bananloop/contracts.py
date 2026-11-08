@@ -8,7 +8,10 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator,
+    model_serializer, model_validator,
+)
 
 
 class Direction(StrEnum):
@@ -943,8 +946,17 @@ class _CampaignSpecV2Base(BaseModel):
     autonomy: AutonomySpecV2
     budget: BudgetSpecV2
     role_registry_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # Optional owner-provided fixture digest. Omitted from legacy hashes when absent.
+    evaluator_fixture_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     feature_flags: FeatureFlagsV2 = Field(default_factory=FeatureFlagsV2)
     parent: ParentCampaignRefV2 | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_v2_compatibly(self, handler):
+        data = handler(self)
+        if data.get("evaluator_fixture_digest") is None:
+            data.pop("evaluator_fixture_digest", None)
+        return data
 
     def approved_hash(self) -> str:
         """Return the v2 canonical digest without modifying v1 hash semantics."""
@@ -957,6 +969,8 @@ class _CampaignSpecV2Base(BaseModel):
             data["evaluation"].pop("approval_digest", None)
         if data.get("optimization_task") is None:
             data.pop("optimization_task", None)
+        if data.get("evaluator_fixture_digest") is None:
+            data.pop("evaluator_fixture_digest", None)
         if isinstance(data.get("parent"), dict):
             data["parent"] = {
                 key: value for key, value in data["parent"].items()

@@ -31,7 +31,9 @@ from .roles import (
     RoleContractError, RoleContextV1, RoleRegistryV1, TeamFactoryV1,
     TeamManifestAuthority, TeamRequestV1, build_role_context,
 )
-from .evaluator_verification import EvaluatorProtocolAuthority, EvaluatorProtocolDraftV1
+from .evaluator_verification import (
+    EvaluatorProtocolAuthority, EvaluatorProtocolDraftV1, EvaluatorProtocolIntentV1,
+)
 from .research_ledger import ResearchFindingV1, ResearchLedger, ResearchLedgerError
 from .worker_queue import DurableWorkerQueue, WorkerQueueError
 from .scheduler import HybridScheduler
@@ -58,6 +60,7 @@ class EvidenceOnlyOutputV2(BaseModel):
     next_experiment: str = Field(min_length=1, max_length=4000)
     research_findings: tuple[ResearchFindingV1, ...] = Field(default=(), max_length=64)
     protocol_draft: EvaluatorProtocolDraftV1 | None = None
+    protocol_intent: EvaluatorProtocolIntentV1 | None = None
     human_decision_request: HumanDecisionRequestV1 | None = None
 
     @field_validator("evidence_refs", "limitations")

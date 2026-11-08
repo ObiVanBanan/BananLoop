@@ -1139,6 +1139,8 @@ def parser() -> argparse.ArgumentParser:
                             help="exact public source file path visible to the researcher; repeat as needed")
     v2_explore.add_argument("--optimization-write-path", action="append", default=[],
                             help="exact file eligible for a supervised Optimization child; must also be a read path")
+    v2_explore.add_argument("--evaluator-fixture",
+                            help="owner-controlled evaluator bundle and tier inputs; pass the same fixture on every resume")
     v2_explore.add_argument("--model", default="gpt-6-luna")
     v2_explore.add_argument("--max-agent-calls", type=int, default=8,
                             help="total model calls budgeted across Exploration, verification, and a child run")

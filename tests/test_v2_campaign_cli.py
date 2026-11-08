@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pydantic import BaseModel, ValidationError
 
 from bananloop.budget_ledger import BudgetLedger
 from bananloop.cli import cmd_v2_explore, cmd_v2_optimize, parser
@@ -17,7 +18,8 @@ from bananloop.contracts import RuntimePaths
 from bananloop.graph_store import GraphRepository
 from bananloop.registry import CampaignRegistry, RegistryError
 from bananloop.v2_campaign_cli import (
-    V2CampaignCLIError, _aggregate_reported_usage, run_v2_explore,
+    V2CampaignCLIError, _aggregate_reported_usage, _safe_failure_diagnostics,
+    run_v2_explore,
 )
 from bananloop.v2_optimization_cli import V2OptimizationCLIError, _safe_paths
 from bananloop.v2_optimization_cli import run_v2_optimize
@@ -48,6 +50,18 @@ def test_v2_usage_aggregation_keeps_scalar_tokens_from_nested_siwc_usage():
     assert _aggregate_reported_usage([{"dispatched": True, "usage": "UNKNOWN"}]) == "UNKNOWN"
 
 
+def test_failure_diagnostics_report_schema_location_without_echoing_model_input():
+    class StrictOutput(BaseModel):
+        decision: str
+
+    with pytest.raises(ValidationError) as caught:
+        StrictOutput.model_validate({"decision": {"private": "untrusted model payload"}})
+    diagnostics = _safe_failure_diagnostics(caught.value)
+    assert diagnostics
+    assert "decision" in diagnostics[0]["location"]
+    assert all("private" not in json.dumps(item) for item in diagnostics)
+
+
 def _args(repo, state_dir, **overrides):
     values = {
         "repo": str(repo), "state_dir": str(state_dir), "request_id": "owner-request-1",
@@ -68,6 +82,47 @@ def test_cli_explore_is_a_separate_v2_route():
     assert args.approve_up_to_calls == 0
     assert args.model == "gpt-6-luna"
     assert args.max_agent_calls == 8
+    assert args.evaluator_fixture is None
+
+
+def test_evaluator_fixture_is_frozen_and_persisted_before_any_live_call(tmp_path):
+    import base64
+    import hashlib
+
+    from bananloop.evaluator_fixture import EvaluatorFixtureV1
+    from bananloop.graph_store import GraphRepository
+
+    repo = _repo(tmp_path)
+    state_dir = tmp_path / "campaign-state"
+    fixture_path = tmp_path / "fixture.json"
+    encode = lambda raw: base64.b64encode(raw).decode("ascii")
+    fixture = EvaluatorFixtureV1.model_validate({
+        "schema_version": 1,
+        "evaluator_bundle_base64": encode(b"evaluator bundle"),
+        "entrypoint": ["python3", "{evaluator}/evaluate.py"],
+        "tiers": [
+            {"tier": tier, "cases": [{"case_id": f"{tier}-1", "input_base64": encode(tier.encode())}]}
+            for tier in ("dev", "holdout", "validation")
+        ],
+    })
+    fixture_path.write_bytes(fixture.canonical_bytes())
+
+    result = run_v2_explore(_args(
+        repo, state_dir, evaluator_fixture=str(fixture_path),
+    ))
+
+    assert result["status"] == "READY_FOR_OWNER_APPROVAL"
+    assert result["live_model_called"] is False
+    state_root = Path(result["state_dir"])
+    graph = GraphRepository.open(str(state_root / "campaign.sqlite3"), campaign_id=result["campaign_id"])
+    try:
+        spec = graph.campaign_spec()
+        assert spec.evaluator_fixture_digest == fixture.content_digest()
+        assert (state_root / "trusted-evaluator-fixture.json").is_file()
+        published = state_root / "rpdi05" / "published" / fixture.content_digest()
+        assert hashlib.sha256(published.read_bytes()).hexdigest() == fixture.content_digest()
+    finally:
+        graph.close()
 
 
 def test_v2_exploration_budget_reserves_one_tool_free_protocol_review_call(tmp_path):

@@ -22,6 +22,7 @@ from .contracts import (
     OptimizationTaskV2,
     PivotExecutionPlanV2, PivotProposal, PivotResourceRequest, RuntimePaths, utc_now,
 )
+from .evaluator_fixture import EvaluatorFixtureV1
 from .graph_store import GraphRepository
 from .migrations import create_v5_graph_schema
 from .registry import CampaignRegistry
@@ -78,7 +79,8 @@ def _read_paths(repo: Path, paths: list[str]) -> tuple[str, ...]:
 def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
                 max_agent_calls: int, max_model_tokens: int, model: str,
                 max_iterations: int = 2,
-                optimization_write_paths: tuple[str, ...] = ()):
+                optimization_write_paths: tuple[str, ...] = (),
+                evaluator_fixture_digest: str | None = None):
     if max_agent_calls < 4:
         raise V2CampaignCLIError("--max-agent-calls must be at least 4 to fund the four pinned v2 roles")
     if not set(optimization_write_paths) <= set(paths):
@@ -165,6 +167,7 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
             "max_model_tokens": max_agent_calls * max_model_tokens,
         },
         "role_registry_digest": roles.digest(), "evaluation": None,
+        "evaluator_fixture_digest": evaluator_fixture_digest,
     })
     return spec, roles, policy
 
@@ -545,7 +548,9 @@ def _complete_pending_protocol_reviews(*, graph: GraphRepository, queue: Durable
             receipt = authority.record_completed_verifier_job(queue, verifier_job_id)
             results.append({"proposal_digest": proposal.proposal_digest,
                             "verifier_job_id": verifier_job_id, "decision": receipt.decision,
-                            "approval_digest": receipt.approval_digest})
+                            "approval_digest": receipt.approval_digest,
+                            "checks": receipt.checks, "rationale": receipt.rationale,
+                            "public_diagnostics": receipt.public_diagnostics})
             continue
         if job["state"] != "READY":
             results.append({"proposal_digest": proposal.proposal_digest,
@@ -576,7 +581,9 @@ def _complete_pending_protocol_reviews(*, graph: GraphRepository, queue: Durable
         )
         results.append({"proposal_digest": proposal.proposal_digest,
                         "verifier_job_id": verifier_job_id, "decision": receipt.decision,
-                        "approval_digest": receipt.approval_digest})
+                        "approval_digest": receipt.approval_digest,
+                        "checks": receipt.checks, "rationale": receipt.rationale,
+                        "public_diagnostics": receipt.public_diagnostics})
     return {"calls_used": used_calls, "reviews": results,
             "pending_proposal_digests": [item.proposal_digest
                                           for item in authority.pending_proposals(campaign_id)],
@@ -620,6 +627,22 @@ def _aggregate_reported_usage(call_history: list[dict[str, Any]]) -> dict[str, i
     return totals
 
 
+def _safe_failure_diagnostics(exc: Exception) -> list[dict[str, Any]]:
+    """Return schema locations/messages without copying untrusted response values."""
+    errors = getattr(exc, "errors", None)
+    if not callable(errors):
+        return []
+    try:
+        records = errors(include_input=False, include_context=False, include_url=False)
+    except TypeError:
+        records = errors()
+    return [{
+        "location": [str(part)[:120] for part in item.get("loc", ())[:12]],
+        "type": str(item.get("type", "unknown"))[:120],
+        "message": str(item.get("msg", "validation failed"))[:400],
+    } for item in records[:12] if isinstance(item, dict)]
+
+
 def run_v2_explore(args: Any) -> dict[str, Any]:
     """Create/reopen one frozen Full v2 Exploration campaign and advance it."""
     goal = args.goal
@@ -643,11 +666,19 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
     write_paths = _read_paths(repo, requested_write_paths) if requested_write_paths else ()
     if not set(write_paths) <= set(paths):
         raise V2CampaignCLIError("--optimization-write-path values must also appear in --read-path")
+    fixture = None
+    fixture_path_arg = getattr(args, "evaluator_fixture", None)
+    if fixture_path_arg:
+        try:
+            fixture = EvaluatorFixtureV1.load(fixture_path_arg)
+        except ValueError as exc:
+            raise V2CampaignCLIError(f"--evaluator-fixture is invalid: {exc}") from exc
     spec, roles, _policy = _build_spec(
         repo, goal, paths, max_agent_calls=args.max_agent_calls,
         max_model_tokens=args.max_model_tokens, model=args.model,
         max_iterations=args.max_iterations,
         optimization_write_paths=write_paths,
+        evaluator_fixture_digest=fixture.content_digest() if fixture else None,
     )
     runtime_paths = RuntimePaths.for_repo(
         repo, Path(args.state_dir).expanduser() if args.state_dir else None,
@@ -656,6 +687,32 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
     entry, state_root, _created = registry.reserve(goal, args.request_id, activate=False)
     database = state_root / "campaign.sqlite3"
     _initialize_campaign(database, spec)
+    if fixture is not None:
+        fixture_bytes = fixture.canonical_bytes()
+        fixture_digest = fixture.content_digest()
+        fixture_dir = state_root / "rpdi05" / "published"
+        fixture_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fixture_asset = fixture_dir / fixture_digest
+        if fixture_asset.is_symlink():
+            raise V2CampaignCLIError("persisted evaluator fixture asset is a symlink")
+        if fixture_asset.exists():
+            if not fixture_asset.is_file() or hashlib.sha256(fixture_asset.read_bytes()).hexdigest() != fixture_digest:
+                raise V2CampaignCLIError("persisted evaluator fixture asset failed integrity check")
+        else:
+            fixture_asset.write_bytes(fixture_bytes)
+            fixture_asset.chmod(0o400)
+        fixture_copy = state_root / "trusted-evaluator-fixture.json"
+        if fixture_copy.is_symlink():
+            raise V2CampaignCLIError("persisted evaluator fixture copy is a symlink")
+        if fixture_copy.exists():
+            try:
+                if EvaluatorFixtureV1.load(fixture_copy).content_digest() != fixture_digest:
+                    raise V2CampaignCLIError("evaluator fixture differs from the frozen campaign digest")
+            except ValueError as exc:
+                raise V2CampaignCLIError("persisted evaluator fixture is invalid") from exc
+        else:
+            fixture_copy.write_bytes(fixture_bytes)
+            fixture_copy.chmod(0o600)
     roles_path = _persist_role_registry(state_root, roles)
 
     ledger = registry.budget_ledger()
@@ -689,6 +746,7 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
         runtime = V2ResearchRuntime(
             graph=graph, queue=queue, campaign_id=entry.campaign_id,
             state_root=state_root, role_registry=roles,
+            trusted_artifact_digests=((fixture.content_digest(),) if fixture else ()),
         )
         if args.approve_up_to_calls == 0:
             return {
@@ -736,17 +794,33 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             researcher_capacity = _remaining_researcher_calls(
                 queue, entry.campaign_id, args.max_agent_calls - 1,
             )
-            iterations = min(args.max_iterations, remaining_approved, researcher_capacity)
+            protocol_gate_closed = bool(
+                reviews_before["pending_proposal_digests"]
+                or (fixture is not None and reviews_before["approved_protocols"])
+            )
+            iterations = (0 if protocol_gate_closed else min(
+                args.max_iterations, remaining_approved, researcher_capacity,
+            ))
             if iterations:
                 result = runtime.run_campaign(
-                    visible_paths=paths, invoke=make_researcher_invoke(researcher),
+                    visible_paths=paths, invoke=make_researcher_invoke(
+                        researcher,
+                        protocol_binder=(
+                            (lambda intent, source: fixture.bind(
+                                intent, source_snapshot_id=source,
+                            )) if fixture else None
+                        ),
+                    ),
                     max_iterations=iterations,
                 )
             else:
                 result = {
-                    "status": ("PROTOCOL_REVIEW_PENDING" if reviews_before["pending_proposal_digests"]
-                               else "CALL_ALLOWANCE_EXHAUSTED" if remaining_approved == 0
-                               else "RESEARCH_ROLE_ALLOCATION_EXHAUSTED"),
+                    "status": (
+                        "PROTOCOL_REVIEW_PENDING" if reviews_before["pending_proposal_digests"]
+                        else "PROTOCOL_APPROVED_AWAITING_OWNER" if protocol_gate_closed
+                        else "CALL_ALLOWANCE_EXHAUSTED" if remaining_approved == 0
+                        else "RESEARCH_ROLE_ALLOCATION_EXHAUSTED"
+                    ),
                     "campaign_id": entry.campaign_id, "iterations_this_call": 0,
                     "completed": [],
                 }
@@ -787,6 +861,9 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
                 "usage": "UNKNOWN", "failure_type": type(exc).__name__,
                 "automatic_replay": False,
             }
+            diagnostics = _safe_failure_diagnostics(exc)
+            if diagnostics:
+                report["failure_diagnostics"] = diagnostics
             report["report_path"] = _write_live_report(state_root, report)
             return {
                 **report, "state_dir": str(state_root),
