@@ -1,11 +1,11 @@
 /** UI-01.3: fixtures only. Do NOT import GraphStore or write to the Engine here. */
-export type ResearchStatus = 'VERIFIED' | 'READY' | 'PENDING' | 'FAILED' | 'BLOCKED';
+export type ResearchStatus = 'VERIFIED' | 'READY' | 'PENDING' | 'FAILED' | 'BLOCKED' | 'COMPLETED' | 'PAUSED' | 'CANCELLED' | 'UNKNOWN';
 export type GraphEdgeType = 'REQUIRES' | 'DERIVED_FROM' | 'RELATED_TO' | 'GROUP_MEMBER';
 export type ResearchVertex = Readonly<{
   id: string;
   title: string;
   description: string;
-  phase: 'EXPLORATION' | 'OPTIMIZATION' | 'VERIFICATION' | 'METRIC_DISCOVERY';
+  phase: string;
   status: ResearchStatus;
   x: number;
   y: number;
@@ -55,5 +55,9 @@ export const statusCopy: Record<ResearchStatus, {name:string;detail:string}> = {
   READY:{name:'Готово',detail:'Предпосылки выполнены: можно запланировать работу. Это НЕ означает, что агент уже работает.'},
   PENDING:{name:'Ожидает',detail:'Работа ещё не готова к запуску или не назначена. Это не запрос подтверждения пользователя.'},
   FAILED:{name:'Не прошло',detail:'В этом демонстрационном сценарии проверка завершилась неуспешно.'},
-  BLOCKED:{name:'Заблокировано',detail:'Переход невозможен до выполнения указанных зависимостей и ограничений.'}
+  BLOCKED:{name:'Заблокировано',detail:'Переход невозможен до выполнения указанных зависимостей и ограничений.'},
+  COMPLETED:{name:'Выполнено',detail:'Зафиксировано завершение. Для старого формата наличие независимой верификации не подтверждено.'},
+  PAUSED:{name:'Приостановлено',detail:'Работа приостановлена, а не завершена.'},
+  CANCELLED:{name:'Отменено',detail:'Работа отменена и не будет продолжена автоматически.'},
+  UNKNOWN:{name:'Не определён',detail:'Текущий формат данных не позволяет достоверно интерпретировать этот статус.'}
 };

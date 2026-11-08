@@ -1,3 +1,21 @@
+# Connected BananLoop UI — 08.11.2026
+
+**Start here:** [CONNECTED_UI.md](CONNECTED_UI.md). The UI now reads real campaign data from the existing loopback BananLoop API through the Vite `/api` development proxy. React Flow Galaxy, Mission Control observation, Decision Center (existing v1 proposals only), and Codex CLI connection status are wired to real data. No synthetic fallbacks, no Engine writes, no in-browser ChatGPT OAuth yet.
+
+## Start
+
+```bash
+# In terminal 1, for your target repository with campaigns:
+bananloop serve --repo /absolute/path/to/your/research-project
+# In terminal 2, this BananLoop checkout:
+cd web-prototype/galaxy-spatial-canvas
+npm install
+npm test
+npm run dev
+```
+
+---
+
 # BananLoop — UI-01.3 Spatial Research Canvas
 
 **Status:** React Flow implementation candidate, design-approved direction **Banana Noir** (with more restrained Atelier-style typography). This code is a *read-only research graph demo*; it intentionally does not start campaigns, call LLMs, authenticate a ChatGPT subscription, or mutate BananLoop Engine.

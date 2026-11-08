@@ -10,7 +10,7 @@ test('read-only Engine graph has no mutation endpoints and no connection handler
   assert.doesNotMatch(source,/\/graph\/commands|fetch\s*\(/);
 });
 test('Engine edges are assembled independently of personal arrows',()=>{
-  assert.match(source,/const researchEdges:Edge\[\]=fixture\.edges\.map/);
+  assert.match(source,/const researchEdges=useMemo\(\(\)=>edgesFromFixture\(fixture\)/);
   assert.match(source,/const personalEdges=useMemo/);
   assert.match(source,/\[\.\.\.researchEdges,\.\.\.personalEdges\]/);
   assert.match(store,/storageKey=\(campaignId:string\)/);
