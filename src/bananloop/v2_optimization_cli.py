@@ -256,6 +256,8 @@ def run_v2_optimize(args: Namespace, *,
         )
         providers = {"optimizer": optimizer, "integration_verifier": verifier}
         try:
+            if getattr(args, "resume", False):
+                runtime.resume()
             result = runtime.run_campaign(
                 visible_paths=visible_paths, write_paths=write_paths,
                 model_reply=bounded_optimizer,

@@ -710,7 +710,7 @@ print(json.dumps({
                 ),),
             ))
 
-            def run_optimization(*, max_steps, approved_calls):
+            def run_optimization(*, max_steps, approved_calls, resume=False):
                 optimize_args = parser().parse_args([
                     "v2", "optimize", "--repo", str(repo), "--campaign-id", child_id,
                     "--role-registry", pivot_ready["role_registry_path"],
@@ -718,6 +718,7 @@ print(json.dumps({
                     "--write-path", "src/optimizer/model/ranker.py",
                     "--max-steps", str(max_steps), "--approve-up-to-calls", str(approved_calls),
                     "--timeout-seconds", "60",
+                    *(["--resume"] if resume else []),
                 ])
                 assert optimize_args.func(optimize_args) == 0
                 return json.loads(capsys.readouterr().out)
@@ -736,6 +737,9 @@ print(json.dumps({
             assert middle_run["status"] == "STEP_LIMIT"
             assert [step["status"] for step in middle_run["steps"]] == ["CANDIDATE_CREATED"]
             assert len(optimizer_epochs) == 3
+            assert child_queue.set_campaign_control(
+                child_id, "PAUSED", reason="acceptance interruption before epoch-three DEV",
+            )["state"] == "PAUSED"
 
             # The CLI closes its queue and graph before returning; reopen the
             # durable campaign state before continuing epoch three.
@@ -757,7 +761,8 @@ print(json.dumps({
             finally:
                 budget_before_resume.close()
 
-            optimized = run_optimization(max_steps=8, approved_calls=1)
+            assert child_queue.campaign_control(child_id)["state"] == "PAUSED"
+            optimized = run_optimization(max_steps=8, approved_calls=1, resume=True)
             assert optimized["status"] == "ALL_NODES_COMPLETE"
             assert optimized["live_model_called"] is True
             assert optimized["provider"] == "chatgpt_plan"

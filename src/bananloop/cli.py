@@ -1166,6 +1166,8 @@ def parser() -> argparse.ArgumentParser:
     v2_optimize.add_argument("--max-steps", type=int, default=8)
     v2_optimize.add_argument("--approve-up-to-calls", type=int, default=0,
                              help="explicit consent to spend up to this many ChatGPT plan requests now")
+    v2_optimize.add_argument("--resume", action="store_true",
+                             help="resume a durably paused Optimization campaign after this invocation is approved")
     v2_optimize.add_argument("--timeout-seconds", type=int, default=120)
     v2_optimize.set_defaults(func=cmd_v2_optimize)
 
