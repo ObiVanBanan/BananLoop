@@ -215,7 +215,8 @@ def _run_git(args: list[str], cwd: Path, *, timeout: int = 60) -> str:
         detail = " ".join(detail.split())[:500]
         raise V2OptimizationError(
             f"trusted Core Git snapshot operation failed "
-            f"({type(exc).__name__}: {detail})"
+            f"(git {args[0] if args else 'operation'}; cwd_is_directory={cwd.is_dir()}; "
+            f"{type(exc).__name__}: {detail})"
         ) from None
 
 
@@ -630,8 +631,11 @@ class V2OptimizationCandidateAdapter:
     def _commit_candidate(self, request: dict[str, Any], workspace: Path,
                           paths: tuple[str, ...], *, build_id: str) -> str:
         source_repo = Path(request["source_repo"]).resolve()
-        builds = _safe_mkdir(self.state_root, "v2_optimization", "builds")
-        build = builds / build_id
+        builds = _safe_mkdir(self.state_root, "v2o", "b")
+        # The durable state root can be deeply nested (notably under Windows
+        # pytest temp roots). Keep transient clone path components short so
+        # subprocess cwd and Git's internal hook paths remain below MAX_PATH.
+        build = builds / hashlib.sha256(build_id.encode("utf-8")).hexdigest()[:24]
         if build.exists():
             raise V2OptimizationError("candidate build workspace already exists")
         snapshots = _safe_mkdir(self.state_root, "v2_optimization", "snapshots",
