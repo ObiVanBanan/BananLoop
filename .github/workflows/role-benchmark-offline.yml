@@ -1,0 +1,50 @@
+name: role-benchmark-offline
+
+on:
+  pull_request:
+    paths:
+      - "src/bananloop/agent_benchmark.py"
+      - "src/bananloop/benchmark_*.py"
+      - "tests/test_*benchmark*.py"
+      - "tests/test_live_sealed_benchmark.py"
+      - "tests/test_sealed_meter_accounting.py"
+      - "docs/benchmarks/live-sealed-role-benchmark.md"
+      - ".github/workflows/role-benchmark-offline.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  no-provider-requests:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, python: "3.11"}
+          - {os: ubuntu-latest, python: "3.12"}
+          - {os: ubuntu-latest, python: "3.13"}
+          - {os: windows-latest, python: "3.12"}
+    env:
+      OPENAI_API_KEY: ""
+      BANANLOOP_TITANIC_LIVE: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install offline test dependencies
+        run: python -m pip install -e ".[test,benchmark]"
+      - name: Run benchmark-only no-network unit tests
+        run: >-
+          python -m pytest -q
+          tests/test_agent_capability_benchmark_spec.py
+          tests/test_agent_benchmark_runner.py
+          tests/test_agent_benchmark_metrics.py
+          tests/test_exploration_discoverybench_diagnostic.py
+          tests/test_live_sealed_benchmark.py
+          tests/test_metered_api_benchmark.py
+          tests/test_benchmark_batches.py
+          tests/test_sealed_meter_accounting.py
