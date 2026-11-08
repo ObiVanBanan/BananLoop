@@ -590,9 +590,9 @@ print(json.dumps({
                         if candidate_snapshot_id == base_commit:
                             score = 0.6
                         else:
+                            snapshot_key = hashlib.sha256(candidate_snapshot_id.encode("ascii")).hexdigest()[:16]
                             candidate_file = (
-                                child_state / "s"
-                                / child_id / candidate_snapshot_id / "src"
+                                child_state / "s" / child_id / snapshot_key / "src"
                                 / "optimizer" / "model" / "ranker.py"
                             )
                             score = (

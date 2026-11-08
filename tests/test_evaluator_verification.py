@@ -139,8 +139,9 @@ def build_full_optimization_runtime(
             if candidate_snapshot_id == source_snapshot_id:
                 score = 0.6
             else:
-                candidate_file = (state_root / "s"
-                                  / campaign_id / candidate_snapshot_id / "src" / "app.py")
+                snapshot_key = hashlib.sha256(candidate_snapshot_id.encode("ascii")).hexdigest()[:16]
+                candidate_file = (state_root / "s" / campaign_id / snapshot_key
+                                  / "src" / "app.py")
                 try:
                     score = 0.5 if "regression candidate" in candidate_file.read_text() else 0.8
                 except FileNotFoundError:

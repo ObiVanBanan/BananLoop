@@ -22,7 +22,7 @@ from .roles import (
     PinnedRoleExecutorV1, RoleContractError, RoleRegistryV1, TeamFactoryV1,
     TeamManifestAuthority, TeamRequestV1,
 )
-from .trusted_evaluator import TrustedEvaluatorAdapter
+from .trusted_evaluator import TrustedEvaluatorAdapter, TrustedEvaluatorError
 from .v2_optimization_runtime import V2OptimizationError, V2OptimizationRuntime, _safe_path
 
 
@@ -296,7 +296,9 @@ def run_v2_optimize(args: Namespace, *,
             report = {
                 "status": "RUN_FAILED", "mode": "OPTIMIZATION", "profile": "FULL",
                 "campaign_id": args.campaign_id, "failure_type": type(exc).__name__,
-                "failure_detail": str(exc)[:500] if isinstance(exc, V2OptimizationError) else None,
+                "failure_detail": str(exc)[:500] if isinstance(
+                    exc, (V2OptimizationError, TrustedEvaluatorError)
+                ) else None,
                 "provider_call_attempts": spent, "usage": "UNKNOWN",
                 "live_model_called": spent > 0, "automatic_replay": False,
                 "request_history": {

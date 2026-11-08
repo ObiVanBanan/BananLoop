@@ -1270,7 +1270,8 @@ class TrustedEvaluatorAdapter:
             )
         except (OSError, subprocess.SubprocessError):
             snapshot_root = (self.state_root / "s" / self.campaign_id).resolve()
-            candidate_repo = snapshot_root / candidate_snapshot_id
+            snapshot_key = hashlib.sha256(candidate_snapshot_id.encode("ascii")).hexdigest()[:16]
+            candidate_repo = snapshot_root / snapshot_key
             try:
                 candidate_resolved = candidate_repo.resolve(strict=True)
                 candidate_resolved.relative_to(snapshot_root)

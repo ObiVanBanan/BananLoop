@@ -674,7 +674,7 @@ class V2OptimizationCandidateAdapter:
             if len(candidate_id) not in {40, 64} or any(c not in "0123456789abcdef" for c in candidate_id):
                 raise V2OptimizationError("Git returned a noncanonical candidate commit ID")
             _run_git(["merge-base", "--is-ancestor", request["source_snapshot_id"], candidate_id], build)
-            final = snapshots / candidate_id
+            final = snapshots / hashlib.sha256(candidate_id.encode("ascii")).hexdigest()[:16]
             if final.exists():
                 raise V2OptimizationError("candidate snapshot ID is already registered")
             os.replace(build, final)
@@ -706,7 +706,8 @@ class V2OptimizationCandidateAdapter:
                 or result.get("source_snapshot_id") != job["request"].get("source_snapshot_id")):
             raise V2OptimizationError("durable optimizer result failed integrity or scope validation")
         candidate_id = result.get("candidate_snapshot_id")
-        snapshot_repo = (self.state_root / "s" / self.campaign_id / str(candidate_id)).resolve()
+        snapshot_key = hashlib.sha256(str(candidate_id).encode("ascii")).hexdigest()[:16]
+        snapshot_repo = (self.state_root / "s" / self.campaign_id / snapshot_key).resolve()
         expected_root = (self.state_root / "s" / self.campaign_id).resolve()
         if (not snapshot_repo.is_relative_to(expected_root) or snapshot_repo.is_symlink()
                 or not snapshot_repo.is_dir()):
