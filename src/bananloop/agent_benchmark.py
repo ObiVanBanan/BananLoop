@@ -16,6 +16,7 @@ import tempfile
 import time
 from typing import Any
 
+from .agent_benchmark_metrics import OracleContractError, score_oracle, validate_oracle
 from .contracts import CapabilityPolicyV2
 from .roles import RoleDefinitionV1, RoleRegistryV1, TeamFactoryV1, TeamManifestV1, TeamRequestV1
 
@@ -104,8 +105,12 @@ def _check_bundle(cases: dict, oracle: dict, registry: RoleRegistryV1,
         binding = case["evaluator_binding"]
         if binding.get("method") != "deterministic" or binding.get("sha256") != digest(oracle):
             raise BenchmarkError("evaluator pin does not match independent oracle bytes")
-        if cid not in oracle["cases"] or set(oracle["cases"][cid]) != {"expected_output"}:
-            raise BenchmarkError("evaluator lacks a valid expected response")
+        if cid not in oracle["cases"]:
+            raise BenchmarkError("evaluator lacks a case oracle")
+        try:
+            validate_oracle(oracle["cases"][cid])
+        except OracleContractError as exc:
+            raise BenchmarkError(f"invalid offline evaluator contract: {exc}") from exc
         limits = case["resource_budget"]
         if not isinstance(limits, dict) or any(type(limits.get(k)) is not int or limits[k] < 1 for k in
                                                ("wall_clock_seconds", "max_agent_calls")):
@@ -204,8 +209,8 @@ def run_suite(*, cases_path: str | Path, oracle_path: str | Path, registry_path:
         except (BenchmarkError, ValueError, TypeError):
             status = "AGENT_ERROR"
         seconds = round(time.monotonic() - started, 6)
-        expected = oracle["cases"][case["case_id"]]["expected_output"]
-        score = int(answer == expected) if status == "COMPLETED" else None
+        expected = oracle["cases"][case["case_id"]]
+        score, checks = score_oracle(expected, answer) if status == "COMPLETED" else (None, [])
         resource = {"input_tokens": None, "output_tokens": None, "cached_tokens": None,
                     "agent_calls": 0, "tool_calls": 0, "evaluator_calls": 1,
                     "wall_clock_seconds": seconds,
@@ -229,8 +234,8 @@ def run_suite(*, cases_path: str | Path, oracle_path: str | Path, registry_path:
                                          "version": case["evaluator_binding"]["version"],
                                          "sha256": digest(oracle), "receipt_sha256": receipt},
                   "status": status,
-                  "metric_results": [{"metric_id": "exact_match", "value": score,
-                                      "direction": "maximize", "source": "evaluator"}],
+                  "metric_results": [{"metric_id": "task_success", "value": score,
+                                      "direction": "maximize", "source": "evaluator"}, *checks],
                   "resource_usage": resource, "policy_violations": [],
                   "artifact_sha256": [digest(answer)] if answer is not None else [],
                   "notes": "Offline public DEV diagnostic only; no model invocation or trusted usage receipt."}
