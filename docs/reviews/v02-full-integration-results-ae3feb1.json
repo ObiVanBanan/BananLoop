@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "campaign": "BananLoop v0.2 Full integration follow-up",
+  "implementation_sha": "ae3feb1be339ece91bc74976670b031b2c03e711",
+  "pr": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "offline_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest -p isolate_home -o addopts='' -q -ra --tb=short",
+    "result": "passed",
+    "passed": 949,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "subtests_passed": 7,
+    "duration_seconds": 68.73,
+    "skips": [
+      "Pinned selector source commit cd753c97c62148c3ccd3f030251e96a4d19b23bd is unavailable",
+      "Windows ACL/reparse-point contract cannot run on Linux"
+    ],
+    "production_bubblewrap_evaluator": true
+  },
+  "titanic_parent_workflow": {
+    "result": "passed in full offline suite",
+    "research_runtime": "V2ResearchRuntime with durable Exploration worker result",
+    "proposal": "recorded from completed worker job through EvaluatorProtocolAuthority",
+    "verification": "EvaluatorVerificationAdapter with pinned independent_verifier",
+    "handoff": "real parent handoff receipt installed by child campaign",
+    "researcher_context": "training data only; validation and holdout case digests excluded",
+    "verifier_context": "holdout case label and digest excluded",
+    "core_trusted_asset_digests": "bound to durable completion, content-verified, omitted from public evidence refs"
+  },
+  "live_titanic": {
+    "run_id": "5104f22d00eb0adcf5105475f45b8cc88ee3c248",
+    "holdout_correct": 153,
+    "holdout_total": 196,
+    "holdout_accuracy": 0.7806122448979592,
+    "target_accuracy": 0.95,
+    "target_met": false,
+    "provider_tokens_reported": 14059,
+    "monetary_cost": "UNKNOWN",
+    "additional_live_calls_for_this_revision": 0
+  },
+  "ci": {
+    "revision": "ae3feb1be339ece91bc74976670b031b2c03e711",
+    "status": "pending publication"
+  },
+  "goal_status": "active; acceptance work and CI verification remain open"
+}

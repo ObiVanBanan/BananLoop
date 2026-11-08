@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "acceptance": "BananLoop v0.2 multi-epoch autonomous offline acceptance",
+  "runtime_test_sha": "a6b0ae44d24de2b77fde2aa1a7fb5e12b8660774",
+  "branch": "codex/v02-full-integration",
+  "pull_request": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "exploration_iterations": 3,
+  "optimization_epochs": [
+    {"epoch": 1, "decision": "REJECTED", "guard": "REGRESSION_FAILED"},
+    {"epoch": 2, "decision": "REJECTED", "guard": "REGRESSION_FAILED"},
+    {"epoch": 3, "decision": "ACCEPTED", "guard": "VERIFIED_RESULT"}
+  ],
+  "pause_resume": {
+    "pause_state": "PAUSED",
+    "pause_point": "third candidate durably published, before DEV evaluation",
+    "restart": "close SQLite connections and invoke v2 optimize with --resume",
+    "resumed_candidate_dev_receipts": 1,
+    "completed_replay_additional_provider_dispatches": 0,
+    "completed_replay_additional_model_budget_spend": 0,
+    "completed_replay_additional_evaluator_receipts": 0
+  },
+  "decision_trace_fields": [
+    "hypothesis_id", "hypothesis", "candidate_rationale", "changed_paths",
+    "source_snapshot_id", "candidate_snapshot_id", "decision", "guard",
+    "evidence_refs"
+  ],
+  "offline_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest -p isolate_home -o addopts='' -q -ra --tb=short",
+    "status": "passed",
+    "passed": 954,
+    "failed": 0,
+    "skipped": 2,
+    "subtests_passed": 7,
+    "duration_seconds": 70.61
+  },
+  "acceptance_variants": {
+    "deterministic_test_evaluator": "passed",
+    "production_bubblewrap_evaluator": "passed"
+  },
+  "external_model_calls": 0,
+  "ci_status": "pending after branch push",
+  "remaining_limitations": [
+    "epoch optimizer responses are deterministic fixtures; live multi-epoch quality is untested",
+    "Titanic live HOLDOUT remains 153/196 = 78.06%, below the 95% stretch target",
+    "independent RPDI-14 benchmark against Codex remains incomplete",
+    "pinned selector commit cd753c97c62148c3ccd3f030251e96a4d19b23bd is unavailable and its test is skipped",
+    "Windows ACL/reparse-point contract is deferred",
+    "Optimization pivot requires explicit owner approval",
+    "no single unattended CLI command orchestrates arbitrary Exploration through final Optimization report"
+  ]
+}

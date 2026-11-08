@@ -293,12 +293,31 @@ class KnowledgePackageV1(BaseModel):
 class ResearchLedger:
     """Append-only evidence records backed by a migrated v5 campaign database."""
 
-    def __init__(self, connection: sqlite3.Connection):
+    def __init__(self, connection: sqlite3.Connection, *, read_only: bool = False):
         self.conn = connection
         self.conn.row_factory = sqlite3.Row
         version = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
         if version != 5:
             raise ResearchLedgerError(f"research ledger requires SQLite schema v5; found v{version}")
+        if read_only:
+            exists = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='research_evidence'"
+            ).fetchone()
+            self._available = exists is not None
+            if self._available:
+                columns = {row[1] for row in self.conn.execute("PRAGMA table_info(research_evidence)")}
+                expected = {
+                    "evidence_id", "campaign_id", "node_id", "node_revision", "spec_hash",
+                    "source_snapshot_id", "protocol_digest", "source_job_id", "source_fence",
+                    "source_request_hash", "output_digest", "event_cursor", "claim_key", "statement",
+                    "stance", "kind", "evidence_refs_json", "confidence", "intervention_type",
+                    "algorithmic_layer", "affected_paths_json", "classification",
+                    "verification_status", "causal_status",
+                }
+                if columns != expected:
+                    raise ResearchLedgerError("research ledger schema is incomplete")
+            return
+        self._available = True
         self.conn.execute("""CREATE TABLE IF NOT EXISTS research_evidence (
             evidence_id TEXT PRIMARY KEY CHECK(length(evidence_id)=64),
             campaign_id TEXT NOT NULL,
@@ -437,20 +456,26 @@ class ResearchLedger:
                 or completion.get("output_digest") != durable["output_digest"]
                 or completion.get("spec_hash") != spec.approved_hash()):
             raise ResearchLedgerError("graph completion provenance does not match the durable worker result")
-        worker_artifact_digests = tuple(sorted(item.sha256 for item in output.artifacts))
+        worker_artifact_digests = tuple(sorted({
+            *(item.sha256 for item in output.artifacts),
+            *output.core_artifact_digests,
+        }))
         event_artifact_digests = completion.get("artifact_digests")
         if (not isinstance(event_artifact_digests, (list, tuple))
                 or any(not isinstance(item, str) for item in event_artifact_digests)
                 or tuple(event_artifact_digests) != worker_artifact_digests):
             raise ResearchLedgerError("graph completion artifact digests differ from the durable worker output")
-        artifact_refs = {f"artifact://sha256/{digest}" for digest in worker_artifact_digests}
-        worker_evidence_refs = tuple(sorted(set(output.evidence_refs) | artifact_refs))
+        worker_output_refs = {
+            f"artifact://sha256/{item.sha256}" for item in output.artifacts
+        }
+        worker_evidence_refs = tuple(sorted(set(output.evidence_refs) | worker_output_refs))
         event_evidence_refs = completion.get("evidence_refs")
         if (not isinstance(event_evidence_refs, (list, tuple))
                 or any(not isinstance(item, str) for item in event_evidence_refs)
                 or tuple(event_evidence_refs) != worker_evidence_refs):
             raise ResearchLedgerError("graph completion evidence refs differ from the durable worker output")
-        if any(not set(finding.evidence_refs) <= artifact_refs for finding in output.research_findings):
+        if any(not set(finding.evidence_refs) <= worker_output_refs
+               for finding in output.research_findings):
             raise ResearchLedgerError("research finding must cite verified published artifact digests")
         if len({finding.claim_key for finding in output.research_findings}) != len(output.research_findings):
             raise ResearchLedgerError("one worker result cannot repeat a claim key")
@@ -560,6 +585,8 @@ class ResearchLedger:
         campaigns = tuple(sorted(set(campaign_ids)))
         if not campaigns or any(not item for item in campaigns):
             raise ResearchLedgerError("knowledge scope requires one or more campaign IDs")
+        if not self._available:
+            return ()
         if not source_snapshot_id or not _GIT_OID.fullmatch(source_snapshot_id):
             raise ResearchLedgerError("knowledge scope requires a full source snapshot object ID")
         if not _SHA256.fullmatch(protocol_digest):
@@ -605,6 +632,26 @@ class ResearchLedger:
                     "ledger rows differ from findings derived from the durable worker result"
                 )
         return records
+
+    def list_scopes(
+        self, *, campaign_id: str, limit: int = 50,
+        after: tuple[str, str] | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Read a bounded list of public knowledge scopes without schema changes."""
+        if not 1 <= limit <= 50:
+            raise ResearchLedgerError("knowledge scope page limit must be between 1 and 50")
+        if not self._available:
+            return [], False
+        predicate = "AND (source_snapshot_id,protocol_digest)>(?,?)" if after else ""
+        params: tuple[Any, ...] = (campaign_id, *(after or ()), limit + 1)
+        rows = self.conn.execute(
+            "SELECT source_snapshot_id,protocol_digest,MAX(event_cursor) AS event_cursor "
+            "FROM research_evidence WHERE campaign_id=? AND classification='PUBLIC_DEV' "
+            f"{predicate} GROUP BY source_snapshot_id,protocol_digest "
+            "ORDER BY source_snapshot_id,protocol_digest LIMIT ?", params,
+        ).fetchall()
+        more = len(rows) > limit
+        return [dict(row) for row in rows[:limit]], more
 
     def project(
         self,

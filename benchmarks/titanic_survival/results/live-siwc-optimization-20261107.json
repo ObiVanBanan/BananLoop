@@ -1,0 +1,128 @@
+{
+  "campaign_report": "live-siwc-optimization-20261107-campaign-report.json",
+  "campaign_report_sha256": "fafac59b54e3c6a3a62e1d5b00410b97e3bd3a60eac9d7a4401352b9274e504f",
+  "campaign_status": "ALL_NODES_COMPLETE",
+  "candidate_snapshot_id": "06c0f2a521c962c8e3d172478d65a2c2ed9761f6",
+  "dataset_md5": "60ac7205eee0ba5045c90b3bba95b1c4",
+  "evaluation_receipts": [
+    {
+      "candidate_snapshot_id": "06c0f2a521c962c8e3d172478d65a2c2ed9761f6",
+      "receipt_digest": "3dea73371a5b9584641c9ad9eae62b487e90d8e89a53608fe3135cef6ba328c3",
+      "result_digest": "246a1f6816e4a581d8a8a8fd7783598be2a5fcf64d45c0a8299a1d3f7d4e1890",
+      "tier": "dev"
+    },
+    {
+      "candidate_snapshot_id": "1faead054676ef438f9c36fbaf19af16e4c7f891",
+      "receipt_digest": "06783487e98eabb61199ac5c36f26417207bd6b7cc3f799b6d9b5ed82beccb8a",
+      "result_digest": "1f9478dc4859e09900ec87c3b5a441a506ec6d477703104207b80d0dbfdd6f4a",
+      "tier": "validation"
+    },
+    {
+      "candidate_snapshot_id": "06c0f2a521c962c8e3d172478d65a2c2ed9761f6",
+      "receipt_digest": "bfa9ec59874992f2813143664e5d781372349d06ebab02eb91df73b21308440e",
+      "result_digest": "bc9b2a533d67cbd9aee31b63a2af059e8c06d91363c3bcefb3df78632f99a91b",
+      "tier": "validation"
+    }
+  ],
+  "holdout": {
+    "candidate_snapshot_id": "06c0f2a521c962c8e3d172478d65a2c2ed9761f6",
+    "case_count": 196,
+    "metric": {
+      "direction": "MAXIMIZE",
+      "metric_field": "accuracy",
+      "metric_id": "accuracy",
+      "n": null,
+      "unit": null,
+      "value": 0.7806122448979592
+    },
+    "receipt_digest": "73a1bea811d764a8468945cfc3d34aff9af3169d6aec548fc83a6ea3367d6aa8",
+    "repeatability_runs": 2,
+    "status": "VERIFIED",
+    "tier": "holdout",
+    "tier_manifest_sha256": "f5ef7440628121ec1d26e28dcd8ec9572300272503738bb4af8918029eab8037"
+  },
+  "inference_calls": 1,
+  "integration_evidence": [
+    {
+      "baseline_run_receipt_digest": "06783487e98eabb61199ac5c36f26417207bd6b7cc3f799b6d9b5ed82beccb8a",
+      "candidate_run_receipt_digest": "bfa9ec59874992f2813143664e5d781372349d06ebab02eb91df73b21308440e",
+      "decision": "PASS",
+      "evidence_digest": "2ee5f53d249b292f2fbc9a14a6a316e76dc0f3275d13b2d158cc2da686ce3337"
+    }
+  ],
+  "model": "gpt-6-luna",
+  "monetary_cost": "UNKNOWN",
+  "offline_protocol_approval": "fixture-seeded",
+  "raw_provider_receipt": "live-siwc-optimization-20261107-receipt.json",
+  "raw_provider_receipt_sha256": "9ea9f804f3714aa0d3fcbba2a4764348d2ad1d0fa70ee0c1fa0996aaa22f568d",
+  "request_id": "resp_03919cb951eec047016aef443035ec87d28562ebaa13404a1b",
+  "retry_policy": "one optimizer inference maximum; no automatic retry",
+  "schema": "bananloop-titanic-live-optimization-result-v1",
+  "seed": 2026,
+  "status": "COMPLETED",
+  "tested_code_sha": "5104f22d00eb0adcf5105475f45b8cc88ee3c248",
+  "usage": {
+    "attribution": {
+      "items": {
+        "msg_03919cb951eec047016aef4430373087d29497e8e118c0cadd": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "content": [
+            {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0,
+              "input_tokens": 13612,
+              "output_tokens": 0
+            }
+          ],
+          "input_tokens": 13612,
+          "output_tokens": 0
+        },
+        "msg_03919cb951eec047016aef4430373087d2bc2719d1a0b5daf6": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "content": [
+            {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0,
+              "input_tokens": 108,
+              "output_tokens": 0
+            }
+          ],
+          "input_tokens": 108,
+          "output_tokens": 0
+        },
+        "msg_03919cb951eec047016aef4433c8d887d2a420c93c70f5669c": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "content": [
+            {
+              "cache_write_tokens": 0,
+              "cached_tokens": 0,
+              "input_tokens": 0,
+              "output_tokens": 185
+            }
+          ],
+          "input_tokens": 0,
+          "output_tokens": 185
+        },
+        "rs_03919cb951eec047016aef4433b1dc87d29852e7f8279c04c4": {
+          "cache_write_tokens": 0,
+          "cached_tokens": 0,
+          "input_tokens": 2,
+          "output_tokens": 152
+        }
+      }
+    },
+    "input_tokens": 13722,
+    "input_tokens_details": {
+      "cache_write_tokens": 0,
+      "cached_tokens": 0
+    },
+    "output_tokens": 337,
+    "output_tokens_details": {
+      "reasoning_tokens": 152
+    },
+    "total_tokens": 14059
+  }
+}

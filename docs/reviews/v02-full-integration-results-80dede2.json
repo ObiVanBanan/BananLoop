@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "campaign": "BananLoop v0.2 Optimization CLI correction",
+  "implementation_sha": "80dede2169c6d38551855baeaab169628aef0f88",
+  "pr": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "defect": {
+    "summary": "v2 optimize requested min_instances=0 from the shared Exploration role registry, creating no optimizer or integration-verifier instances",
+    "fix": "Explicitly request one optimizer and one integration verifier for the Optimization child",
+    "regression_test": "test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth",
+    "test_role_min_instances": 0,
+    "real_provider_calls": 0
+  },
+  "focused_suite": {
+    "command": "PYTHONPATH=tests:src .venv/bin/python -m pytest -q tests/test_v2_campaign_cli.py tests/test_v2_optimization_runtime.py tests/test_optimization_lifecycle.py tests/test_rpdi13_integrated_acceptance.py",
+    "result": "passed",
+    "passed": 42,
+    "failed": 0
+  },
+  "offline_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest -p isolate_home -o addopts='' -q -ra --tb=short",
+    "result": "passed",
+    "passed": 954,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "subtests_passed": 7,
+    "duration_seconds": 64.72,
+    "skips": [
+      "Pinned selector source commit cd753c97c62148c3ccd3f030251e96a4d19b23bd is unavailable",
+      "Windows ACL/reparse-point contract is deferred with Windows"
+    ]
+  },
+  "live_titanic": {
+    "holdout_correct": 153,
+    "holdout_total": 196,
+    "holdout_accuracy": 0.7806122448979592,
+    "target_accuracy": 0.95,
+    "target_met": false,
+    "additional_calls": 0
+  },
+  "ci": {
+    "revision": "80dede2169c6d38551855baeaab169628aef0f88",
+    "status_at_report_creation": "pending publication"
+  },
+  "goal_status": "active; Optimization CLI defect fixed; remaining v0.2 Full criteria remain open"
+}

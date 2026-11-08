@@ -1,0 +1,663 @@
+"""RPDI-13R: explicit, offline-testable v2 Exploration execution.
+
+This module does not invoke Codex CLI. A future trusted, isolated provider
+broker must supply model_reply; passing a host-capable CodexAdapter directly
+would bypass the capability boundary and is not a supported integration.
+"""
+from __future__ import annotations
+
+import base64
+import binascii
+import hashlib
+import json
+import os
+import re
+import tempfile
+from pathlib import Path
+from typing import Any, Callable
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from .budget_ledger import BudgetLedger
+from .contracts import ExplorationCampaignSpecV2, utc_now
+from .exploration import EvidenceAdapterError, EvidenceOnlyAttemptAdapter, EvidenceOnlyOutputV2
+from .experiment_intent import same_experiment_intent
+from .evaluator_verification import EvaluatorProtocolDraftV1
+from .graph_store import AddEdge, AddNode, GraphRepository, MutateGraph
+from .human_decision import HumanDecisionRequestV1, StrategyChangeProposalV1
+from .research_ledger import ResearchLedger
+from .roles import PinnedRoleExecutorV1, RoleRegistryV1, TeamManifestAuthority
+from .scheduler import HybridScheduler, SchedulerPlan
+from .worker_queue import DurableWorkerQueue, WorkerBudgetError, WorkerQueueError
+
+
+class V2RuntimeError(RuntimeError):
+    """The requested work is not an authorized v2 Exploration attempt."""
+
+
+class ResearchHypothesisV1(BaseModel):
+    """One bounded candidate and its directly testable next action."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,79}$")
+    hypothesis: str = Field(min_length=1, max_length=4000)
+    rationale: str = Field(min_length=1, max_length=1000)
+    next_experiment: str = Field(min_length=1, max_length=4000)
+    falsification_condition: str = Field(min_length=1, max_length=1000)
+    expected_evidence: str = Field(min_length=1, max_length=1000)
+    evidence_refs: tuple[str, ...] = Field(default=(), max_length=16)
+    target_claim_key: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_.:-]{0,119}$")
+
+
+class ResearcherReplyV1(BaseModel):
+    """Agent-authored research text only; artifacts are digested by trusted Core."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    next_experiment: str | None = Field(default=None, min_length=1, max_length=4000)
+    hypotheses: tuple[ResearchHypothesisV1, ...] = Field(default=(), max_length=4)
+    selected_hypothesis_id: str | None = Field(default=None, min_length=1, max_length=100)
+    evidence_refs: tuple[str, ...] = ()
+    limitations: tuple[str, ...] = ()
+    research_findings: tuple[dict[str, Any], ...] = ()
+    artifact_text: dict[str, str] = Field(default_factory=dict)
+    artifact_base64: dict[str, str] = Field(default_factory=dict)
+    protocol_draft: EvaluatorProtocolDraftV1 | None = None
+    strategy_change_request: StrategyChangeProposalV1 | None = None
+
+
+# The adapter is a synchronous, one-model-call protocol: one durable
+# agent-call reservation corresponds to one model action, not an unmetered
+# conversation of hidden tool calls.
+ModelReply = Callable[..., dict[str, Any]]
+MAX_VISIBLE_FILES = 16
+MAX_FILE_CHARS = 64_000
+MAX_ALL_VISIBLE_CHARS = 160_000
+MAX_ARTIFACT_BYTES = 96_000
+
+
+def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, Any]]:
+    """Adapt a one-shot *trusted isolated model transport* to a pinned role.
+
+    The model receives only public DEV role context and explicitly allowlisted
+    file text read through ToolGateway; it does not receive the raw queue
+    request, host paths, grant, eval assets or executable tool access.
+    The callable supplied here is not by itself proof of model isolation.
+    """
+    if not callable(model_reply):
+        raise TypeError("a trusted one-shot model transport is required")
+
+    def invoke(request: dict[str, Any], gateway: Any, *, adapter: str, provider: str,
+               model: str, model_version: str, prompt_digest: str,
+               max_model_tokens: int) -> dict[str, Any]:
+        if adapter != "codex" or provider != "openai":
+            raise V2RuntimeError("this bridge only accepts the pinned OpenAI Codex researcher")
+        if type(max_model_tokens) is not int or max_model_tokens < 1:
+            raise V2RuntimeError("invalid pinned per-call model-token ceiling")
+        role_binding = request.get("role_binding")
+        if (not isinstance(role_binding, dict)
+                or role_binding.get("role_id") != "researcher"
+                or any(role_binding.get(k) != v for k, v in (
+                    ("adapter", adapter), ("provider", provider), ("model", model),
+                    ("model_version", model_version), ("prompt_digest", prompt_digest)))):
+            raise V2RuntimeError("model request is not bound to the pinned researcher")
+        cap = request.get("capability_manifest")
+        if not isinstance(cap, dict):
+            raise V2RuntimeError("missing trusted capability manifest")
+        paths = cap.get("visible_paths")
+        if (not isinstance(paths, list) or not 1 <= len(paths) <= MAX_VISIBLE_FILES
+                or any(not isinstance(p, str) for p in paths)):
+            raise V2RuntimeError("invalid bounded visibility allowlist")
+        documents: dict[str, str] = {}
+        total = 0
+        for name in paths:
+            # Trust only ToolGateway to authorize and read; no direct Path.open().
+            content = gateway.read_file(name)
+            if not isinstance(content, str) or len(content) > MAX_FILE_CHARS:
+                raise V2RuntimeError("visible file exceeds safe prompt ceiling")
+            total += len(content)
+            if total > MAX_ALL_VISIBLE_CHARS:
+                raise V2RuntimeError("combined public source exceeds safe prompt ceiling")
+            documents[name] = content
+        role_context = request.get("role_context")
+        if not isinstance(role_context, dict):
+            raise V2RuntimeError("missing validated public role context")
+        public_input = {
+            "protocol": "rpdi13r-researcher-one-shot-v1",
+            "role_context": role_context,
+            "visible_documents": documents,
+            "instruction": (
+                "Return 2-4 materially different, bounded, falsifiable hypotheses, "
+                "each with id and hypothesis, plus selected_hypothesis_id identifying "
+                "the one best supported for the next experiment. Include a falsifiable "
+                "next_experiment for that selection and optional text artifacts. Always "
+                "provide at least one research_finding. If no experiment was executed, "
+                "state that as an UNCERTAIN OBSERVATION and do not report a result. "
+                "When using prior findings, provide target_claim_key and cite its exact "
+                "evidence_ids in evidence_refs; if prior findings are available, at least "
+                "one candidate must cite a matching target claim and exact evidence ID. "
+                "Use supplied memory to select a distinct "
+                "follow-up experiment unless replication is specifically justified. "
+                "Do not claim "
+                "independent evaluator approval, validation or HOLDOUT scores. "
+                "These observations are unverified PUBLIC_DEV evidence. If the evidence "
+                "indicates that a fundamental strategy change is needed, you may instead "
+                "return only strategy_change_request with current_strategy, proposed_strategy, "
+                "rationale, expected_effect, and changed_scope. This creates a request for "
+                "owner review only; it does not authorize a pivot or run another experiment."
+            ),
+        }
+        # The broker controls provider/model selection; worker content cannot.
+        raw = model_reply(
+            public_input, provider=provider, model=model,
+            model_version=model_version, prompt_digest=prompt_digest,
+            max_model_tokens=max_model_tokens,
+        )
+        reply = ResearcherReplyV1.model_validate(raw)
+        if reply.strategy_change_request is not None:
+            if (reply.next_experiment is not None or reply.hypotheses
+                    or reply.selected_hypothesis_id is not None or reply.evidence_refs
+                    or reply.limitations or reply.research_findings or reply.artifact_text):
+                raise V2RuntimeError(
+                    "strategy-change request must be the only researcher action"
+                )
+            job_node_id = request["node_id"]
+            proposal = reply.strategy_change_request.model_dump(mode="json")
+            request_id = hashlib.sha256(json.dumps(
+                proposal, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+            ).encode("utf-8")).hexdigest()
+            request = HumanDecisionRequestV1(**proposal, request_id=request_id)
+            raw_request = (json.dumps(
+                request.model_dump(mode="json"), sort_keys=True,
+                separators=(",", ":"), ensure_ascii=False,
+            ) + "\n").encode("utf-8")
+            gateway.write_artifact("research/strategy-change-request.json", raw_request)
+            digest = hashlib.sha256(raw_request).hexdigest()
+            output = EvidenceOnlyOutputV2.model_validate({
+                "node_id": job_node_id,
+                "artifacts": [{"path": "research/strategy-change-request.json", "sha256": digest}],
+                "limitations": ("No experiment was executed; owner review is required before strategy changes.",),
+                "next_experiment": "Await owner decision on the proposed strategy change.",
+                "human_decision_request": request.model_dump(mode="json"),
+            })
+            return output.model_dump(mode="json")
+        if not reply.research_findings:
+            raise V2RuntimeError(
+                "ordinary research response must include at least one evidence-linked finding"
+            )
+        allowed_evidence_refs = set(role_context.get("evidence_refs", ()))
+        if reply.hypotheses:
+            if not 2 <= len(reply.hypotheses) <= 4:
+                raise V2RuntimeError("hypothesis portfolio must contain at least two candidates")
+            ids = [item.id for item in reply.hypotheses]
+            if (len(set(ids)) != len(ids)
+                    or reply.selected_hypothesis_id not in ids):
+                raise V2RuntimeError("hypothesis selection must identify one unique portfolio candidate")
+            selected = next(item for item in reply.hypotheses if item.id == reply.selected_hypothesis_id)
+            if reply.next_experiment is not None and reply.next_experiment != selected.next_experiment:
+                raise V2RuntimeError("next experiment must match the selected hypothesis candidate")
+            claim_evidence: dict[str, set[str]] = {}
+            for line in str(role_context.get("dev_summary", "")).splitlines():
+                match = re.match(
+                    r"^([a-z][a-z0-9_.:-]{0,119}) \[[A-Z_]+\] evidence_ids=([0-9a-f,]*):",
+                    line,
+                )
+                if match:
+                    claim_evidence.setdefault(match.group(1), set()).update(
+                        filter(None, match.group(2).split(","))
+                    )
+            evidence_scores: dict[str, int] = {}
+            for candidate in reply.hypotheses:
+                refs = set(candidate.evidence_refs)
+                if not refs <= allowed_evidence_refs:
+                    raise V2RuntimeError(
+                        "hypothesis cites prior evidence that is not present in its trusted role context"
+                    )
+                if candidate.target_claim_key is not None:
+                    claim_refs = claim_evidence.get(candidate.target_claim_key, set())
+                    if not refs <= claim_refs:
+                        raise V2RuntimeError(
+                            "hypothesis evidence references do not belong to its target claim"
+                        )
+                    evidence_scores[candidate.id] = len(refs)
+                else:
+                    evidence_scores[candidate.id] = 0
+            ranked = [item for item in reply.hypotheses if evidence_scores[item.id] > 0]
+            if allowed_evidence_refs and not ranked:
+                raise V2RuntimeError(
+                    "later hypothesis portfolio must cite available Research Memory on a candidate"
+                )
+            if ranked:
+                # Candidate IDs and the model's preferred ID have no quality
+                # weight. Core ranks only references already present in the
+                # trusted context, then uses a content-only digest for ties.
+                selected = max(ranked, key=lambda item: (
+                    evidence_scores[item.id],
+                    hashlib.sha256(json.dumps(
+                        item.model_dump(mode="json", exclude={"id"}),
+                        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                    ).encode("utf-8")).hexdigest(),
+                ))
+                selection = {
+                    "method": "CORE_PUBLIC_DEV_EVIDENCE_COVERAGE",
+                    "selected_hypothesis_id": selected.id,
+                    "scores": evidence_scores,
+                    "reason": "Highest count of distinct prior public evidence references attached to its exact target claim; tied candidates use a stable content digest.",
+                }
+            else:
+                selection = {
+                    "method": "RESEARCHER_INITIAL_SELECTION",
+                    "selected_hypothesis_id": selected.id,
+                    "scores": evidence_scores,
+                    "reason": "No prior evidence was available to rank candidates; researcher preference is advisory for the initial step.",
+                }
+            next_experiment = selected.next_experiment
+            portfolio = json.dumps({
+                "candidates": [item.model_dump(mode="json") for item in reply.hypotheses],
+                "selected_hypothesis_id": selected.id,
+                "researcher_preferred_hypothesis_id": reply.selected_hypothesis_id,
+                "core_selection": selection,
+            }, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        else:
+            if allowed_evidence_refs:
+                raise V2RuntimeError(
+                    "later research response must return a hypothesis portfolio that uses available Research Memory"
+                )
+            if not reply.next_experiment:
+                raise V2RuntimeError("researcher must return a hypothesis portfolio or next experiment")
+            next_experiment = reply.next_experiment
+            portfolio = None
+        if len(reply.artifact_text) + len(reply.artifact_base64) > MAX_VISIBLE_FILES:
+            raise V2RuntimeError("too many researcher artifacts")
+        artifacts: list[dict[str, str]] = []
+        bytes_total = 0
+        artifact_bytes: dict[str, bytes] = {}
+        for name, text in reply.artifact_text.items():
+            if not isinstance(name, str) or not isinstance(text, str):
+                raise V2RuntimeError("artifact text must use UTF-8 names and strings")
+            artifact_bytes[name] = text.encode("utf-8")
+        for name, encoded in reply.artifact_base64.items():
+            if (not isinstance(name, str) or not isinstance(encoded, str)
+                    or name in artifact_bytes):
+                raise V2RuntimeError("base64 artifacts require unique UTF-8 names and strings")
+            if len(encoded) > 4 * ((MAX_ARTIFACT_BYTES + 2) // 3):
+                raise V2RuntimeError("base64 artifact exceeds artifact budget")
+            try:
+                raw = base64.b64decode(encoded, validate=True)
+            except (ValueError, binascii.Error) as exc:
+                raise V2RuntimeError("base64 artifact is malformed") from exc
+            if base64.b64encode(raw).decode("ascii") != encoded:
+                raise V2RuntimeError("base64 artifact is not in canonical encoding")
+            artifact_bytes[name] = raw
+        for name, raw_bytes in sorted(artifact_bytes.items()):
+            bytes_total += len(raw_bytes)
+            if bytes_total > MAX_ARTIFACT_BYTES:
+                raise V2RuntimeError("researcher artifacts exceed artifact budget")
+            # ToolGateway is the only write authority.
+            gateway.write_artifact(name, raw_bytes)
+            artifacts.append({"path": name, "sha256": hashlib.sha256(raw_bytes).hexdigest()})
+        if portfolio is not None:
+            name = "research/hypothesis-portfolio.json"
+            gateway.write_artifact(name, portfolio)
+            artifacts.append({"path": name, "sha256": hashlib.sha256(portfolio).hexdigest()})
+        # Only trusted Core may bind claims to produced artifact digests.
+        # The LLM need not guess SHA-256 values and may not invent refs to
+        # unavailable artifacts. Findings remain unverified.
+        produced_refs = {f"artifact://sha256/{item['sha256']}" for item in artifacts}
+        findings: list[dict[str, Any]] = []
+        for raw_finding in reply.research_findings:
+            finding = dict(raw_finding)
+            supplied = finding.get("evidence_refs")
+            if supplied is None or supplied == [] or supplied == ():
+                if not produced_refs:
+                    raise V2RuntimeError("research finding requires a produced evidence artifact")
+                finding["evidence_refs"] = sorted(produced_refs)
+            elif (not isinstance(supplied, (list, tuple))
+                  or not set(supplied) <= produced_refs):
+                raise V2RuntimeError("research finding cites evidence not produced by this job")
+            findings.append(finding)
+        output = EvidenceOnlyOutputV2.model_validate({
+            "node_id": request["node_id"],
+            "evidence_refs": reply.evidence_refs,
+            "artifacts": artifacts,
+            "limitations": reply.limitations,
+            "next_experiment": next_experiment,
+            "research_findings": findings,
+            "protocol_draft": (reply.protocol_draft.model_dump(mode="json")
+                               if reply.protocol_draft is not None else None),
+        })
+        if not output.artifacts and not output.research_findings and not output.evidence_refs:
+            raise V2RuntimeError("researcher returned no auditable evidence")
+        return output.model_dump(mode="json")
+
+    return invoke
+
+
+class V2ResearchRuntime:
+    """Connect v2 scheduling, pinned roles, queue, gateway, and public ledger."""
+
+    def __init__(self, *, graph: GraphRepository, queue: DurableWorkerQueue,
+                 campaign_id: str, state_root: str | Path, role_registry: RoleRegistryV1,
+                 trusted_artifact_digests: tuple[str, ...] = ()):
+        self.graph = graph
+        self.queue = queue
+        self.campaign_id = campaign_id
+        self.state_root = Path(state_root)
+        self.role_registry = role_registry
+        self._convergence_reason: str | None = None
+        self.adapter = EvidenceOnlyAttemptAdapter(
+            graph=graph, queue=queue, campaign_id=campaign_id,
+            state_root=state_root, role_registry=role_registry,
+            trusted_artifact_digests=trusted_artifact_digests,
+        )
+
+    def plan(self):
+        spec = self.graph.campaign_spec()
+        if not isinstance(spec, ExplorationCampaignSpecV2):
+            raise V2RuntimeError("v2 Research runtime requires a persisted Exploration v2 spec")
+        if spec.feature_flags.profile != "FULL":
+            raise V2RuntimeError("diagnostic or partial profile cannot run as v0.2 Full")
+        if spec.role_registry_digest != self.role_registry.digest():
+            raise V2RuntimeError("role registry differs from the frozen campaign spec")
+        control = self.queue.campaign_control(self.campaign_id)
+        if control["state"] == "PAUSED":
+            return SchedulerPlan((), "PAUSED", self.graph.graph_revision())
+        if control["state"] == "STOPPED":
+            return SchedulerPlan((), "STOP_REQUESTED", self.graph.graph_revision())
+        budget = BudgetLedger(self.queue.path)
+        try:
+            snapshot = budget.snapshot(self.campaign_id)
+        finally:
+            budget.close()
+        return HybridScheduler(self.graph).plan(budget=snapshot)
+
+    def pause(self, *, reason: str = "owner requested pause") -> dict[str, Any]:
+        return self.queue.set_campaign_control(self.campaign_id, "PAUSED", reason=reason)
+
+    def resume(self) -> dict[str, Any]:
+        return self.queue.set_campaign_control(self.campaign_id, "RUNNING")
+
+    def stop(self, *, reason: str = "owner requested stop") -> dict[str, Any]:
+        return self.queue.set_campaign_control(self.campaign_id, "STOPPED", reason=reason)
+
+    def run_one(self, *, node_id: str, visible_paths: list[str] | tuple[str, ...],
+                invoke: Callable[..., dict[str, Any]], worker_id: str = "v2-research",
+                lease_seconds: int = 300) -> dict[str, Any]:
+        plan = self.plan()
+        eligible = [item for item in plan.candidates
+                    if item.node_id == node_id and item.lane == "EVIDENCE_WORKER"
+                    and item.phase == "EXPLORATION"]
+        if not eligible:
+            if plan.reason in {"PAUSED", "STOP_REQUESTED"}:
+                return {"status": plan.reason, "campaign_id": self.campaign_id}
+            raise V2RuntimeError(
+                f"node {node_id!r} is not a schedulable v2 Exploration job; scheduler: {plan.reason}"
+            )
+        if not callable(invoke):
+            raise V2RuntimeError("a pinned, tested model-invoke boundary is required")
+        job = self.adapter.enqueue(node_id=node_id, visible_paths=visible_paths)
+        manifest_authority = TeamManifestAuthority(self.queue.path)
+        try:
+            spec = self.graph.campaign_spec()
+            manifest = manifest_authority.load(
+                self.campaign_id, spec_hash=spec.approved_hash(),
+                registry_digest=self.role_registry.digest(),
+            )
+        finally:
+            manifest_authority.close()
+        member = manifest.member(job["request"]["role_binding"]["role_instance_id"])
+        if member.role.role_id != "researcher":
+            raise V2RuntimeError("scheduled role is not the canonical researcher")
+        executor = PinnedRoleExecutorV1.from_manifest(manifest, member.instance_id, invoke)
+        state = self.queue.get_job(job["job_id"])["state"]
+        if state == "READY":
+            self.adapter.run_one(job_id=job["job_id"], worker_id=worker_id,
+                                 executor=executor, lease_seconds=lease_seconds)
+        elif state != "COMPLETED":
+            raise V2RuntimeError(
+                f"research job is {state}; uncertain work is never dispatched twice"
+            )
+        published = self.adapter.publish_completed(job["job_id"])
+        evidence = ResearchLedger(self.graph.conn).ingest_completed_job(
+            self.graph, self.queue, job["job_id"],
+        )
+        completion = next((node["payload"].get("completion_evidence")
+                           for node in self.graph.scheduling_snapshot()["nodes"]
+                           if node["node_id"] == node_id), None)
+        human_request = (completion.get("human_decision_request")
+                         if isinstance(completion, dict) else None)
+        if isinstance(human_request, dict):
+            self.queue.set_campaign_control(
+                self.campaign_id, "PAUSED",
+                reason=f"strategy decision required: {human_request['request_id']}",
+            )
+        return {
+            "status": "EXPLORATION_COMPLETED",
+            "mode": "EXPLORATION",
+            "profile": "FULL",
+            "campaign_id": self.campaign_id,
+            "node_id": node_id,
+            "job_id": job["job_id"],
+            "published": published,
+            "research_evidence_ids": list(evidence),
+            "human_decision_request": human_request,
+        }
+
+    def run_campaign(
+        self, *, visible_paths: list[str] | tuple[str, ...],
+        invoke: Callable[..., dict[str, Any]], max_iterations: int = 10,
+        worker_id: str = "v2-research", lease_seconds: int = 300,
+    ) -> dict[str, Any]:
+        """Advance a bounded sequence of Exploration nodes and persist each next step.
+
+        The next node is derived from the previous durable completion record,
+        linked to its predecessor, and recovered idempotently after restart.
+        Existing budget reservations remain the authority for stopping work.
+        """
+        if (isinstance(max_iterations, bool) or not isinstance(max_iterations, int)
+                or not 1 <= max_iterations <= 100):
+            raise V2RuntimeError("max_iterations must be an integer from 1 to 100")
+        self.plan()  # Validate the persisted Full spec and pinned roles before any graph mutation.
+        completed: list[dict[str, Any]] = []
+        pending = self._pending_human_decision()
+        if pending is not None:
+            return self._finish_campaign_run("PAUSED_NEEDS_INPUT", completed)
+        self._recover_followups()
+        if self._convergence_reason is not None:
+            return self._finish_campaign_run(
+                "CONVERGED_REPEATED_EXPERIMENT", completed,
+                convergence_reason=self._convergence_reason,
+            )
+        while len(completed) < max_iterations:
+            plan = self.plan()
+            selected = next((item for item in plan.candidates
+                             if item.phase == "EXPLORATION" and item.lane == "EVIDENCE_WORKER"), None)
+            if selected is None:
+                return self._finish_campaign_run(plan.reason, completed)
+            try:
+                result = self.run_one(
+                    node_id=selected.node_id, visible_paths=visible_paths,
+                    invoke=invoke, worker_id=worker_id, lease_seconds=lease_seconds,
+                )
+            except WorkerBudgetError as exc:
+                current = self.plan()
+                status = ("ROLE_ALLOCATION_EXHAUSTED" if "role instance" in str(exc)
+                          else current.reason if current.reason == "BUDGET_EXHAUSTED"
+                          else "BUDGET_RESERVATION_REJECTED")
+                return self._finish_campaign_run(status, completed)
+            except WorkerQueueError:
+                current = self.plan()
+                if current.reason not in {"PAUSED", "STOP_REQUESTED"}:
+                    raise
+                return self._finish_campaign_run(current.reason, completed)
+            except EvidenceAdapterError as exc:
+                if "allocation exhausted" not in str(exc):
+                    raise
+                current = self.plan()
+                status = ("ROLE_ALLOCATION_EXHAUSTED" if "role instance" in str(exc)
+                          else current.reason)
+                return self._finish_campaign_run(status, completed)
+            completed.append(result)
+            if result.get("human_decision_request") is not None:
+                return self._finish_campaign_run("PAUSED_NEEDS_INPUT", completed)
+            self._recover_followups()
+            if self._convergence_reason is not None:
+                return self._finish_campaign_run(
+                    "CONVERGED_REPEATED_EXPERIMENT", completed,
+                    convergence_reason=self._convergence_reason,
+                )
+        return self._finish_campaign_run("ITERATION_LIMIT", completed)
+
+    @staticmethod
+    def _normalized_experiment(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = " ".join(value.casefold().split())
+        return normalized or None
+
+    def _finish_campaign_run(self, status: str, completed: list[dict[str, Any]],
+                             *, convergence_reason: str | None = None) -> dict[str, Any]:
+        snapshot = self.graph.scheduling_snapshot()
+        evidence_nodes = []
+        for node in snapshot["nodes"]:
+            completion = node["payload"].get("completion_evidence")
+            if node["status"] != "COMPLETED" or not isinstance(completion, dict):
+                continue
+            if completion.get("human_decision_request") is not None:
+                continue
+            evidence_nodes.append({
+                "node_id": node["node_id"],
+                "iteration": node["payload"].get("iteration", 0),
+                "hypothesis": node["payload"].get("hypothesis"),
+                "evidence_refs": completion.get("evidence_refs", []),
+                "limitations": completion.get("limitations", []),
+                "next_experiment": completion.get("next_experiment"),
+            })
+        human_decision_requests = [
+            {
+                "node_id": node["node_id"],
+                "request": node["payload"]["completion_evidence"]["human_decision_request"],
+            }
+            for node in snapshot["nodes"]
+            if node["status"] == "COMPLETED"
+            and isinstance(node["payload"].get("completion_evidence"), dict)
+            and node["payload"]["completion_evidence"].get("human_decision_request") is not None
+        ]
+        spec = self.graph.campaign_spec()
+        report = {
+            "schema_version": 1,
+            "campaign_id": self.campaign_id,
+            "goal": spec.goal,
+            "status": status,
+            "stop_reason": convergence_reason or status,
+            "scientific_conclusion": (
+                "No verified scientific conclusion is asserted; Exploration findings are unverified PUBLIC_DEV evidence."
+            ),
+            "completed_experiments": evidence_nodes,
+            "human_decision_requests": human_decision_requests,
+            "graph_revision": snapshot["graph_revision"],
+            "as_of": utc_now(),
+        }
+        reports = self.state_root / "reports"
+        reports.mkdir(parents=True, exist_ok=True)
+        target = reports / f"v2-exploration-{self.campaign_id}.json"
+        raw = (json.dumps(report, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=reports)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(raw)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        return {
+            "status": status, "campaign_id": self.campaign_id,
+            "iterations_this_call": len(completed), "completed": completed,
+            "graph_revision": snapshot["graph_revision"],
+            "report_path": str(target),
+        }
+
+    def _recover_followups(self) -> None:
+        snapshot = self.graph.scheduling_snapshot()
+        edges = {(edge["source_id"], edge["target_id"], edge["type"])
+                 for edge in snapshot["edges"]}
+        nodes = {node["node_id"]: node for node in snapshot["nodes"]}
+        completed_tasks: list[tuple[str, str]] = []
+        for node in snapshot["nodes"]:
+            if (node["status"] == "COMPLETED"
+                    and isinstance(node["payload"].get("completion_evidence"), dict)):
+                task = self._normalized_experiment(node["payload"].get("hypothesis"))
+                if task is not None:
+                    completed_tasks.append((node["node_id"], task))
+        for parent in snapshot["nodes"]:
+            evidence = parent["payload"].get("completion_evidence")
+            if (parent["status"] != "COMPLETED" or not isinstance(evidence, dict)
+                    or evidence.get("human_decision_request") is not None
+                    or not isinstance(evidence.get("job_id"), str)
+                    or not isinstance(evidence.get("next_experiment"), str)):
+                continue
+            job_id = evidence["job_id"]
+            child_id = "explore-next-" + hashlib.sha256(job_id.encode()).hexdigest()[:32]
+            durable = self.queue.get_result(job_id)
+            result = durable.get("result") if isinstance(durable, dict) else None
+            if (not isinstance(result, dict)
+                    or result.get("next_experiment") != evidence["next_experiment"]):
+                raise V2RuntimeError("completed exploration has no matching durable next-step result")
+            selected_task = self._normalized_experiment(evidence["next_experiment"])
+            direct_children = {
+                node_id for node_id, node in nodes.items()
+                if node["payload"].get("parent_node_id") == parent["node_id"]
+            }
+            prior_tasks = {
+                task for node_id, task in completed_tasks
+                if node_id not in direct_children
+            }
+            semantic_repeat = next((task for task in prior_tasks
+                                    if same_experiment_intent(evidence["next_experiment"], task)), None)
+            if ((selected_task is not None and selected_task in prior_tasks)
+                    or semantic_repeat is not None):
+                self._convergence_reason = (
+                    "Selected next experiment repeats a previously completed task by exact normalization "
+                    "or conservative controlled-variable intent matching."
+                )
+                continue
+            if child_id in nodes:
+                if (parent["node_id"], child_id, "REQUIRES") not in edges:
+                    raise V2RuntimeError("persisted Exploration follow-up is missing its prerequisite edge")
+                continue
+            key = "exploration-followup:" + hashlib.sha256(job_id.encode()).hexdigest()
+            parent_priority = int(parent["payload"].get("scheduler", {}).get("priority", 0))
+            parent_iteration = int(parent["payload"].get("iteration", 0))
+            self.graph.mutate(MutateGraph(
+                command_id=key, idempotency_key=key,
+                expected_graph_revision=self.graph.graph_revision(),
+                changes=(
+                    AddNode(
+                        type="AddNode", node_id=child_id, phase="EXPLORATION",
+                        payload={
+                            "hypothesis": evidence["next_experiment"],
+                            "parent_node_id": parent["node_id"],
+                            "iteration": parent_iteration + 1,
+                            "scheduler": {"priority": parent_priority},
+                        },
+                    ),
+                    AddEdge(type="AddEdge", source_id=parent["node_id"],
+                            target_id=child_id, edge_type="REQUIRES"),
+                ),
+            ))
+
+    def _pending_human_decision(self) -> dict[str, Any] | None:
+        snapshot = self.graph.scheduling_snapshot()
+        for node in snapshot["nodes"]:
+            completion = node["payload"].get("completion_evidence")
+            if (node["status"] == "COMPLETED" and isinstance(completion, dict)
+                    and isinstance(completion.get("human_decision_request"), dict)):
+                request = completion["human_decision_request"]
+                self.queue.set_campaign_control(
+                    self.campaign_id, "PAUSED",
+                    reason=f"strategy decision required: {request['request_id']}",
+                )
+                return request
+        return None

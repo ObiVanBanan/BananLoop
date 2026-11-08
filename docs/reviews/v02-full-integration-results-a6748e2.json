@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "campaign": "BananLoop v0.2 Linux offline acceptance",
+  "implementation_sha": "a6748e2bef8e753f727a451829101771fe6e17e5",
+  "pr": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "exploration_cli_resume": {
+    "result": "passed",
+    "dispatcher": "parsed v2 explore -> cmd_v2_explore -> run_v2_explore",
+    "calls_per_resume": 1,
+    "iterations": 2,
+    "second_call_uses_durable_public_evidence": true,
+    "provider_transport": "mock SIWC transport; real pinned runtime and persistence",
+    "external_model_calls": 0
+  },
+  "offline_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest -p isolate_home -o addopts='' -q -ra --tb=short",
+    "result": "passed",
+    "passed": 954,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "subtests_passed": 7,
+    "duration_seconds": 63.79,
+    "skips": [
+      "Pinned selector source commit cd753c97c62148c3ccd3f030251e96a4d19b23bd is unavailable",
+      "Windows ACL/reparse-point contract deferred"
+    ]
+  },
+  "integrated_acceptance": {
+    "result": "passed",
+    "variants": ["test-runner", "real-bwrap"],
+    "route": "Exploration -> independently verified protocol -> owner-approved pivot -> parsed v2 optimize CLI",
+    "optimizer_and_verifier_transports": "mocked",
+    "external_model_calls": 0
+  },
+  "live_titanic": {
+    "holdout_correct": 153,
+    "holdout_total": 196,
+    "holdout_accuracy": 0.7806122448979592,
+    "target_accuracy": 0.95,
+    "target_met": false,
+    "additional_calls": 0,
+    "cost": "UNKNOWN where provider did not report it"
+  },
+  "ci": {
+    "revision": "a6748e2bef8e753f727a451829101771fe6e17e5",
+    "successful": [
+      "pytest ubuntu-latest Python 3.11",
+      "pytest ubuntu-latest Python 3.12",
+      "pytest ubuntu-latest Python 3.13",
+      "chromium",
+      "mutate-policy"
+    ],
+    "windows": "deferred by owner"
+  },
+  "goal_status": "active; offline Linux Exploration and Optimization paths pass; Titanic 95% target and remaining acceptance criteria are open"
+}

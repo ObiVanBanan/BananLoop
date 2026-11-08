@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>BananLoop Dashboard</title>
+    <link rel="stylesheet" href="/dashboard.css">
+    <script src="/dashboard.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Local operator console</p>
+        <h1>BananLoop</h1>
+      </div>
+      <div class="top-actions">
+        <span id="connection" class="connection" role="status">Not connected</span>
+        <button id="clear-token" class="quiet" type="button" hidden>Clear token</button>
+      </div>
+    </header>
+
+    <main>
+      <section id="auth-panel" class="panel auth-panel" aria-labelledby="auth-title">
+        <div>
+          <p class="eyebrow">Optional local API credential</p>
+          <h2 id="auth-title">Connect to your local campaigns</h2>
+          <p>If the API server uses a bearer token, enter it here. The token stays in memory and is cleared when this page closes.</p>
+        </div>
+        <form id="token-form" class="token-form" method="post" action="/">
+          <label for="token-input">Bearer token</label>
+          <div class="token-row">
+            <input id="token-input" name="token" type="password" autocomplete="off" spellcheck="false">
+            <button type="submit">Connect</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="toolbar panel" aria-label="Campaign selection">
+        <div class="campaign-picker">
+          <label for="campaign-select">Campaign</label>
+          <select id="campaign-select" disabled>
+            <option value="">Connect to load campaigns</option>
+          </select>
+        </div>
+        <div class="toolbar-actions">
+          <button id="load-more" class="quiet" type="button" hidden>Load more</button>
+          <button id="refresh" class="quiet" type="button" disabled>Refresh</button>
+        </div>
+      </section>
+
+      <p id="notice" class="notice" role="status" aria-live="polite"></p>
+
+      <section id="overview" class="panel" aria-labelledby="overview-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Persisted state</p>
+            <h2 id="overview-title" tabindex="-1">Campaign overview</h2>
+          </div>
+          <time id="as-of" class="muted"></time>
+        </div>
+        <dl id="summary-grid" class="summary-grid" aria-live="polite">
+          <dt class="sr-only">Campaign summary</dt>
+          <dd class="empty">Choose a campaign to see its safe summary.</dd>
+        </dl>
+        <div id="budget-summary" class="budget-summary"></div>
+        <section class="observability" aria-labelledby="observability-title">
+          <h3 id="observability-title">Queue and resource observability</h3>
+          <p id="observability-capture" class="muted">Persisted state has not been loaded.</p>
+          <h4>Scheduler status</h4>
+          <div id="scheduler-summary" class="budget-summary" aria-live="polite">Scheduler state has not been loaded.</div>
+          <div id="queue-summary" class="budget-summary"></div>
+          <div id="budget-dimensions" class="budget-summary"></div>
+        </section>
+      </section>
+
+      <section id="graph-panel" class="panel" aria-labelledby="graph-title" hidden>
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Canonical scheduling view</p>
+            <h2 id="graph-title">Research DAG</h2>
+          </div>
+          <span id="graph-revision" class="badge"></span>
+        </div>
+        <div id="graph-nodes" class="node-list"></div>
+        <div class="graph-details">
+          <div>
+            <h3>Dependencies</h3>
+            <ul id="graph-edges" class="compact-list"></ul>
+          </div>
+          <div>
+            <h3>AND / OR groups</h3>
+            <ul id="graph-groups" class="compact-list"></ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="research-panel" class="panel" aria-labelledby="research-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">PUBLIC_DEV · explicitly unverified</p>
+            <h2 id="research-title">Research Intelligence</h2>
+          </div>
+          <span id="research-source" class="badge">Not loaded</span>
+        </div>
+        <label for="research-scope">Frozen source snapshot and protocol</label>
+        <select id="research-scope" disabled>
+          <option value="">No public knowledge scopes</option>
+        </select>
+        <button id="research-load-more" class="quiet" type="button" hidden>Load more scopes</button>
+        <div id="research-findings" class="research-list">
+          <p class="empty">PUBLIC_DEV findings appear here only when a campaign has a persisted research scope.</p>
+        </div>
+      </section>
+
+      <section id="lifecycle-panel" class="panel" aria-labelledby="lifecycle-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Core receipts · persisted decisions</p>
+            <h2 id="lifecycle-title">Optimization, verification and pivots</h2>
+          </div>
+          <span id="lifecycle-source" class="badge">Not loaded</span>
+        </div>
+        <p id="lifecycle-help" class="muted">An approval records a decision; child campaign state below shows whether handoff progressed.</p>
+        <div id="phase-state" class="budget-summary"></div>
+        <div id="lifecycle-items" class="research-list">
+          <p class="empty">Persisted optimization and evaluator receipts will appear here.</p>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="events-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Committed event cursor</p>
+            <h2 id="events-title">Activity</h2>
+          </div>
+          <span id="event-cursor" class="badge">Cursor 0</span>
+        </div>
+        <ol id="event-list" class="event-list" aria-live="polite">
+          <li class="empty">Committed events will appear here.</li>
+        </ol>
+      </section>
+
+      <section id="controls" class="panel" aria-labelledby="controls-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Durable operator intent</p>
+            <h2 id="controls-title">Controls</h2>
+          </div>
+        </div>
+        <p id="control-help" class="muted">Control commands are recorded by the API. A supervisor must act on the request before campaign state changes.</p>
+        <div class="control-actions">
+          <button data-command="pause" type="button" disabled>Request pause</button>
+          <button data-command="resume" class="quiet" type="button" disabled>Request resume</button>
+          <button data-command="stop" class="danger" type="button" disabled>Request stop</button>
+        </div>
+        <p id="control-result" class="control-result" role="status" aria-live="polite"></p>
+      </section>
+    </main>
+
+    <footer>
+      <span>Data comes from this BananLoop API instance.</span>
+      <span>No remote telemetry or external assets.</span>
+    </footer>
+  </body>
+</html>

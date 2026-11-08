@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "campaign": "BananLoop v0.2 full CLI-to-CLI Linux acceptance",
+  "implementation_sha": "17f91493068a4201bc3c6316228370775cbab5c7",
+  "pr": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "integrated_acceptance": {
+    "result": "passed",
+    "variants": ["test-runner", "real-bwrap"],
+    "single_campaign_route": [
+      "parsed v2 explore preflight creates campaign without model dispatch",
+      "parsed v2 explore resumes and executes two iterations with durable public research memory",
+      "pinned independent verifier approves public evaluator protocol",
+      "owner pivot approved and executed through API into separate Optimization child",
+      "parsed v2 optimize executes through trusted HOLDOUT and final report"
+    ],
+    "mocked_components": [
+      "SIWC researcher transport",
+      "SIWC protocol-verifier transport",
+      "SIWC optimizer transport",
+      "SIWC integration-verifier transport"
+    ],
+    "real_components": [
+      "CampaignRegistry and frozen CampaignSpec",
+      "role manifests and durable worker queue",
+      "capability checks and v2 research runtime",
+      "SQLite Research Ledger and API projections",
+      "independent protocol and integration verifier authorities",
+      "owner pivot saga and Optimization child runtime",
+      "DEV/VALIDATION evaluation, champion, trusted HOLDOUT, final report"
+    ],
+    "external_model_calls": 0
+  },
+  "offline_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest -p isolate_home -o addopts='' -q -ra --tb=short",
+    "result": "passed",
+    "passed": 954,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "subtests_passed": 7,
+    "duration_seconds": 63.86,
+    "skips": [
+      "Pinned selector source commit cd753c97c62148c3ccd3f030251e96a4d19b23bd is unavailable",
+      "Windows ACL/reparse-point contract deferred"
+    ]
+  },
+  "ci": {
+    "revision": "17f91493068a4201bc3c6316228370775cbab5c7",
+    "successful": [
+      "pytest ubuntu-latest Python 3.11",
+      "pytest ubuntu-latest Python 3.12",
+      "pytest ubuntu-latest Python 3.13",
+      "chromium",
+      "mutate-policy"
+    ],
+    "windows": "deferred by owner"
+  },
+  "live_titanic": {
+    "holdout_correct": 153,
+    "holdout_total": 196,
+    "holdout_accuracy": 0.7806122448979592,
+    "target_accuracy": 0.95,
+    "target_met": false,
+    "additional_calls": 0,
+    "cost": "UNKNOWN where provider did not report it"
+  },
+  "goal_status": "active; single-campaign offline v2 Exploration-to-Optimization CLI flow passes; live Titanic target and remaining acceptance criteria are open"
+}

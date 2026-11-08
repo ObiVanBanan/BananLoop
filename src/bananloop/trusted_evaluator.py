@@ -419,7 +419,33 @@ def _limit_evaluator_process(timeout_seconds: int) -> None:
         cpu_limit = max(1, int(timeout_seconds) + 2)
         _resource.setrlimit(_resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
         if hasattr(_resource, "RLIMIT_NPROC"):
-            _resource.setrlimit(_resource.RLIMIT_NPROC, (128, 128))
+            # RLIMIT_NPROC is charged to the host UID, even for a process
+            # entering a user namespace. A fixed cap below the host's existing
+            # process count prevents bubblewrap itself from starting. Preserve
+            # a small fixed fork budget above the observed baseline instead.
+            uid = os.getuid()
+            existing = 0
+            try:
+                for entry in os.scandir("/proc"):
+                    if not entry.name.isdecimal():
+                        continue
+                    try:
+                        status = Path(entry.path, "status").read_text(encoding="ascii")
+                        uid_line = next(line for line in status.splitlines() if line.startswith("Uid:"))
+                        if int(uid_line.split()[1]) != uid:
+                            continue
+                        existing += len(os.listdir(Path(entry.path, "task")))
+                    except (OSError, StopIteration, ValueError):
+                        continue
+            except OSError:
+                # When procfs is unavailable, retain the conservative historic
+                # cap; the sandbox will fail closed if the host cannot fork.
+                existing = 0
+            process_soft, process_hard = _resource.getrlimit(_resource.RLIMIT_NPROC)
+            target = max(128, existing + 128)
+            if process_hard != _resource.RLIM_INFINITY:
+                target = min(target, process_hard)
+            _resource.setrlimit(_resource.RLIMIT_NPROC, (target, process_hard))
         # Evaluator bundles are executable code and can otherwise exhaust the
         # host before their wall-clock timeout fires. Linux provides RLIMIT_AS;
         # fail closed if the hard memory ceiling cannot be applied.
@@ -936,6 +962,50 @@ class TrustedEvaluatorAdapter:
         EvaluatorProtocolAuthority(self.graph.conn).append_run_receipt(receipt)
         return receipt
 
+    def owner_metric_summary(self, receipt: EvaluatorRunReceiptV1) -> dict[str, Any]:
+        """Return only the frozen aggregate metric for an owner-facing result.
+
+        This Core-only projection deliberately excludes case measurements,
+        evaluator output, diagnostics, and artifacts.
+        """
+        from .contracts import OptimizationCampaignSpecV2
+        from .evaluator_verification import EvaluatorProtocolAuthority
+
+        if not isinstance(receipt, EvaluatorRunReceiptV1) or receipt.tier != "holdout":
+            raise TrustedEvaluatorError("owner metric summary requires a HOLDOUT receipt")
+        spec = self.graph.campaign_spec()
+        if not isinstance(spec, OptimizationCampaignSpecV2):
+            raise TrustedEvaluatorError("owner metric summary requires an Optimization campaign")
+        reference = spec.evaluation
+        authority = EvaluatorProtocolAuthority(self.graph.conn)
+        authority.require_frozen_reference(
+            reference.protocol_id, reference.version, reference.content_sha256,
+            reference.approval_digest, campaign_id=self.campaign_id,
+        )
+        proposal, _ = authority.approved_protocol(reference.approval_digest)
+        protocol = proposal.protocol
+        durable_receipt = authority.require_run_receipt(
+            receipt.receipt_digest, campaign_id=self.campaign_id,
+            spec_hash=spec.approved_hash(), approval_digest=reference.approval_digest,
+            protocol_digest=protocol.content_digest(),
+            candidate_snapshot_id=receipt.candidate_snapshot_id,
+        )
+        if (durable_receipt != receipt or durable_receipt.tier != "holdout"
+                or durable_receipt.result_digest != receipt.result_digest):
+            raise TrustedEvaluatorError("owner metric summary receipt is stale or untrusted")
+        result = self._load_evaluation_result(receipt.result_digest)
+        metric = result.metrics.get(protocol.metric_field)
+        if result.status != "ok" or metric is None or not math.isfinite(metric.value):
+            raise TrustedEvaluatorError("trusted HOLDOUT aggregate metric is invalid")
+        return {
+            "metric_id": protocol.metric_id,
+            "metric_field": protocol.metric_field,
+            "direction": protocol.direction,
+            "value": metric.value,
+            "unit": metric.unit,
+            "n": metric.n,
+        }
+
     def create_integration_evidence(self, *, baseline_run_receipt_digest: str,
                                     candidate_run_receipt_digest: str):
         """Derive candidate-vs-baseline integration checks inside trusted Core.
@@ -1190,6 +1260,29 @@ class TrustedEvaluatorAdapter:
         repo = Path(spec.source_repo).resolve()
         if not repo.is_dir() or repo.is_symlink():
             raise TrustedEvaluatorError("frozen campaign source repository is unavailable")
+        # v2 Optimizer candidates are committed into a Core-owned private Git
+        # snapshot repository. Never import their objects into the user's
+        # source repository; resolve the exact content-addressed path instead.
+        try:
+            subprocess.check_output(
+                ["git", "-C", str(repo), "cat-file", "-e", f"{candidate_snapshot_id}^{{commit}}"],
+                stderr=subprocess.PIPE, timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError):
+            snapshot_root = (self.state_root / "v2_optimization" / "snapshots"
+                             / self.campaign_id).resolve()
+            candidate_repo = snapshot_root / candidate_snapshot_id
+            try:
+                candidate_resolved = candidate_repo.resolve(strict=True)
+                candidate_resolved.relative_to(snapshot_root)
+            except (OSError, ValueError):
+                raise TrustedEvaluatorError(
+                    "candidate snapshot is unavailable in the source or Core snapshot repository"
+                ) from None
+            if (candidate_repo.is_symlink() or not candidate_resolved.is_dir()
+                    or (candidate_resolved / ".git").is_symlink()):
+                raise TrustedEvaluatorError("Core candidate snapshot repository is unsafe")
+            repo = candidate_resolved
         for commit in (source_snapshot_id, candidate_snapshot_id):
             try:
                 resolved = subprocess.check_output(

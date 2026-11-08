@@ -29,4 +29,43 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -U pip
       - run: python -m pip install -e ".[test]"
-      - run: pytest
+      - name: Prepare private Windows pytest root
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $testRoot = Join-Path $env:USERPROFILE ".bananloop-pytest-temp"
+          New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
+          $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          Write-Output "Pytest DACL runner SID: $currentSid"
+          $acl = Get-Acl -Path $testRoot
+          $acl.SetAccessRuleProtection($true, $false)
+          foreach ($rule in @($acl.Access)) { $acl.RemoveAccessRuleAll($rule) }
+          $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
+            [Security.AccessControl.InheritanceFlags]::ObjectInherit
+          foreach ($sid in @($currentSid, "S-1-5-18", "S-1-5-32-544")) {
+            $identity = [Security.Principal.SecurityIdentifier]::new($sid)
+            $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+              $identity, [Security.AccessControl.FileSystemRights]::FullControl,
+              $inheritance, [Security.AccessControl.PropagationFlags]::None,
+              [Security.AccessControl.AccessControlType]::Allow)
+            [void]$acl.AddAccessRule($rule)
+          }
+          Set-Acl -Path $testRoot -AclObject $acl
+          $verifiedAcl = Get-Acl -Path $testRoot
+          if (-not $verifiedAcl.AreAccessRulesProtected) { throw "Pytest DACL still inherits from USERPROFILE" }
+          if (@($verifiedAcl.Access).Count -ne 3) { throw "Pytest DACL contains unexpected access rules" }
+          $verifiedAcl.Access | ForEach-Object {
+            $sid = $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+            Write-Output "$sid $($_.FileSystemRights) $($_.AccessControlType) inherited=$($_.IsInherited)"
+          }
+          "BANANLOOP_TEST_BASETEMP=$testRoot" >> $env:GITHUB_ENV
+      - name: Run pytest on Windows
+        if: matrix.os == 'windows-latest'
+        run: python -m pytest -p isolate_home --basetemp "$env:BANANLOOP_TEST_BASETEMP"
+        env:
+          PYTHONPATH: tests/plugins
+      - name: Run pytest on Ubuntu
+        if: matrix.os == 'ubuntu-latest'
+        run: python -m pytest -p isolate_home
+        env:
+          PYTHONPATH: tests/plugins

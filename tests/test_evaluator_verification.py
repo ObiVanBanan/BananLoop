@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 import sqlite3
 import subprocess
 import zipfile
@@ -109,6 +110,87 @@ def _receipt(proposal, *, decision="APPROVE", verifier_instance="agent-" + "5" *
         verifier_output_digest="8" * 64, review_material_digest="9" * 64,
         output=output,
     )
+
+
+def build_full_optimization_runtime(
+    *, graph, queue, campaign_id, state_root, source_snapshot_id,
+    candidate_snapshot_id, protocol, manifest, registry, runner=None,
+):
+    """Build the real evaluator/integration adapters used by lifecycle E2E tests."""
+    class DeterministicRunner(TrustedEvaluatorRunner):
+        def __init__(self):
+            super().__init__(bwrap_binary="not-used-in-test")
+            self.protocol_hash = manifest.protocol_sha256
+
+        def _sandbox_available(self):
+            return True
+
+        def _execute_isolated(
+            self, argv, *, readonly, output, candidate_snapshot_id, tier, timeout,
+        ):
+            private_map = json.loads(
+                (readonly / "tier" / "input-map.json").read_text(encoding="utf-8")
+            )
+            measured_cases = [{
+                "case_id": item["case_id"], "repetition": item["repetition"],
+                "input_sha256": item["input_sha256"], "metrics": {},
+            } for item in private_map]
+            if candidate_snapshot_id == source_snapshot_id:
+                score = 0.6
+            else:
+                candidate_file = (state_root / "v2_optimization" / "snapshots"
+                                  / campaign_id / candidate_snapshot_id / "src" / "app.py")
+                try:
+                    score = 0.5 if "regression candidate" in candidate_file.read_text() else 0.8
+                except FileNotFoundError:
+                    score = 0.8
+            return json.dumps({
+                "status": "ok", "metrics": {"quality": score},
+                "protocol_sha256": self.protocol_hash, "cases": measured_cases,
+                "diagnostics": {},
+            })
+
+    trusted = TrustedEvaluatorAdapter(
+        graph=graph, queue=queue, campaign_id=campaign_id,
+        state_root=state_root, runner=runner or DeterministicRunner(),
+    )
+    team = TeamFactoryV1.build(
+        registry,
+        TeamRequestV1(
+            campaign_id=campaign_id, spec_hash=graph.campaign_spec().approved_hash(),
+            requested_instances={
+                "integration_verifier": 1,
+                **({"optimizer": 1} if any(role.role_id == "optimizer" for role in registry.roles) else {}),
+            }, specializations=(),
+            available_agent_calls=20, available_model_tokens=1000,
+        ),
+        expected_registry_digest=registry.digest(),
+    )
+    manifest_authority = TeamManifestAuthority(queue.path)
+    manifest_authority.pin(team)
+    manifest_authority.close()
+    member = next(item for item in team.members if item.role.role_id == "integration_verifier")
+
+    def invoke(request, _gateway, **_pinned):
+        public_evidence = json.loads(request["role_context"]["public_task"])
+        return IntegrationVerifierOutputV1(
+            candidate_snapshot_id=request["candidate_snapshot_id"],
+            protocol_digest=request["protocol_digest"], decision=public_evidence["decision"],
+            checks=(
+                "candidate_identity", "protocol_identity", "evaluation_receipt",
+                "budget_receipt", "artifact_integrity", "regression_policy",
+            ),
+        ).model_dump(mode="json")
+
+    executor = PinnedRoleExecutorV1.from_manifest(team, member.instance_id, invoke)
+    integration = IntegrationVerificationAdapter(
+        graph=graph, queue=queue, campaign_id=campaign_id,
+        trusted_evaluator=trusted,
+    )
+    coordinator = OptimizationAttemptCoordinator(
+        graph=graph, trusted_evaluator=trusted, integration_verifier=integration,
+    )
+    return coordinator, trusted, executor
 
 
 def test_protocol_digest_is_canonical_and_protected_tiers_have_manifest_identity():
@@ -647,8 +729,9 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(
 
 
 
-def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
-    tmp_path, monkeypatch,
+@pytest.mark.parametrize("real_isolation", [False, True], ids=["test-runner", "real-bwrap"])
+def test_optimization_lifecycle_integrates_durable_evaluator_and_verification_queues(
+    tmp_path, monkeypatch, real_isolation,
 ):
     repo = tmp_path / "source-repo"
     repo.mkdir()
@@ -661,8 +744,10 @@ def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
     git("config", "user.email", "rpdi11@example.invalid")
     git("config", "user.name", "RPDI-11 test")
     (repo / "src").mkdir()
+    (repo / "data").mkdir()
+    (repo / "data" / "train.csv").write_text("sex,survived\nfemale,1\n", encoding="utf-8")
     (repo / "src" / "app.py").write_text("base\n", encoding="utf-8")
-    git("add", "src/app.py")
+    git("add", "src/app.py", "data/train.csv")
     git("commit", "-qm", "source snapshot")
     source_snapshot_id = git("rev-parse", "HEAD")
     (repo / "src" / "app.py").write_text("candidate\n", encoding="utf-8")
@@ -672,21 +757,40 @@ def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
 
     input_bytes = b'{"prompt":"controlled case","label":"ok"}'
     input_sha = hashlib.sha256(input_bytes).hexdigest()
+    holdout_input_bytes = b'{"prompt":"separate final holdout case","label":"holdout"}'
+    holdout_input_sha = hashlib.sha256(holdout_input_bytes).hexdigest()
     bundle_io = __import__("io").BytesIO()
+    evaluator = b'''import json, os
+from pathlib import Path
+tier = Path(os.environ["BANANLOOP_TIER"])
+manifest = json.loads((tier / "manifest.json").read_text())
+cases = json.loads((tier / "input-map.json").read_text())
+candidate = Path(os.environ["BANANLOOP_CANDIDATE"]) / "src/app.py"
+source = candidate.read_text()
+quality = 0.5 if "regression candidate" in source else (0.6 if source == "base\\n" else 0.8)
+print(json.dumps({
+    "status": "ok", "metrics": {"quality": quality},
+    "protocol_sha256": manifest["protocol_sha256"],
+    "cases": [{key: item[key] for key in ("case_id", "repetition", "input_sha256")} for item in cases],
+}))
+'''
     with zipfile.ZipFile(bundle_io, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("evaluate.py", "# deterministic test asset\n")
+        archive.writestr("evaluate.py", evaluator)
     bundle_bytes = bundle_io.getvalue()
     bundle_sha = hashlib.sha256(bundle_bytes).hexdigest()
     preliminary = EvaluatorProtocolV1(
         protocol_id="lifecycle-quality", version=1,
         source_snapshot_id=source_snapshot_id,
         evaluator_bundle_sha256=bundle_sha,
-        entrypoint=("python", "{evaluator}/evaluate.py"),
+        entrypoint=("python3", "{evaluator}/evaluate.py"),
         metric_id="quality", metric_field="quality",
         direction="MAXIMIZE", aggregation="MEAN",
         tiers=(
             EvaluatorTierManifestV1(
                 tier="dev", manifest_sha256="0" * 64, case_count=1,
+            ),
+            EvaluatorTierManifestV1(
+                tier="holdout", manifest_sha256="0" * 64, case_count=1,
             ),
             EvaluatorTierManifestV1(
                 tier="validation", manifest_sha256="0" * 64, case_count=1,
@@ -704,10 +808,24 @@ def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
         manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
     ).encode()
     manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
+    holdout_manifest = ProtocolManifest(
+        protocol_sha256=_case_protocol_digest(preliminary),
+        cases=(ProtocolCase(
+            case_id="controlled-holdout-case", repetition=0,
+            input_sha256=holdout_input_sha,
+        ),),
+    )
+    holdout_manifest_bytes = json.dumps(
+        holdout_manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
+    ).encode()
+    holdout_manifest_sha = hashlib.sha256(holdout_manifest_bytes).hexdigest()
     protocol = preliminary.model_copy(update={
         "tiers": (
             EvaluatorTierManifestV1(
                 tier="dev", manifest_sha256=manifest_sha, case_count=1,
+            ),
+            EvaluatorTierManifestV1(
+                tier="holdout", manifest_sha256=holdout_manifest_sha, case_count=1,
             ),
             EvaluatorTierManifestV1(
                 tier="validation", manifest_sha256=manifest_sha, case_count=1,
@@ -746,11 +864,24 @@ def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
         ),
         context_fields=("campaign_goal", "public_task"),
         priority=1, min_instances=1, max_instances=1,
-        calls_per_instance=1, tokens_per_instance=100,
+        calls_per_instance=5, tokens_per_instance=500,
+    )
+    optimizer_role = RoleDefinitionV1(
+        role_id="optimizer", adapter="codex", provider="openai",
+        model="gpt-6-luna", model_version="pin-test", prompt_digest="b" * 64,
+        capability_policy=CapabilityPolicyV2(
+            tools=("read_file", "write_file", "commit_candidate"),
+            read_paths=("data/**", "src/**"), write_paths=("src/**",), backend="LOCAL",
+            network_access=False,
+        ),
+        context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
+                        "constraints", "evidence_refs", "dev_summary"),
+        priority=1, min_instances=1, max_instances=1,
+        calls_per_instance=5, tokens_per_instance=500,
     )
     registry = RoleRegistryV1(
         registry_id="full-lifecycle-registry", version=1,
-        roles=(role_definition,),
+        roles=(role_definition, optimizer_role),
     )
     spec = parse_campaign_spec_document({
         "schema_version": 2, "mode": "OPTIMIZATION",
@@ -759,8 +890,9 @@ def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
         "autonomy": {
             "mode": "SUPERVISED", "scope_digest": "b" * 64, "scope_version": 1,
             "capability_policy": {
-                "tools": [], "read_paths": ["src/**"], "write_paths": [],
-                "backend": "ISOLATED", "network_access": False,
+                "tools": ["read_file", "write_file", "commit_candidate"],
+                "read_paths": ["data/**", "src/**"], "write_paths": ["src/**"],
+                "backend": "LOCAL", "network_access": False,
             },
         },
         "budget": {
@@ -783,14 +915,16 @@ def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
     published.mkdir(parents=True)
     for data, digest in (
         (bundle_bytes, bundle_sha), (manifest_bytes, manifest_sha),
-        (input_bytes, input_sha),
+        (input_bytes, input_sha), (holdout_manifest_bytes, holdout_manifest_sha),
+        (holdout_input_bytes, holdout_input_sha),
     ):
         (published / digest).write_bytes(data)
 
     db_path = state_root / "campaign.sqlite3"
     ledger = BudgetLedger(db_path)
     ledger.create_root(
-        campaign_id, {"agent_calls": 20, "evaluator_calls": 20},
+        campaign_id, {"agent_calls": 20, "evaluator_calls": 20,
+                      "experiments": 10, "attempts": 20},
     )
     ledger.close()
     conn = sqlite3.connect(db_path, isolation_level=None)
@@ -817,67 +951,13 @@ def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
     protocol_authority._append_proposal(proposal)
     protocol_authority._append_verified_receipt(approval)
 
-    class DeterministicRunner(TrustedEvaluatorRunner):
-        def __init__(self):
-            super().__init__(bwrap_binary="not-used-in-test")
-            self.protocol_hash = manifest.protocol_sha256
-
-        def _sandbox_available(self):
-            return True
-
-        def _execute_isolated(
-            self, argv, *, readonly, output, candidate_snapshot_id, tier, timeout,
-        ):
-            private_map = json.loads(
-                (readonly / "tier" / "input-map.json").read_text(encoding="utf-8")
-            )
-            measured_cases = [{
-                "case_id": item["case_id"], "repetition": item["repetition"],
-                "input_sha256": item["input_sha256"], "metrics": {},
-            } for item in private_map]
-            score = 0.6 if candidate_snapshot_id == source_snapshot_id else 0.8
-            return json.dumps({
-                "status": "ok", "metrics": {"quality": score},
-                "protocol_sha256": self.protocol_hash, "cases": measured_cases,
-                "diagnostics": {},
-            })
-
-    runner = DeterministicRunner()
-    trusted = TrustedEvaluatorAdapter(
-        graph=graph, queue=queue, campaign_id=campaign_id,
-        state_root=state_root, runner=runner,
-    )
-    team = TeamFactoryV1.build(
-        registry,
-        TeamRequestV1(
-            campaign_id=campaign_id, spec_hash=spec_hash,
-            requested_instances={"integration_verifier": 1}, specializations=(),
-            available_agent_calls=10, available_model_tokens=1000,
-        ),
-        expected_registry_digest=registry.digest(),
-    )
-    manifest_authority = TeamManifestAuthority(db_path)
-    manifest_authority.pin(team)
-    manifest_authority.close()
-    member = team.members[0]
-
-    def invoke(request, _gateway, **_pinned):
-        return IntegrationVerifierOutputV1(
-            candidate_snapshot_id=request["candidate_snapshot_id"],
-            protocol_digest=request["protocol_digest"], decision="PASS",
-            checks=(
-                "candidate_identity", "protocol_identity", "evaluation_receipt",
-                "budget_receipt", "artifact_integrity", "regression_policy",
-            ),
-        ).model_dump(mode="json")
-
-    executor = PinnedRoleExecutorV1.from_manifest(team, member.instance_id, invoke)
-    integration = IntegrationVerificationAdapter(
-        graph=graph, queue=queue, campaign_id=campaign_id,
-        trusted_evaluator=trusted,
-    )
-    coordinator = OptimizationAttemptCoordinator(
-        graph=graph, trusted_evaluator=trusted, integration_verifier=integration,
+    real_runner = TrustedEvaluatorRunner() if real_isolation else None
+    if real_runner is not None and not real_runner._sandbox_available():
+        pytest.skip("host does not permit production bubblewrap namespaces")
+    coordinator, trusted, executor = build_full_optimization_runtime(
+        graph=graph, queue=queue, campaign_id=campaign_id, state_root=state_root,
+        source_snapshot_id=source_snapshot_id, candidate_snapshot_id=candidate_snapshot_id,
+        protocol=protocol, manifest=manifest, registry=registry, runner=real_runner,
     )
     try:
         graph.mutate(MutateGraph(
@@ -974,6 +1054,161 @@ def test_full_optimization_lifecycle_runs_real_evaluator_and_integration_queues(
         assert graph.conn.execute(
             "SELECT COUNT(*) FROM evaluator_integration_receipts"
         ).fetchone()[0] == 1
+
+        graph.mutate(MutateGraph(
+            command_id="add-v2-runtime-proposal", idempotency_key="add-v2-runtime-proposal",
+            expected_graph_revision=graph.graph_revision(),
+            changes=(AddNode(
+                type="AddNode", node_id="v2-runtime-proposal", phase="OPTIMIZATION",
+                payload={"source_snapshot_id": source_snapshot_id,
+                         "hypothesis": "Improve the deterministic ranker.",
+                         "scheduler": {"priority": 5}},
+            ),),
+        ))
+        from bananloop.v2_optimization_runtime import V2OptimizationRuntime
+
+        runtime = V2OptimizationRuntime(
+            graph=graph, queue=queue, campaign_id=campaign_id, state_root=state_root,
+            role_registry=registry, trusted_evaluator=trusted,
+            integration_verifier=coordinator.integration_verifier,
+        )
+
+        def optimizer_reply(public_input, **_pinned):
+            assert "visible_documents" in public_input
+            assert public_input["visible_documents"]["data/train.csv"] == (
+                "sex,survived\nfemale,1\n"
+            )
+            assert public_input["writable_paths"] == ["src/app.py"]
+            encoded = json.dumps(public_input).lower()
+            assert "controlled-case" not in encoded
+            assert "controlled case" not in encoded
+            return {
+                "hypothesis_id": "ranker-hypothesis",
+                "rationale": "Use the improved deterministic ranker implementation.",
+                "changes": {"src/app.py": "optimized candidate\n"},
+            }
+
+        proposed = runtime.run_one(
+            visible_paths=["src/app.py", "data/train.csv"],
+            write_paths=["src/app.py"], hypothesis_id="ranker-hypothesis",
+            model_reply=optimizer_reply, worker_id="v2-optimizer-test",
+        )
+        assert proposed["status"] == "CANDIDATE_CREATED"
+        assert proposed["candidate_snapshot_id"] != source_snapshot_id
+        published_revision = graph.graph_revision()
+        published_events = len(queue.events_after(0))
+        replayed = runtime.candidate_adapter.publish_completed(proposed["job_id"])
+        assert replayed["replayed"] is True
+        assert graph.graph_revision() == published_revision
+        assert len(queue.events_after(0)) == published_events
+        assert runtime.run_one(
+            visible_paths=["src/app.py"], worker_id="v2-optimization-cycle",
+        )["status"] == "DEV_EVALUATED"
+        verified = runtime.run_one(
+            visible_paths=["src/app.py"], integration_verifier_executor=executor,
+            worker_id="v2-optimization-cycle",
+        )
+        assert verified["status"] == "INDEPENDENT_VERIFICATION_PASS"
+        assert verified["champion"]["snapshot_id"] == proposed["candidate_snapshot_id"]
+
+        graph.mutate(MutateGraph(
+            command_id="add-v2-runtime-regression", idempotency_key="add-v2-runtime-regression",
+            expected_graph_revision=graph.graph_revision(),
+            changes=(AddNode(
+                type="AddNode", node_id="v2-runtime-regression", phase="OPTIMIZATION",
+                payload={"source_snapshot_id": source_snapshot_id,
+                         "hypothesis": "Try an intentionally regressing implementation.",
+                         "scheduler": {"priority": 10}},
+            ),),
+        ))
+
+        def regressing_reply(_public_input, **_pinned):
+            return {
+                "hypothesis_id": "regressing-hypothesis",
+                "rationale": "This candidate is deliberately worse for the rejection test.",
+                "changes": {"src/app.py": "regression candidate\n"},
+            }
+
+        regressing = runtime.run_one(
+            visible_paths=["src/app.py"], hypothesis_id="regressing-hypothesis",
+            model_reply=regressing_reply, worker_id="v2-regression-optimizer",
+        )
+        assert regressing["status"] == "CANDIDATE_CREATED"
+        assert runtime.run_one(
+            visible_paths=["src/app.py"], worker_id="v2-regression-evaluator",
+        )["status"] == "DEV_EVALUATED"
+        rejected = runtime.run_one(
+            visible_paths=["src/app.py"], integration_verifier_executor=executor,
+            worker_id="v2-regression-verifier",
+        )
+        assert rejected["status"] == "INDEPENDENT_VERIFICATION_FAIL"
+        assert rejected["champion"] is None
+
+        # Reopen the durable graph and queue after the rejected attempt. The
+        # next role context must still carry the persisted failure evidence.
+        restarted_graph = GraphRepository.open(str(db_path), campaign_id=campaign_id)
+        restarted_queue = DurableWorkerQueue(db_path)
+        restarted_trusted = TrustedEvaluatorAdapter(
+            graph=restarted_graph, queue=restarted_queue, campaign_id=campaign_id,
+            state_root=state_root, runner=trusted.runner,
+        )
+        restarted_integration = IntegrationVerificationAdapter(
+            graph=restarted_graph, queue=restarted_queue, campaign_id=campaign_id,
+            trusted_evaluator=restarted_trusted,
+        )
+        runtime = V2OptimizationRuntime(
+            graph=restarted_graph, queue=restarted_queue, campaign_id=campaign_id,
+            state_root=state_root, role_registry=registry,
+            trusted_evaluator=restarted_trusted,
+            integration_verifier=restarted_integration,
+        )
+
+        def memory_guided_reply(public_input, **_pinned):
+            constraints = public_input["role_context"]["constraints"]
+            assert any("previous candidate did not pass" in item.lower() for item in constraints)
+            assert public_input["role_context"]["evidence_refs"]
+            return {
+                "hypothesis_id": "revised-hypothesis",
+                "rationale": "Use the prior rejection evidence to revise the implementation.",
+                "changes": {"src/app.py": "recovered optimized candidate\n"},
+            }
+
+        revised = runtime.run_one(
+            visible_paths=["src/app.py"], hypothesis_id="revised-hypothesis",
+            model_reply=memory_guided_reply, worker_id="v2-recovery-optimizer",
+        )
+        assert revised["status"] == "CANDIDATE_CREATED"
+        assert runtime.run_one(
+            visible_paths=["src/app.py"], worker_id="v2-recovery-evaluator",
+        )["status"] == "DEV_EVALUATED"
+        recovered = runtime.run_one(
+            visible_paths=["src/app.py"], integration_verifier_executor=executor,
+            worker_id="v2-recovery-verifier",
+        )
+        assert recovered["status"] == "INDEPENDENT_VERIFICATION_PASS"
+        assert recovered["champion"]["snapshot_id"] == revised["candidate_snapshot_id"]
+        finalized = runtime.run_campaign(
+            visible_paths=["src/app.py"], integration_verifier_executor=executor,
+            max_steps=1, worker_id="v2-optimization-finalize",
+        )
+        assert finalized["status"] == "ALL_NODES_COMPLETE"
+        assert finalized["holdout"]["status"] == "VERIFIED"
+        assert finalized["holdout"]["candidate_snapshot_id"] == revised["candidate_snapshot_id"]
+        assert finalized["holdout"]["metric"]["metric_id"] == "quality"
+        assert finalized["holdout"]["metric"]["value"] == 0.8
+        optimization_report = json.loads(Path(finalized["report_path"]).read_text())
+        assert optimization_report["campaign_id"] == campaign_id
+        assert optimization_report["status"] == finalized["status"]
+        assert optimization_report["champion"]["snapshot_id"] == revised["candidate_snapshot_id"]
+        assert optimization_report["holdout"]["tier"] == "holdout"
+        assert optimization_report["holdout"]["metric"]["value"] == 0.8
+        assert {item["tier"] for item in optimization_report["evaluation_receipts"]} == {
+            "dev", "validation",
+        }
+        assert not any("holdout" in item.lower() for node in optimization_report["nodes"]
+                       for item in node["evidence_refs"])
+        restarted_queue.close()
+        restarted_graph.close()
     finally:
         queue.close()
         graph.close()

@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "campaign": "BananLoop v0.2 Full owner-facing Optimization CLI",
+  "implementation_sha": "456a6f22f935fb2a1704db1af4e3a289b20e8563",
+  "pr": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "offline_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest -p isolate_home -o addopts='' -q -ra --tb=short",
+    "result": "passed",
+    "passed": 952,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "subtests_passed": 7,
+    "duration_seconds": 67.59,
+    "skips": [
+      "Pinned selector source commit cd753c97c62148c3ccd3f030251e96a4d19b23bd is unavailable",
+      "Windows ACL/reparse-point contract cannot run on Linux"
+    ],
+    "production_bubblewrap_evaluator": true,
+    "loopback_api_acceptance": true
+  },
+  "optimization_cli": {
+    "command": "bananloop v2 optimize",
+    "legacy_engine": false,
+    "requires_frozen_optimization_child": true,
+    "role_registry_digest_bound": true,
+    "evaluator_handoff_preflight": true,
+    "default_approval_calls": 0,
+    "optimizer_and_verifier_share_approval_allowance": true,
+    "provider_receipts_persisted_in_sqlite": true,
+    "automatic_retry_after_uncertain_request": false,
+    "path_allowlists_separate_read_and_write": true,
+    "offline_cli_plumbing_test_uses_mocks": true,
+    "real_v2_optimization_runtime_covered_by_existing_integration_tests": true
+  },
+  "remaining_integration_gap": "The command runs an existing Optimization child. One public command still does not create the parent Exploration, discover and independently verify a protocol, create the child, and continue through Optimization.",
+  "live_titanic": {
+    "holdout_correct": 153,
+    "holdout_total": 196,
+    "holdout_accuracy": 0.7806122448979592,
+    "target_accuracy": 0.95,
+    "target_met": false,
+    "monetary_cost": "UNKNOWN",
+    "live_calls_for_this_change": 0
+  },
+  "ci": {
+    "revision": "456a6f22f935fb2a1704db1af4e3a289b20e8563",
+    "status": "pending publication"
+  },
+  "goal_status": "active; full parent-to-child orchestration and final acceptance remain open"
+}

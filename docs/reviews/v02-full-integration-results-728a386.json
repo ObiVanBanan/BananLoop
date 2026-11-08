@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "campaign": "BananLoop v0.2 Linux three-iteration CLI-to-CLI acceptance",
+  "implementation_sha": "728a386dc2e3185c936cd9502d5466200bd0a25f",
+  "pr": "https://github.com/ObiVanBanan/BananLoop/pull/135",
+  "integrated_acceptance": {
+    "result": "passed",
+    "variants": ["test-runner", "real-bwrap"],
+    "single_campaign_route": [
+      "parsed v2 explore preflight creates frozen campaign without provider dispatch",
+      "first matched-control hypothesis records REFUTES in durable Research Ledger",
+      "Core selects an evidence-linked follow-up over the researcher's unrelated preference",
+      "second matched-control result also records REFUTES",
+      "third iteration receives both refutations, executes narrowed follow-up and records SUPPORTS",
+      "convergence detection records stop on repeated next action after three completed experiments",
+      "separate pinned protocol verifier approves evaluator protocol",
+      "owner approves and executes pivot via API to a separate Optimization child",
+      "parsed v2 optimize runs trusted HOLDOUT and writes final report"
+    ],
+    "mocked_components": ["SIWC researcher, protocol-verifier, optimizer and integration-verifier transports"],
+    "external_model_calls": 0
+  },
+  "offline_suite": {
+    "command": "PYTHONPATH=tests/plugins:tests:src:. .venv/bin/python -m pytest -p isolate_home -o addopts='' -q -ra --tb=short",
+    "result": "passed",
+    "passed": 954,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "subtests_passed": 7,
+    "duration_seconds": 64.13,
+    "skips": [
+      "Pinned selector source commit cd753c97c62148c3ccd3f030251e96a4d19b23bd is unavailable",
+      "Windows ACL/reparse-point contract deferred"
+    ]
+  },
+  "ci": {
+    "revision": "728a386dc2e3185c936cd9502d5466200bd0a25f",
+    "successful": [
+      "pytest ubuntu-latest Python 3.11",
+      "pytest ubuntu-latest Python 3.12",
+      "pytest ubuntu-latest Python 3.13",
+      "chromium",
+      "mutate-policy"
+    ],
+    "windows": "deferred by owner"
+  },
+  "live_titanic": {
+    "holdout_correct": 153,
+    "holdout_total": 196,
+    "holdout_accuracy": 0.7806122448979592,
+    "target_accuracy": 0.95,
+    "target_met": false,
+    "additional_calls": 0,
+    "cost": "UNKNOWN where provider did not report it"
+  },
+  "goal_status": "active; three-iteration full CLI offline E2E proves refutation-driven memory and Optimization handoff; live Titanic target and remaining acceptance criteria remain open"
+}

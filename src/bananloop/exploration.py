@@ -18,12 +18,14 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .budget_ledger import BudgetLedger
 from .capabilities import (
     BubblewrapBackend, CapabilityAuthority, CapabilityDenied, CapabilityGrantV1,
     LocalBackend, PermissionEngine, SandboxUnavailable, ToolGateway,
 )
 from .contracts import ExplorationCampaignSpecV2
 from .graph_store import ExplorationCompletionV2, GraphRepository, GraphStoreError
+from .human_decision import HumanDecisionRequestV1
 from .roles import (
     PinnedRoleExecutorV1, RoleContextSourceV1,
     RoleContractError, RoleContextV1, RoleRegistryV1, TeamFactoryV1,
@@ -51,10 +53,12 @@ class EvidenceOnlyOutputV2(BaseModel):
     node_id: str = Field(min_length=1, max_length=200)
     evidence_refs: tuple[str, ...] = ()
     artifacts: tuple[ArtifactDigestV2, ...] = ()
+    core_artifact_digests: tuple[str, ...] = Field(default=(), max_length=4096)
     limitations: tuple[str, ...] = ()
     next_experiment: str = Field(min_length=1, max_length=4000)
     research_findings: tuple[ResearchFindingV1, ...] = Field(default=(), max_length=64)
     protocol_draft: EvaluatorProtocolDraftV1 | None = None
+    human_decision_request: HumanDecisionRequestV1 | None = None
 
     @field_validator("evidence_refs", "limitations")
     @classmethod
@@ -62,6 +66,14 @@ class EvidenceOnlyOutputV2(BaseModel):
         if any(not x.strip() or len(x) > 2000 for x in values):
             raise ValueError("evidence text items must be nonempty and bounded")
         return tuple(sorted(set(values)))
+
+    @field_validator("core_artifact_digests")
+    @classmethod
+    def valid_core_artifact_digests(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if (len(set(values)) != len(values)
+                or any(not re.fullmatch(r"[0-9a-f]{64}", item) for item in values)):
+            raise ValueError("Core artifact bindings must be unique SHA-256 digests")
+        return tuple(sorted(values))
 
     @model_validator(mode="after")
     def unique_artifact_paths(self) -> "EvidenceOnlyOutputV2":
@@ -128,13 +140,20 @@ class EvidenceOnlyAttemptAdapter:
     """Build, execute, verify and replay an isolated exploration attempt."""
 
     def __init__(self, *, graph: GraphRepository, queue: DurableWorkerQueue,
-                 campaign_id: str, state_root: str | Path, role_registry: RoleRegistryV1):
+                 campaign_id: str, state_root: str | Path, role_registry: RoleRegistryV1,
+                 trusted_artifact_digests: tuple[str, ...] = ()):
         self.graph = graph
         self.queue = queue
         self.campaign_id = campaign_id
         self.graph.bind_campaign_id(campaign_id)
         self.state_root = Path(state_root).resolve()
         self.role_registry = role_registry
+        if (len(trusted_artifact_digests) > 4096
+                or any(not isinstance(item, str) or not re.fullmatch(r"[0-9a-f]{64}", item)
+                       for item in trusted_artifact_digests)
+                or len(set(trusted_artifact_digests)) != len(trusted_artifact_digests)):
+            raise EvidenceAdapterError("trusted artifact allowlist must contain unique SHA-256 digests")
+        self.trusted_artifact_digests = tuple(sorted(trusted_artifact_digests))
 
     def enqueue(self, *, node_id: str, visible_paths: tuple[str, ...] | list[str]) -> dict[str, Any]:
         spec = self.graph.campaign_spec()
@@ -172,11 +191,39 @@ class EvidenceOnlyAttemptAdapter:
             raise EvidenceAdapterError("approved base does not resolve to a Git commit") from exc
         if not _GIT_OID.fullmatch(resolved_commit):
             raise EvidenceAdapterError("Git returned an invalid full commit object ID")
+        action_id = f"exploration:{node_id}"
+        existing = self.queue.get_job_for_action(self.campaign_id, action_id)
+        if existing is not None:
+            request = existing["request"]
+            capability_manifest = request.get("capability_manifest")
+            if (request.get("schema") != "evidence-only-attempt-v1"
+                    or request.get("node_id") != node_id
+                    or request.get("spec_hash") != spec_hash
+                    or request.get("base_commit") != resolved_commit
+                    or request.get("role_registry_digest") != spec.role_registry_digest
+                    or not isinstance(capability_manifest, dict)
+                    or capability_manifest.get("visible_paths") != list(paths)
+                    or int(request.get("node_revision", -1)) != node_revision):
+                raise EvidenceAdapterError("persisted Exploration action differs from this replay request")
+            return existing
+        budget_ledger = BudgetLedger(self.queue.path)
+        try:
+            budget_snapshot = budget_ledger.snapshot(self.campaign_id)
+        finally:
+            budget_ledger.close()
+        budget_remaining = {
+            name: max(0, int(item["cap"]) - int(item["spent"])
+                      - int(item["reserved"]) - int(item["unknown"]))
+            for name, item in budget_snapshot.items()
+        }
         model_token_cap = spec.budget.max_model_tokens
+        requested_instances = {"researcher": 1}
+        if any(role.role_id == "independent_verifier" for role in self.role_registry.roles):
+            requested_instances["independent_verifier"] = 1
         team_request = TeamRequestV1(
             campaign_id=self.campaign_id,
             spec_hash=spec_hash,
-            requested_instances={"researcher": 1},
+            requested_instances=requested_instances,
             available_agent_calls=spec.budget.max_agent_calls,
             available_model_tokens=model_token_cap,
         )
@@ -204,17 +251,24 @@ class EvidenceOnlyAttemptAdapter:
         researcher = next((member for member in team_manifest.members if member.role.role_id == "researcher"), None)
         if researcher is None:
             raise EvidenceAdapterError("pinned team manifest has no researcher instance")
+        node_hypothesis = target_node["payload"].get("hypothesis")
+        if not isinstance(node_hypothesis, str) or not node_hypothesis.strip():
+            node_hypothesis = None
         try:
             context_fields = {
                     "node_id": {"value": node_id, "classification": "PUBLIC_NODE",
                                 "source_ref": f"graph://nodes/{node_id}"},
                     "node_phase": {"value": target_node["phase"], "classification": "PUBLIC_NODE",
                                    "source_ref": f"graph://nodes/{node_id}"},
-                    "public_task": {"value": spec.goal, "classification": "PUBLIC_SPEC",
-                                    "source_ref": "campaign://spec/goal"},
+                    "public_task": {
+                        "value": (node_hypothesis or spec.goal)[:4000],
+                        "classification": "PUBLIC_NODE" if node_hypothesis else "PUBLIC_SPEC",
+                        "source_ref": f"graph://nodes/{node_id}" if node_hypothesis
+                                      else "campaign://spec/goal",
+                    },
                     "evidence_refs": {"value": (), "classification": "PUBLIC_NODE",
                                       "source_ref": f"graph://nodes/{node_id}"},
-                    "budget_remaining": {"value": {"agent_calls": spec.budget.max_agent_calls},
+                    "budget_remaining": {"value": budget_remaining,
                                          "classification": "CORE_BUDGET",
                                          "source_ref": f"budget://campaign/{self.campaign_id}"},
             }
@@ -226,7 +280,7 @@ class EvidenceOnlyAttemptAdapter:
             role_context = build_role_context(researcher, role_context_source)
             protocol_digest = ResearchLedger.protocol_digest_for_binding(
                 team_manifest.job_binding(
-                    researcher.instance_id, action_id=f"exploration:{node_id}",
+                    researcher.instance_id, action_id=action_id,
                     context_digest=role_context.digest(),
                 )
             )
@@ -246,9 +300,14 @@ class EvidenceOnlyAttemptAdapter:
                     context_updated = True
                 if "dev_summary" in researcher.role.context_fields:
                     summary_lines = [
-                        f"{item.claim_key} [{item.status}]: " + " | ".join(item.statements)
-                        for item in projection.causal_memory
+                        f"{item.claim_key} [{item.stance}] evidence_ids={item.evidence_id}: {item.statement}"
+                        for item in projection.evidence
                     ]
+                    summary_lines.extend([
+                        f"{item.claim_key} [{item.status}] evidence_ids="
+                        f"{','.join(item.evidence_ids)}: " + " | ".join(item.statements)
+                        for item in projection.causal_memory
+                    ])
                     summary_lines.extend(
                         f"{item.signature} [{item.status}]: {item.intervention_type}/"
                         f"{item.algorithmic_layer}; paths={', '.join(item.affected_paths)}; "
@@ -273,7 +332,7 @@ class EvidenceOnlyAttemptAdapter:
         except Exception as exc:
             raise EvidenceAdapterError(f"cannot build isolated researcher context: {type(exc).__name__}") from exc
         role_binding = team_manifest.job_binding(
-            researcher.instance_id, action_id=f"exploration:{node_id}", context_digest=role_context.digest(),
+            researcher.instance_id, action_id=action_id, context_digest=role_context.digest(),
         )
         role_policy = researcher.role.capability_policy
         task_policy = policy.model_copy(update={"read_paths": paths})
@@ -332,7 +391,7 @@ class EvidenceOnlyAttemptAdapter:
                    "role_registry_digest": team_manifest.registry_digest}
         return self.queue.enqueue(
             job_id=job_id, enqueue_key=job_id, campaign_id=self.campaign_id,
-            action_id=f"exploration:{node_id}", resource="agent_calls", upper_bound=1,
+            action_id=action_id, resource="agent_calls", upper_bound=1,
             request=request,
             role_allocation={
                 "manifest_digest": team_manifest.manifest_digest,
@@ -428,6 +487,11 @@ class EvidenceOnlyAttemptAdapter:
             finally:
                 authority.close()
             output = EvidenceOnlyOutputV2.model_validate(raw)
+            if output.core_artifact_digests:
+                raise EvidenceAdapterError("worker output cannot declare Core-trusted artifact digests")
+            output = output.model_copy(update={
+                "core_artifact_digests": self.trusted_artifact_digests,
+            })
             if output.node_id != lease["request"]["node_id"]:
                 raise EvidenceAdapterError("worker output targets a different graph node")
             declared = {item.path: item.sha256 for item in output.artifacts}
@@ -469,6 +533,8 @@ class EvidenceOnlyAttemptAdapter:
         if job["state"] != "COMPLETED" or durable["result"] is None:
             raise EvidenceAdapterError("job has no durable evidence result")
         result = EvidenceOnlyOutputV2.model_validate(durable["result"])
+        if result.core_artifact_digests != self.trusted_artifact_digests:
+            raise EvidenceAdapterError("durable Core-trusted artifact binding differs from runtime configuration")
         # Hash the exact durable worker payload. Re-serializing through the
         # current model would add fields introduced after an older job was
         # committed and break crash-safe replay across schema additions.
@@ -513,7 +579,7 @@ class EvidenceOnlyAttemptAdapter:
             raise EvidenceAdapterError("job artifact directory is missing or escaped its state root")
         published_root = _ensure_state_dir(self.state_root, "rpdi05", "published")
         artifact_refs: list[str] = []
-        artifact_digests: list[str] = []
+        artifact_digests: list[str] = list(result.core_artifact_digests)
         aggregate_size = 0
         for item in result.artifacts:
             relative = _safe_relative(item.path)
@@ -550,6 +616,14 @@ class EvidenceOnlyAttemptAdapter:
                         temporary.unlink()
             artifact_digests.append(digest)
             artifact_refs.append(f"artifact://sha256/{digest}")
+        for digest in self.trusted_artifact_digests:
+            if digest not in result.core_artifact_digests:
+                raise EvidenceAdapterError("durable result lost its Core-trusted artifact binding")
+            trusted_file = published_root / digest
+            if (trusted_file.is_symlink() or not trusted_file.is_file()
+                    or _sha(trusted_file.read_bytes()) != digest):
+                raise EvidenceAdapterError("Core-trusted published artifact failed digest verification")
+            artifact_digests.append(digest)
         payload = {
             "command_id": f"complete-{job_id}-f{durable['fence']}",
             "idempotency_key": f"completion:{job_id}:f{durable['fence']}",
@@ -559,8 +633,9 @@ class EvidenceOnlyAttemptAdapter:
             "source_request_hash": job["request_hash"], "output_digest": durable["output_digest"],
             "spec_hash": request["spec_hash"],
             "evidence_refs": tuple(sorted((*result.evidence_refs, *artifact_refs))),
-            "artifact_digests": tuple(sorted(artifact_digests)), "limitations": result.limitations,
+            "artifact_digests": tuple(sorted(set(artifact_digests))), "limitations": result.limitations,
             "next_experiment": result.next_experiment,
+            "human_decision_request": result.human_decision_request,
         }
         try:
             completion = ExplorationCompletionV2.model_validate(payload)

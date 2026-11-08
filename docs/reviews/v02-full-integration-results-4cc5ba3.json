@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "tested_code_commit": "4cc5ba3a36d44a0f844012caf0e41df4ea1d0a23",
+  "branch": "codex/v02-full-integration",
+  "base_main_commit": "6c89975870b0da8060146953faea966e203ba857",
+  "paid_model_call_made": false,
+  "prepared_live_smoke_command": "python examples/v2_research_diagnostic/run_one_chatgpt.py --work-dir /tmp/bananloop-v2-live-one-call --model gpt-6-luna --approve-one-call",
+  "hypothesis_portfolio": {
+    "candidate_count": 2,
+    "typed_fields": ["id", "hypothesis", "rationale", "next_experiment", "falsification_condition", "expected_evidence"],
+    "selection_bound_to_action": true,
+    "persisted_as_content_addressed_evidence": true
+  },
+  "exploration": {
+    "offline_smoke": "OFFLINE_V2_EXPLORATION_PASS",
+    "iterations": 2,
+    "research_evidence_counts": [1, 1],
+    "second_turn_received_public_memory": true,
+    "campaign_report_written": true,
+    "worktree_clean_at_tested_sha": true,
+    "live_model_called": false
+  },
+  "real_isolated_optimization": {
+    "bubblewrap_namespace_probe": true,
+    "dev_evaluation": true,
+    "validation_evaluation": true,
+    "regression_rejected": true,
+    "independent_verification": true,
+    "promotion": true,
+    "restart_memory_recovery": true,
+    "durable_public_optimization_report": true,
+    "report_excludes_nonpublic_evaluator_tiers": true,
+    "consolidated_parent_child_report": true,
+    "parent_graph_read_is_readonly": true
+  },
+  "combined_real_isolated_e2e": {
+    "exploration_to_approved_optimization_child": true,
+    "baseline_and_dev_evaluation": true,
+    "independent_verification": true,
+    "api_cli_and_final_report_projection": true
+  },
+  "repository_tests": {
+    "collected": 928,
+    "passed": 926,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 2,
+    "host_loopback_and_namespace_access_enabled": true
+  },
+  "open_acceptance_gates": [
+    "independent evidence-based candidate ranking and semantic plateau detection",
+    "current-head CI completion",
+    "owner-approved one-call ChatGPT live smoke (not run)"
+  ]
+}

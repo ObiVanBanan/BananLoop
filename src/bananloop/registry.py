@@ -428,6 +428,126 @@ class CampaignRegistry:
             finally:
                 conn.close()
 
+    def resolve_readonly(self, campaign_id: str | None = None) -> tuple[Path, str | None]:
+        """Resolve an existing campaign without bootstrapping or changing registry state."""
+        assert_safe_local_path(self.root, "project state root")
+        assert_safe_local_path(self.path, "campaign registry")
+        if not self.path.exists():
+            if self.legacy_db.exists() and campaign_id in {None, "legacy"}:
+                return self.legacy_db.parent, "legacy"
+            raise RegistryError("campaign registry does not contain the requested campaign")
+        uri = self.path.resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            tables = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )}
+            if not {"campaign_index", "project_meta"} <= tables:
+                if self.legacy_db.exists() and campaign_id in {None, "legacy"}:
+                    return self.legacy_db.parent, "legacy"
+                raise RegistryError("campaign registry schema is incomplete")
+            if campaign_id is None:
+                row = conn.execute(
+                    "SELECT campaign_id FROM project_meta WHERE id=1"
+                ).fetchone()
+                campaign_id = row[0] if row and row[0] else None
+            if campaign_id is None:
+                if self.legacy_db.exists():
+                    return self.legacy_db.parent, "legacy"
+                raise RegistryError("no campaign is selected")
+            row = conn.execute(
+                "SELECT * FROM campaign_index WHERE campaign_id=?", (campaign_id,),
+            ).fetchone()
+            if row is None:
+                if campaign_id == "legacy" and self.legacy_db.exists():
+                    return self.legacy_db.parent, "legacy"
+                raise RegistryError("unknown campaign ID")
+            entry = CampaignEntry(**dict(row))
+            return self._validate_state_path(entry.state_path, entry.origin), entry.campaign_id
+        except sqlite3.DatabaseError as exc:
+            raise RegistryError("campaign registry cannot be read safely") from exc
+        finally:
+            conn.close()
+
+    def list_page(
+        self, *, limit: int = 50,
+        after: tuple[str, str] | None = None,
+    ) -> tuple[list[tuple[CampaignEntry, bool]], bool]:
+        """Read one bounded campaign-index page without changing active state."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise RegistryError("campaign page limit must be between 1 and 100")
+        if after is not None and (
+            not isinstance(after, tuple) or len(after) != 2
+            or not isinstance(after[0], str) or len(after[0]) > 64
+            or not isinstance(after[1], str) or len(after[1]) > 100
+        ):
+            raise RegistryError("invalid campaign page cursor")
+
+        entries: list[tuple[CampaignEntry, bool]] = []
+        active: str | None = None
+        has_more = False
+        legacy_indexed = False
+        if self.path.exists():
+            assert_safe_local_path(self.path, "campaign registry")
+            uri = self.path.resolve().as_uri() + "?mode=ro"
+            conn = sqlite3.connect(uri, uri=True, timeout=5)
+            conn.row_factory = sqlite3.Row
+            try:
+                tables = {row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )}
+                if tables and not {"project_meta", "campaign_index"} <= tables:
+                    raise RegistryError("campaign registry schema is incomplete")
+                if "project_meta" in tables:
+                    active_row = conn.execute(
+                        "SELECT active_campaign_id FROM project_meta WHERE id=1"
+                    ).fetchone()
+                    active = active_row[0] if active_row else None
+                if "campaign_index" in tables:
+                    legacy_indexed = conn.execute(
+                        "SELECT 1 FROM campaign_index WHERE campaign_id='legacy'"
+                    ).fetchone() is not None
+                    params: list[object] = []
+                    predicate = ""
+                    if after is not None:
+                        predicate = "WHERE created_at>? OR (created_at=? AND campaign_id>?)"
+                        params.extend((after[0], after[0], after[1]))
+                    rows = conn.execute(
+                        f"SELECT * FROM campaign_index {predicate} "
+                        "ORDER BY created_at,campaign_id LIMIT ?",
+                        (*params, limit + 1),
+                    ).fetchall()
+                    has_more = len(rows) > limit
+                    entries.extend(
+                        (CampaignEntry(**dict(row)), row["campaign_id"] == active)
+                        for row in rows[:limit]
+                    )
+            except (sqlite3.DatabaseError, TypeError, KeyError) as exc:
+                raise RegistryError(
+                    f"campaign registry is corrupt at {self.path}; preserve a backup"
+                ) from exc
+            finally:
+                conn.close()
+
+        # A legacy database may predate the registry index. Represent it in the
+        # read model without calling ensure_legacy(), which could change active
+        # campaign state as a side effect of a GET request.
+        if self.legacy_db.exists() and not legacy_indexed:
+            legacy_key = ("0001-01-01T00:00:00+00:00", "legacy")
+            if after is None or legacy_key > after:
+                legacy = CampaignEntry(
+                    campaign_id="legacy", request_key="legacy", goal_fingerprint="",
+                    goal_summary="Legacy campaign", state_path=".", origin="legacy",
+                    created_at=legacy_key[0], updated_at=legacy_key[0],
+                )
+                entries.append((legacy, active == "legacy"))
+        entries.sort(key=lambda pair: (pair[0].created_at, pair[0].campaign_id))
+        if len(entries) > limit:
+            entries = entries[:limit]
+            has_more = True
+        return entries, has_more
+
     def list(self) -> list[tuple[CampaignEntry, bool]]:
         self.ensure_legacy()
         conn = self._connect()

@@ -204,6 +204,55 @@ def test_runner_refuses_to_fallback_when_bubblewrap_is_unavailable():
         )
 
 
+def test_real_bubblewrap_runner_executes_frozen_evaluator_without_network_fallback():
+    protocol, manifest, manifest_bytes, _bundle, inputs = _protocol_and_manifest()
+    script = b'''import json, os
+from pathlib import Path
+tier = Path(os.environ["BANANLOOP_TIER"])
+manifest = json.loads((tier / "manifest.json").read_text())
+cases = json.loads((tier / "input-map.json").read_text())
+candidate = Path(os.environ["BANANLOOP_CANDIDATE"]) / "src/main.py"
+quality = 0.8 if "better" in candidate.read_text() else 0.5
+print(json.dumps({
+    "status": "ok",
+    "metrics": {"quality": quality},
+    "protocol_sha256": manifest["protocol_sha256"],
+    "cases": [{key: item[key] for key in ("case_id", "repetition", "input_sha256")} for item in cases],
+}))
+'''
+    bundle_io = io.BytesIO()
+    with zipfile.ZipFile(bundle_io, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("evaluate.py", script)
+    bundle = bundle_io.getvalue()
+    protocol = protocol.model_copy(update={"evaluator_bundle_sha256": _sha(bundle)})
+    protocol = protocol.model_copy(update={"entrypoint": ("python3", "{evaluator}/evaluate.py")})
+    manifest = manifest.model_copy(update={"protocol_sha256": _case_protocol_digest(protocol)})
+    manifest_bytes = json.dumps(
+        manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"),
+    ).encode()
+    protocol = protocol.model_copy(update={
+        "tiers": tuple(
+            item.model_copy(update={"manifest_sha256": _sha(manifest_bytes)})
+            if item.tier == "holdout" else item for item in protocol.tiers
+        ),
+    })
+    runner = TrustedEvaluatorRunner()
+    if not runner._sandbox_available():
+        pytest.skip("host does not permit the production bubblewrap namespaces")
+    execution = runner.run(
+        protocol=protocol, approval_digest="3" * 64, campaign_id="campaign-1",
+        spec_hash="4" * 64, candidate_snapshot_id="b" * 40,
+        candidate_files={"src/main.py": b"better candidate"},
+        evaluator_bundle=bundle, tier="holdout", tier_manifest=manifest_bytes,
+        case_inputs=inputs,
+    )
+    assert execution.tier == "holdout"
+    private_result = json.loads(execution.private_result_bytes)
+    assert private_result["metrics"]["quality"]["value"] == 0.8
+    assert len(private_result["cases"]) == len(inputs)
+    assert "private alpha" not in execution.private_result_bytes.decode()
+
+
 def test_bundle_extraction_rejects_traversal_and_symlink_entries(tmp_path):
     traversal = io.BytesIO()
     with zipfile.ZipFile(traversal, "w") as archive:

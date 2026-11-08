@@ -53,7 +53,7 @@ class RoleDefinitionV1(BaseModel):
     capability_policy: CapabilityPolicyV2
     context_fields: tuple[str, ...] = Field(min_length=1, max_length=16)
     priority: int = Field(default=100, ge=0, le=10000)
-    min_instances: int = Field(default=1, ge=1, le=64)
+    min_instances: int = Field(default=1, ge=0, le=64)
     max_instances: int = Field(default=1, ge=1, le=64)
     calls_per_instance: int = Field(default=1, ge=1, le=10000)
     tokens_per_instance: int = Field(default=1, ge=1, le=100_000_000)

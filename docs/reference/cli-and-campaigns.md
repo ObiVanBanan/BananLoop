@@ -414,6 +414,7 @@ Promotion is idempotent at the store level: a completed experiment has one durab
 
 ```bash
 bananloop campaigns list --repo .
+bananloop campaigns inspect --repo . --campaign-id c-0123456789abcdef0123456789abcdef --json
 bananloop status --repo . --json
 bananloop report --repo .
 bananloop report --repo . --json --output campaign.json
@@ -421,6 +422,11 @@ bananloop stop --repo .
 bananloop resume --repo .
 bananloop export --repo . --output ../champion-export
 ```
+
+`campaigns inspect` reads the same application-backed snapshot, v2 graph,
+PUBLIC_DEV scope index, queue/budget/scheduler observability, and lifecycle
+projection used by the local API. It does not execute workers or mutate
+campaign selection.
 
 Use `--campaign-id ID` with run/resume/status/stop/report/export to select an
 indexed campaign. Without it, commands use the active campaign shown by
