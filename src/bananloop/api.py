@@ -15,13 +15,14 @@ from urllib.parse import parse_qs, urlsplit
 from pydantic import ValidationError
 
 from .application import CampaignApplication
+from .ui_read_models import campaign_ui_view, list_ui_campaigns, codex_connection_status
 from .contracts import PivotDecisionCommand, PivotProposal
 from .graph_store import GraphStoreError
 from .registry import RegistryError
 from .store import StoreError
 
 MAX_BODY_BYTES = 64 * 1024
-_CAMPAIGN_PATH = re.compile(r"^/v1/campaigns/([^/]+)(?:/(snapshot|events|events/stream|graph|graph/commands|commands/(pause|resume|stop)|pivot-decisions|v2/pivot-proposals|v2/pivot-decisions|v2/pivot-executions))?$")
+_CAMPAIGN_PATH = re.compile(r"^/v1/campaigns/([^/]+)(?:/(snapshot|view|events|events/stream|graph|graph/commands|commands/(pause|resume|stop)|pivot-decisions|v2/pivot-proposals|v2/pivot-decisions|v2/pivot-executions))?$")
 
 
 def _openapi() -> dict[str, Any]:
@@ -30,6 +31,9 @@ def _openapi() -> dict[str, Any]:
         "info": {"title": "BananLoop Local API", "version": "0.2.0"},
         "paths": {
             "/healthz": {"get": {"operationId": "health", "responses": {"200": {"description": "Healthy"}}}},
+            "/v1/campaigns": {"get": {"operationId": "uiCampaignList", "responses": {"200": {"description": "Safe campaign registry summary"}}}},
+            "/v1/providers/codex/status": {"get": {"operationId": "codexConnectionStatus", "responses": {"200": {"description": "Codex CLI authentication mode (no credentials)"}}}},
+            "/v1/campaigns/{campaign_id}/view": {"get": {"operationId": "campaignReadOnlyView", "responses": {"200": {"description": "Safe read-only UI graph projection"}}}},
             "/v1/campaigns/{campaign_id}/snapshot": {"get": {"operationId": "campaignSnapshot", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "Redacted campaign snapshot"}}}},
             "/v1/campaigns/{campaign_id}/graph": {"get": {"operationId": "researchGraphSnapshot", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "Redacted v2 graph scheduling snapshot"}}}},
             "/v1/campaigns/{campaign_id}/graph/commands": {"post": {"operationId": "mutateResearchGraph", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}, {"name": "Idempotency-Key", "in": "header", "required": True, "schema": {"type": "string"}}], "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GraphMutation"}}}}, "responses": {"200": {"description": "Canonical graph mutation receipt"}}}},
@@ -124,6 +128,17 @@ def create_server(
             if parsed.path == "/openapi.json":
                 self._json(HTTPStatus.OK, _openapi())
                 return
+            if parsed.path in {"/v1/campaigns", "/v1/providers/codex/status"}:
+                try:
+                    if parsed.path == "/v1/campaigns":
+                        self._json(HTTPStatus.OK, list_ui_campaigns(repo))
+                    else:
+                        self._json(HTTPStatus.OK, codex_connection_status())
+                except (RegistryError, StoreError, ValueError):
+                    self._json(HTTPStatus.CONFLICT, {"error": "registry_unavailable"})
+                except Exception:
+                    self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal_error"})
+                return
             match = _CAMPAIGN_PATH.fullmatch(parsed.path)
             if not match:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
@@ -134,6 +149,8 @@ def create_server(
             try:
                 if endpoint == "snapshot":
                     self._json(HTTPStatus.OK, app.snapshot())
+                elif endpoint == "view":
+                    self._json(HTTPStatus.OK, campaign_ui_view(repo, campaign_id))
                 elif endpoint == "graph":
                     self._json(HTTPStatus.OK, app.graph_snapshot())
                 elif endpoint == "events":
