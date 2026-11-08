@@ -16,6 +16,7 @@ def _api_ledger(path, case_id):
     key = Ed25519PrivateKey.generate()
     row = {
         "case_id": case_id, "role_id": "researcher",
+        "model": "deterministic-demo",
         "status": "COMPLETED_METERED_API",
         "prev_sha256": "0" * 64,
         "provider_usage": {"input_tokens": 21, "output_tokens": 8,
@@ -75,6 +76,7 @@ def test_codex_unsigned_usage_not_misrepresented_as_provider_cost(tmp_path):
     ledger = tmp_path / "codex-observed.json"
     row = {
         "case_id": case_id, "role_id": "researcher",
+        "model_id": "deterministic-demo",
         "status": "COMPLETED", "previous_sha256": "0" * 64,
         "usage": {"input_tokens": 70, "cached_input_tokens": 3, "output_tokens": 18},
     }
