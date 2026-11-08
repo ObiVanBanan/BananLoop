@@ -30,6 +30,8 @@ Total provider-reported usage was 1,354 tokens. Monetary subscription cost is `U
 
 The first integrated live attempt returned all six integration checks as a JSON object of booleans. The strict `IntegrationVerifierOutputV1` contract requires an array of check-name strings, so Core correctly rejected that response and marked the dispatched verifier outcome `UNKNOWN`; it did not replay the call. The SIWC prompt now explicitly requires a JSON array and lists the exact six allowed names. A prompt-contract regression test was added, and the fresh campaign above passed. Two diagnostic verifier responses before the fix were not retried.
 
+The rejected diagnostic requests were `resp_0440c3c8546c20e0016af090d9bcc887d2a30b909e2d4e7cd6` (828 provider-reported tokens; first integrated attempt) and `resp_0b3f59537bf9b54f016af09186fe4887d294165b638b7cdb09` (767 tokens; a separate verifier-only diagnostic). The first attempt's optimizer request `resp_058138c8cc218345016af090d3ca8887d28005fdc8d8deb249` completed with 491 tokens; its candidate and evaluation were recorded before the verifier schema rejection. No request was replayed.
+
 ## Durable evidence
 
 - Parent Exploration campaign: `c-fcd40493afb05da11f0f4f996f817c33` (`CONVERGED_REPEATED_EXPERIMENT`, three persisted findings; deterministic researcher fixture).
