@@ -67,7 +67,41 @@
     "problem": "Integration verifier returned checks as a JSON object of booleans; strict contract requires an array of check-name strings.",
     "resolution": "Prompt now explicitly requires the array format and enumerates the six allowed names.",
     "automatic_retry": false,
-    "fresh_campaign_after_fix": true
+    "fresh_campaign_after_fix": true,
+    "diagnostic_attempts": [
+      {
+        "campaign_id": "c-5300cf0637e3d9daf9897f8806e1d52d",
+        "status": "RUN_FAILED",
+        "model_requests": [
+          {
+            "role_id": "optimizer",
+            "request_id": "resp_058138c8cc218345016af090d3ca8887d28005fdc8d8deb249",
+            "status": "COMPLETED",
+            "total_tokens": 491
+          },
+          {
+            "role_id": "integration_verifier",
+            "request_id": "resp_0440c3c8546c20e0016af090d9bcc887d2a30b909e2d4e7cd6",
+            "status": "COMPLETED_PROVIDER_RESPONSE_REJECTED_BY_SCHEMA",
+            "total_tokens": 828
+          }
+        ],
+        "automatic_retry": false
+      },
+      {
+        "campaign_id": "c-48db29d6f8be8fec26d1ba185a6db344",
+        "status": "VERIFIER_RESPONSE_REJECTED_BY_SCHEMA",
+        "model_requests": [
+          {
+            "role_id": "integration_verifier",
+            "request_id": "resp_0b3f59537bf9b54f016af09186fe4887d294165b638b7cdb09",
+            "status": "COMPLETED_PROVIDER_RESPONSE_REJECTED_BY_SCHEMA",
+            "total_tokens": 767
+          }
+        ],
+        "automatic_retry": false
+      }
+    ]
   },
   "test_state_dir": "/tmp/pytest-of-sonik/pytest-90/test_exploration_research_hand0/"
 }
