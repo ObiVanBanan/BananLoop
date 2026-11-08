@@ -696,6 +696,7 @@ class V2OptimizationCandidateAdapter:
             "candidate_snapshot_id": candidate_id,
             "hypothesis_id": result["hypothesis_id"],
             "candidate_rationale": result["rationale"],
+            "changed_paths": result["changed_paths"],
             "parent_node_id": node_id,
             "candidate_limitations": result["limitations"],
             "scheduler": {"priority": int(parent["payload"].get("scheduler", {}).get("priority", 0)),
@@ -1056,11 +1057,23 @@ class V2OptimizationRuntime:
         nodes = []
         for node in snapshot["nodes"]:
             transition = node["payload"].get("last_phase_transition", {})
+            payload = node["payload"]
             nodes.append({
                 "node_id": node["node_id"], "phase": node["phase"],
                 "status": node["status"],
-                "candidate_snapshot_id": node["payload"].get("candidate_snapshot_id"),
+                "hypothesis_id": payload.get("hypothesis_id"),
+                "hypothesis": payload.get("hypothesis"),
+                "candidate_rationale": payload.get("candidate_rationale"),
+                "changed_paths": list(payload.get("changed_paths", ())),
+                "source_snapshot_id": payload.get("source_snapshot_id"),
+                "candidate_snapshot_id": payload.get("candidate_snapshot_id"),
+                "parent_node_id": payload.get("parent_node_id"),
                 "guard": transition.get("guard"),
+                "decision": {
+                    "VERIFIED_RESULT": "ACCEPTED",
+                    "REGRESSION_FAILED": "REJECTED",
+                }.get(transition.get("guard")),
+                "last_phase_transition": transition or None,
                 "evidence_refs": list(transition.get("evidence_refs", ())),
             })
         spec = self.graph.campaign_spec()
@@ -1101,6 +1114,10 @@ class V2OptimizationRuntime:
             "mode": "OPTIMIZATION", "goal": spec.goal,
             "status": result["status"], "graph_revision": snapshot["graph_revision"],
             "steps": result.get("steps", []), "nodes": nodes,
+            "decision_trace": [
+                item for item in nodes
+                if item.get("candidate_snapshot_id") is not None
+            ],
             "evaluation_receipts": evaluation_receipts,
             "integration_evidence": integration_evidence,
             "parent": spec.parent.model_dump(mode="json") if spec.parent else None,

@@ -197,7 +197,7 @@ manifest = json.loads((tier / "manifest.json").read_text())
 cases = json.loads((tier / "input-map.json").read_text())
 candidate = Path(os.environ["BANANLOOP_CANDIDATE"])
 ranker = (candidate / "src/optimizer/model/ranker.py").read_text()
-quality = 0.9 if "ranker = 2" in ranker else 0.8 if "ranker = 1" in ranker else 0.5
+quality = 0.1 if "regression candidate" in ranker else 0.8 if "accepted candidate" in ranker else 0.5
 print(json.dumps({
     "status": "ok", "metrics": {"quality": quality},
     "protocol_sha256": manifest["protocol_sha256"],
@@ -596,7 +596,7 @@ print(json.dumps({
                                 / "optimizer" / "model" / "ranker.py"
                             )
                             score = (
-                                0.5 if "regression candidate" in candidate_file.read_text()
+                                0.1 if "regression candidate" in candidate_file.read_text()
                                 else 0.8
                             )
                         return json.dumps({
@@ -619,6 +619,8 @@ print(json.dumps({
                 })(),
             )
 
+            optimizer_epochs = []
+
             class MockOptimizer:
                 def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer):
                     assert approved_model == "gpt-6-luna" and timeout_seconds == 60
@@ -639,15 +641,26 @@ print(json.dumps({
                     )
                     assert "closed deterministic evaluator case" not in json.dumps(public_input).lower()
                     receipt = {
-                        "request_id": "resp_integrated_optimizer", "status": "COMPLETED",
+                        "request_id": f"resp_integrated_optimizer_{len(optimizer_epochs) + 1}",
+                        "status": "COMPLETED",
                         "dispatched": True, "usage": {"total_tokens": 31},
                     }
                     self.request_history.append(receipt)
                     self.call_observer(receipt)
+                    optimizer_epochs.append(public_input["role_context"])
+                    epoch = len(optimizer_epochs)
+                    content = (
+                        f"epoch {epoch} regression candidate\n" if epoch < 3
+                        else f"epoch {epoch} accepted candidate\n"
+                    )
                     return {
                         "hypothesis_id": "improve-ranker",
-                        "rationale": "Apply the research-selected ranker improvement.",
-                        "changes": {"src/optimizer/model/ranker.py": "candidate ranker = 2\n"},
+                        "rationale": (
+                            f"Epoch {epoch}: "
+                            + ("DEV evidence did not justify promotion; retry with a distinct candidate."
+                               if epoch < 3 else "DEV and independent validation support promotion.")
+                        ),
+                        "changes": {"src/optimizer/model/ranker.py": content},
                     }
 
             class MockVerifier:
@@ -697,28 +710,72 @@ print(json.dumps({
                 ),),
             ))
 
-            optimize_args = parser().parse_args([
-                "v2", "optimize", "--repo", str(repo), "--campaign-id", child_id,
-                "--role-registry", pivot_ready["role_registry_path"],
-                "--visible-path", "src/optimizer/model/ranker.py",
-                "--write-path", "src/optimizer/model/ranker.py",
-                "--max-steps", "8", "--approve-up-to-calls", "2", "--timeout-seconds", "60",
-            ])
-            assert optimize_args.func(optimize_args) == 0
-            optimized = json.loads(capsys.readouterr().out)
+            def run_optimization(*, max_steps, approved_calls):
+                optimize_args = parser().parse_args([
+                    "v2", "optimize", "--repo", str(repo), "--campaign-id", child_id,
+                    "--role-registry", pivot_ready["role_registry_path"],
+                    "--visible-path", "src/optimizer/model/ranker.py",
+                    "--write-path", "src/optimizer/model/ranker.py",
+                    "--max-steps", str(max_steps), "--approve-up-to-calls", str(approved_calls),
+                    "--timeout-seconds", "60",
+                ])
+                assert optimize_args.func(optimize_args) == 0
+                return json.loads(capsys.readouterr().out)
+
+            # Two complete failed epochs consume two optimizer and two verifier
+            # calls. The third epoch is interrupted after its durable candidate
+            # publication, then recovered by a fresh CLI/runtime invocation.
+            first_run = run_optimization(max_steps=6, approved_calls=4)
+            assert first_run["status"] == "STEP_LIMIT"
+            assert [step["status"] for step in first_run["steps"]] == [
+                "CANDIDATE_CREATED", "DEV_EVALUATED", "INDEPENDENT_VERIFICATION_FAIL",
+                "CANDIDATE_CREATED", "DEV_EVALUATED", "INDEPENDENT_VERIFICATION_FAIL",
+            ]
+            assert len(optimizer_epochs) == 2
+            middle_run = run_optimization(max_steps=1, approved_calls=1)
+            assert middle_run["status"] == "STEP_LIMIT"
+            assert [step["status"] for step in middle_run["steps"]] == ["CANDIDATE_CREATED"]
+            assert len(optimizer_epochs) == 3
+
+            # The CLI closes its queue and graph before returning; reopen the
+            # durable campaign state before continuing epoch three.
+            child_queue.close()
+            child_graph.close()
+            child_graph = GraphRepository.open(str(child_db), campaign_id=child_id)
+            child_queue = registry.worker_queue()
+            third_candidate = next(step["candidate_snapshot_id"] for step in middle_run["steps"]
+                                   if step["status"] == "CANDIDATE_CREATED")
+            assert child_graph.conn.execute(
+                "SELECT COUNT(*) FROM evaluator_run_receipts "
+                "WHERE campaign_id=? AND candidate_snapshot_id=? AND json_extract(receipt_json,'$.tier')='dev'",
+                (child_id, third_candidate),
+            ).fetchone()[0] == 0
+            from bananloop.budget_ledger import BudgetLedger
+            budget_before_resume = BudgetLedger(child_queue.path)
+            try:
+                before_resume = budget_before_resume.snapshot(child_id)
+            finally:
+                budget_before_resume.close()
+
+            optimized = run_optimization(max_steps=8, approved_calls=1)
             assert optimized["status"] == "ALL_NODES_COMPLETE"
             assert optimized["live_model_called"] is True
             assert optimized["provider"] == "chatgpt_plan"
-            assert optimized["provider_call_attempts"] == 2
+            assert optimized["provider_call_attempts"] == 1
             assert [step["status"] for step in optimized["steps"]] == [
-                "CANDIDATE_CREATED", "DEV_EVALUATED", "INDEPENDENT_VERIFICATION_PASS",
+                "DEV_EVALUATED", "INDEPENDENT_VERIFICATION_PASS",
             ]
-            candidate = next(
-                step for step in optimized["steps"] if step["status"] == "CANDIDATE_CREATED"
-            )
+            assert len(optimizer_epochs) == 3
+            candidate = next(step for step in middle_run["steps"]
+                             if step["status"] == "CANDIDATE_CREATED")
             assert optimized["steps"][-1]["champion"]["snapshot_id"] == candidate[
                 "candidate_snapshot_id"
             ]
+            assert child_graph.conn.execute(
+                "SELECT COUNT(*) FROM evaluator_run_receipts "
+                "WHERE campaign_id=? AND candidate_snapshot_id=? AND json_extract(receipt_json,'$.tier')='dev'",
+                (child_id, third_candidate),
+            ).fetchone()[0] == 1
             assert optimized["holdout"]["tier"] == "holdout"
             assert optimized["holdout"]["candidate_snapshot_id"] == candidate["candidate_snapshot_id"]
             assert optimized["holdout"]["status"] == "VERIFIED"
@@ -739,10 +796,51 @@ print(json.dumps({
                 "candidate_snapshot_id"
             ]
             assert final_report["optimization_report"]["integration_evidence"][-1]["decision"] == "PASS"
+            candidate_trace = final_report["optimization_report"]["decision_trace"]
+            assert len(candidate_trace) == 3
+            candidate_trace.sort(key=lambda node: node["candidate_rationale"])
+            assert [node["decision"] for node in candidate_trace] == [
+                "REJECTED", "REJECTED", "ACCEPTED",
+            ]
+            assert [node["guard"] for node in candidate_trace] == [
+                "REGRESSION_FAILED", "REGRESSION_FAILED", "VERIFIED_RESULT",
+            ]
+            assert all(node["candidate_rationale"] and node["changed_paths"]
+                       and node["evidence_refs"] for node in candidate_trace)
+            budget_after_resume = BudgetLedger(child_queue.path)
+            try:
+                after_resume = budget_after_resume.snapshot(child_id)
+            finally:
+                budget_after_resume.close()
+            assert after_resume["agent_calls"]["spent"] - before_resume["agent_calls"]["spent"] == 1
             assert {item["tier"] for item in final_report["optimization_report"]["evaluation_receipts"]} == {
                 "dev", "validation",
             }
             assert final_report["optimization_report"]["holdout"]["tier_manifest_sha256"] == holdout_manifest_digest
+
+            # Replaying the completed campaign after another runtime restart
+            # must reuse the durable final HOLDOUT receipt and spend no budget.
+            calls_before_replay = len(optimizer_epochs)
+            receipts_before_replay = child_graph.conn.execute(
+                "SELECT COUNT(*) FROM evaluator_run_receipts WHERE campaign_id=?", (child_id,),
+            ).fetchone()[0]
+            budget_before_replay = BudgetLedger(child_queue.path)
+            try:
+                spent_before_replay = budget_before_replay.snapshot(child_id)["agent_calls"]["spent"]
+            finally:
+                budget_before_replay.close()
+            replayed = run_optimization(max_steps=8, approved_calls=1)
+            assert replayed["status"] == "ALL_NODES_COMPLETE"
+            assert replayed["live_model_called"] is False
+            assert len(optimizer_epochs) == calls_before_replay
+            assert child_graph.conn.execute(
+                "SELECT COUNT(*) FROM evaluator_run_receipts WHERE campaign_id=?", (child_id,),
+            ).fetchone()[0] == receipts_before_replay
+            budget_after_replay = BudgetLedger(child_queue.path)
+            try:
+                assert budget_after_replay.snapshot(child_id)["agent_calls"]["spent"] == spent_before_replay
+            finally:
+                budget_after_replay.close()
         finally:
             child_queue.close()
             child_graph.close()

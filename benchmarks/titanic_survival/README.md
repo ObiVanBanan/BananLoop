@@ -207,8 +207,16 @@ PYTHONPATH=tests/plugins:tests:src:. python -m pytest -p isolate_home -q \
 The real-bubblewrap Titanic test and cross-layer API test need Linux namespace
 permissions; without them, pytest reports a skip for the affected production
 isolation case. The independent RPDI-13 E2E covers the broader
-Exploration → Research Memory → Optimization handoff; this Titanic mini
-benchmark covers the real Optimization/evaluator/verification/HOLDOUT path.
+Exploration → Research Memory → Optimization handoff. It now exercises three
+offline Optimization epochs on one campaign: two candidates rejected by
+independent verification, a restart after the third candidate is durably
+published, and acceptance of that candidate after resume. The final report
+retains a per-candidate decision trace with hypothesis, rationale, changed
+paths, guard, and evidence references. Replaying the completed run does not
+spend more model budget or duplicate evaluator receipts. This is a deterministic
+runtime acceptance case; it does not claim that a live model will choose useful
+candidates. The Titanic mini benchmark covers the real
+Optimization/evaluator/verification/HOLDOUT path.
 95% remains a stretch target, not a guarantee. A live model-driven Titanic
 Optimization run has completed; the upstream Exploration protocol-discovery
 handoff still uses a fixture-seeded approval.
