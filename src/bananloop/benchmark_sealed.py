@@ -129,8 +129,71 @@ def seal_suite(*, authored_suite_path: str, registry_path: str, team_path: str,
     return manifest
 
 
+def _verify_meter_ledgers(ledgers: list[str], *, allowed_case_ids: set[str],
+                          operator_public_key_hex: str | None) -> dict:
+    """Join token/cost evidence without promoting operator statements to provider signatures."""
+    from .benchmark_live_codex import verify_codex_observation
+    from .benchmark_metered_api import verify_operator_meter
+
+    seen = set()
+    measured = unknown = input_tokens = output_tokens = priced_microusd = 0
+    api_count = cli_count = 0
+    for ledger_path in ledgers:
+        doc = read_json(ledger_path)
+        if not isinstance(doc, dict) or not isinstance(doc.get("records"), list):
+            raise BenchmarkError("invalid model meter ledger")
+        if doc.get("signature_source") == "OPERATOR_NOT_PROVIDER":
+            if not operator_public_key_hex:
+                raise BenchmarkError("API evidence requires the registered operator public key")
+            verify_operator_meter(receipts_path=ledger_path, public_key_hex=operator_public_key_hex)
+            source = "api"
+        elif doc.get("usage_authority") == "UNSIGNED_OBSERVATION_NOT_PROVIDER_RECEIPT":
+            verify_codex_observation(ledger_path)
+            source = "cli"
+        else:
+            raise BenchmarkError("meter ledger source is unsupported or unverified")
+        for record in doc["records"]:
+            cid = record.get("case_id")
+            if cid not in allowed_case_ids or cid in seen:
+                raise BenchmarkError("meter record is unrelated, duplicated or outside frozen suite")
+            seen.add(cid)
+            if source == "api":
+                api_count += 1
+                usage = record.get("provider_usage")
+                input_field, output_field = "input_tokens", "output_tokens"
+                if usage is not None:
+                    price = record.get("calculated_cost_microusd")
+                    if type(price) is not int or price < 0:
+                        raise BenchmarkError("API meter lacks a bounded declared price estimate")
+                    priced_microusd += price
+            else:
+                cli_count += 1
+                usage = record.get("usage")
+                input_field, output_field = "input_tokens", "output_tokens"
+            if usage is None:
+                unknown += 1
+                continue
+            if any(type(usage.get(field)) is not int or usage[field] < 0
+                   for field in (input_field, output_field)):
+                raise BenchmarkError("metered provider usage is absent or malformed")
+            measured += 1
+            input_tokens += usage[input_field]
+            output_tokens += usage[output_field]
+    return {
+        "attempted": len(seen), "measured_calls": measured,
+        "unknown_settlement_calls": unknown,
+        "cli_observed_calls": cli_count, "api_operator_signed_calls": api_count,
+        "observed_input_tokens": input_tokens, "observed_output_tokens": output_tokens,
+        "api_locally_priced_microusd": priced_microusd,
+        "provider_cryptographically_signed": False,
+        "provider_invoice_reconciled": False,
+        "release_eligible": False,
+    }
+
+
 def score_sealed(*, public_dir: str, private_dir: str, responses_path: str,
-                 output_dir: str) -> dict:
+                 output_dir: str, meter_ledgers: list[str] | None = None,
+                 operator_public_key_hex: str | None = None) -> dict:
     """Second-stage scorer: privately verify salt/commitment before showing no gold to agents."""
     public_root, private_root = Path(public_dir), Path(private_dir)
     if public_root.resolve() == private_root.resolve() or (
@@ -152,6 +215,14 @@ def score_sealed(*, public_dir: str, private_dir: str, responses_path: str,
             c.get("evaluator_binding", {}).get("sha256") != manifest["evaluator_commitment_sha256"]
             for c in public["cases"]):
         raise BenchmarkError("case evaluator commitment mismatch")
+    accounting = (_verify_meter_ledgers(
+        meter_ledgers, allowed_case_ids={c["case_id"] for c in public["cases"]},
+        operator_public_key_hex=operator_public_key_hex)
+        if meter_ledgers else {
+            "attempted": 0, "measured_calls": 0, "unknown_settlement_calls": 0,
+            "source": "NO_METER_EVIDENCE_SUPPLIED", "provider_invoice_reconciled": False,
+            "release_eligible": False,
+        })
     result = run_suite(
         cases_path=public_root / "cases.json",
         oracle_path=private_root / "oracle.json",
@@ -176,6 +247,7 @@ def score_sealed(*, public_dir: str, private_dir: str, responses_path: str,
             item["completed"] += 1
             item["passed"] += int(record["metric_results"][0]["value"] == 1)
     result["splits"] = splits
+    result["accounting"] = accounting
     result["evaluator_commitment_sha256"] = manifest["evaluator_commitment_sha256"]
     result["independently_verified"] = False
     result["release_eligible"] = False
@@ -193,6 +265,8 @@ def main(argv: list[str] | None = None) -> int:
     score = cmd.add_parser("score", help="Score all splits with private evaluator-only oracle")
     for field in ("public-dir", "private-dir", "responses", "out"):
         score.add_argument("--" + field, required=True)
+    score.add_argument("--meter-ledger", action="append", default=[])
+    score.add_argument("--operator-public-key-hex")
     args = parser.parse_args(argv)
     try:
         if args.command == "seal":
@@ -201,7 +275,9 @@ def main(argv: list[str] | None = None) -> int:
                                 public_dir=args.public_dir, private_dir=args.private_dir)
         else:
             result = score_sealed(public_dir=args.public_dir, private_dir=args.private_dir,
-                                  responses_path=args.responses, output_dir=args.out)
+                                  responses_path=args.responses, output_dir=args.out,
+                                  meter_ledgers=args.meter_ledger,
+                                  operator_public_key_hex=args.operator_public_key_hex)
     except (BenchmarkError, ValueError) as exc:
         parser.exit(2, f"sealed benchmark refused: {exc}\n")
     print(json.dumps(result, sort_keys=True))
