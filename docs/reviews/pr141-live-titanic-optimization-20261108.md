@@ -37,3 +37,7 @@ Earlier versions of this test exposed two harness defects: the child spec initia
 This run tested one Optimization epoch only. It does not establish multiple live epochs, autonomous live Exploration, or 95% Titanic accuracy.
 
 Source worktree: `a7e93aae719bf3a7c5fbeb5f9c53380357c47063` plus uncommitted changes; the current working-tree diff SHA-256 after the offline three-epoch test is `0a5755d965cc8672afadfeb1ae31a46df315d4d2126ebfbd9c0b593113251e5e`. The final live run used the same live path; the subsequent edit only expanded the offline reply sequence.
+
+## Additional authorized live run
+
+A fresh one-call run was executed after restoring network access for the SIWC model catalog. Pytest passed (`1 passed in 12.24s`); the campaign completed with no retries. Provider request `resp_0389c70843f206bc016af067df486487d288fc31920e8c0739` reported 13,722 input + 303 output = 14,025 tokens (127 reasoning). SQLite recorded exactly 14,025 spent, 0 unknown, against the 65,000-token campaign cap; no budget breach. Trusted HOLDOUT again verified 196 cases with two repeatability runs and 78.06% accuracy; the 95% target remains unmet. Monetary cost is unknown. The failed initial attempt was limited to model-catalog discovery under restricted DNS and dispatched no inference.

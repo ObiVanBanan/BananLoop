@@ -76,5 +76,31 @@
     "Exploration and protocol verification used deterministic test code, not live model calls.",
     "The run did not reach the 0.95 Titanic stretch target.",
     "Provider monetary cost is unknown."
-  ]
+  ],
+  "latest_live_run": {
+    "result": "PASSED",
+    "pytest_summary": "1 passed in 12.24s",
+    "live_model_inferences": 1,
+    "automatic_retries": 0,
+    "campaign_status": "ALL_NODES_COMPLETE",
+    "provider_request_id": "resp_0389c70843f206bc016af067df486487d288fc31920e8c0739",
+    "usage": {
+      "input_tokens": 13722,
+      "output_tokens": 303,
+      "reasoning_tokens": 127,
+      "total_tokens": 14025
+    },
+    "ledger_model_tokens_spent": 14025,
+    "ledger_model_tokens_unknown": 0,
+    "budget_cap": 65000,
+    "budget_breached": false,
+    "holdout_accuracy": 0.7806122448979592,
+    "holdout_cases": 196,
+    "holdout_repeatability_runs": 2,
+    "stretch_target": 0.95,
+    "stretch_target_met": false,
+    "monetary_cost": "UNKNOWN",
+    "source_head": "a492d0181a36f451f67db29fccc40c9ede558c16",
+    "source_worktree": "local detached checkout with report/test dirty changes; PR head source verified from task state"
+  }
 }
