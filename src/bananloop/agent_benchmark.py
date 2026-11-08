@@ -146,15 +146,18 @@ def _fixture_reply(case: dict) -> dict:
     return answer
 
 
-def _report(results: list[dict], *, run_id: str, suite_digest: str, mode: str) -> tuple[dict, str]:
+def _report(results: list[dict], *, run_id: str, suite_digest: str, mode: str,
+            sealed: bool = False) -> tuple[dict, str]:
     groups: dict[str, list[dict]] = {}
     for result in results:
         groups.setdefault(result["role_identity"]["role_id"], []).append(result)
     summary = {"schema_version": 1, "run_id": run_id, "qualification": "DEV_DIAGNOSTIC_ONLY",
                "adapter": mode, "suite_sha256": suite_digest, "roles": {}}
     md = ["# Offline role-capability diagnostic", "",
-          "**Not an independent RPDI-14 result. No live Codex/LLM was called.**", "",
-          "All cases are public DEV; these scores measure a deterministic fixture or recorded outputs, not autonomous agent capability.", "",
+          "**Not an independent RPDI-14 result. The scorer does not invoke an LLM.**", "",
+          ("Sealed-split offline replay: oracle and case split were provided to a separate scoring stage."
+           if sealed else
+           "Public DEV diagnostic: fixture or recorded outputs, not a validated live role benchmark."), "",
           "| Role | Completed | Exact matches | Accuracy | Failed/incomplete |",
           "| --- | ---: | ---: | ---: | ---: |"]
     for role, group in sorted(groups.items()):
@@ -176,7 +179,8 @@ def run_suite(*, cases_path: str | Path, oracle_path: str | Path, registry_path:
               team_path: str | Path, output_dir: str | Path, adapter: str = "fixture",
               responses_path: str | Path | None = None,
               allowed_splits: frozenset[str] = frozenset({"DEV"}),
-              evaluator_pin_sha256: str | None = None) -> dict:
+              evaluator_pin_sha256: str | None = None,
+              allow_incomplete_replay: bool = False) -> dict:
     if adapter not in {"fixture", "replay"} or bool(responses_path) != (adapter == "replay"):
         raise BenchmarkError("select fixture or replay with exactly one recorded responses file")
     suite = read_json(cases_path)
@@ -188,10 +192,12 @@ def run_suite(*, cases_path: str | Path, oracle_path: str | Path, registry_path:
     data = _check_bundle(suite, oracle, registry, team,
                          allowed_splits=allowed_splits, evaluator_pin_sha256=evaluator_pin_sha256)
     replay = read_json(responses_path) if adapter == "replay" else None
+    frozen_ids = {case["case_id"] for case in data}
     if replay is not None and (not isinstance(replay, dict) or set(replay) != {"schema_version", "responses"}
                                or replay["schema_version"] != 1 or not isinstance(replay["responses"], dict)
-                               or set(replay["responses"]) != {case["case_id"] for case in data}):
-        raise BenchmarkError("recorded outputs must cover exactly the frozen case IDs")
+                               or (not set(replay["responses"]) <= frozen_ids if allow_incomplete_replay
+                                   else set(replay["responses"]) != frozen_ids)):
+        raise BenchmarkError("recorded outputs must cover exactly the frozen case IDs (or an authorized incomplete subset)")
     target = Path(output_dir)
     if target.exists():
         raise BenchmarkError("output directory already exists (overwrite disabled)")
@@ -209,6 +215,10 @@ def run_suite(*, cases_path: str | Path, oracle_path: str | Path, registry_path:
         try:
             if adapter == "fixture":
                 answer = _fixture_reply(case)
+            elif case["case_id"] not in replay["responses"]:
+                if not allow_incomplete_replay:
+                    raise BenchmarkError("missing recorded response")
+                status = "INCOMPLETE"
             else:
                 answer = replay["responses"][case["case_id"]]
                 if not isinstance(answer, dict) or len(canonical(answer)) > 65536:
@@ -247,7 +257,8 @@ def run_suite(*, cases_path: str | Path, oracle_path: str | Path, registry_path:
                   "artifact_sha256": [digest(answer)] if answer is not None else [],
                   "notes": "Offline public DEV diagnostic only; no model invocation or trusted usage receipt."}
         records.append(record)
-    summary, markdown = _report(records, run_id=run_id, suite_digest=digest(suite), mode=adapter)
+    summary, markdown = _report(records, run_id=run_id, suite_digest=digest(suite),
+                                 mode=adapter, sealed=(allowed_splits != frozenset({"DEV"})))
     _write(target / "results.json", {"schema_version": 1, "results": records})
     _write(target / "summary.json", summary)
     (target / "report.md").write_text(markdown, encoding="utf-8")
