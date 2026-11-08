@@ -841,10 +841,21 @@ sys.stdout.write(json.dumps({"prediction": prediction}, separators=(",", ":")))
             assert task.source_artifact_sha256 in {
                 artifact["sha256"] for artifact in queue.get_result(job_id)["result"]["artifacts"]
             }
-            selected_portfolio = next(
-                item for item in portfolios
-                if item["core_selection"]["selected_hypothesis_id"] == task.hypothesis_id
+            # Several iterations can select the same hypothesis ID while
+            # carrying different evidence. Bind this assertion to the exact
+            # durable Researcher job that produced the approved protocol.
+            source_job = queue.get_job(task.source_job_id)
+            source_result = queue.get_result(task.source_job_id)["result"]
+            portfolio_artifact = next(
+                item for item in source_result["artifacts"]
+                if item["sha256"] == task.source_artifact_sha256
             )
+            selected_portfolio_path = (
+                state_root / "rpdi05" / "artifacts"
+                / f"{task.source_job_id}-f{source_job['fence']}"
+                / portfolio_artifact["path"]
+            )
+            selected_portfolio = json.loads(selected_portfolio_path.read_text(encoding="utf-8"))
             expected_task_evidence = {
                 f"artifact://sha256/{task.source_artifact_sha256}"
             }

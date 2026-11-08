@@ -16,6 +16,9 @@ jobs:
   pytest:
     runs-on: ${{ matrix.os }}
     strategy:
+      # Keep the Windows job running even if a Linux matrix entry fails; the
+      # platform-specific ACL and reparse-point checks need their own result.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest]
         python-version: ["3.11", "3.12", "3.13"]
