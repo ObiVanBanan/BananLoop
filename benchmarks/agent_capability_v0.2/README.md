@@ -54,7 +54,7 @@ python -m bananloop.agent_benchmark run \
   --out /tmp/bananloop-role-demo/results
 ```
 
-The `results/` folder contains `results.json` (per-case result-schema records), `summary.json` (per-role completed/errors/exact-match rate) and `report.md`. Paths are not overwritten. Keep local evaluator oracles out of Git and away from agent workspace. This publicly generated demo oracle is **not secret and not suitable for blind evaluation**.
+The `results/` folder contains `results.json` (per-case result-schema records), `summary.json` (per-role completed/errors/success rate) and `report.md`. Paths are not overwritten. Keep local evaluator oracles out of Git and away from agent workspace. This publicly generated demo oracle is **not secret and not suitable for blind evaluation**.
 
 To score previously recorded responses, create a DEV-only JSON file like:
 
@@ -76,7 +76,18 @@ To score previously recorded responses, create a DEV-only JSON file like:
 
 Then run the same command with `--adapter replay --responses /path/to/responses.json --out /path/to/new-results`. Every frozen case ID must have exactly one response.
 
-This executor supports a basic deterministic **exact-match** oracle. It does **not** implement source-grounded research scoring, hidden-test execution, human rubric adjudication or a statistically powered role comparison. Those remain separate evaluator adapters and authorization work; see `evaluation-contract.md`.
+The evaluator also supports a strictly bounded, **deterministic multi-metric rubric** for recorded role outputs. Each case in the evaluator-only DEV oracle may supply either `{"expected_output": {...}}` (exact match) or a `{"checks": [...]}` array with the four supported check types: `field_equals`, `contains_all` (evidence/source IDs), `numeric_close` (absolute tolerance), and `nonempty`. Nested paths are arrays of field names. The runner records one `task_success` metric plus every individual criterion, without mixing scores across roles.
+
+For example, an evaluator-only researcher rubric can be:
+
+```json
+{"checks": [
+  {"metric_id": "chosen_candidate", "type": "field_equals", "path": ["selected_hypothesis_id"], "expected": "h2"},
+  {"metric_id": "supported_refs", "type": "contains_all", "path": ["evidence_refs"], "required": ["E1", "E2"]}
+]}
+```
+
+After modifying an evaluator-only DEV oracle, update its digest in all case `evaluator_binding.sha256` fields **before** running. This is a simple offline deterministic evaluator; it does **not** prove source-grounded truth beyond the authored rubric, execute hidden tests, perform human review or provide a statistically powered independent comparison. Those remain separate evaluator adapters and authorization work; see `evaluation-contract.md`.
 
 ## Files and execution boundary
 
@@ -85,13 +96,14 @@ This executor supports a basic deterministic **exact-match** oracle. It does **n
 - `evaluation-contract.md`, `dataset-sources.md`, `pilot-plan.md` — trust, licensing, resource and staged-run decisions;
 - `tests/test_agent_capability_benchmark_spec.py` — offline consistency checks against the PR #135 role API;
 - `tests/test_agent_benchmark_runner.py` — 12 offline E2E/negative tests for four roles, replay, pins, provenance, splits and oracle tampering;
-- `src/bananloop/agent_benchmark.py` and `fixture_worker.py` — runnable DEV-only executor;
+- `tests/test_agent_benchmark_metrics.py` — seven offline rubric and scoring tests;
+- `src/bananloop/agent_benchmark.py`, `src/bananloop/agent_benchmark_metrics.py` and `fixture_worker.py` — runnable DEV-only executor;
 - `benchmarks/v02_full/` — the existing **separate** RPDI-14 preregistration, signed accounting, blinding, worker and scoring *infrastructure*.
 
 To run the **offline checks only** from the repository root:
 
 ```bash
-python -m pytest tests/test_agent_capability_benchmark_spec.py tests/test_agent_benchmark_runner.py -q
+python -m pytest tests/test_agent_capability_benchmark_spec.py tests/test_agent_benchmark_runner.py tests/test_agent_benchmark_metrics.py -q
 ```
 
 ## Gates
