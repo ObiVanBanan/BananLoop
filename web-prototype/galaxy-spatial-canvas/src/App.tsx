@@ -57,7 +57,8 @@ export function App(){
   const abort=new AbortController();let alive=true;
   const reconcile=async()=>{
    try{
-    const [projection,snap]=await Promise.all([getView(campaignId,token,abort.signal),getSnapshot(campaignId,token,abort.signal)]);
+    const projection=await getView(campaignId,token,abort.signal);
+    const snap=projection.source_schema===0?{schema_version:0,campaign_id:campaignId,status:'RESERVED'}:await getSnapshot(campaignId,token,abort.signal);
     if(!alive)return;
     setView(projection);setSnapshot(snap);setError('');
    }catch(e){if(!alive||abort.signal.aborted)return;setConnected(false);setError(String(e))}
@@ -87,7 +88,7 @@ export function App(){
     }catch(e){
      if(!alive||abort.signal.aborted)break;
      setConnected(false);setEventStatus('Повторное подключение');
-     if(String(e).includes('400'))cursor.current=0;
+     if(String(e).includes('400')){cursor.current=0;setEvents([])}
      await sleep(1700);
     }
    }
