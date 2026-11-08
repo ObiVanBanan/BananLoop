@@ -63,7 +63,8 @@ def _write(path: Path, data: Any) -> None:
 
 
 def _check_bundle(cases: dict, oracle: dict, registry: RoleRegistryV1,
-                  team: TeamManifestV1) -> list[dict]:
+                  team: TeamManifestV1, *, allowed_splits: frozenset[str] = frozenset({"DEV"}),
+                  evaluator_pin_sha256: str | None = None) -> list[dict]:
     if not isinstance(cases, dict) or set(cases) != {"schema_version", "cases"} or cases["schema_version"] != 1:
         raise BenchmarkError("invalid case suite envelope")
     if not isinstance(oracle, dict) or set(oracle) != {"schema_version", "cases"} or oracle["schema_version"] != 1:
@@ -87,8 +88,8 @@ def _check_bundle(cases: dict, oracle: dict, registry: RoleRegistryV1,
         if not isinstance(cid, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,127}", cid) or cid in ids:
             raise BenchmarkError("invalid or duplicate case ID")
         ids.add(cid)
-        if case["split"] != "DEV" or case["suite"] != "role_capability":
-            raise BenchmarkError("offline runner refuses non-DEV or system-level task dispatch")
+        if case["split"] not in allowed_splits or case["suite"] != "role_capability":
+            raise BenchmarkError("runner refuses unapproved split or system-level task dispatch")
         if role not in allowed_roles:
             raise BenchmarkError(f"case role is not in frozen team manifest: {role}")
         effective = allowed_roles[role]
@@ -103,8 +104,9 @@ def _check_bundle(cases: dict, oracle: dict, registry: RoleRegistryV1,
         if case["provenance"].get("license_status") not in {"APPROVED", "INTERNAL_SANITIZED"}:
             raise BenchmarkError("task data reuse rights are not approved")
         binding = case["evaluator_binding"]
-        if binding.get("method") != "deterministic" or binding.get("sha256") != digest(oracle):
-            raise BenchmarkError("evaluator pin does not match independent oracle bytes")
+        expected_pin = evaluator_pin_sha256 if evaluator_pin_sha256 is not None else digest(oracle)
+        if binding.get("method") != "deterministic" or binding.get("sha256") != expected_pin:
+            raise BenchmarkError("evaluator pin does not match independently committed oracle")
         if cid not in oracle["cases"]:
             raise BenchmarkError("evaluator lacks a case oracle")
         try:
@@ -172,14 +174,19 @@ def _report(results: list[dict], *, run_id: str, suite_digest: str, mode: str) -
 
 def run_suite(*, cases_path: str | Path, oracle_path: str | Path, registry_path: str | Path,
               team_path: str | Path, output_dir: str | Path, adapter: str = "fixture",
-              responses_path: str | Path | None = None) -> dict:
+              responses_path: str | Path | None = None,
+              allowed_splits: frozenset[str] = frozenset({"DEV"}),
+              evaluator_pin_sha256: str | None = None) -> dict:
     if adapter not in {"fixture", "replay"} or bool(responses_path) != (adapter == "replay"):
         raise BenchmarkError("select fixture or replay with exactly one recorded responses file")
     suite = read_json(cases_path)
     oracle = read_json(oracle_path)
     registry = RoleRegistryV1.model_validate(read_json(registry_path))
     team = TeamManifestV1.model_validate(read_json(team_path))
-    data = _check_bundle(suite, oracle, registry, team)
+    if allowed_splits != frozenset({"DEV"}) and (adapter != "replay" or evaluator_pin_sha256 is None):
+        raise BenchmarkError("VALIDATION/HOLDOUT scoring requires a sealed private replay and evaluator commitment")
+    data = _check_bundle(suite, oracle, registry, team,
+                         allowed_splits=allowed_splits, evaluator_pin_sha256=evaluator_pin_sha256)
     replay = read_json(responses_path) if adapter == "replay" else None
     if replay is not None and (not isinstance(replay, dict) or set(replay) != {"schema_version", "responses"}
                                or replay["schema_version"] != 1 or not isinstance(replay["responses"], dict)
