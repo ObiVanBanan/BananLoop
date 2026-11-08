@@ -14,6 +14,9 @@ service as the HTTP handlers.
 ## Routes
 
 - `GET /healthz`
+- `GET /v1/campaigns` (safe local registry summary)
+- `GET /v1/providers/codex/status` (installed/authenticated CLI mode only; no credentials)
+- `GET /v1/campaigns/{campaign_id}/view` (UI read-only v1/v2 graph projection)
 - `GET /v1/campaigns/{campaign_id}/snapshot`
 - `GET /v1/campaigns/{campaign_id}/graph` (v2 campaigns)
 - `GET /v1/campaigns/{campaign_id}/events?after=0&limit=100`
@@ -44,6 +47,23 @@ including `command_id`, `idempotency_key`, `expected_graph_revision`, and
 the persisted receipt and reuse with different content is rejected. The CLI
 offers equivalent `bananloop graph snapshot` and `bananloop graph mutate`
 commands.
+
+The UI consumes the campaign `/view` read model, never the raw graph store:
+for v2, the endpoint presents public node id, phase, status, readiness,
+blockers, typed edges and AND/OR groups. It never emits raw node payload,
+sealed evaluation data, state paths, provider tokens or holdout/validation
+scores. For legacy v1, it presents committed hypothesis titles/statuses as
+**unconnected** nodes because v1 does not have the v2 dependency graph.
+The projection checks the graph revision before returning to avoid silently
+mixing nodes and edges from different commits. The UI only controls local
+layout and annotations; engine mutation controls remain out of scope.
+
+The Codex status endpoint executes only `codex login status` on the local
+machine using a bounded subprocess, and returns a narrow authentication
+mode (ChatGPT, API key, unknown, or disconnected). It never creates a login
+or reads credential files; sign in independently with `codex login` or
+`codex login --device-auth`. A ChatGPT account is not an API key, and API-key
+billing is separate from ChatGPT plan usage.
 
 Example:
 
