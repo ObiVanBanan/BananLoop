@@ -16,7 +16,7 @@ The two original PR heads are **not fast-forward compatible** with PR #135. Raw 
 
 The integrated PR #135 acceptance exercises `researcher`, `optimizer`, `independent_verifier`, and `integration_verifier` through pinned role registry / Team Manifest data. The old PR #125's `proposer`, `selector`, `implementer`, `diagnostic`, `campaign_bootstrapper`, and `pivot_advisor` remain **capability names**, not independent declared runtime roles. The `role-catalog.yaml` file is a benchmark crosswalk, **not** the authoritative role registry.
 
-The role-capability suite is only a design with offline validation tests. It does **not** implement a complete case dispatch runner, trusted provider usage verifier, or independent scorer for agent-wise results.
+The role-capability suite now includes an **executable public-DEV offline diagnostic runner** (`python -m bananloop.agent_benchmark`), a deterministic subprocess fixture, replay of previously recorded role responses, evaluator-only exact-match or fixed multi-metric rubrics, and per-role reports. This is not a live agent dispatcher, an independently sealed evaluator/scorer, or an RPDI-14 eligible benchmark. Trusted model/provider usage receipts, sealed datasets, hard live spending caps and actual v0.2 role transport invocation remain **not implemented** in this suite.
 
 ## RPDI-14 conflict decisions
 
@@ -33,7 +33,7 @@ On PR #135's **previous** code/test SHA `728a386dc2e3185c936cd9502d5466200bd0a25
 Run offline:
 
 ```bash
-python -m pytest tests/test_agent_capability_benchmark_spec.py tests/test_exploration_discoverybench_diagnostic.py tests/test_v02_full_prereg.py tests/test_v02_full_evidence.py tests/test_v02_full_dispatch.py -q
+python -m pytest tests/test_agent_capability_benchmark_spec.py tests/test_agent_benchmark_runner.py tests/test_agent_benchmark_metrics.py tests/test_exploration_discoverybench_diagnostic.py tests/test_v02_full_prereg.py tests/test_v02_full_evidence.py tests/test_v02_full_dispatch.py -q
 ```
 
 Before **any scored run**: freeze the exact integrated SHA, full feature profile, task/rights pins, split/oracle boundaries, per-arm model and budgets, independent signed attestations, verified sandbox and provider usage receipts, sample size and permitted scoring. Keep Optimization and Exploration comparisons separate. Codex Direct must be allowed iterative DEV feedback. Historical v0.1 or DEV-only scores do not satisfy this gate.
