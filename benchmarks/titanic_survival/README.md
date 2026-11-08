@@ -196,6 +196,24 @@ run the trusted evaluator and terminal HOLDOUT; the model does not receive
 private evaluator tiers. This command advances an approved Optimization child;
 it does not itself discover a protocol or create that child.
 
+If the Optimization campaign is durably paused, resume it explicitly after
+reviewing the current state and approving the next bounded allowance:
+
+```sh
+bananloop v2 optimize \
+  --repo . \
+  --campaign-id "$OPTIMIZATION_CHILD_ID" \
+  --role-registry ./roles.json \
+  --visible-path data/train.csv \
+  --visible-path src/model.json \
+  --write-path src/model.json \
+  --resume \
+  --approve-up-to-calls 2
+```
+
+The durable queue and evaluator receipts are reused on resume; completed
+candidate work is not dispatched again.
+
 Current verified Linux commands:
 
 ```sh
@@ -217,6 +235,9 @@ spend more model budget or duplicate evaluator receipts. This is a deterministic
 runtime acceptance case; it does not claim that a live model will choose useful
 candidates. The Titanic mini benchmark covers the real
 Optimization/evaluator/verification/HOLDOUT path.
+The exact three-epoch pause/resume result is in
+[`v02-multi-epoch-acceptance-a6b0ae4.md`](../../docs/reviews/v02-multi-epoch-acceptance-a6b0ae4.md)
+and its JSON companion.
 95% remains a stretch target, not a guarantee. A live model-driven Titanic
 Optimization run has completed; the upstream Exploration protocol-discovery
 handoff still uses a fixture-seeded approval.
