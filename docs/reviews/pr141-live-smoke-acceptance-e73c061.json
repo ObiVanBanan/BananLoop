@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "acceptance": "PR #141 live SIWC smoke and Linux acceptance",
+  "runtime_commit_sha": "e73c0612719e8a23604b6ca5db814ea741383351",
+  "runtime_tree_sha": "27c31a89d2f095c3ce0862da55f8ae4a63c9a34b",
+  "pull_request": "https://github.com/ObiVanBanan/BananLoop/pull/141",
+  "live_smoke": {
+    "status": "SIWC_ONE_SHOT_EXPLORATION_COMPLETED",
+    "provider": "chatgpt_plan",
+    "model": "gpt-6-luna",
+    "inference_calls": 1,
+    "automatic_retries": 0,
+    "usage_tokens": {
+      "input": 1036,
+      "output": 1238,
+      "total": 2274
+    },
+    "campaign_id": "c-c6188d67dbb10ec974618d95c2863606",
+    "job_id": "explore-d4847b346f4d91b3a03bc5a2206aa058802ba10e",
+    "research_evidence_id": "2dbefa37c8b080fb92cf293bbc6668ae0a154c79955dbb25d651647569f9183d",
+    "sqlite_integrity": "ok",
+    "empirical_experiment_run": false,
+    "full_pipeline_proven": false,
+    "rpdi14_score": false,
+    "monetary_cost": "UNKNOWN"
+  },
+  "offline_suite": {
+    "python": "3.12.15",
+    "passed": 1015,
+    "failed": 0,
+    "skipped": 2,
+    "subtests_passed": 7,
+    "duration_seconds": 66.83,
+    "provider_requests": 0,
+    "loopback_used_for_local_api_fixtures": true
+  },
+  "ci_snapshot": {
+    "linux_py311": "success",
+    "linux_py312": "success",
+    "linux_py313": "success",
+    "chromium": "success",
+    "no_provider_windows_py312": "success",
+    "windows_pytest_py312": "in_progress_at_report_time"
+  },
+  "remaining_limits": [
+    "multi-epoch live model behavior not tested",
+    "independent Codex benchmark comparison incomplete",
+    "Windows full suite unresolved",
+    "pinned selector source commit unavailable"
+  ]
+}
