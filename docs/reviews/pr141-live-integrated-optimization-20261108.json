@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-08",
+  "platform": "Linux",
+  "test": {
+    "command": "BANANLOOP_LIVE_INTEGRATED_OPTIMIZATION=1 .venv/bin/python -m pytest -o addopts= -q -s 'tests/test_rpdi13_integrated_acceptance.py::test_exploration_research_handoff_child_agrees_through_api_and_cli[real-bwrap]'",
+    "result": "passed",
+    "duration_seconds": 19.54,
+    "live_model": "gpt-6-luna",
+    "provider": "Sign in with ChatGPT",
+    "automatic_retries": 0,
+    "monetary_cost": "UNKNOWN"
+  },
+  "campaigns": {
+    "exploration_parent": {
+      "campaign_id": "c-fcd40493afb05da11f0f4f996f817c33",
+      "status": "CONVERGED_REPEATED_EXPERIMENT",
+      "research_iterations": 3,
+      "researcher_live": false,
+      "protocol_verifier_live": false
+    },
+    "optimization_child": {
+      "campaign_id": "c-905465efabb50fe34983871bd3fb9ee5",
+      "status": "ALL_NODES_COMPLETE",
+      "champion_revision": 1,
+      "candidate_snapshot_id": "b6b6b843335c91e0dcde0a04d85e2afc76ece8c9",
+      "candidate_file": "src/optimizer/model/ranker.py",
+      "candidate_file_content": "baseline ranker = 1\n",
+      "integration_decision": "PASS",
+      "integration_receipt_digest": "f47adc8d5601386b04098debfb41d1ca1f49e339ed7e38754e152a45bdbaf6ba",
+      "holdout": {
+        "status": "VERIFIED",
+        "tier": "holdout",
+        "case_count": 1,
+        "repeatability_runs": 2,
+        "metric_id": "quality",
+        "value": 0.8,
+        "receipt_digest": "0299430e090a853a193d71c51b8bd7890820b47f0200515cfe03a4b8aa9d1f03"
+      }
+    }
+  },
+  "provider_calls": [
+    {
+      "role_id": "optimizer",
+      "request_id": "resp_0954bcbb72400549016af0921ca0e487d2bb27e4a8f97228bc",
+      "status": "COMPLETED",
+      "input_tokens": 325,
+      "output_tokens": 234,
+      "total_tokens": 559
+    },
+    {
+      "role_id": "integration_verifier",
+      "request_id": "resp_007a75ada111b61d016af0922595b087d2a18cbc323430baf1",
+      "status": "COMPLETED",
+      "input_tokens": 643,
+      "output_tokens": 152,
+      "total_tokens": 795
+    }
+  ],
+  "total_provider_tokens": 1354,
+  "limitations": [
+    "Exploration researcher and independent protocol verifier were deterministic fixtures.",
+    "The evaluator is a one-case synthetic fixture; its 0.8 score is not a benchmark score.",
+    "This does not demonstrate an autonomous live Exploration campaign."
+  ],
+  "contract_fix": {
+    "problem": "Integration verifier returned checks as a JSON object of booleans; strict contract requires an array of check-name strings.",
+    "resolution": "Prompt now explicitly requires the array format and enumerates the six allowed names.",
+    "automatic_retry": false,
+    "fresh_campaign_after_fix": true
+  },
+  "test_state_dir": "/tmp/pytest-of-sonik/pytest-90/test_exploration_research_hand0/"
+}
