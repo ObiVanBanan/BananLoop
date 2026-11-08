@@ -203,8 +203,8 @@ def make_optimizer_invoke(model_reply: OptimizerModelReply) -> Callable[..., dic
 def _run_git(args: list[str], cwd: Path, *, timeout: int = 60) -> str:
     try:
         return subprocess.check_output(
-            ["git", "-c", "core.longpaths=true", *args],
-            cwd=cwd, stderr=subprocess.PIPE, timeout=timeout,
+            ["git", "-C", str(cwd), "-c", "core.longpaths=true", *args],
+            stderr=subprocess.PIPE, timeout=timeout,
         ).decode("utf-8").strip()
     except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
         detail = getattr(exc, "stderr", None)
@@ -215,7 +215,7 @@ def _run_git(args: list[str], cwd: Path, *, timeout: int = 60) -> str:
         detail = " ".join(detail.split())[:500]
         raise V2OptimizationError(
             f"trusted Core Git snapshot operation failed "
-            f"(git {args[0] if args else 'operation'}; cwd_is_directory={cwd.is_dir()}; "
+            f"(git {args[0] if args else 'operation'}; target_is_directory={cwd.is_dir()}; "
             f"{type(exc).__name__}: {detail})"
         ) from None
 
