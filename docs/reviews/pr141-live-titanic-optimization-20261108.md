@@ -28,7 +28,7 @@ The test's live wrapper refuses a second optimizer dispatch and does not retry. 
 
 ## Offline multi-epoch check
 
-The same E2E fixture also passed offline with two Optimization epochs (`1 passed in 2.25s`): the first intentionally poor candidate was rejected; the second optimizer context contained the persisted rejection reason; the second candidate passed independent verification and reached trusted HOLDOUT. This verifies multi-epoch runtime behavior with deterministic model replies, not multiple live LLM epochs.
+The same E2E fixture also passed offline with three Optimization epochs (`1 passed in 2.92s`): the first two intentionally poor candidates were rejected; the next optimizer context contained the persisted rejection reason each time; the third candidate passed independent verification and reached trusted HOLDOUT. This verifies multi-epoch runtime behavior with deterministic model replies, not multiple live LLM epochs.
 
 ## Limits and follow-up
 
@@ -36,4 +36,4 @@ Earlier versions of this test exposed two harness defects: the child spec initia
 
 This run tested one Optimization epoch only. It does not establish multiple live epochs, autonomous live Exploration, or 95% Titanic accuracy.
 
-Source worktree: `a7e93aae719bf3a7c5fbeb5f9c53380357c47063` plus uncommitted changes; working-tree diff SHA-256 at the final live run: `765b0f04947b85bbd10a75900eb59ec425bfd7b442d4b792020b7c5ef1ecc5a5`.
+Source worktree: `a7e93aae719bf3a7c5fbeb5f9c53380357c47063` plus uncommitted changes; the current working-tree diff SHA-256 after the offline three-epoch test is `0a5755d965cc8672afadfeb1ae31a46df315d4d2126ebfbd9c0b593113251e5e`. The final live run used the same live path; the subsequent edit only expanded the offline reply sequence.

@@ -4,7 +4,7 @@
   "source": {
     "git_head": "a7e93aae719bf3a7c5fbeb5f9c53380357c47063",
     "worktree_dirty": true,
-    "tracked_diff_sha256": "765b0f04947b85bbd10a75900eb59ec425bfd7b442d4b792020b7c5ef1ecc5a5"
+    "tracked_diff_sha256": "0a5755d965cc8672afadfeb1ae31a46df315d4d2126ebfbd9c0b593113251e5e"
   },
   "test": {
     "command": "BANANLOOP_TITANIC_LIVE=1 python -m pytest tests/test_titanic_benchmark.py::test_titanic_v2_optimization_campaign_runs_to_terminal_holdout -ra",
@@ -51,12 +51,12 @@
     "tier_manifest_sha256": "b3fdbfd126f04f3a42738274a42d0db74930bb3c26fc7bd2220ac32812cf188a"
   },
   "offline_multi_epoch_check": {
-    "pytest_summary": "1 passed in 2.25s",
+    "pytest_summary": "1 passed in 2.92s",
     "live_model_inferences": 0,
-    "optimization_epochs": 2,
-    "first_candidate": "REJECTED",
-    "rejection_evidence_in_second_context": true,
-    "second_candidate": "ACCEPTED",
+    "optimization_epochs": 3,
+    "first_two_candidates": "REJECTED",
+    "rejection_evidence_in_next_contexts": true,
+    "third_candidate": "ACCEPTED",
     "trusted_holdout_verified": true
   },
   "budget_observation": {

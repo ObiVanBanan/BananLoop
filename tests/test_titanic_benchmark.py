@@ -594,17 +594,20 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
             offline_dispatch_count += 1
             assert_optimizer_input_is_candidate_only(public_input)
             assert public_input["visible_documents"]["data/train.csv"]
-            if offline_dispatch_count == 1:
+            if offline_dispatch_count <= 2:
+                intercept = 100.0 if offline_dispatch_count == 1 else -100.0
                 return {
                     "hypothesis_id": "titanic-child-interaction",
-                    "rationale": "Deliberately poor first candidate to verify rejection and research-memory handoff.",
+                    "rationale": "Deliberately poor candidate to verify rejection and research-memory handoff.",
                     "changes": {
                         "src/model.json": json.dumps({
-                            "schema": "titanic-linear-v1", "intercept": 100.0,
+                            "schema": "titanic-linear-v1", "intercept": intercept,
                             "coefficients": {"sex_female": 0.0},
                         }, sort_keys=True, separators=(",", ":")),
                     },
-                    "limitations": ["The first candidate intentionally predicts survival for everyone."],
+                    "limitations": [
+                        "This candidate intentionally predicts one class for every passenger."
+                    ],
                 }
             assert "previous candidate did not pass independent verification" in json.dumps(
                 public_input["role_context"], ensure_ascii=False,
@@ -685,9 +688,9 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
             assert len(live_receipts) == 1
         assert result["status"] == "ALL_NODES_COMPLETE"
         if not live_mode:
-            assert offline_dispatch_count == 2
+            assert offline_dispatch_count == 3
             assert sum(item.get("status") == "CANDIDATE_CREATED"
-                       for item in result["steps"]) == 2
+                       for item in result["steps"]) == 3
         assert result["holdout"]["status"] == "VERIFIED"
         assert result["holdout"]["tier"] == "holdout"
         assert 0.0 <= result["holdout"]["metric"]["value"] <= 1.0
