@@ -102,3 +102,13 @@ still running. Check the PR for its current status.
 - This smoke does not prove multi-epoch live model quality or an independent
   Codex benchmark comparison.
 - The Windows full suite and the pinned selector revision remain unresolved.
+
+## Later local Codex CLI diagnostic
+
+A one-case public researcher diagnostic later completed through the Codex CLI
+runner using `gpt-6-luna`. It returned a schema-valid `ResearcherReplyV1`;
+CLI-observed usage was 14,054 input and 482 output tokens. This is a
+non-qualifying diagnostic, not an independent benchmark score. It ran from an
+uncommitted worktree and has separate source and artifact hashes. See [the
+Codex CLI diagnostic report](pr141-codex-live-role-diagnostic-20261108.md) and
+[machine-readable result](pr141-codex-live-role-diagnostic-20261108.json).

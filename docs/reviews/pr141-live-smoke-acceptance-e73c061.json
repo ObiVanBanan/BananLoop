@@ -30,7 +30,10 @@
     "model": "gpt-6-luna",
     "iterations_completed": 2,
     "inference_calls": 2,
-    "request_statuses": ["COMPLETED", "COMPLETED"],
+    "request_statuses": [
+      "COMPLETED",
+      "COMPLETED"
+    ],
     "automatic_replay": false,
     "research_evidence_count": 2,
     "second_iteration_received_prior_evidence_ref": true,
@@ -97,5 +100,17 @@
     "independent Codex benchmark comparison incomplete",
     "Windows full suite unresolved",
     "pinned selector source commit unavailable"
-  ]
+  ],
+  "live_codex_cli_role_diagnostic": {
+    "report": "docs/reviews/pr141-codex-live-role-diagnostic-20261108.md",
+    "machine_result": "docs/reviews/pr141-codex-live-role-diagnostic-20261108.json",
+    "status": "COMPLETED_DIAGNOSTIC",
+    "cases": 1,
+    "model": "gpt-6-luna",
+    "input_tokens_observed": 14054,
+    "output_tokens_observed": 482,
+    "provider_cost": "UNKNOWN",
+    "rpdi14_score": false,
+    "committed_or_pushed": true
+  }
 }

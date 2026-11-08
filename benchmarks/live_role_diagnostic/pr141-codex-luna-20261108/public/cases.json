@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "schema_version": 1,
+      "suite": "role_capability",
+      "case_id": "pr141-luna-researcher-diagnostic-001",
+      "split": "DEV",
+      "role_id": "researcher",
+      "task_family": "synthetic_role_contract",
+      "capability_profile_id": "pinned-role-contract",
+      "output_contract_id": "v0.2-researcher-model-reply",
+      "allowed_context": [],
+      "agent_input": {
+        "campaign_goal": "Develop a falsifiable research plan for diagnosing a generalization gap in a tabular classification workflow.",
+        "public_task": {
+          "context": "A model has a higher score on training data than on a held-out development split. No row-level data, scores, feature list, or model details are provided.",
+          "question": "Propose up to three distinct, falsifiable hypotheses that could explain the gap. Select one hypothesis and specify a small next experiment, the expected evidence, and a condition that would falsify it. Do not claim that any experiment has already been run; identify missing information as a limitation.",
+          "constraints": [
+            "Use only the supplied facts.",
+            "Do not assume a particular dataset or model.",
+            "Prefer a low-cost diagnostic that does not inspect a final test or holdout set."
+          ]
+        }
+      },
+      "provenance": {
+        "content_sha256": "63e39d47f196a7c385d9187b6fe61d0ee5a565c9960db04cde1c27662942c960",
+        "license_status": "INTERNAL_SANITIZED",
+        "source_id": "operator-authored-public-diagnostic",
+        "source_revision": "2026-11-08"
+      },
+      "resource_budget": {
+        "max_agent_calls": 1,
+        "max_tool_calls": 0,
+        "wall_clock_seconds": 120
+      }
+    }
+  ]
+}

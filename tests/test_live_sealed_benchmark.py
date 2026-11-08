@@ -167,13 +167,25 @@ def test_codex_nonzero_exit_records_safe_diagnostics_without_raw_stderr(tmp_path
 
     raw_stderr = b"Model not found; authorization=Bearer private-token-value"
     raw_stdout = b"CLI failure detail could contain private workspace information"
+    source_codex_home = tmp_path / "original-codex-home"
+    source_codex_home.mkdir()
+    auth_file = source_codex_home / "auth.json"
+    auth_file.write_text('{"test":"secret-do-not-read"}')
+    monkeypatch.setenv("CODEX_HOME", str(source_codex_home))
+    launch = {}
 
     class FailedProcess:
         returncode = 2
         pid = 999999
 
-        def __init__(self, *args, **kwargs):
-            pass
+        def __init__(self, command, **kwargs):
+            launch["command"] = command
+            launch["cwd"] = Path(kwargs["cwd"])
+            launch["env"] = kwargs["env"]
+            transient_auth = Path(kwargs["env"]["CODEX_HOME"]) / "auth.json"
+            launch["auth_is_symlink"] = transient_auth.is_symlink()
+            launch["auth_target"] = transient_auth.resolve()
+            launch["xdg_config_home"] = kwargs["env"]["XDG_CONFIG_HOME"]
 
         def communicate(self, **kwargs):
             return raw_stdout, raw_stderr
@@ -195,6 +207,12 @@ def test_codex_nonzero_exit_records_safe_diagnostics_without_raw_stderr(tmp_path
     assert error.stdout_event_types == []
     assert b"private-token-value" not in str(error).encode()
     assert b"private workspace" not in str(error).encode()
+    transient_home = Path(launch["env"]["CODEX_HOME"])
+    assert transient_home != source_codex_home
+    assert launch["auth_is_symlink"] is True
+    assert launch["auth_target"] == auth_file
+    assert launch["cwd"] != transient_home
+    assert launch["xdg_config_home"].startswith(str(transient_home.parent))
 
 
 def test_codex_failure_classification_checks_stdout_without_returning_its_contents():

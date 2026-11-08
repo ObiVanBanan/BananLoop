@@ -260,10 +260,26 @@ def run_codex_case(case: dict, model_id: str, *, codex_executable: str,
     if len(raw_prompt) > MAX_PROMPT_BYTES:
         raise LiveBenchmarkError("public role prompt exceeds hard byte ceiling")
     with tempfile.TemporaryDirectory(prefix="bananloop-codex-public-") as root:
-        cwd = Path(root)
+        root_path = Path(root)
+        cwd = root_path / "work"
+        cwd.mkdir(mode=0o700)
+        env = _safe_cli_env()
+        # Codex CLI initializes its in-process app-server under CODEX_HOME.
+        # The benchmark worker may run with a read-only home, so keep all
+        # transient state in its private temp directory while linking (not
+        # copying or reading) the existing ChatGPT login file.
+        source_codex_home = Path(env.get("CODEX_HOME", str(Path.home() / ".codex")))
+        auth_file = source_codex_home / "auth.json"
+        if auth_file.is_file():
+            codex_home = root_path / "codex-home"
+            codex_home.mkdir(mode=0o700)
+            (codex_home / "auth.json").symlink_to(auth_file)
+            env["CODEX_HOME"] = str(codex_home)
+        env["XDG_CONFIG_HOME"] = str(root_path / "xdg-config")
+        env["XDG_DATA_HOME"] = str(root_path / "xdg-data")
         cmd = _codex_command(codex_executable, model_id)
         proc = subprocess.Popen(
-            cmd, cwd=cwd, env=_safe_cli_env(), stdin=subprocess.PIPE,
+            cmd, cwd=cwd, env=env, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
         )
         try:
