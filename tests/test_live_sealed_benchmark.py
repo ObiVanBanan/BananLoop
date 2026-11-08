@@ -10,7 +10,8 @@ from bananloop.agent_benchmark import BenchmarkError, digest, prepare_demo, read
 from bananloop.benchmark_sealed import seal_suite, score_sealed, evaluator_commitment
 from bananloop.benchmark_generate import generate_private_smoke
 from bananloop.benchmark_live_codex import (
-    LiveBenchmarkError, _preflight, parse_codex_events, run_live, validate_role_reply,
+    CodexExecFailure, LiveBenchmarkError, _classify_codex_failure, _codex_command, _preflight, parse_codex_events,
+    run_codex_case, run_live, validate_role_reply,
 )
 from bananloop.roles import RoleRegistryV1, TeamFactoryV1, TeamRequestV1
 
@@ -145,6 +146,87 @@ def test_codex_jsonl_has_measured_usage_and_one_structured_reply():
     answer, usage = parse_codex_events(b"\n".join(json.dumps(x).encode() for x in lines))
     assert answer == {"research_findings": []}
     assert usage["input_tokens"] == 500
+
+
+def test_live_codex_command_disables_execution_and_integration_tools_before_dispatch(tmp_path):
+    cmd = _codex_command("codex", "gpt-6-luna")
+    disabled = {cmd[i + 1] for i, value in enumerate(cmd[:-1])
+                if value == "--disable"}
+    assert disabled == {
+        "shell_tool", "apps", "browser_use", "browser_use_external",
+        "browser_use_full_cdp_access", "code_mode_host",
+    }
+    assert "--search" not in cmd
+    assert "--output-schema" not in cmd
+    assert "--ignore-user-config" in cmd
+
+
+def test_codex_nonzero_exit_records_safe_diagnostics_without_raw_stderr(tmp_path, monkeypatch):
+    import hashlib
+    import bananloop.benchmark_live_codex as live
+
+    raw_stderr = b"Model not found; authorization=Bearer private-token-value"
+    raw_stdout = b"CLI failure detail could contain private workspace information"
+
+    class FailedProcess:
+        returncode = 2
+        pid = 999999
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def communicate(self, **kwargs):
+            return raw_stdout, raw_stderr
+
+    monkeypatch.setattr(live.shutil, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(live.subprocess, "Popen", FailedProcess)
+    with pytest.raises(CodexExecFailure) as caught:
+        run_codex_case({"role_id": "researcher", "agent_input": {}}, "gpt-6-luna",
+                       codex_executable="codex", timeout_seconds=1)
+    error = caught.value
+    assert error.failure_code == "MODEL_UNAVAILABLE"
+    assert error.cli_exit_code == 2
+    assert error.stderr_bytes == len(raw_stderr)
+    assert error.stderr_sha256 == hashlib.sha256(raw_stderr).hexdigest()
+    assert error.stdout_bytes == len(raw_stdout)
+    assert error.stdout_sha256 == hashlib.sha256(raw_stdout).hexdigest()
+    assert error.stdout_format == "TEXT"
+    assert error.stdout_event_types == []
+    assert b"private-token-value" not in str(error).encode()
+    assert b"private workspace" not in str(error).encode()
+
+
+def test_codex_failure_classification_checks_stdout_without_returning_its_contents():
+    raw_stdout = b'{"error":"usage limit reached","workspace":"/private/path"}'
+    assert _classify_codex_failure(b"", raw_stdout) == "QUOTA_OR_RATE_LIMIT"
+    assert _classify_codex_failure(b'', b'{"code":"model_not_found"}') == "MODEL_UNAVAILABLE"
+
+
+def test_codex_jsonl_failure_is_classified_without_persisting_error_text(tmp_path, monkeypatch):
+    import bananloop.benchmark_live_codex as live
+    raw_stdout = b'{"type":"error","message":"private account detail and path /tmp/secret"}'
+
+    class FailedProcess:
+        returncode = 1
+        pid = 999999
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def communicate(self, **kwargs):
+            return raw_stdout, b""
+
+    monkeypatch.setattr(live.shutil, "which", lambda _name: "/usr/bin/codex")
+    monkeypatch.setattr(live.subprocess, "Popen", FailedProcess)
+    with pytest.raises(CodexExecFailure) as caught:
+        run_codex_case({"role_id": "researcher", "agent_input": {}}, "gpt-6-luna",
+                       codex_executable="codex", timeout_seconds=1)
+    error = caught.value
+    assert error.failure_code == "CODEX_JSONL_ERROR_EVENT"
+    assert error.stdout_format == "JSONL"
+    assert error.stdout_event_types == ["error"]
+    assert "private account" not in str(error)
+    assert "/tmp/secret" not in str(error)
 
 
 @pytest.mark.parametrize("bad", [

@@ -28,10 +28,87 @@ MAX_PROMPT_BYTES = 150_000
 MAX_RESPONSE_BYTES = 128_000
 _ROLES = {"researcher", "optimizer", "independent_verifier", "integration_verifier"}
 _BAD_KEYS = {"oracle", "answer_key", "expected_output", "gold_answer", "holdout_label", "private_label"}
+# A post-hoc JSONL check is useful for detecting CLI regressions, but is not a
+# control: by then a requested tool may already have run. Disable every
+# user-facing execution/integration feature supported by Codex CLI before the
+# model turn. User/project MCP configuration is independently excluded below
+# with --ignore-user-config, and web search is opt-in (we never pass --search).
+_DISABLED_CODEX_FEATURES = (
+    "shell_tool", "apps", "browser_use", "browser_use_external",
+    "browser_use_full_cdp_access", "code_mode_host",
+)
 
 
 class LiveBenchmarkError(BenchmarkError):
     """Live diagnostic dispatch is not safely authorized or verifiable."""
+
+
+def _classify_codex_failure(stderr: bytes, stdout: bytes = b"") -> str:
+    """Classify common CLI failures without persisting potentially sensitive text."""
+    message = (stderr + b"\n" + stdout).decode("utf-8", errors="replace").casefold()
+    # Structured CLI error codes commonly use snake_case; normalize separators
+    # so they map to the same allowlisted categories as human-readable errors.
+    message = re.sub(r"[_-]+", " ", message)
+    patterns = (
+        ("AUTHENTICATION_ERROR", ("not logged in", "unauthorized", "authentication failed", "sign in")),
+        ("QUOTA_OR_RATE_LIMIT", ("usage limit", "rate limit", "quota exceeded", "too many requests")),
+        ("MODEL_UNAVAILABLE", ("model not found", "unknown model", "model is not available", "model unavailable")),
+        ("CONFIG_OR_FEATURE_ERROR", ("unknown feature", "unknown config", "invalid config", "unrecognized option")),
+        ("SCHEMA_ERROR", ("output schema", "json schema", "schema validation")),
+        ("NETWORK_OR_PROXY_ERROR", ("connection refused", "connection reset", "dns", "proxy", "tls", "certificate", "network error")),
+    )
+    for code, needles in patterns:
+        if any(needle in message for needle in needles):
+            return code
+    _, event_types = _codex_stdout_metadata(stdout)
+    if "error" in event_types:
+        return "CODEX_JSONL_ERROR_EVENT"
+    if "turn.failed" in event_types:
+        return "CODEX_JSONL_TURN_FAILED_EVENT"
+    return "CODEX_EXIT_NONZERO_UNCLASSIFIED"
+
+
+def _codex_stdout_metadata(stdout: bytes) -> tuple[str, list[str]]:
+    """Summarize JSONL shape and allowlisted event names without retaining content."""
+    if not stdout:
+        return "EMPTY", []
+    known = {"error", "turn.failed", "turn.completed", "turn.started", "turn.cancelled",
+             "thread.started", "item.started", "item.completed", "item.updated"}
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    parsed = 0
+    event_types = []
+    for line in lines[:MAX_EVENT_BYTES // 2]:
+        try:
+            event = json.loads(line)
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if isinstance(event, dict) and isinstance(event.get("type"), str):
+            parsed += 1
+            name = event["type"] if event["type"] in known else "OTHER"
+            if name not in event_types and len(event_types) < 8:
+                event_types.append(name)
+    if parsed == 0:
+        kind = "TEXT"
+    elif parsed == len(lines):
+        kind = "JSONL"
+    else:
+        kind = "MIXED"
+    return kind, event_types
+
+
+class CodexExecFailure(LiveBenchmarkError):
+    """Safe, non-content diagnostics for an unsuccessful Codex CLI process."""
+
+    def __init__(self, *, failure_code: str, returncode: int | None,
+                 stderr: bytes, stdout: bytes = b""):
+        self.failure_code = failure_code
+        self.cli_exit_code = returncode
+        self.stderr_bytes = len(stderr)
+        self.stderr_sha256 = hashlib.sha256(stderr).hexdigest()
+        self.stdout_bytes = len(stdout)
+        self.stdout_sha256 = hashlib.sha256(stdout).hexdigest()
+        self.stdout_format, self.stdout_event_types = _codex_stdout_metadata(stdout)
+        super().__init__(f"Codex CLI stopped ({failure_code}); settlement is unknown; no retry")
 
 
 def _contains_secret_key(value: Any) -> bool:
@@ -145,6 +222,18 @@ def _safe_cli_env() -> dict[str, str]:
     return {name: os.environ[name] for name in names if name in os.environ}
 
 
+def _codex_command(codex_executable: str, model_id: str) -> list[str]:
+    cmd = [
+        codex_executable, "exec", "--json", "--ephemeral",
+        "--ignore-user-config", "--ignore-rules",
+        "--sandbox", "read-only", "--skip-git-repo-check",
+    ]
+    for feature in _DISABLED_CODEX_FEATURES:
+        cmd.extend(("--disable", feature))
+    cmd.extend(("--model", model_id, "-"))
+    return cmd
+
+
 def run_codex_case(case: dict, model_id: str, *, codex_executable: str,
                    timeout_seconds: int) -> tuple[dict, dict]:
     """One fresh Codex exec; no retry, no host repo checkout in its cwd."""
@@ -157,6 +246,7 @@ def run_codex_case(case: dict, model_id: str, *, codex_executable: str,
         "role": case["role_id"],
         "role_protocol": "v0.2-pinned-model-reply-diagnostic",
         "task": case["agent_input"],
+        "response_schema": model.model_json_schema(),
         "instruction": ("Return exactly one JSON object satisfying the role output schema. "
                         "Do not call tools, browse, execute commands, read files, "
                         "or claim unprovided evaluator outcomes. Use only the public task."),
@@ -166,30 +256,38 @@ def run_codex_case(case: dict, model_id: str, *, codex_executable: str,
         raise LiveBenchmarkError("public role prompt exceeds hard byte ceiling")
     with tempfile.TemporaryDirectory(prefix="bananloop-codex-public-") as root:
         cwd = Path(root)
-        schema = cwd / "role-output-schema.json"
-        schema.write_bytes(canonical(model.model_json_schema()))
-        cmd = [
-            codex_executable, "exec", "--json", "--ephemeral",
-            "--ignore-user-config", "--ignore-rules",
-            "--sandbox", "read-only", "--skip-git-repo-check",
-            "--model", model_id, "--output-schema", str(schema), "-",
-        ]
+        cmd = _codex_command(codex_executable, model_id)
         proc = subprocess.Popen(
             cmd, cwd=cwd, env=_safe_cli_env(), stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
         )
         try:
-            output, _stderr = proc.communicate(input=raw_prompt, timeout=timeout_seconds)
+            output, stderr = proc.communicate(input=raw_prompt, timeout=timeout_seconds)
         except (subprocess.TimeoutExpired, KeyboardInterrupt):
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            proc.communicate()
-            raise LiveBenchmarkError("Codex timeout/interruption; provider settlement is unknown; no retry")
+            try:
+                output, stderr = proc.communicate()
+            except Exception:
+                output, stderr = b"", b""
+            raise CodexExecFailure(
+                failure_code="CODEX_TIMEOUT_OR_INTERRUPTED",
+                returncode=proc.returncode, stderr=stderr or b"", stdout=output or b"",
+            ) from None
         if proc.returncode != 0:
-            raise LiveBenchmarkError("Codex exec failed; provider usage may be unknown; no retry")
-    answer, observed = parse_codex_events(output)
+            raise CodexExecFailure(
+                failure_code=_classify_codex_failure(stderr or b"", output or b""),
+                returncode=proc.returncode, stderr=stderr or b"", stdout=output or b"",
+            )
+    try:
+        answer, observed = parse_codex_events(output)
+    except LiveBenchmarkError:
+        raise CodexExecFailure(
+            failure_code="CODEX_EVENT_STREAM_INVALID_OR_UNMETERED",
+            returncode=proc.returncode, stderr=stderr or b"", stdout=output or b"",
+        ) from None
     observed["cli_event_stream_sha256"] = hashlib.sha256(output).hexdigest()
     return answer, observed
 
@@ -320,6 +418,12 @@ def run_live(*, cases_path: str, registry_path: str, team_path: str,
                 entry["status"] = ("AGENT_ERROR_WITH_CLI_USAGE"
                                    if "usage" in entry else "UNKNOWN_SETTLEMENT_STOP")
                 entry["error_type"] = type(exc).__name__
+                if isinstance(exc, CodexExecFailure):
+                    for key in ("failure_code", "cli_exit_code", "stderr_bytes", "stderr_sha256",
+                                "stdout_bytes", "stdout_sha256", "stdout_format", "stdout_event_types"):
+                        entry[key] = getattr(exc, key)
+                elif "usage" not in entry and isinstance(exc, LiveBenchmarkError):
+                    entry["failure_code"] = "RUNNER_PREFLIGHT_OR_EVENT_VALIDATION_ERROR"
                 state = ("STOPPED_METERED_AGENT_ERROR" if "usage" in entry
                          else "STOPPED_UNKNOWN_USAGE_OR_INVALID_OUTPUT")
                 break

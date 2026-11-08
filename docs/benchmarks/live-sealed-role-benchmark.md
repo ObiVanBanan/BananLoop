@@ -106,7 +106,7 @@ The public package includes `cases.json`, `registry.json`, `team.json`, and `com
 
 ## 2. Real Codex CLI execution, using existing subscription access
 
-Codex CLI supports `exec --json --ephemeral`, structured output schema, a read-only sandbox and per-turn token usage. See the [official non-interactive CLI documentation](https://developers.openai.com/codex/non-interactive/). The code uses `--ignore-user-config` / `--ignore-rules`, zero requested CLI tools, one fresh subprocess per task and a bounded timeout. It validates returned objects against the **real v0.2 model-reply Pydantic schemas**, rather than substituting the deterministic fixture worker.
+Codex CLI supports `exec --json --ephemeral`, structured output schemas, a read-only sandbox and per-turn token usage. See the [official non-interactive CLI documentation](https://developers.openai.com/codex/non-interactive/). The current v0.2 reply models contain flexible maps and optional defaults that the provider's strict structured-output subset rejects. The runner therefore sends the real reply schema as public prompt context, parses JSONL, and validates the returned object locally against the **real v0.2 model-reply Pydantic schema**. Before dispatch, it passes `--disable` for shell, apps, browser, and code-mode execution features; it also uses `--ignore-user-config` / `--ignore-rules`, does not enable web search, runs one fresh subprocess per task and applies a bounded timeout. This prevents model-requested CLI tool execution at the feature boundary; the JSONL parser remains a regression detector, not the primary control.
 
 **What this measures:** a model's behavior on a pinned public role prompt with real v0.2 output schema. It does **not** execute the entire durable v0.2 Core, worker fence, trusted evaluator or end-to-end capability-gated campaign. The Researcher/Optimizer input prompt is a benchmark prompt, not necessarily identical to the production prompt referenced by the role's `prompt_digest`.
 
@@ -140,7 +140,7 @@ python -m bananloop.benchmark_live_codex \
   --i-authorize-codex-exec
 ```
 
-**Limits:** Codex CLI `turn.completed.usage` is real *CLI-observed* token telemetry; it is **not a provider-signed resource receipt**, a guaranteed hard pre-dispatch token ceiling, or a subscription quota balance. An unknown/error/timeout stops further invocations with **no retry**; an over-budget observation stops subsequent invocations, but tokens already consumed cannot be undone. Cost in USD stays **UNKNOWN**, not `$0`. Run in a dedicated pre-isolated Linux VM/container with only public task material and your minimum needed Codex auth.
+**Limits:** Codex CLI `turn.completed.usage` is real *CLI-observed* token telemetry; it is **not a provider-signed resource receipt**, a guaranteed hard pre-dispatch token ceiling, or a subscription quota balance. An unknown/error/timeout stops further invocations with **no retry**; an over-budget observation stops subsequent invocations, but tokens already consumed cannot be undone. On a failed CLI process, the local ledger retains only a classified failure code, exit code, stdout/stderr byte lengths and SHA-256 hashes, plus JSONL/text classification and allowlisted event names; it does not retain raw streams, which may contain sensitive diagnostics. Cost in USD stays **UNKNOWN**, not `$0`. Run in a dedicated pre-isolated Linux VM/container with only public task material and your minimum needed Codex auth.
 
 ## 3. Alternatively: separately billed OpenAI Responses API with explicit cash ceiling
 

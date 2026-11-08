@@ -467,17 +467,21 @@ def _remaining_researcher_calls(queue: DurableWorkerQueue, campaign_id: str,
     return max(0, capacity - int(used))
 
 
-def _aggregate_reported_usage(call_history: list[dict[str, Any]]) -> dict[str, int] | str:
-    """Sum provider usage only when every dispatched request reports same-shaped counters."""
+def _aggregate_reported_usage(call_history: list[dict[str, Any]]) -> dict[str, int | str] | str:
+    """Sum known scalar token counters while ignoring provider-specific nested detail."""
     records = [item.get("usage") for item in call_history if item.get("dispatched")]
     if not records or any(not isinstance(item, dict) or not item for item in records):
         return "UNKNOWN"
-    keys = set(records[0])
-    if any(set(item) != keys for item in records):
+    totals: dict[str, int | str] = {}
+    for key in ("input_tokens", "output_tokens", "total_tokens"):
+        values = [item.get(key) for item in records]
+        if all(type(value) is int and value >= 0 for value in values):
+            totals[key] = sum(values)
+        else:
+            totals[key] = "UNKNOWN"
+    if all(value == "UNKNOWN" for value in totals.values()):
         return "UNKNOWN"
-    if any(type(value) is not int or value < 0 for item in records for value in item.values()):
-        return "UNKNOWN"
-    return {key: sum(item[key] for item in records) for key in sorted(keys)}
+    return totals
 
 
 def run_v2_explore(args: Any) -> dict[str, Any]:

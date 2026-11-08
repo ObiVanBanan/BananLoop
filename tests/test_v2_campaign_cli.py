@@ -16,7 +16,9 @@ from bananloop.contracts import OptimizationCampaignSpecV2
 from bananloop.contracts import RuntimePaths
 from bananloop.graph_store import GraphRepository
 from bananloop.registry import CampaignRegistry, RegistryError
-from bananloop.v2_campaign_cli import V2CampaignCLIError, run_v2_explore
+from bananloop.v2_campaign_cli import (
+    V2CampaignCLIError, _aggregate_reported_usage, run_v2_explore,
+)
 from bananloop.v2_optimization_cli import V2OptimizationCLIError, _safe_paths
 from bananloop.v2_optimization_cli import run_v2_optimize
 
@@ -31,6 +33,19 @@ def _repo(tmp_path):
     subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "public baseline"], check=True)
     return repo
+
+
+def test_v2_usage_aggregation_keeps_scalar_tokens_from_nested_siwc_usage():
+    calls = [
+        {"dispatched": True, "usage": {"input_tokens": 993, "output_tokens": 972,
+                                          "total_tokens": 1965, "attribution": {"a": {}}}},
+        {"dispatched": True, "usage": {"input_tokens": 1163, "output_tokens": 1136,
+                                          "total_tokens": 2299, "attribution": {"b": {}}}},
+    ]
+    assert _aggregate_reported_usage(calls) == {
+        "input_tokens": 2156, "output_tokens": 2108, "total_tokens": 4264,
+    }
+    assert _aggregate_reported_usage([{"dispatched": True, "usage": "UNKNOWN"}]) == "UNKNOWN"
 
 
 def _args(repo, state_dir, **overrides):
