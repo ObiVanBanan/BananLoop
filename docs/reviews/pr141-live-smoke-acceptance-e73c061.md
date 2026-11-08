@@ -32,6 +32,27 @@ credentials, shell, or network tools.
 
 Machine-readable result: [acceptance JSON](pr141-live-smoke-acceptance-e73c061.json).
 
+## Separate live Titanic Optimization
+
+The repository also contains a completed one-call live v2 Optimization run on
+the frozen Titanic seed-2026 split:
+
+- Runtime SHA: `5104f22d00eb0adcf5105475f45b8cc88ee3c248`.
+- One GPT-6 Luna optimizer inference completed; there was no retry.
+- The real optimizer reply produced a candidate. Trusted DEV evaluation,
+  independent integration verification, VALIDATION, and terminal trusted
+  HOLDOUT all completed. The optimizer did not receive validation or HOLDOUT
+  rows or labels.
+- HOLDOUT accuracy was **153/196 = 0.780612**, below the requested 0.95 stretch
+  target. The run is evidence that the live Optimization executor works, not
+  evidence that the target was reached.
+- Parent protocol approval was fixture-seeded and the independent integration
+  verifier was deterministic; the whole parent Exploration-to-Optimization
+  campaign was not live. Monetary cost is `UNKNOWN`.
+
+The public result, provider receipt, and campaign report are committed in
+`benchmarks/titanic_survival/results/live-siwc-optimization-20261107*.json`.
+
 ## Separate two-iteration live Exploration
 
 A second, independent SIWC run exercised two real GPT-6 Luna Researcher jobs

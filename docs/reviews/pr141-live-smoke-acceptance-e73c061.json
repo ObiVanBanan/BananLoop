@@ -46,6 +46,34 @@
     "complete_full_pipeline_proven": false,
     "campaign_id": "c-9cf01dce60858d13386a1d818426dbdb"
   },
+  "live_optimization": {
+    "status": "COMPLETED",
+    "tested_code_sha": "5104f22d00eb0adcf5105475f45b8cc88ee3c248",
+    "provider": "chatgpt_plan",
+    "model": "gpt-6-luna",
+    "inference_calls": 1,
+    "automatic_retries": 0,
+    "campaign_status": "ALL_NODES_COMPLETE",
+    "optimizer_candidate_created": true,
+    "trusted_dev_completed": true,
+    "independent_verification": "PASS",
+    "trusted_validation_completed": true,
+    "trusted_holdout_status": "VERIFIED",
+    "holdout_accuracy": 0.7806122448979592,
+    "holdout_correct": 153,
+    "holdout_cases": 196,
+    "stretch_target": 0.95,
+    "stretch_target_met": false,
+    "usage_tokens": {
+      "input": 13722,
+      "output": 337,
+      "total": 14059
+    },
+    "parent_protocol_approval": "fixture-seeded",
+    "integration_verifier": "deterministic_fixture",
+    "private_evaluator_data_exposed_to_model": false,
+    "monetary_cost": "UNKNOWN"
+  },
   "offline_suite": {
     "python": "3.12.15",
     "passed": 1015,
