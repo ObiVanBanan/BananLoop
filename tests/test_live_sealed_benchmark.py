@@ -180,6 +180,7 @@ def test_codex_nonzero_exit_records_safe_diagnostics_without_raw_stderr(tmp_path
 
     monkeypatch.setattr(live.shutil, "which", lambda _name: "/usr/bin/codex")
     monkeypatch.setattr(live.subprocess, "Popen", FailedProcess)
+    monkeypatch.setattr(live, "_posix_live_runner_supported", lambda: True)
     with pytest.raises(CodexExecFailure) as caught:
         run_codex_case({"role_id": "researcher", "agent_input": {}}, "gpt-6-luna",
                        codex_executable="codex", timeout_seconds=1)
@@ -218,6 +219,7 @@ def test_codex_jsonl_failure_is_classified_without_persisting_error_text(tmp_pat
 
     monkeypatch.setattr(live.shutil, "which", lambda _name: "/usr/bin/codex")
     monkeypatch.setattr(live.subprocess, "Popen", FailedProcess)
+    monkeypatch.setattr(live, "_posix_live_runner_supported", lambda: True)
     with pytest.raises(CodexExecFailure) as caught:
         run_codex_case({"role_id": "researcher", "agent_input": {}}, "gpt-6-luna",
                        codex_executable="codex", timeout_seconds=1)

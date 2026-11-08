@@ -234,10 +234,15 @@ def _codex_command(codex_executable: str, model_id: str) -> list[str]:
     return cmd
 
 
+def _posix_live_runner_supported() -> bool:
+    """The real subprocess worker uses POSIX process groups for bounded cleanup."""
+    return os.name == "posix"
+
+
 def run_codex_case(case: dict, model_id: str, *, codex_executable: str,
                    timeout_seconds: int) -> tuple[dict, dict]:
     """One fresh Codex exec; no retry, no host repo checkout in its cwd."""
-    if os.name != "posix":
+    if not _posix_live_runner_supported():
         raise LiveBenchmarkError("live Codex diagnostic needs a reviewed POSIX execution host")
     if not shutil.which(codex_executable):
         raise LiveBenchmarkError("Codex CLI executable not available")
