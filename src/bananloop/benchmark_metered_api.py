@@ -78,8 +78,12 @@ def _strict_usage(response: dict, expected_model: str) -> tuple[dict, str, str]:
         raise MeteringError("provider message output missing")
     parts = []
     for message in outputs:
-        if not isinstance(message, dict) or message.get("type") != "message":
-            raise MeteringError("tools/reasoning output is not a single bounded message")
+        if not isinstance(message, dict):
+            raise MeteringError("provider output item is malformed")
+        if message.get("type") == "reasoning":
+            continue  # Non-text reasoning metadata is not a tool or an answer.
+        if message.get("type") != "message":
+            raise MeteringError("provider returned a tool or non-message output")
         for piece in message.get("content", []):
             if not isinstance(piece, dict) or piece.get("type") != "output_text":
                 raise MeteringError("provider output contains non-text content")
