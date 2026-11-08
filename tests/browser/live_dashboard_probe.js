@@ -19,7 +19,7 @@ async function main() {
     await expect(page.locator("#summary-grid")).toContainText("OPTIMIZATION");
     await expect(page.locator("#summary-grid")).toContainText("FULL");
     await expect(page.locator("#graph-panel")).toBeVisible();
-    await expect(page.locator("#graph-nodes")).toContainText("v2-optimizer-proposal-candidate-");
+    await expect(page.locator("#graph-nodes")).toContainText("optimization-task-");
     await expect(page.locator("#graph-nodes")).toContainText("CONSOLIDATION · COMPLETED");
     await expect(page.locator("#phase-state")).toContainText("CONSOLIDATION");
     await expect(page.locator("#lifecycle-items")).toContainText("Integration verification · PASS");
