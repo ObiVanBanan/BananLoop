@@ -189,7 +189,9 @@ def run_codex_case(case: dict, model_id: str, *, codex_executable: str,
             raise LiveBenchmarkError("Codex timeout/interruption; provider settlement is unknown; no retry")
         if proc.returncode != 0:
             raise LiveBenchmarkError("Codex exec failed; provider usage may be unknown; no retry")
-    return parse_codex_events(output)
+    answer, observed = parse_codex_events(output)
+    observed["cli_event_stream_sha256"] = hashlib.sha256(output).hexdigest()
+    return answer, observed
 
 
 def _preflight(public: dict, registry: RoleRegistryV1, team: TeamManifestV1,
@@ -299,21 +301,27 @@ def run_live(*, cases_path: str, registry_path: str, team_path: str,
                     case, entry["model_id"], codex_executable=codex_executable,
                     timeout_seconds=case["resource_budget"]["wall_clock_seconds"],
                 )
-                result = validate_role_reply(case["role_id"], reply, case["agent_input"])
+                if (not isinstance(usage, dict) or
+                        any(type(usage.get(k)) is not int or usage[k] < 0 for k in
+                            ("input_tokens", "cached_input_tokens", "output_tokens"))):
+                    raise LiveBenchmarkError("model transport omitted observable token usage")
                 entry["usage"] = usage
-                entry["status"] = "COMPLETED"
-                entry["response_sha256"] = digest(result)
                 used_input += usage["input_tokens"]
                 used_output += usage["output_tokens"]
+                result = validate_role_reply(case["role_id"], reply, case["agent_input"])
+                entry["status"] = "COMPLETED"
+                entry["response_sha256"] = digest(result)
                 responses[case["case_id"]] = result
                 if used_input > auth["max_observed_input_tokens"] or used_output > auth["max_observed_output_tokens"]:
                     entry["status"] = "OVER_OBSERVED_BUDGET"
                     state = "STOPPED_OVER_BUDGET"
                     break
             except Exception as exc:
-                entry["status"] = "UNKNOWN_SETTLEMENT_STOP"
+                entry["status"] = ("AGENT_ERROR_WITH_CLI_USAGE"
+                                   if "usage" in entry else "UNKNOWN_SETTLEMENT_STOP")
                 entry["error_type"] = type(exc).__name__
-                state = "STOPPED_UNKNOWN_USAGE_OR_INVALID_OUTPUT"
+                state = ("STOPPED_METERED_AGENT_ERROR" if "usage" in entry
+                         else "STOPPED_UNKNOWN_USAGE_OR_INVALID_OUTPUT")
                 break
             finally:
                 entry["entry_sha256"] = digest({k: v for k, v in entry.items() if k != "entry_sha256"})
