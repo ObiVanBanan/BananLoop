@@ -221,8 +221,15 @@ def _preflight(public: dict, registry: RoleRegistryV1, team: TeamManifestV1,
                 or defined.model_version != member.model_version or member.adapter != "codex"
                 or member.provider != "openai"):
             raise LiveBenchmarkError("live case role is not a pinned OpenAI Codex role")
-        if member.capability_policy.tools or member.capability_policy.network_access:
-            raise LiveBenchmarkError("role bench requires a tool-free pinned role")
+        # The model-only diagnostic grants NO tools even if a production
+        # researcher/optimizer role has wider Core-gated capabilities.
+        # Pin the original profile rather than silently rewriting its role ID.
+        if member.capability_policy.network_access:
+            raise LiveBenchmarkError("role benchmark refuses an independently network-enabled role")
+        if role_id in {"independent_verifier", "integration_verifier"} and (
+                member.capability_policy.tools or member.capability_policy.read_paths
+                or member.capability_policy.write_paths):
+            raise LiveBenchmarkError("independent verifier roles must be tool-free")
         data = case.get("agent_input")
         if not isinstance(data, dict) or digest(data) != case.get("provenance", {}).get("content_sha256"):
             raise LiveBenchmarkError("public input provenance mismatch")
