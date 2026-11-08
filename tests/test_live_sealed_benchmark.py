@@ -199,5 +199,6 @@ def test_live_refuses_bad_role_reply_without_automatic_retry(tmp_path):
                       authorization_path=root / "owner-authorization.json",
                       output_dir=root / "usage-results", execute=malformed)
     assert len(seen) == 1
-    assert result["status"] == "STOPPED_UNKNOWN_USAGE_OR_INVALID_OUTPUT"
+    assert result["status"] == "STOPPED_METERED_AGENT_ERROR"
+    assert result["observed_input_tokens"] == 50
     assert result["release_eligible"] is False
