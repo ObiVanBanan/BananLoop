@@ -32,6 +32,15 @@ def test_optimizer_proposal_is_bounded_and_rejects_empty_replacements():
         )
 
 
+def test_optimizer_proposal_normalizes_one_string_limitation_losslessly():
+    proposal = OptimizationCandidateProposalV1.model_validate({
+        "hypothesis_id": "h1", "rationale": "bounded change",
+        "changes": {"src/app.py": "candidate\n"},
+        "limitations": "Needs follow-up testing.",
+    })
+    assert proposal.limitations == ("Needs follow-up testing.",)
+
+
 def test_optimizer_model_bridge_exposes_only_allowlisted_text_and_gateway_writes():
     class Gateway:
         def __init__(self):

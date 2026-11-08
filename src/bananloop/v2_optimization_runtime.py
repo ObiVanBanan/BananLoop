@@ -53,6 +53,14 @@ class OptimizationCandidateProposalV1(BaseModel):
     changes: dict[str, str] = Field(min_length=1, max_length=16)
     limitations: tuple[str, ...] = Field(default=(), max_length=32)
 
+    @field_validator("limitations", mode="before")
+    @classmethod
+    def normalize_single_limitation(cls, value: Any) -> Any:
+        # LLMs occasionally serialize one optional limitation as a scalar
+        # string. This has an unambiguous lossless interpretation; malformed
+        # non-string values remain rejected by the typed contract.
+        return (value,) if isinstance(value, str) else value
+
     @field_validator("limitations")
     @classmethod
     def bounded_limitations(cls, value: tuple[str, ...]) -> tuple[str, ...]:
@@ -654,7 +662,16 @@ class V2OptimizationCandidateAdapter:
         except V2OptimizationError:
             raise
         except (OSError, subprocess.SubprocessError) as exc:
-            raise V2OptimizationError("trusted Core could not commit the candidate snapshot") from exc
+            detail = getattr(exc, "stderr", None)
+            if isinstance(detail, bytes):
+                detail = detail.decode("utf-8", errors="replace")
+            if not isinstance(detail, str) or not detail.strip():
+                detail = str(exc)
+            detail = " ".join(detail.split())[:500]
+            raise V2OptimizationError(
+                f"trusted Core could not commit the candidate snapshot "
+                f"({type(exc).__name__}: {detail})"
+            ) from exc
 
     def publish_completed(self, job_id: str) -> dict[str, Any]:
         job = self.queue.get_job(job_id)

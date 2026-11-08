@@ -59,7 +59,8 @@ INSTRUCTIONS = (
 OPTIMIZER_INSTRUCTIONS = (
     "You are the pinned BananLoop v0.2 optimizer. Return one strict JSON object with "
     "hypothesis_id copied exactly from selected_hypothesis_id, rationale, changes (a mapping of allowlisted relative paths to "
-    "complete UTF-8 replacement text), and optional limitations. Do not return commands, "
+    "complete UTF-8 replacement text), and optional limitations as an array of strings "
+    "(omit limitations when there are none; never return a single string there). Do not return commands, "
     "scores, tests, evaluator output, credentials, or private data. When editing numeric "
     "model parameters, preserve the visible schema and use only existing coefficient keys; "
     "do not invent feature names. Make only the smallest change that tests the hypothesis."

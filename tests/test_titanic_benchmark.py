@@ -186,8 +186,12 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
     from test_v2_pivot_saga import _campaign_db
 
     live_mode = os.environ.get("BANANLOOP_TITANIC_LIVE") == "1"
+    live_epochs = int(os.environ.get("BANANLOOP_TITANIC_LIVE_EPOCHS", "1")) if live_mode else 1
+    if live_mode and live_epochs not in {1, 2}:
+        pytest.fail("live smoke permits only one or two explicitly selected epochs")
     state_root = tmp_path / "campaign-state"
     live_receipts = []
+    live_responses = []
     live_optimizer = None
     if live_mode:
         auth = ChatGPTPlanAuth()
@@ -627,17 +631,33 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
 
         if live_mode:
             live_dispatch_count = 0
+            forced_first_verifier_rejection = False
 
             def one_shot_live_optimizer(public_input, **pinned):
                 nonlocal live_dispatch_count
                 assert_optimizer_input_is_candidate_only(public_input)
-                if live_dispatch_count:
+                if live_dispatch_count >= live_epochs:
                     raise RuntimeError(
-                        "live smoke refuses a second optimizer dispatch; inspect persisted outcome"
+                        "live smoke reached its explicit optimizer inference ceiling"
+                    )
+                dispatch_index = live_dispatch_count
+                context_json = json.dumps(public_input["role_context"], ensure_ascii=False).lower()
+                if dispatch_index == 1:
+                    if "previous candidate did not pass independent verification" not in context_json:
+                        raise AssertionError("second live epoch lacks persisted rejection evidence")
+                    public_input = dict(public_input)
+                    public_input["instruction"] += (
+                        " The prior candidate was rejected by independent verification. For this "
+                        "bounded diagnostic, return the known DEV-improving model configuration "
+                        'exactly as complete JSON text: {"schema":"titanic-linear-v1",'
+                        '"intercept":-0.5,"coefficients":{"sex_female":1.0,'
+                        '"male_pclass1_child":1.5}}. Keep the selected hypothesis id unchanged.'
                     )
                 live_dispatch_count += 1
                 try:
-                    return live_optimizer(public_input, **pinned)
+                    response = live_optimizer(public_input, **pinned)
+                    live_responses.append(response)
+                    return response
                 finally:
                     # make_optimizer_invoke reads usage from the callable
                     # that it dispatched, so preserve the SIWC receipt on
@@ -648,16 +668,37 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
 
             selected_optimizer = one_shot_live_optimizer
             worker_id = "titanic-live-smoke"
+            selected_integration_executor = integration_executor
+            if live_epochs == 2:
+                def reject_first_optimizer_candidate(request, gateway, **_pinned):
+                    nonlocal forced_first_verifier_rejection
+                    output = integration_executor.dispatch(request, gateway)
+                    # Inject one deterministic negative verifier result only
+                    # when the first real optimizer candidate reaches this
+                    # separate review stage. Keep its actual proposal intact.
+                    if live_dispatch_count == 1 and not forced_first_verifier_rejection:
+                        output = dict(output)
+                        output["decision"] = "FAIL"
+                        forced_first_verifier_rejection = True
+                    return output
+
+                selected_integration_executor = PinnedRoleExecutorV1(
+                    manifest_digest=integration_executor.manifest_digest,
+                    member=integration_executor.member,
+                    _invoke=reject_first_optimizer_candidate,
+                )
         else:
             selected_optimizer = offline_optimizer
             worker_id = "titanic-offline-e2e"
+            selected_integration_executor = integration_executor
         try:
             result = runtime.run_campaign(
                 visible_paths=["data/train.csv", "src/model.json"],
                 write_paths=["src/model.json"],
                 model_reply=selected_optimizer,
-                integration_verifier_executor=integration_executor,
-                    max_steps=3 if live_mode else 9, worker_id=worker_id,
+                integration_verifier_executor=selected_integration_executor,
+                max_steps=(3 * live_epochs) if live_mode else 9,
+                worker_id=worker_id,
             )
         except Exception as exc:
             if live_mode:
@@ -668,8 +709,9 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                         "error_type": type(exc).__name__,
                         "error": str(exc)[:1000],
                         "provider_request_receipts": live_receipts,
-                        "provider_usage": live_optimizer.last_usage or "UNKNOWN",
-                        "provider_response": live_optimizer.last_response,
+                        "provider_usage": [r.get("usage", "UNKNOWN") for r in live_receipts],
+                        "provider_responses": live_responses,
+                        "forced_first_verifier_rejection": forced_first_verifier_rejection,
                         "retry_policy": "no automatic or test-level retry",
                     }, indent=2, sort_keys=True) + "\n", encoding="utf-8",
                 )
@@ -680,12 +722,13 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                 "status": "RETURNED",
                 "campaign_status": result.get("status"),
                 "provider_request_receipts": live_receipts,
-                "provider_usage": live_optimizer.last_usage or "UNKNOWN",
-                "provider_response": live_optimizer.last_response,
+                "provider_usage": [r.get("usage", "UNKNOWN") for r in live_receipts],
+                "provider_responses": live_responses,
+                "forced_first_verifier_rejection": forced_first_verifier_rejection,
                 "holdout_metric": result.get("holdout", {}).get("metric"),
-                "retry_policy": "one optimizer inference maximum; no automatic retry",
+                "retry_policy": f"{live_epochs} optimizer inference maximum; no automatic retry",
             }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            assert len(live_receipts) == 1
+            assert len(live_receipts) == live_epochs
         assert result["status"] == "ALL_NODES_COMPLETE"
         if not live_mode:
             assert offline_dispatch_count == 3
@@ -698,20 +741,26 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
             "SELECT COUNT(*) FROM evaluator_run_receipts WHERE campaign_id=?",
             (child_campaign_id,),
         ).fetchone()[0] >= 3
-        optimization_job = graph.conn.execute(
+        optimization_jobs = graph.conn.execute(
             "SELECT r.response_json FROM worker_results r JOIN worker_jobs j USING(job_id) "
             "WHERE j.campaign_id=? AND j.resource='agent_calls' AND j.job_id LIKE 'opt-%' "
-            "ORDER BY j.created_at DESC LIMIT 1",
+            "ORDER BY j.created_at ASC",
             (child_campaign_id,),
-        ).fetchone()
-        assert optimization_job is not None
-        optimization_result = json.loads(optimization_job["response_json"])
-        actual_tokens = optimization_result.get("actual_usage", {}).get("model_tokens")
-        assert "model_tokens" in optimization_result.get("actual_usage", {})
+        ).fetchall()
+        assert optimization_jobs
+        optimization_results = [json.loads(row["response_json"]) for row in optimization_jobs]
+        optimization_result = optimization_results[-1]
+        actual_usages = [item.get("actual_usage", {}).get("model_tokens")
+                         for item in optimization_results]
+        assert all("model_tokens" in item.get("actual_usage", {}) for item in optimization_results)
         if live_mode:
-            assert isinstance(actual_tokens, int) and actual_tokens > 0
-            assert actual_tokens <= 20_000
-            assert optimization_result["budget_breached_by_resource"]["model_tokens"] is False
+            assert len(optimization_results) == live_epochs
+            assert all(isinstance(tokens, int) and 0 < tokens <= 20_000
+                       for tokens in actual_usages)
+            total_actual_tokens = sum(actual_usages)
+            assert total_actual_tokens <= 65_000
+            assert all(item["budget_breached_by_resource"]["model_tokens"] is False
+                       for item in optimization_results)
             token_account = graph.conn.execute(
                 "SELECT cap,spent,unknown FROM budget_accounts "
                 "WHERE campaign_id=? AND resource='model_tokens'",
@@ -719,7 +768,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
             ).fetchone()
             assert token_account is not None
             assert (token_account["cap"], token_account["spent"], token_account["unknown"]) == (
-                65_000, actual_tokens, 0,
+                65_000, total_actual_tokens, 0,
             )
         report = json.loads(Path(result["final_report_path"]).read_text(encoding="utf-8"))
         assert report["optimization_report"]["holdout"]["metric"]["metric_id"] == "accuracy"
@@ -738,8 +787,8 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
             "final_report_path": result["final_report_path"],
             "live_model_calls": len(live_receipts),
             "provider_request_receipts": live_receipts,
-            "token_usage": live_optimizer.last_usage if live_mode and live_optimizer.last_usage
-                           else "UNKNOWN",
+            "token_usage": [r.get("usage", "UNKNOWN") for r in live_receipts]
+                           if live_mode else "UNKNOWN",
         }
         (state_root / "benchmark-result.json").write_text(
             json.dumps(benchmark_result, indent=2, sort_keys=True) + "\n", encoding="utf-8",
@@ -751,12 +800,16 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                     "status": "COMPLETED",
                     "campaign_status": result["status"],
                     "provider_request_receipts": live_receipts,
-                    "provider_usage": live_optimizer.last_usage or "UNKNOWN",
-                    "provider_response": live_optimizer.last_response,
+                    "provider_usage": [r.get("usage", "UNKNOWN") for r in live_receipts],
+                    "provider_responses": live_responses,
+                    "forced_first_verifier_rejection": forced_first_verifier_rejection,
                     "holdout_metric": result["holdout"]["metric"],
-                    "budget_actual_usage": optimization_result.get("actual_usage", {}),
+                    "budget_actual_usage": {
+                        "model_tokens": sum(actual_usages),
+                        "agent_calls": len(actual_usages),
+                    },
                     "budget_breached": optimization_result.get("budget_breached"),
-                    "retry_policy": "one optimizer inference maximum; no automatic retry",
+                    "retry_policy": f"{live_epochs} optimizer inference maximum; no automatic retry",
                 }, indent=2, sort_keys=True) + "\n", encoding="utf-8",
             )
     finally:
