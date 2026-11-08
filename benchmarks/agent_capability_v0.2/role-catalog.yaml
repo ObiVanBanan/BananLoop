@@ -1,0 +1,70 @@
+schema_version: 1
+benchmark_version: "0.2-integration-draft"
+status: "DESIGN_ONLY_NOT_RUN"
+integration_source_sha: "9c5965d4072f3431ef4d487ebe3bb25e35df62cf"
+authority: "src/bananloop/roles.py: RoleRegistryV1 and TeamManifestV1"
+role_selection: "bind from frozen per-campaign TeamManifestV1; this is not a global registry"
+roles:
+  - role_id: researcher
+    runtime_status: integrated_offline_acceptance
+    runtime_entry: "src/bananloop/v2_research_runtime.py"
+    evaluator_family: evidence_grounding_and_hypothesis_followup
+    primary_metrics:
+      - supported_claim_rate
+      - falsifiable_hypothesis_rate
+      - evidence_followup_quality
+      - role_scope_violation_rate
+  - role_id: optimizer
+    runtime_status: integrated_offline_acceptance
+    runtime_entry: "src/bananloop/v2_optimization_runtime.py"
+    evaluator_family: candidate_implementation_and_regression
+    primary_metrics:
+      - eligible_candidate_pass_rate
+      - independent_validation_pass_rate
+      - regression_rate
+      - scope_violation_rate
+  - role_id: independent_verifier
+    runtime_status: integrated_offline_acceptance
+    runtime_entry: "src/bananloop/evaluator_verification.py"
+    evaluator_family: evaluator_protocol_verification
+    primary_metrics:
+      - invalid_protocol_rejection_rate
+      - incorrect_approval_rate
+      - pin_integrity_rate
+  - role_id: integration_verifier
+    runtime_status: integrated_offline_acceptance
+    runtime_entry: "src/bananloop/v2_optimization_runtime.py"
+    evaluator_family: independent_candidate_verification
+    primary_metrics:
+      - invalid_candidate_rejection_rate
+      - false_acceptance_rate
+      - promotion_invariant_rate
+
+legacy_capabilities:
+  - capability: campaign_bootstrapper
+    resolution: "Core v2 explore preflight, not a separately scored model role"
+  - capability: proposer
+    resolution: "hypothesis proposal inside researcher output, not a separately pinned role in current E2E"
+  - capability: selector
+    resolution: "Core evidence-linked selection; separate model selector not exercised by current E2E"
+  - capability: implementer
+    resolution: "tested as optimizer behavior, not an alias rewrite"
+  - capability: diagnostic
+    resolution: "fault-diagnosis rubric retained for future separate role definition"
+  - capability: pivot_advisor
+    resolution: "supervised proposal/owner approval; no autonomous pivot authority"
+
+control_plane_components:
+  - role_registry
+  - team_factory
+  - scheduler
+  - capability_gateway
+  - research_ledger
+  - budget_accounting
+  - durable_worker_queue
+  - convergence_detection
+  - evaluator_gate
+  - owner_pivot_approval
+control_plane_note: >
+  Evaluate these Core invariants using offline contract, isolation, security,
+  and failure-injection tests. Do not award the model role credit for enforcement by Core.
