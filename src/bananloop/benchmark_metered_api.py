@@ -129,6 +129,8 @@ def https_provider_once(payload: bytes, *, api_key: str, timeout_seconds: int) -
 
 
 def _operator_signing_key(path: str | Path) -> Ed25519PrivateKey:
+    if os.name != "posix":
+        raise MeteringError("API meter signer requires reviewed POSIX private-key permission checks")
     source = Path(path)
     if not source.is_file() or source.is_symlink() or source.stat().st_mode & 0o077:
         raise MeteringError("operator Ed25519 signing key must be a private regular file, mode 0600")
