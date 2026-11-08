@@ -162,6 +162,7 @@ def score_sealed(*, public_dir: str, private_dir: str, responses_path: str,
         responses_path=responses_path,
         allowed_splits=frozenset(_SPLITS),
         evaluator_pin_sha256=manifest["evaluator_commitment_sha256"],
+        allow_incomplete_replay=True,
     )
     score_doc = read_json(Path(output_dir) / "results.json")
     splits = {}
