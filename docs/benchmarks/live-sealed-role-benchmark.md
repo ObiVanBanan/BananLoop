@@ -34,6 +34,49 @@ The private oracle directory must be held by the independent scorer **on a separ
 
 **A new cryptographically randomized private synthetic set is not automatically independent.** For actual benchmark evidence, an outside task author must prepare or attest fresh tasks, task rights, gold and scoring rubric; the independent scorer must be isolated from the BananLoop arm owner. The generator here is an E2E *smoke fixture*, not externally adjudicated truth.
 
+## 0. Export the *existing campaign's* exact pinned roster
+
+**Do not substitute a benchmark fixture roster for a real campaign.**
+
+The v2 Exploration CLI writes `role-registry.json` into the selected campaign's state root. The exact `TeamManifestV1` is durably saved in the shared `campaign-registry.sqlite3` SQLite table `team_manifest_pins.manifest_json`. The manifest is not normally a separate exported file; it is usually first pinned when the role queue admits its initial job, so a preflight-only campaign may not have one.
+
+Select the **actual campaign ID**, not a made-up roster:
+
+```bash
+python -m bananloop.cli campaigns list --repo /path/to/campaign-source --json
+
+# Read-only recovery: never invent/modify a pin or run a model.
+python -m bananloop.benchmark_export_roster \
+  --repo /path/to/campaign-source \
+  --campaign-id c-EXACT_32_HEX_ID \
+  --out /tmp/bananloop-selected-roster
+```
+
+If campaign creation used a nondefault state root, provide the **same** `--state-dir /path/to/actual-state-root`. The command refuses to overwrite an output directory, export into the tracked source checkout, or select an implicit campaign.
+
+On success two files are written:
+
+- `/tmp/bananloop-selected-roster/registry.json` — unchanged validated `RoleRegistryV1` roles, digest matching the selected campaign spec.
+- `/tmp/bananloop-selected-roster/team.json` — validated `TeamManifestV1` from the **existing** durable `team_manifest_pins` row, checked against immutable role call/token allocations.
+
+Use these two paths as `--registry` and `--team` for the live benchmark and sealed-suite authoring. The printed report includes both digests and `origin=EXISTING_DURABLE_PIN`.
+
+If it fails with `NO_DURABLE_TEAM_PIN`, an **existing** role registry was found but the campaign never persisted its selected team. Do not fabricate a replacement in `team.json`. To explicitly perform the *same deterministic TeamFactoryV1 composition* used at runtime, for this already-frozen spec and registry, run:
+
+```bash
+python -m bananloop.benchmark_export_roster \
+  --repo /path/to/campaign-source \
+  --campaign-id c-EXACT_32_HEX_ID \
+  --out /tmp/bananloop-composed-roster \
+  --compose-and-pin-if-missing
+```
+
+This explicit operation **writes an immutable team pin to campaign-registry.sqlite3**, and the report sets `origin=EXPLICIT_DETERMINISTIC_RUNTIME_PIN_CREATED`. It does not create or rename role definitions, start a campaign job, execute a model, or authorize any spend. For Exploration it mirrors the runtime request for `researcher` plus `independent_verifier` when present; Optimization requests `optimizer` plus `integration_verifier`. This produces only roles requested or required by the actual registry's minimum instances.
+
+If `role-registry.json` is absent or its digest does not match the saved campaign spec, **both modes fail closed**. The missing definitions cannot be reconstructed from a SHA-256 digest or only the team manifest.
+
+An Exploration team may contain only two role instances even though its registry defines four roles. The live benchmark must therefore **filter cases to role IDs actually pinned in the selected team**, not replace the roster with a four-role synthetic fixture.
+
 ## 1. Create fresh private test cases on the scoring host (zero LLM calls)
 
 ```bash
