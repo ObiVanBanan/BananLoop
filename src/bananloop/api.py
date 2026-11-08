@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from .application import CampaignApplication
 from .ui_read_models import campaign_ui_view, list_ui_campaigns, codex_connection_status
+from .ui_codex_login import CodexDeviceLogin, LoginUnavailable
 from .contracts import PivotDecisionCommand, PivotProposal
 from .graph_store import GraphStoreError
 from .registry import RegistryError
@@ -33,6 +34,9 @@ def _openapi() -> dict[str, Any]:
             "/healthz": {"get": {"operationId": "health", "responses": {"200": {"description": "Healthy"}}}},
             "/v1/campaigns": {"get": {"operationId": "uiCampaignList", "responses": {"200": {"description": "Safe campaign registry summary"}}}},
             "/v1/providers/codex/status": {"get": {"operationId": "codexConnectionStatus", "responses": {"200": {"description": "Codex CLI authentication mode (no credentials)"}}}},
+            "/v1/providers/codex/login/status": {"get": {"operationId": "codexDeviceLoginStatus", "responses": {"200": {"description": "Device login progress (no credentials)"}}}},
+            "/v1/providers/codex/login/start": {"post": {"operationId": "startCodexDeviceLogin", "responses": {"200": {"description": "Official verification URL and one-time user code"}}}},
+            "/v1/providers/codex/login/cancel": {"post": {"operationId": "cancelCodexDeviceLogin", "responses": {"200": {"description": "Device login cancelled"}}}},
             "/v1/campaigns/{campaign_id}/view": {"get": {"operationId": "campaignReadOnlyView", "responses": {"200": {"description": "Safe read-only UI graph projection"}}}},
             "/v1/campaigns/{campaign_id}/snapshot": {"get": {"operationId": "campaignSnapshot", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "Redacted campaign snapshot"}}}},
             "/v1/campaigns/{campaign_id}/graph": {"get": {"operationId": "researchGraphSnapshot", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "Redacted v2 graph scheduling snapshot"}}}},
@@ -75,6 +79,8 @@ def create_server(
         raise ValueError("SSE poll interval must be between 0.05 and 10 seconds")
     if host.lower() not in {"127.0.0.1", "localhost"}:
         raise ValueError("API binds are restricted to loopback until TLS transport is configured")
+
+    device_login = CodexDeviceLogin()
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "BananLoopAPI/0.2"
@@ -128,10 +134,12 @@ def create_server(
             if parsed.path == "/openapi.json":
                 self._json(HTTPStatus.OK, _openapi())
                 return
-            if parsed.path in {"/v1/campaigns", "/v1/providers/codex/status"}:
+            if parsed.path in {"/v1/campaigns", "/v1/providers/codex/status", "/v1/providers/codex/login/status"}:
                 try:
                     if parsed.path == "/v1/campaigns":
                         self._json(HTTPStatus.OK, list_ui_campaigns(repo))
+                    elif parsed.path == "/v1/providers/codex/login/status":
+                        self._json(HTTPStatus.OK, device_login.status())
                     else:
                         self._json(HTTPStatus.OK, codex_connection_status())
                 except (RegistryError, StoreError, ValueError):
@@ -206,6 +214,31 @@ def create_server(
             if not self._authorized():
                 self._json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
                 return
+            if urlsplit(self.path).path in {"/v1/providers/codex/login/start", "/v1/providers/codex/login/cancel"}:
+                # An explicit browser gesture is required. Reject cross-site
+                # form posts even though the API is loopback-only.
+                origin = self.headers.get("Origin", "")
+                allowed_origins = {
+                    "http://127.0.0.1:5173", "http://localhost:5173",
+                    f"http://127.0.0.1:{self.server.server_address[1]}",
+                    f"http://localhost:{self.server.server_address[1]}",
+                }
+                content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                if origin not in allowed_origins or content_type != "application/json":
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "origin_or_content_type_rejected"})
+                    return
+                try:
+                    if self._body():
+                        raise ValueError
+                    payload = device_login.start() if self.path == "/v1/providers/codex/login/start" else device_login.cancel()
+                    self._json(HTTPStatus.OK, payload)
+                except LoginUnavailable:
+                    self._json(HTTPStatus.CONFLICT, {"error": "codex_login_unavailable"})
+                except (ValueError, TypeError):
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid_request"})
+                except Exception:
+                    self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal_error"})
+                return
             match = _CAMPAIGN_PATH.fullmatch(urlsplit(self.path).path)
             if not match:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
@@ -278,6 +311,7 @@ def create_server(
     original_shutdown = server.shutdown
 
     def shutdown() -> None:
+        device_login.close()
         server.shutdown_requested.set()  # type: ignore[attr-defined]
         original_shutdown()
 
