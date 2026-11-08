@@ -627,7 +627,11 @@ class V2OptimizationCandidateAdapter:
         snapshots = _safe_mkdir(self.state_root, "v2_optimization", "snapshots",
                                 self.campaign_id)
         try:
-            subprocess.run(["git", "clone", "--no-hardlinks", "--quiet",
+            # pytest and user campaign state can be nested deeply on Windows;
+            # Git for Windows otherwise fails while materializing template
+            # hook files below .git/hooks once the full path exceeds MAX_PATH.
+            subprocess.run(["git", "-c", "core.longpaths=true", "clone",
+                            "--no-hardlinks", "--quiet",
                             str(source_repo), str(build)], check=True,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
             _run_git(["checkout", "--detach", request["source_snapshot_id"]], build)

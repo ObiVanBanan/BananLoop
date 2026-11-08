@@ -63,7 +63,11 @@ def test_titanic_benchmark_prepares_separate_grouped_private_tiers(tmp_path):
     assert {"dev.json", "validation.json", "holdout.json"} <= {
         path.name for path in private.iterdir()
     }
-    assert (private.stat().st_mode & 0o777) == 0o700
+    # Windows does not expose NTFS ACLs through chmod mode bits; pytest's
+    # private root inherits the runner account ACL there. POSIX must enforce
+    # owner-only permissions explicitly.
+    if os.name != "nt":
+        assert (private.stat().st_mode & 0o777) == 0o700
     for tier in ("dev", "validation", "holdout"):
         payload = json.loads((private / f"{tier}.json").read_text(encoding="utf-8"))
         assert set(payload) == {"rows", "labels"}
