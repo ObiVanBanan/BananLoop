@@ -236,24 +236,30 @@ def run_api(*, cases_path: str, registry_path: str, team_path: str,
                                 timeout_seconds=case["resource_budget"]["wall_clock_seconds"])
                 usage, response_id, answer_text = _strict_usage(raw, model_id)
                 measured_cost = _micro_cost(usage["input_tokens"], usage["output_tokens"], in_rate, out_rate)
+                # Account for a billable provider response BEFORE evaluating
+                # model quality. Invalid answers still consume real tokens.
+                attempt.update({
+                    "status": "METERED_PENDING_ROLE_VALIDATION", "provider_response_id": response_id,
+                    "provider_usage": usage, "calculated_cost_microusd": measured_cost,
+                    "provider_response_sha256": digest(raw), "pricing_sha256": price_pin,
+                    "usage_source": "AUTHENTICATED_OPENAI_RESPONSES_API",
+                    "provider_crypto_signature": False,
+                })
+                used_microusd += measured_cost
                 if usage["input_tokens"] > input_bound or measured_cost > reserved:
                     raise MeteringError("provider usage exceeded conservative local reservation; stop")
                 answer = json.loads(answer_text)
                 validated = validate_role_reply(case["role_id"], answer, case["agent_input"])
-                attempt.update({
-                    "status": "COMPLETED_METERED_API", "provider_response_id": response_id,
-                    "provider_usage": usage, "calculated_cost_microusd": measured_cost,
-                    "provider_response_sha256": digest(raw),
-                    "response_sha256": digest(validated), "pricing_sha256": price_pin,
-                    "usage_source": "AUTHENTICATED_OPENAI_RESPONSES_API",
-                    "provider_crypto_signature": False,
-                })
+                attempt["status"] = "COMPLETED_METERED_API"
+                attempt["response_sha256"] = digest(validated)
                 responses[cid] = validated
-                used_microusd += measured_cost
             except Exception as exc:
-                attempt["status"] = "STOPPED_UNKNOWN_OR_INVALID_SETTLEMENT"
+                attempt["status"] = ("STOPPED_METERED_AGENT_OR_BOUND_ERROR"
+                                     if "provider_usage" in attempt else
+                                     "STOPPED_UNKNOWN_OR_INVALID_SETTLEMENT")
                 attempt["error_type"] = type(exc).__name__
-                state = "STOPPED_UNKNOWN_SETTLEMENT"
+                state = ("STOPPED_METERED_INVALID_OUTPUT_OR_BOUND"
+                         if "provider_usage" in attempt else "STOPPED_UNKNOWN_SETTLEMENT")
                 break
             finally:
                 signed_bytes = canonical(attempt)
@@ -275,7 +281,7 @@ def run_api(*, cases_path: str, registry_path: str, team_path: str,
             "attempted_calls": len(receipts), "completed_calls": len(responses),
             "measured_priced_cost_microusd": used_microusd,
             "actual_provider_invoice_verified": False,
-            "provider_reported_usage_observed": len(responses) > 0,
+            "provider_reported_usage_observed": any("provider_usage" in row for row in receipts),
             "usage_receipts_operator_signed": len(receipts) > 0,
             "release_eligible": False,
         })
