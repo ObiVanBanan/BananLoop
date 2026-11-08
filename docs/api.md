@@ -16,6 +16,9 @@ service as the HTTP handlers.
 - `GET /healthz`
 - `GET /v1/campaigns` (safe local registry summary)
 - `GET /v1/providers/codex/status` (installed/authenticated CLI mode only; no credentials)
+- `POST /v1/providers/codex/login/start` (explicit local-only ChatGPT device login)
+- `GET /v1/providers/codex/login/status` (device login progress)
+- `POST /v1/providers/codex/login/cancel` (cancel pending device login)
 - `GET /v1/campaigns/{campaign_id}/view` (UI read-only v1/v2 graph projection)
 - `GET /v1/campaigns/{campaign_id}/snapshot`
 - `GET /v1/campaigns/{campaign_id}/graph` (v2 campaigns)
@@ -60,10 +63,15 @@ layout and annotations; engine mutation controls remain out of scope.
 
 The Codex status endpoint executes only `codex login status` on the local
 machine using a bounded subprocess, and returns a narrow authentication
-mode (ChatGPT, API key, unknown, or disconnected). It never creates a login
-or reads credential files; sign in independently with `codex login` or
-`codex login --device-auth`. A ChatGPT account is not an API key, and API-key
-billing is separate from ChatGPT plan usage.
+mode (ChatGPT, API key, unknown, or disconnected). It never reads credential
+files or returns account tokens. A separate explicit POST device-login route
+starts `codex app-server` and uses the official `chatgptDeviceCode` RPC to
+return a one-time code and the official verification URL. This endpoint only
+accepts JSON POSTs from the local UI origin and supports status/cancel; Codex
+itself owns credential persistence and refresh. Device login may be disabled
+by account or workspace policy; `codex login` remains a fallback. A ChatGPT
+account is not an API key, and API-key billing is separate from ChatGPT plan
+usage.
 
 Example:
 
