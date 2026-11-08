@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .accounting import ResourceUsage
+from .evidence import EvidenceError, _verify_windows_path, _windows_protected_acl
 from .prereg import ArmConfig
 
 MAX_REQUEST_BYTES = 4_000_000
@@ -151,18 +152,31 @@ class OneShotProviderBroker:
             )
         self._temp = tempfile.TemporaryDirectory(prefix="rpdi14-provider-broker-")
         directory = Path(self._temp.name)
-        os.chmod(directory, 0o700)
-        path = directory / "provider.sock"
-        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server = None
         try:
+            if os.name == "nt":
+                _verify_windows_path(directory, final_is_directory=True)
+            else:
+                os.chmod(directory, 0o700)
+            path = directory / "provider.sock"
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             server.bind(str(path))
-            os.chmod(path, 0o600)
+            if os.name == "nt":
+                _windows_protected_acl(path)
+                info = path.lstat()
+                if getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x0400):
+                    raise ProviderBrokerError("provider socket may not be a Windows reparse point")
+            else:
+                os.chmod(path, 0o600)
             server.listen(1)
             server.settimeout(self.timeout_seconds + 5)
-        except OSError:
-            server.close()
+        except Exception as exc:
+            if server is not None:
+                server.close()
             self._temp.cleanup()
             self._temp = None
+            if isinstance(exc, EvidenceError):
+                raise ProviderBrokerError("provider broker trust root is not protected") from exc
             raise
         self._server = server
         self.socket_path = path
@@ -284,6 +298,8 @@ def request_one_provider_action(
     socket_path: str | Path, *, action_id: str, prompt: bytes, timeout_seconds: int,
 ) -> ProviderInvocation:
     """Worker-side RPC helper; returns model output and the host-verified receipt."""
+    if not hasattr(socket, "AF_UNIX"):
+        raise ProviderBrokerError("provider broker requires AF_UNIX socket support")
     if not isinstance(prompt, bytes) or not prompt or len(prompt) > MAX_PROMPT_BYTES:
         raise ProviderBrokerError("prompt is empty or exceeds the broker limit")
     request = _canonical({
