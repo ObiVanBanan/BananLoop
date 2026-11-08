@@ -1,5 +1,6 @@
 """Mock-transport tests; NEVER call OpenAI or spend tokens during CI."""
 import json
+import os
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
@@ -69,6 +70,7 @@ def _execute(root, transport):
     )
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX-only trusted private signing-key ACL")
 def test_authenticated_usage_and_operator_signed_accounting_without_any_real_api(tmp_path):
     root = tmp_path / "fixture"
     pub = _approval(root)
@@ -93,6 +95,7 @@ def test_authenticated_usage_and_operator_signed_accounting_without_any_real_api
     assert check["provider_signed"] is False
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX-only trusted private signing-key ACL")
 def test_operator_receipt_tampering_is_detected(tmp_path):
     root = tmp_path / "fixture"
     pub = _approval(root)
@@ -105,6 +108,7 @@ def test_operator_receipt_tampering_is_detected(tmp_path):
         verify_operator_meter(receipts_path=ledger_path, public_key_hex=pub)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX-only trusted private signing-key ACL")
 def test_provider_usage_missing_or_mismatched_fails_closed_without_retry(tmp_path):
     root = tmp_path / "fixture"
     _approval(root)
@@ -122,6 +126,7 @@ def test_provider_usage_missing_or_mismatched_fails_closed_without_retry(tmp_pat
         "STOPPED_UNKNOWN_OR_INVALID_SETTLEMENT")
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX-only trusted private signing-key ACL")
 def test_api_explicit_authorization_prevents_any_transport(tmp_path):
     root = tmp_path / "fixture"
     _approval(root)
