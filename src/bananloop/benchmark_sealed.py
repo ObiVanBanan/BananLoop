@@ -129,7 +129,7 @@ def seal_suite(*, authored_suite_path: str, registry_path: str, team_path: str,
     return manifest
 
 
-def _verify_meter_ledgers(ledgers: list[str], *, allowed_case_ids: set[str],
+def _verify_meter_ledgers(ledgers: list[str], *, frozen_cases: dict[str, tuple[str, str]],
                           operator_public_key_hex: str | None) -> dict:
     """Join token/cost evidence without promoting operator statements to provider signatures."""
     from .benchmark_live_codex import verify_codex_observation
@@ -154,8 +154,12 @@ def _verify_meter_ledgers(ledgers: list[str], *, allowed_case_ids: set[str],
             raise BenchmarkError("meter ledger source is unsupported or unverified")
         for record in doc["records"]:
             cid = record.get("case_id")
-            if cid not in allowed_case_ids or cid in seen:
+            if cid not in frozen_cases or cid in seen:
                 raise BenchmarkError("meter record is unrelated, duplicated or outside frozen suite")
+            role_id, model_id = frozen_cases[cid]
+            observed_model = record.get("model") if source == "api" else record.get("model_id")
+            if record.get("role_id") != role_id or observed_model != model_id:
+                raise BenchmarkError("meter record conflicts with frozen role or model identity")
             seen.add(cid)
             if source == "api":
                 api_count += 1
@@ -216,7 +220,9 @@ def score_sealed(*, public_dir: str, private_dir: str, responses_path: str,
             for c in public["cases"]):
         raise BenchmarkError("case evaluator commitment mismatch")
     accounting = (_verify_meter_ledgers(
-        meter_ledgers, allowed_case_ids={c["case_id"] for c in public["cases"]},
+        meter_ledgers, frozen_cases={
+            c["case_id"]: (c["role_id"], registry.role(c["role_id"]).model)
+            for c in public["cases"]},
         operator_public_key_hex=operator_public_key_hex)
         if meter_ledgers else {
             "attempted": 0, "measured_calls": 0, "unknown_settlement_calls": 0,
