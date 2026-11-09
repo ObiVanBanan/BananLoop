@@ -59,12 +59,26 @@ export type StudioLaunch={request_id:string;campaign_id:string;phase:string;mode
 async function studioPost<T>(path:string,token:string,body:object):Promise<T>{
  const response=await fetch(endpoint+path,{method:'POST',headers:{'Content-Type':'application/json',...(token?{'Authorization':`Bearer ${token}`}:{})},
   cache:'no-store',body:JSON.stringify(body)});
- if(!response.ok)throw new Error(
-  response.status===401?'Нужен токен локального API':
-  response.status===404?'Studio не включён. Запусти bananloop serve --studio':
-  response.status===503?'Codex CLI сейчас не отвечает. Проверь авторизацию и настройки безопасности':
-  response.status===409?'Запуск уже выполняется или не завершена подготовка':
-  `Studio API: HTTP ${response.status}`);
+ if(!response.ok){
+  const payload=await response.json().catch(()=>null) as {error?:string}|null;
+  const errors:Record<string,string>={
+   unsafe_config:'Codex отклонил изолированный режим чата. Проверь конфигурацию app-server и отключение инструментов для Studio.',
+   app_server_unavailable:'Codex app-server не запустился. Проверь установленный Codex CLI: codex --version.',
+   model_timeout:'Codex не ответил вовремя. Попробуй повторить сообщение.',
+   model_incomplete:'Codex прервал ответ. Попробуй повторить сообщение.',
+   provider_unavailable:'Codex не смог обработать сообщение. Проверь codex login status и доступность модели.',
+   studio_provider_unavailable:'Локальный планировщик Codex недоступен.',
+   origin_or_content_type_rejected:'API отклонил источник запроса. Открой UI через http://127.0.0.1:5173 и проверь адрес BananLoop API.',
+   invalid_studio_request:'Некорректный запрос Studio. Перезагрузи страницу и попробуй снова.',
+  };
+  throw new Error(
+   response.status===401?'Нужен токен локального API':
+   response.status===404?'Studio не включён. Запусти bananloop serve --studio':
+   payload?.error&&errors[payload.error]?errors[payload.error]:
+   response.status===503?'Локальный Codex планировщик недоступен':
+   response.status===409?'Запуск уже выполняется или не завершена подготовка':
+   `Studio API: HTTP ${response.status}`);
+ }
  return await response.json() as T;
 }
 export const getStudioInfo=(token:string)=>getJson<StudioInfo>('/v1/studio/info',token);
