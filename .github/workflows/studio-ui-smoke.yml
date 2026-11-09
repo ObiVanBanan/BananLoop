@@ -1,0 +1,36 @@
+name: Studio UI Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'web-prototype/galaxy-spatial-canvas/**'
+      - 'operator-ui/studio-chat-worker.mjs'
+      - '.github/workflows/studio-ui-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install React Flow and Vite dependencies
+        working-directory: web-prototype/galaxy-spatial-canvas
+        run: npm install --no-audit --no-fund
+      - name: Run frontend model tests
+        working-directory: web-prototype/galaxy-spatial-canvas
+        run: npm test
+      - name: Typecheck frontend
+        working-directory: web-prototype/galaxy-spatial-canvas
+        run: npm run typecheck
+      - name: Build frontend
+        working-directory: web-prototype/galaxy-spatial-canvas
+        run: npm run build
+      - name: Check Codex Studio worker syntax
+        run: node --check operator-ui/studio-chat-worker.mjs
