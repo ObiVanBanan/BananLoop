@@ -267,8 +267,11 @@ def create_server(
                     self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "request_too_large"})
                 except (StudioError, TypeError, ValueError):
                     self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid_studio_request"})
-                except StudioUnavailable:
-                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "studio_provider_unavailable"})
+                except StudioUnavailable as exc:
+                    known = {"unsafe_config", "app_server_unavailable", "model_timeout",
+                             "model_incomplete", "provider_unavailable"}
+                    code = str(exc) if str(exc) in known else "studio_provider_unavailable"
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": code})
                 except Exception:
                     self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "studio_internal_error"})
                 return
