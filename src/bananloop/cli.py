@@ -1144,6 +1144,8 @@ def parser() -> argparse.ArgumentParser:
     v2_explore.add_argument("--model", default="gpt-6-luna")
     v2_explore.add_argument("--max-agent-calls", type=int, default=8,
                             help="total model calls budgeted across Exploration, verification, and a child run")
+    v2_explore.add_argument("--max-evaluator-calls", type=int, default=16,
+                            help="trusted evaluator call budget; one candidate needs four repeatability receipts")
     v2_explore.add_argument("--max-model-tokens", type=int, default=2048,
                             help="per-call ledger ceiling; SIWC may not enforce this provider-side")
     v2_explore.add_argument("--max-iterations", type=int, default=2)

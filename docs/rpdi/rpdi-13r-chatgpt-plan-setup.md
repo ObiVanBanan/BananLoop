@@ -68,10 +68,14 @@ bananloop v2 explore --repo . --state-dir /tmp/bananloop-v2-state \
 The same stable request ID, goal, repo HEAD, paths, model and budget must be
 used to resume the campaign. The default total `--max-agent-calls 8` is split
 across four pinned roles: researcher, independent protocol verifier, optimizer,
-and integration verifier. The current allocation gives four calls to the
-researcher, one to protocol review, two to the optimizer, and one to integration
-verification. Parent Exploration and the child Optimization each use only their
-assigned roles. A command's
+and integration verifier. With the default two Exploration iterations, the
+current allocation is two researcher calls, one protocol-review call, two
+optimizer calls, and two integration-verifier calls (seven allocated of eight).
+The default `--max-evaluator-calls 16` leaves enough room for one candidate's
+DEV, baseline VALIDATION, candidate VALIDATION, and final HOLDOUT receipts when
+the approved protocol uses up to four repeats per tier. A protocol with three
+repeats needs 12 evaluator jobs for that lifecycle. Parent Exploration and the
+child Optimization each use only their assigned roles. A command's
 `--approve-up-to-calls` allowance covers either role and can be at most that
 campaign total. If a protocol proposal is waiting for review, a resumed command
 spends its next approved call on the verifier before starting another research
@@ -118,6 +122,10 @@ model requests; each invocation that should spend subscription usage needs an
 explicit `--approve-up-to-calls N`. The v2 Optimization child is funded from the
 parent's frozen role/call vector, and trusted DEV/VALIDATION/HOLDOUT evaluation
 is executed by Core after the candidate is committed.
+Before owner approval, Core checks that the parent evaluator envelope can fund
+the child's full one-candidate lifecycle and freezes the exact child evaluator
+allocation from the approved repeatability count. An underfunded parent is
+rejected before pivot approval is requested.
 
 The SIWC Responses preview rejects a server-side `max_output_tokens`
 parameter, so the advertised `tokens_per_instance` here is **not**

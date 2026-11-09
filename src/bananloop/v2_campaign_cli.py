@@ -36,6 +36,15 @@ class V2CampaignCLIError(ValueError):
     """A v2 campaign could not be safely prepared or advanced."""
 
 
+def _required_optimization_evaluator_calls(repeatability_runs: int) -> int:
+    """Minimum evaluator jobs for one candidate to reach a final report."""
+    if (isinstance(repeatability_runs, bool) or not isinstance(repeatability_runs, int)
+            or not 2 <= repeatability_runs <= 10):
+        raise V2CampaignCLIError("approved protocol repeatability count is invalid")
+    # Candidate DEV, baseline/candidate VALIDATION, final champion HOLDOUT.
+    return 4 * repeatability_runs
+
+
 def _git(repo: Path, *args: str) -> str:
     try:
         return subprocess.check_output(
@@ -78,6 +87,7 @@ def _read_paths(repo: Path, paths: list[str]) -> tuple[str, ...]:
 
 def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
                 max_agent_calls: int, max_model_tokens: int, model: str,
+                max_evaluator_calls: int = 16,
                 max_iterations: int = 2,
                 optimization_write_paths: tuple[str, ...] = (),
                 evaluator_fixture_digest: str | None = None):
@@ -164,6 +174,7 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
         },
         "budget": {
             "max_agent_calls": max_agent_calls,
+            "max_evaluator_calls": max_evaluator_calls,
             "max_model_tokens": max_agent_calls * max_model_tokens,
         },
         "role_registry_digest": roles.digest(), "evaluation": None,
@@ -416,6 +427,24 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
         "capability_policy": child_policy.model_dump(mode="json"),
     }
     payload["budget"]["max_agent_calls"] = child_calls
+    # One supervised pivot currently represents one candidate experiment. Fund
+    # its complete trusted lifecycle: candidate DEV, baseline VALIDATION,
+    # candidate VALIDATION, and final champion HOLDOUT. Each receipt requires
+    # the repeatability count fixed by the independently approved protocol.
+    # The scheduler records the Optimization task itself and the single
+    # candidate as separate experiment work, so reserve two slots here.
+    payload["budget"]["max_experiments"] = 2
+    required_evaluator_calls = _required_optimization_evaluator_calls(
+        proposal.protocol.repeatability_runs,
+    )
+    if parent_spec.budget.max_evaluator_calls < required_evaluator_calls:
+        raise V2CampaignCLIError(
+            "parent evaluator budget cannot fund the approved one-candidate lifecycle: "
+            f"requires {required_evaluator_calls} calls for repeatability="
+            f"{proposal.protocol.repeatability_runs}, has "
+            f"{parent_spec.budget.max_evaluator_calls}"
+        )
+    payload["budget"]["max_evaluator_calls"] = required_evaluator_calls
     if parent_spec.budget.max_model_tokens is not None:
         per_call = parent_spec.budget.max_model_tokens // parent_spec.budget.max_agent_calls
         payload["budget"]["max_model_tokens"] = child_calls * per_call
@@ -649,6 +678,8 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
     if not isinstance(goal, str) or not goal.strip() or len(goal) > 4000 or "\x00" in goal:
         raise V2CampaignCLIError("--goal must contain 1 to 4000 non-NUL characters")
     if (isinstance(args.max_agent_calls, bool) or not 4 <= args.max_agent_calls <= 100
+            or isinstance(getattr(args, "max_evaluator_calls", 16), bool)
+            or not 1 <= getattr(args, "max_evaluator_calls", 16) <= 1000
             or isinstance(args.max_model_tokens, bool) or not 1 <= args.max_model_tokens <= 100_000
             or isinstance(args.approve_up_to_calls, bool)
             or not 0 <= args.approve_up_to_calls <= args.max_agent_calls
@@ -676,6 +707,7 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
     spec, roles, _policy = _build_spec(
         repo, goal, paths, max_agent_calls=args.max_agent_calls,
         max_model_tokens=args.max_model_tokens, model=args.model,
+        max_evaluator_calls=getattr(args, "max_evaluator_calls", 16),
         max_iterations=args.max_iterations,
         optimization_write_paths=write_paths,
         evaluator_fixture_digest=fixture.content_digest() if fixture else None,

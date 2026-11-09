@@ -18,7 +18,8 @@ from bananloop.contracts import RuntimePaths
 from bananloop.graph_store import GraphRepository
 from bananloop.registry import CampaignRegistry, RegistryError
 from bananloop.v2_campaign_cli import (
-    V2CampaignCLIError, _aggregate_reported_usage, _safe_failure_diagnostics,
+    V2CampaignCLIError, _aggregate_reported_usage, _required_optimization_evaluator_calls,
+    _safe_failure_diagnostics,
     run_v2_explore,
 )
 from bananloop.v2_optimization_cli import V2OptimizationCLIError, _safe_paths
@@ -82,7 +83,19 @@ def test_cli_explore_is_a_separate_v2_route():
     assert args.approve_up_to_calls == 0
     assert args.model == "gpt-6-luna"
     assert args.max_agent_calls == 8
+    assert args.max_evaluator_calls == 16
     assert args.evaluator_fixture is None
+
+
+@pytest.mark.parametrize(("repeats", "expected"), [(2, 8), (3, 12), (10, 40)])
+def test_one_candidate_optimization_budget_covers_all_trusted_tiers(repeats, expected):
+    assert _required_optimization_evaluator_calls(repeats) == expected
+
+
+@pytest.mark.parametrize("repeats", [True, 1, 11, 3.0])
+def test_optimization_budget_rejects_invalid_protocol_repeatability(repeats):
+    with pytest.raises(V2CampaignCLIError, match="repeatability count is invalid"):
+        _required_optimization_evaluator_calls(repeats)
 
 
 def test_evaluator_fixture_is_frozen_and_persisted_before_any_live_call(tmp_path):
@@ -160,6 +173,7 @@ def test_v2_default_call_budget_preserves_exploration_and_funds_two_paired_epoch
         max_agent_calls=8, max_model_tokens=128, model="gpt-6-luna",
     )
     assert spec.budget.max_agent_calls == 8
+    assert spec.budget.max_evaluator_calls == 16
     assert roles.role("researcher").calls_per_instance == 2
     assert roles.role("independent_verifier").calls_per_instance == 1
     assert roles.role("optimizer").calls_per_instance == 2
