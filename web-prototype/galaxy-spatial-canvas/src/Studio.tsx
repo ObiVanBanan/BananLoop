@@ -28,7 +28,11 @@ export function Studio({token,onOpenCampaign}:StudioProps){
  const [requestId,setRequestId]=useState<string|null>(null);
  const [launch,setLaunch]=useState<StudioLaunch|null>(null);
  const bottom=useRef<HTMLDivElement|null>(null);
- useEffect(()=>bottom.current?.scrollIntoView({behavior:'smooth',block:'end'}),[messages,busy,launch]);
+ useEffect(()=>{
+  // scrollIntoView may return a Promise in modern browsers. React effects
+  // must return only undefined or a cleanup function, never that Promise.
+  bottom.current?.scrollIntoView({behavior:'smooth',block:'end'});
+ },[messages,busy,launch]);
  const sentMessages=useMemo(()=>messages.slice(-16),[messages]);
  const send=useCallback(async()=>{
   const message=input.trim();
