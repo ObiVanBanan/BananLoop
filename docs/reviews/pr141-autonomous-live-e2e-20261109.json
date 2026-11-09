@@ -32,5 +32,11 @@
     "accounting_status": "UNDERCOUNTED_IN_ORIGINAL_RUN"
   },
   "monetary_cost": "UNKNOWN",
+  "current_audit": {
+    "audited_at": "2026-11-10",
+    "parent_and_child_campaign_databases_available": false,
+    "independent_reconstruction_status": "NOT_VERIFIED",
+    "note": "Campaign IDs, request IDs, metrics, and budget summary are preserved in this report, but the historical durable campaign databases and separate role/evaluator receipts were not found during the current audit. A fresh campaign on the metering fixes is waiting at its owner pivot gate."
+  },
   "follow_up": "All live-role token usage is metered in code after this run; a fresh live verification is still needed."
 }

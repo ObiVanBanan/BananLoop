@@ -44,3 +44,7 @@ The code now meters model-token usage for Researcher, Protocol Verifier, Optimiz
 - After the metering and lifecycle changes, the clean PR-head worktree passed **1,037 tests, 2 skipped, 7 subtests** with live flags disabled.
 - The targeted API/integrated acceptance passed both test-runner and real-bwrap variants. It verifies the final report, terminal child state, and closed allocation.
 - The PR remains Draft. The post-fix code needs CI on its new commit; a new live metering check still requires additional owner-approved calls.
+
+## Current evidence availability
+
+During the 2026-11-10 follow-up audit, the parent and child SQLite campaign databases and separate role/evaluator receipts for these campaign IDs were not present in the available state directories. The values above are preserved in this contemporaneous run report, but the historical campaign status, budget settlement, and metrics could not be independently reconstructed from durable state during this audit. Treat this report as recorded live-run evidence, not as independently revalidated acceptance evidence. A fresh campaign on the metering fixes is in progress separately and is waiting at its explicit owner pivot gate.
