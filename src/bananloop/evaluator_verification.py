@@ -42,6 +42,24 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
 
 
+def _reported_model_tokens(executor: Any) -> int | None:
+    """Read usage from either an annotated callable or its bound transport owner.
+
+    SIWC role executors store a bound ``_dispatch_verifier`` method. Provider
+    usage is held by the method's owning ChatGPTPlan verifier instance, not on
+    the transient bound-method object itself.
+    """
+    invoke = getattr(executor, "_invoke", None)
+    usage = getattr(invoke, "last_usage", None)
+    if usage is None:
+        owner = getattr(invoke, "__self__", None)
+        usage = getattr(owner, "last_usage", None)
+    amount = usage.get("total_tokens") if isinstance(usage, dict) else None
+    if isinstance(amount, bool) or not isinstance(amount, int) or amount < 0:
+        return None
+    return amount
+
+
 def _validate_completed_role_job(queue: Any, job_id: str, *, expected_role_id: str):
     """Return a durable job only after binding it to its pinned manifest member."""
     try:
@@ -1424,11 +1442,7 @@ class EvaluatorVerificationAdapter:
         try:
             self.queue.mark_dispatched(verifier_job_id, worker_id, fence)
             raw = executor.dispatch(dict(lease["request"]), None)
-            usage = getattr(executor._invoke, "last_usage", None)
-            model_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
-            if (isinstance(model_tokens, bool) or not isinstance(model_tokens, int)
-                    or model_tokens < 0):
-                model_tokens = None
+            model_tokens = _reported_model_tokens(executor)
             output = ProtocolVerifierOutputV1.model_validate(raw)
             if output.proposal_digest != lease["request"].get("proposal_digest"):
                 raise EvaluatorVerificationError("verifier returned a decision for another proposal")
@@ -1629,11 +1643,7 @@ class IntegrationVerificationAdapter:
         try:
             self.queue.mark_dispatched(verifier_job_id, worker_id, fence)
             raw_output = executor.dispatch(dict(lease["request"]), None)
-            usage = getattr(executor._invoke, "last_usage", None)
-            model_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
-            if (isinstance(model_tokens, bool) or not isinstance(model_tokens, int)
-                    or model_tokens < 0):
-                model_tokens = None
+            model_tokens = _reported_model_tokens(executor)
             output = IntegrationVerifierOutputV1.model_validate(raw_output)
             request = lease["request"]
             if (output.candidate_snapshot_id != request.get("candidate_snapshot_id")

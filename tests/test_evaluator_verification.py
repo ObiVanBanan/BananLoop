@@ -565,7 +565,7 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(
         "budget": {
             "max_experiments": 5, "max_attempts": 8, "max_agent_calls": 20,
             "max_evaluator_calls": 10, "deadline_seconds": 3600,
-            "plateau_experiments": 3,
+            "plateau_experiments": 3, "max_model_tokens": 1_000,
         },
         "role_registry_digest": registry.digest(),
         "evaluation": {
@@ -578,7 +578,7 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(
     spec_hash = spec.approved_hash()
     db_path = tmp_path / "campaign.sqlite3"
     ledger = BudgetLedger(db_path)
-    ledger.create_root(campaign_id, {"agent_calls": 20})
+    ledger.create_root(campaign_id, {"agent_calls": 20, "model_tokens": 1_000})
     ledger.close()
 
     conn = sqlite3.connect(db_path, isolation_level=None)
@@ -675,17 +675,23 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(
     manifest_authority.close()
     member = team.members[0]
 
-    def invoke(request, _gateway, **_pinned):
-        return IntegrationVerifierOutputV1(
-            candidate_snapshot_id=request["candidate_snapshot_id"],
-            protocol_digest=request["protocol_digest"], decision=reviewer_decision,
-            checks=(
-                "candidate_identity", "protocol_identity", "evaluation_receipt",
-                "budget_receipt", "artifact_integrity", "regression_policy",
-            ),
-        ).model_dump(mode="json")
+    class IntegrationTransport:
+        last_usage = {"total_tokens": 59}
 
-    executor = PinnedRoleExecutorV1.from_manifest(team, member.instance_id, invoke)
+        def dispatch(self, request, _gateway, **_pinned):
+            return IntegrationVerifierOutputV1(
+                candidate_snapshot_id=request["candidate_snapshot_id"],
+                protocol_digest=request["protocol_digest"], decision=reviewer_decision,
+                checks=(
+                    "candidate_identity", "protocol_identity", "evaluation_receipt",
+                    "budget_receipt", "artifact_integrity", "regression_policy",
+                ),
+            ).model_dump(mode="json")
+
+    transport = IntegrationTransport()
+    executor = PinnedRoleExecutorV1.from_manifest(
+        team, member.instance_id, transport.dispatch,
+    )
     integration = IntegrationVerificationAdapter(
         graph=graph, queue=queue, campaign_id=campaign_id,
         trusted_evaluator=trusted,
@@ -747,6 +753,8 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(
         )]
         assert len(job_ids) == 1
         assert queue.get_job(job_ids[0])["state"] == "COMPLETED"
+        integration_result = queue.get_result(job_ids[0])["response"]
+        assert integration_result["actual_usage"]["model_tokens"] == 59
         assert [event["event_type"] for event in queue.events(job_ids[0])] == [
             "JOB_ENQUEUED", "JOB_LEASED", "JOB_DISPATCHED", "JOB_COMPLETED",
         ]
@@ -1336,13 +1344,14 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
                 "backend": "ISOLATED", "network_access": False,
             },
         },
-        "budget": {}, "role_registry_digest": registry.digest(),
+        "budget": {"max_agent_calls": 20, "max_model_tokens": 1_000},
+        "role_registry_digest": registry.digest(),
         "evaluation": None,
     })
     spec_hash = spec.approved_hash()
     db_path = tmp_path / "protocol-workflow.sqlite3"
     ledger = BudgetLedger(db_path)
-    ledger.create_root(campaign_id, {"agent_calls": 20})
+    ledger.create_root(campaign_id, {"agent_calls": 20, "model_tokens": 1_000})
     ledger.close()
 
     conn = sqlite3.connect(db_path, isolation_level=None)
@@ -1531,14 +1540,19 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
         "fair_comparison", "error_semantics",
     )
 
-    def invoke_verifier(request, _gateway, **_pinned):
-        return ProtocolVerifierOutputV1(
-            proposal_digest=request["proposal_digest"], decision="APPROVE",
-            checks=checks, rationale="Independent deterministic protocol review.",
-        ).model_dump(mode="json")
+    class VerifierTransport:
+        last_usage = {"total_tokens": 73}
+
+        def dispatch(self, request, _gateway, **_pinned):
+            return ProtocolVerifierOutputV1(
+                proposal_digest=request["proposal_digest"], decision="APPROVE",
+                checks=checks, rationale="Independent deterministic protocol review.",
+            ).model_dump(mode="json")
+
+    invoke_verifier = VerifierTransport()
 
     wrong_executor = PinnedRoleExecutorV1.from_manifest(
-        manifest, researcher.instance_id, invoke_verifier,
+        manifest, researcher.instance_id, invoke_verifier.dispatch,
     )
     with pytest.raises(EvaluatorVerificationError, match="pinned independent verifier"):
         verification.run_verifier_one(
@@ -1549,7 +1563,7 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
 
     unpinned_executor = SimpleNamespace(
         manifest_digest=None, member=verifier,
-        dispatch=lambda *_args, **_kwargs: invoke_verifier(
+        dispatch=lambda *_args, **_kwargs: invoke_verifier.dispatch(
             verifier_job["request"], None,
         ),
     )
@@ -1561,7 +1575,7 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
     assert queue.get_job(verifier_job["job_id"])["state"] == "READY"
 
     verifier_executor = PinnedRoleExecutorV1.from_manifest(
-        manifest, verifier.instance_id, invoke_verifier,
+        manifest, verifier.instance_id, invoke_verifier.dispatch,
     )
     receipt = verification.run_verifier_one(
         verifier_job_id=verifier_job["job_id"], worker_id="verify-worker",
@@ -1571,6 +1585,8 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
     assert receipt.verifier_role_instance_id == verifier.instance_id
     assert receipt.verifier_role_instance_id != proposal.proposer_role_instance_id
     assert receipt.approval_digest
+    verifier_result = queue.get_result(verifier_job["job_id"])["response"]
+    assert verifier_result["actual_usage"]["model_tokens"] == 73
 
     approved_proposal, stored_receipt = protocol_authority.approved_protocol(
         receipt.approval_digest,
