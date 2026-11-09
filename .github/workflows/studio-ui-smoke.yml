@@ -37,3 +37,5 @@ jobs:
         run: npm run build
       - name: Check Codex Studio worker syntax
         run: node --check operator-ui/studio-chat-worker.mjs
+      - name: Verify isolated Codex chat and response parser
+        run: node --test operator-ui/codex-chat.test.mjs operator-ui/studio-chat-worker.test.mjs
