@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import subprocess
 import tempfile
@@ -9,9 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-spec = importlib.util.spec_from_file_location("ui_studio", Path(__file__).with_name("ui_studio.py"))
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
+from bananloop import ui_studio as mod
 
 
 def plan():
