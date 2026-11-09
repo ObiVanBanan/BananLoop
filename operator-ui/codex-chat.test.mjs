@@ -256,3 +256,29 @@ test('cleans its temporary directory if app-server launch throws synchronously',
   assert.deepEqual(readdirSync(tmpdir()).filter(name => name.startsWith('bananloop-operator-chat-') && !before.has(name)), []);
   client.close();
 });
+
+test('Studio permits a globally configured MCP only if the ephemeral effective config disables it', async () => {
+  let calledInventory = false;
+  const safe = createCodexChat({
+    command: 'codex-test',
+    listMcpServers: () => { calledInventory = true; throw new Error('global list should not be consulted'); },
+    requireGlobalMcpOff: false,
+    spawnProcess: () => new FakeChild('complete'),
+    requestTimeoutMs: 500, turnTimeoutMs: 1000,
+  });
+  await safe.connect();
+  assert.equal(calledInventory, false);
+  assert.equal((await safe.sendMessage('research objective')).status,'completed');
+  safe.close();
+
+  // This choice does not weaken the actual effective runtime check.
+  const unsafe = createCodexChat({
+    command: 'codex-test',
+    listMcpServers: () => [{name:'global-private',enabled:true}],
+    requireGlobalMcpOff: false,
+    spawnProcess: () => new FakeChild('unsafe-mcp'),
+    requestTimeoutMs: 500, turnTimeoutMs: 1000,
+  });
+  await assert.rejects(unsafe.connect(), /safety configuration/);
+  unsafe.close();
+});
