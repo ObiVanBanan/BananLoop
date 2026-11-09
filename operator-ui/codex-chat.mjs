@@ -71,6 +71,7 @@ export function createCodexChat({
   env = process.env,
   model,
   listMcpServers = listConfiguredMcpServers,
+  requireGlobalMcpOff = true,
   requestTimeoutMs = 15_000,
   turnTimeoutMs = 120_000,
   onEvent = () => {},
@@ -214,7 +215,10 @@ export function createCodexChat({
     if (state === 'ready') return { threadId };
     if (state !== 'new') throw new Error('Codex app-server connection cannot be reused');
     state = 'starting';
-    try { assertNoEnabledMcpServers(listMcpServers(command, env, cwd)); }
+    // Only the bounded Studio planner can opt out of checking the *global* MCP
+    // registry: strict-config plus config/read MUST still prove every MCP/tool
+    // is disabled in the actual ephemeral app-server before any model turn.
+    try { if (requireGlobalMcpOff) assertNoEnabledMcpServers(listMcpServers(command, env, cwd)); }
     catch (error) {
       state = 'failed';
       cleanupWorkDir();
