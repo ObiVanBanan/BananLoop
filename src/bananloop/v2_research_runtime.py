@@ -560,6 +560,16 @@ class V2ResearchRuntime:
                           else current.reason)
                 return self._finish_campaign_run(status, completed)
             completed.append(result)
+            job_id = result.get("job_id")
+            if isinstance(job_id, str):
+                durable = self.queue.get_result(job_id)
+                model_output = durable.get("result") if isinstance(durable, dict) else None
+                if (isinstance(model_output, dict)
+                        and model_output.get("protocol_draft") is not None):
+                    # A protocol proposal changes what Researcher may do next:
+                    # stop this lane so the pinned independent verifier reviews
+                    # the frozen protocol before any further live exploration.
+                    return self._finish_campaign_run("PROTOCOL_REVIEW_PENDING", completed)
             if result.get("human_decision_request") is not None:
                 return self._finish_campaign_run("PAUSED_NEEDS_INPUT", completed)
             self._recover_followups()

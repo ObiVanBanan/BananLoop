@@ -249,6 +249,30 @@ def test_two_real_exploration_nodes_use_refutation_memory_and_preserve_pins(tmp_
         graph.close()
 
 
+def test_research_lane_stops_when_worker_proposes_protocol_for_independent_review(tmp_path, monkeypatch):
+    runtime, graph, queue = _runtime(tmp_path, max_agent_calls=4)
+    calls = []
+    monkeypatch.setattr(queue, "get_result", lambda _job_id: {
+        "result": {"protocol_draft": {"protocol_id": "frozen-by-core"}},
+    })
+
+    def completed_with_protocol(*, node_id, **_kwargs):
+        calls.append(node_id)
+        return {"job_id": "completed-proposal-job", "status": "EXPLORATION_COMPLETED"}
+
+    monkeypatch.setattr(runtime, "run_one", completed_with_protocol)
+    try:
+        result = runtime.run_campaign(
+            visible_paths=["README.md"], invoke=lambda *_a, **_k: {}, max_iterations=3,
+        )
+        assert result["status"] == "PROTOCOL_REVIEW_PENDING"
+        assert result["iterations_this_call"] == 1
+        assert len(calls) == 1
+    finally:
+        queue.close()
+        graph.close()
+
+
 def test_researcher_rejects_score_and_no_evidence(tmp_path):
     runtime, graph, queue = _runtime(tmp_path)
     try:

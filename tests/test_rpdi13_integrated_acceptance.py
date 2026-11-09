@@ -908,7 +908,7 @@ sys.stdout.write(json.dumps({"prediction": prediction}, separators=(",", ":")))
             assert final_report["campaign_id"] == entry.campaign_id
             assert final_report["optimization_campaign_id"] == child_id
             assert final_report["exploration_report"]["campaign_id"] == entry.campaign_id
-            assert final_report["exploration_report"]["status"] == "CONVERGED_REPEATED_EXPERIMENT"
+            assert final_report["exploration_report"]["status"] == "PROTOCOL_REVIEW_PENDING"
             assert len(final_report["exploration_report"]["completed_experiments"]) == 3
             assert final_report["optimization_report"]["champion"]["snapshot_id"] == candidate[
                 "candidate_snapshot_id"
