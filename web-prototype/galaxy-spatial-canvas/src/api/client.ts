@@ -48,3 +48,31 @@ export async function streamEvents(id:string,after:number,token:string,onEvent:(
   }
  }finally{reader.releaseLock()}
 }
+/** A model discussion proposes values; only an explicit second click can start Engine. */
+export type StudioMode='full_auto'|'supervised';
+export type StudioMessage={role:'user'|'assistant';content:string};
+export type StudioBudgets={max_experiments:number;max_attempts:number;max_agent_calls:number;max_evaluator_calls:number;deadline_seconds:number};
+export type StudioDraft={goal:string;budgets:StudioBudgets;missing:string[];ready_for_bootstrap:boolean};
+export type StudioInfo={enabled:boolean;workspace_kind:string|null;planning_provider:string|null;modes:StudioMode[]};
+export type StudioReply={reply:string;draft:StudioDraft|null;provider:'codex_cli';model_called:boolean};
+export type StudioLaunch={request_id:string;campaign_id:string;phase:string;mode:StudioMode;exit_code:number|null;note:string|null};
+async function studioPost<T>(path:string,token:string,body:object):Promise<T>{
+ const response=await fetch(endpoint+path,{method:'POST',headers:{'Content-Type':'application/json',...(token?{'Authorization':`Bearer ${token}`}:{})},
+  cache:'no-store',body:JSON.stringify(body)});
+ if(!response.ok)throw new Error(
+  response.status===401?'Нужен токен локального API':
+  response.status===404?'Studio не включён. Запусти bananloop serve --studio':
+  response.status===503?'Codex CLI сейчас не отвечает. Проверь авторизацию и настройки безопасности':
+  response.status===409?'Запуск уже выполняется или не завершена подготовка':
+  `Studio API: HTTP ${response.status}`);
+ return await response.json() as T;
+}
+export const getStudioInfo=(token:string)=>getJson<StudioInfo>('/v1/studio/info',token);
+export const discussStudio=(token:string,body:{message:string;history:StudioMessage[]})=>
+ studioPost<StudioReply>('/v1/studio/discuss',token,body);
+export const launchStudio=(token:string,body:{goal:string;mode:StudioMode;budgets:StudioBudgets;request_id:string})=>
+ studioPost<StudioLaunch>('/v1/studio/launch',token,body);
+export const confirmStudioLaunch=(token:string,request_id:string)=>
+ studioPost<StudioLaunch>('/v1/studio/launch/confirm',token,{request_id});
+export const getStudioLaunch=(token:string,request_id:string)=>
+ getJson<StudioLaunch>('/v1/studio/launch/status?request_id='+encodeURIComponent(request_id),token);
