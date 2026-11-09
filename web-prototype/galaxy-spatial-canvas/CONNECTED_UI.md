@@ -106,3 +106,34 @@ user's own subscription or API-key billing mode as configured.
 Development run: in the PR checkout, start `bananloop serve --studio` and
 `npm run dev` from `web-prototype/galaxy-spatial-canvas`. A packaged one-command
 desktop distribution is out of scope. See `docs/ui/studio-chat-first-launcher.md`.
+
+## Chat-first Studio desktop update (November 9, 2026)
+
+Studio is now its own full-height workspace: **chat list on the left, conversation
+in the center, composer with Full Auto / Supervised at the bottom**. A new
+chat starts empty, with no prior goal, budget, launch request or copied
+discussion. The optional campaign plan opens as a drawer, not a permanent
+dashboard. The user can return to an existing conversation and retry a failed
+Codex planning turn without duplicating their message.
+
+Conversations and the latest suggested plan are stored only in the **current
+browser's localStorage** under a versioned BananLoop key, capped at 30
+conversations and 60 messages per conversation. They are not synced between
+machines and may contain user-supplied project context. Do not enter secrets
+in planning chat. OAuth tokens and API bearer tokens are **not** saved there.
+Deleting a chat removes its local copy, not an existing Engine campaign.
+
+The React scroll effect explicitly returns void, even on browsers where
+`scrollIntoView` returns a Promise; the old effect could crash React on
+opening New Campaign. The Studio-specific Codex chat bridge no longer rejects
+a user just because their **global** Codex installation has unrelated MCP
+servers: its own ephemeral app-server still requires a verified disabled
+effective tool/MCP configuration before *any* model turn. Unknown and unsafe
+effective configurations fail closed. Provider errors are returned as safe
+codes so the UI can explain an unavailable app-server, timeout, or blocked
+isolation, without exposing CLI output, secrets or raw prompts.
+
+QA: dedicated React mount/unmount, multi-chat and retry tests have been
+added to the Studio UI Smoke CI. Real user-account Codex E2E remains an
+operator-machine acceptance item. `CONNECTED` in Settings is account
+authorization status, not proof the planning app-server can start a turn.
