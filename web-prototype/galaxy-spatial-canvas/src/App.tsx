@@ -137,6 +137,8 @@ export function App(){
  },[campaignId,token]);
  const fixture=useMemo(()=>view?toGalaxyFixture(view):null,[view]);
  const navigation=(value:Screen)=>setScreen(value);
+ if(screen==='studio')return <Studio token={token} onBack={()=>setScreen('home')}
+  onOpenCampaign={id=>{setCampaignId(id);setScreen('mission')}}/>;
  if(screen==='galaxy'&&view&&fixture){
   return <Galaxy key={campaignId} fixture={fixture} campaigns={campaigns} onCampaignChange={setCampaignId} onNavigate={navigation} onNewCampaign={()=>setScreen('studio')} streamConnected={connected}/>;
  }
@@ -155,7 +157,6 @@ export function App(){
      {!campaigns.length?<div className="live-empty">Пока нет кампаний. Начни с идеи и обсуди параметры в New Campaign.</div>:
       <div className="studio-home-campaigns">{campaigns.map(item=><button key={item.campaign_id} onClick={()=>{setCampaignId(item.campaign_id);setScreen('galaxy')}}><strong>{item.goal||item.campaign_id}</strong><small>{item.initialized?'Campaign':'Bootstrap / reserved'} · {item.active?'Active':'Saved'}</small></button>)}</div>}
    </div>}
-   {screen==='studio'&&<Studio token={token} onOpenCampaign={id=>{setCampaignId(id);setScreen('mission')}}/>}
    {screen==='galaxy'&&<><div className="live-head"><span className="live-tag">RESEARCH GALAXY · REAL DATA</span><h1>Исследовательское пространство</h1><p>Интерфейс ожидает реальный snapshot BananLoop. Синтетическая Galaxy здесь не подставляется.</p></div>
     {loading?<div className="live-empty">Подключение к локальному API…</div>:!campaigns.length?<div className="live-empty"><strong>Пока нет кампаний.</strong><p>Создай кампанию через New Campaign: сначала обсуди цель с Codex, затем подтверди запуск.</p><button disabled={!studioInfo?.enabled} onClick={()=>setScreen('studio')}>+ New Campaign</button>{!studioInfo?.enabled&&<p>Для запуска без директории проекта используй <code>bananloop serve --studio</code>.</p>}</div>:!view?<div className="live-empty">Загрузка выбранной кампании…</div>:null}</>}
    {screen==='mission'&&<><div className="live-head"><span className="live-tag">MISSION CONTROL · COMMITTED EVENTS</span><h1>Пульс исследования</h1><p>Только данные существующей кампании. Отправка chat-команд и управление Engine здесь не имитируются.</p></div>
