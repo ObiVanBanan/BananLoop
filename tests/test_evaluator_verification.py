@@ -1528,6 +1528,16 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
     assert "CASE_BYTES_SENTINEL" not in public_task
     assert input_ref not in public_task
     assert '"protocol_binding":{"researcher_intent_bound_by_core":false' in public_task
+    for contract_fact in (
+        "evaluator_wall_timeout_seconds",
+        "evaluator_per_process_cpu_seconds_max",
+        "evaluator_per_process_address_space_bytes_max",
+        "evaluator_child_process_limit_increment_max",
+        "evaluator_regular_file_write_bytes_max",
+        "evaluator_result_stdout_bytes_max",
+        "evaluator_stderr_bytes_max",
+    ):
+        assert contract_fact in public_task
     (published_root / input_sha).write_bytes(b"tampered private input")
     with pytest.raises(EvaluatorVerificationError, match="do not match their digest"):
         verification.enqueue_verifier(proposal.proposal_digest)

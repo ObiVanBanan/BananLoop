@@ -1169,7 +1169,10 @@ def _build_protocol_review_material(
 ) -> dict[str, Any]:
     """Build a complete bounded source view without exposing tier case identities or bytes."""
     from .contracts import ProtocolManifest
-    from .trusted_evaluator import _case_protocol_digest, _extract_bundle
+    from .trusted_evaluator import (
+        _MAX_EVALUATOR_MEMORY_BYTES, _MAX_OUTPUT_BYTES, _MAX_RESULT_BYTES,
+        _case_protocol_digest, _extract_bundle,
+    )
 
     protocol = proposal.protocol
     bundle_bytes = _read_published_blob(
@@ -1289,6 +1292,13 @@ def _build_protocol_review_material(
             "core_checks_each_input_digest_before_evaluation": True,
             "repeatability_runs_enforced_by_core": protocol.repeatability_runs,
             "repeatability_requires_identical_outputs_and_artifacts": True,
+            "evaluator_wall_timeout_seconds": protocol.timeout_seconds,
+            "evaluator_per_process_cpu_seconds_max": protocol.timeout_seconds + 2,
+            "evaluator_per_process_address_space_bytes_max": _MAX_EVALUATOR_MEMORY_BYTES,
+            "evaluator_child_process_limit_increment_max": 128,
+            "evaluator_regular_file_write_bytes_max": _MAX_OUTPUT_BYTES,
+            "evaluator_result_stdout_bytes_max": _MAX_RESULT_BYTES,
+            "evaluator_stderr_bytes_max": _MAX_OUTPUT_BYTES,
         },
     }
 
