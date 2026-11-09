@@ -1,5 +1,7 @@
 /** Strict, one-turn Codex subscription planning. No tools and no Engine writes. */
 import { createCodexChat } from './codex-chat.mjs';
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 
 const readInput = async () => {
   let value = '';
@@ -65,7 +67,7 @@ ${JSON.stringify(transcript)}`;
     process.stdout.write(JSON.stringify(parseAnswer(result.text))+'\n');
   } finally {chat.close()}
 }
-main().catch(error=>{
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch(error=>{
   // Stable non-sensitive error codes only. Never expose CLI stdout or raw
   // exception text, which could include local paths, prompts or credentials.
   const info=String(error?.message||'');
