@@ -54,3 +54,12 @@ button.settings-action{border:0;color:inherit;background:transparent;cursor:poin
 .live-screen input{background:var(--surface);color:var(--ink);border:1px solid var(--line);padding:10px 12px;width:min(480px,100%);border-radius:6px}
 .live-status{font:11px ui-monospace,monospace;color:#e4bd6d}
 @media(max-width:850px){.live-topbar{align-items:flex-start;flex-direction:column;padding:16px}.live-screen{padding:22px 16px}.live-cards{grid-template-columns:1fr}}
+/* Local ChatGPT device-code sign-in. The app never handles OAuth credentials. */
+.provider-actions{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0}
+.live-screen button:disabled{opacity:.45;cursor:not-allowed}
+.device-login{border:1px solid rgba(228,189,109,.4);background:linear-gradient(135deg,rgba(228,189,109,.09),rgba(15,35,51,.78));padding:19px 20px;border-radius:8px;margin:18px 0}
+.device-login h3{font-size:15px;font-weight:650;margin:0 0 9px}
+.device-login p{margin:0 0 13px}
+.device-login a{color:#f5d082;text-decoration:underline;text-underline-offset:4px;display:inline-block;margin-bottom:12px}
+.device-login .device-code{display:block;max-width:max-content;padding:13px 18px;letter-spacing:.18em;font:700 21px ui-monospace,Consolas,monospace;color:#f3d990;background:#162b38;border:1px dashed #c6a65f;border-radius:5px;user-select:all}
+.device-login a:focus-visible,.live-screen button:focus-visible{outline:2px solid #f3ca66;outline-offset:3px}
