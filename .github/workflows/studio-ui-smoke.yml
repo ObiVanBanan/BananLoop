@@ -26,6 +26,9 @@ jobs:
       - name: Run frontend model tests
         working-directory: web-prototype/galaxy-spatial-canvas
         run: npm test
+      - name: React Studio runtime regression
+        working-directory: web-prototype/galaxy-spatial-canvas
+        run: npm run test:ui
       - name: Typecheck frontend
         working-directory: web-prototype/galaxy-spatial-canvas
         run: npm run typecheck
