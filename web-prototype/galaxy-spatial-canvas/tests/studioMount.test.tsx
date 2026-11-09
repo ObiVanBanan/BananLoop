@@ -45,6 +45,15 @@ describe('Studio chat desktop runtime',()=>{
     expect(screen.getByText('С чего начнём?')).toBeTruthy();
   });
 
+  it('can choose Supervised before sending a first message without launching Engine',()=>{
+    render(<Studio token="" onBack={()=>{}} onOpenCampaign={()=>{}}/>);
+    const supervised=screen.getByRole('button',{name:'Supervised'});
+    fireEvent.click(supervised);
+    expect(supervised.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText('С чего начнём?')).toBeTruthy();
+    expect(mockDiscuss).not.toHaveBeenCalled();
+  });
+
   it('sends a real request, surfaces failures and retries without fabricating a response',async()=>{
     mockDiscuss.mockRejectedValueOnce(new Error('Codex app-server недоступен'));
     mockDiscuss.mockResolvedValueOnce({reply:'Давай определим метрику.',draft:null,provider:'codex_cli',model_called:true});
