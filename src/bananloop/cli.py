@@ -707,8 +707,15 @@ def cmd_export(args: argparse.Namespace) -> int:
 def cmd_serve(args: argparse.Namespace) -> int:
     from .api import create_server
 
+    repo = args.repo
+    if getattr(args, "studio", False):
+        if args.repo != ".":
+            raise ValueError("--studio and --repo are mutually exclusive")
+        from .ui_studio import ensure_studio_repo, studio_path
+        repo = str(ensure_studio_repo(studio_path()))
     token = args.token or os.environ.get("BANANLOOP_API_TOKEN")
-    server = create_server(args.repo, args.host, args.port, token=token)
+    server = create_server(repo, args.host, args.port, token=token,
+                           studio_mode=bool(getattr(args, "studio", False)))
     print(f"BananLoop API listening on {server.server_address[0]}:{server.server_address[1]}", flush=True)
     try:
         server.serve_forever(poll_interval=0.2)
@@ -1078,6 +1085,7 @@ def parser() -> argparse.ArgumentParser:
 
     serve = sub.add_parser("serve", help="serve the loopback-first REST, OpenAPI and SSE API")
     serve.add_argument("--repo", default=".")
+    serve.add_argument("--studio", action="store_true", help="start without a project directory; use a managed local Studio workspace")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--token", help="bearer token; required when binding outside loopback (or BANANLOOP_API_TOKEN)")
