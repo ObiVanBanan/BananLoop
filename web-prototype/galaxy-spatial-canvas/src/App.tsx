@@ -147,7 +147,7 @@ export function App(){
    <nav aria-label="Главные экраны">{([['home','Home'],['galaxy','Galaxy'],['mission','Mission Control'],['decisions','Decision Center'],['settings','Settings']] as const).map(([id,name])=><button key={id} aria-current={screen===id?'page':undefined} onClick={()=>setScreen(id)}>{name}</button>)}<button className="studio-top-new" disabled={!studioInfo?.enabled} onClick={()=>setScreen('studio')}>+ New Campaign</button></nav>
    <select className="live-select" aria-label="Выбор кампании" value={campaignId} onChange={e=>setCampaignId(e.target.value)}><option value="">Выбрать кампанию</option>{campaigns.map(c=><option key={c.campaign_id} value={c.campaign_id}>{c.goal||c.campaign_id}</option>)}</select>
   </header>
-  <main className={screen==='studio'?'live-screen studio-page':'live-screen'}>
+  <main className="live-screen">
    {screen==='home'&&<div className="studio-home">
      <div className="studio-kicker">BANANLOOP / MISSION INDEX</div><h1>Твои исследования<span>.</span></h1>
      <p>Создавай кампании через диалог с Codex. Для нового исследования не нужно заранее создавать или выбирать папку.</p>
