@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from .application import CampaignApplication
 from .ui_read_models import campaign_ui_view, list_ui_campaigns, codex_connection_status
 from .ui_codex_login import CodexDeviceLogin, LoginUnavailable
+from .ui_studio import StudioLauncher, StudioError, StudioUnavailable, discuss_via_codex
 from .contracts import PivotDecisionCommand, PivotProposal
 from .graph_store import GraphStoreError
 from .registry import RegistryError
@@ -33,6 +34,11 @@ def _openapi() -> dict[str, Any]:
         "paths": {
             "/healthz": {"get": {"operationId": "health", "responses": {"200": {"description": "Healthy"}}}},
             "/v1/campaigns": {"get": {"operationId": "uiCampaignList", "responses": {"200": {"description": "Safe campaign registry summary"}}}},
+            "/v1/studio/info": {"get": {"operationId": "studioInfo", "responses": {"200": {"description": "Local managed Studio availability"}}}},
+            "/v1/studio/discuss": {"post": {"operationId": "discussStudioCampaign", "responses": {"200": {"description": "Real, tool-isolated Codex planning reply"}}}},
+            "/v1/studio/launch": {"post": {"operationId": "launchStudioCampaign", "responses": {"200": {"description": "Bounded Engine launch receipt"}}}},
+            "/v1/studio/launch/confirm": {"post": {"operationId": "confirmStudioLaunch", "responses": {"200": {"description": "Explicit prepared campaign execution"}}}},
+            "/v1/studio/launch/status": {"get": {"operationId": "studioLaunchStatus", "responses": {"200": {"description": "Current local launch process status"}}}},
             "/v1/providers/codex/status": {"get": {"operationId": "codexConnectionStatus", "responses": {"200": {"description": "Codex CLI authentication mode (no credentials)"}}}},
             "/v1/providers/codex/login/status": {"get": {"operationId": "codexDeviceLoginStatus", "responses": {"200": {"description": "Device login progress (no credentials)"}}}},
             "/v1/providers/codex/login/start": {"post": {"operationId": "startCodexDeviceLogin", "responses": {"200": {"description": "Official verification URL and one-time user code"}}}},
@@ -72,7 +78,7 @@ def _safe_json(value: Any) -> bytes:
 
 def create_server(
     repo: str, host: str = "127.0.0.1", port: int = 8765, *, token: str | None = None,
-    poll_seconds: float = 0.5,
+    poll_seconds: float = 0.5, studio_mode: bool = False,
 ) -> ThreadingHTTPServer:
     """Create a loopback-only HTTP server for local clients and dashboards."""
     if not 0.05 <= poll_seconds <= 10:
@@ -81,6 +87,7 @@ def create_server(
         raise ValueError("API binds are restricted to loopback until TLS transport is configured")
 
     device_login = CodexDeviceLogin()
+    studio = StudioLauncher(repo) if studio_mode else None
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "BananLoopAPI/0.2"
@@ -133,6 +140,24 @@ def create_server(
                 return
             if parsed.path == "/openapi.json":
                 self._json(HTTPStatus.OK, _openapi())
+                return
+            if parsed.path == "/v1/studio/info":
+                self._json(HTTPStatus.OK, {"enabled": studio is not None,
+                    "workspace_kind": "managed_local" if studio else None,
+                    "planning_provider": "codex_cli" if studio else None,
+                    "modes": ["full_auto", "supervised"] if studio else []})
+                return
+            if parsed.path == "/v1/studio/launch/status":
+                if studio is None:
+                    self._json(HTTPStatus.NOT_FOUND, {"error": "studio_disabled"})
+                    return
+                try:
+                    request_ids = parse_qs(parsed.query).get("request_id", [])
+                    if len(request_ids) != 1:
+                        raise StudioError("one request_id is required")
+                    self._json(HTTPStatus.OK, studio.status(request_ids[0]))
+                except StudioError:
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid_studio_request"})
                 return
             if parsed.path in {"/v1/campaigns", "/v1/providers/codex/status", "/v1/providers/codex/login/status"}:
                 try:
@@ -214,7 +239,40 @@ def create_server(
             if not self._authorized():
                 self._json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
                 return
-            if urlsplit(self.path).path in {"/v1/providers/codex/login/start", "/v1/providers/codex/login/cancel"}:
+            studio_path = urlsplit(self.path).path
+            if studio_path in {"/v1/studio/discuss", "/v1/studio/launch", "/v1/studio/launch/confirm"}:
+                if studio is None:
+                    self._json(HTTPStatus.NOT_FOUND, {"error": "studio_disabled"})
+                    return
+                allowed = {
+                    "http://127.0.0.1:5173", "http://localhost:5173",
+                    f"http://127.0.0.1:{self.server.server_address[1]}",
+                    f"http://localhost:{self.server.server_address[1]}",
+                }
+                origin = self.headers.get("Origin", "")
+                content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                if origin not in allowed or content_type != "application/json":
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "origin_or_content_type_rejected"})
+                    return
+                try:
+                    data = self._body()
+                    if studio_path == "/v1/studio/discuss":
+                        response = discuss_via_codex(data)
+                    elif studio_path == "/v1/studio/launch":
+                        response = studio.launch(data)
+                    else:
+                        response = studio.launch(data, confirm=True)
+                    self._json(HTTPStatus.OK, response)
+                except OverflowError:
+                    self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "request_too_large"})
+                except (StudioError, TypeError, ValueError):
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid_studio_request"})
+                except StudioUnavailable:
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "studio_provider_unavailable"})
+                except Exception:
+                    self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "studio_internal_error"})
+                return
+            if studio_path in {"/v1/providers/codex/login/start", "/v1/providers/codex/login/cancel"}:
                 # An explicit browser gesture is required. Reject cross-site
                 # form posts even though the API is loopback-only.
                 origin = self.headers.get("Origin", "")
