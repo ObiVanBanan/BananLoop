@@ -1,11 +1,12 @@
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {Galaxy} from './Galaxy';
+import {Studio} from './Studio';
 import {toGalaxyFixture} from './domain/live';
 import type {CampaignSummary,CampaignView,CampaignSnapshot,EngineEvent,CodexStatus} from './domain/live';
-import {cancelCodexLogin,getCampaigns,getCodexLogin,getCodexStatus,getEvents,getSnapshot,getView,startCodexLogin,streamEvents} from './api/client';
-import type {DeviceLogin} from './api/client';
+import {cancelCodexLogin,getCampaigns,getCodexLogin,getCodexStatus,getEvents,getSnapshot,getView,getStudioInfo,startCodexLogin,streamEvents} from './api/client';
+import type {DeviceLogin,StudioInfo} from './api/client';
 
-type Screen='galaxy'|'mission'|'decisions'|'settings';
+type Screen='home'|'studio'|'galaxy'|'mission'|'decisions'|'settings';
 const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
 function formatMetric(n:unknown){return typeof n==='number'&&Number.isFinite(n)?n.toFixed(4):'—'}
 function providerText(provider:CodexStatus|null):string{
@@ -22,7 +23,7 @@ function mergeEvents(old:EngineEvent[],incoming:EngineEvent[]):EngineEvent[]{
  return [...map.values()].sort((a,b)=>a.seq-b.seq).slice(-maxEvents);
 }
 export function App(){
- const [screen,setScreen]=useState<Screen>('galaxy');
+ const [screen,setScreen]=useState<Screen>('home');
  const [token,setToken]=useState(''); // deliberately memory-only; no credential persistence
  const [campaigns,setCampaigns]=useState<CampaignSummary[]>([]);
  const [campaignId,setCampaignId]=useState('');
@@ -30,6 +31,7 @@ export function App(){
  const [snapshot,setSnapshot]=useState<CampaignSnapshot|null>(null);
  const [events,setEvents]=useState<EngineEvent[]>([]);
  const [codex,setCodex]=useState<CodexStatus|null>(null);
+ const [studioInfo,setStudioInfo]=useState<StudioInfo|null>(null);
  const [login,setLogin]=useState<DeviceLogin|null>(null);
  const [loginBusy,setLoginBusy]=useState(false);
  const [loginError,setLoginError]=useState('');
@@ -42,6 +44,7 @@ export function App(){
   try{setCodex(await getCodexStatus(token))}catch{setCodex(null)}
  },[token]);
  useEffect(()=>{void refreshProviders()},[refreshProviders]);
+ useEffect(()=>{let active=true;void getStudioInfo(token).then(result=>{if(active)setStudioInfo(result)}).catch(()=>{if(active)setStudioInfo(null)});return()=>{active=false}},[token]);
  useEffect(()=>{
   if(screen!=='settings')return;
   let active=true;
@@ -135,14 +138,24 @@ export function App(){
  const fixture=useMemo(()=>view?toGalaxyFixture(view):null,[view]);
  const navigation=(value:Screen)=>setScreen(value);
  if(screen==='galaxy'&&view&&fixture){
-  return <Galaxy key={campaignId} fixture={fixture} campaigns={campaigns} onCampaignChange={setCampaignId} onNavigate={navigation} streamConnected={connected}/>;
+  return <Galaxy key={campaignId} fixture={fixture} campaigns={campaigns} onCampaignChange={setCampaignId} onNavigate={navigation} onNewCampaign={()=>setScreen('studio')} streamConnected={connected}/>;
  }
  return <div className="live-shell"><header className="live-topbar">
    <strong>bananaloop<span>.</span> <small className="live-tag">RESEARCH OS</small></strong>
-   <nav aria-label="Главные экраны">{([['galaxy','Galaxy'],['mission','Mission Control'],['decisions','Decision Center'],['settings','Settings']] as const).map(([id,name])=><button key={id} aria-current={screen===id?'page':undefined} onClick={()=>setScreen(id)}>{name}</button>)}</nav>
+   <nav aria-label="Главные экраны">{([['home','Home'],['galaxy','Galaxy'],['mission','Mission Control'],['decisions','Decision Center'],['settings','Settings']] as const).map(([id,name])=><button key={id} aria-current={screen===id?'page':undefined} onClick={()=>setScreen(id)}>{name}</button>)}<button className="studio-top-new" disabled={!studioInfo?.enabled} onClick={()=>setScreen('studio')}>+ New Campaign</button></nav>
    <select className="live-select" aria-label="Выбор кампании" value={campaignId} onChange={e=>setCampaignId(e.target.value)}><option value="">Выбрать кампанию</option>{campaigns.map(c=><option key={c.campaign_id} value={c.campaign_id}>{c.goal||c.campaign_id}</option>)}</select>
   </header>
-  <main className="live-screen">
+  <main className={screen==='studio'?'live-screen studio-page':'live-screen'}>
+   {screen==='home'&&<div className="studio-home">
+     <div className="studio-kicker">BANANLOOP / MISSION INDEX</div><h1>Твои исследования<span>.</span></h1>
+     <p>Создавай кампании через диалог с Codex. Для нового исследования не нужно заранее создавать или выбирать папку.</p>
+     <button className="studio-home-cta" disabled={!studioInfo?.enabled} onClick={()=>setScreen('studio')}>✦ New Campaign</button>
+     {!studioInfo?.enabled&&<div className="studio-home-help">Чтобы работать без привязки к проекту, запусти локальный сервер командой <code>bananloop serve --studio</code>. Он создаст рабочее пространство автоматически.</div>}
+     <h2>Кампании</h2>
+     {!campaigns.length?<div className="live-empty">Пока нет кампаний. Начни с идеи и обсуди параметры в New Campaign.</div>:
+      <div className="studio-home-campaigns">{campaigns.map(item=><button key={item.campaign_id} onClick={()=>{setCampaignId(item.campaign_id);setScreen('galaxy')}}><strong>{item.goal||item.campaign_id}</strong><small>{item.initialized?'Campaign':'Bootstrap / reserved'} · {item.active?'Active':'Saved'}</small></button>)}</div>}
+   </div>}
+   {screen==='studio'&&<Studio token={token} onOpenCampaign={id=>{setCampaignId(id);setScreen('mission')}}/>}
    {screen==='galaxy'&&<><div className="live-head"><span className="live-tag">RESEARCH GALAXY · REAL DATA</span><h1>Исследовательское пространство</h1><p>Интерфейс ожидает реальный snapshot BananLoop. Синтетическая Galaxy здесь не подставляется.</p></div>
     {loading?<div className="live-empty">Подключение к локальному API…</div>:!campaigns.length?<div className="live-empty"><strong>Пока нет кампаний.</strong><p>Запусти BananLoop в этой репозитории через CLI. Список обновляется автоматически.</p><p>API: <code>bananloop serve --repo /path/to/project</code></p></div>:!view?<div className="live-empty">Загрузка выбранной кампании…</div>:null}</>}
    {screen==='mission'&&<><div className="live-head"><span className="live-tag">MISSION CONTROL · COMMITTED EVENTS</span><h1>Пульс исследования</h1><p>Только данные существующей кампании. Отправка chat-команд и управление Engine здесь не имитируются.</p></div>
