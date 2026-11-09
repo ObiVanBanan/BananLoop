@@ -10,6 +10,13 @@ Campaign `c-5ba8c2fc90ff620b19c25cb2964c7ffb` began with `evaluation=None`. The 
 
 The Optimizer changed only `src/optimizer/model/ranker.py` (threshold 2 → 1). The live Integration Verifier returned PASS. Trusted evaluation completed all tiers. VALIDATION improved from 0.5 to 1.0 (delta +0.5); HOLDOUT was 1.0 over 2 cases and 3 repeatability runs. The final JSON and Markdown report included the explicit baseline/candidate/delta table.
 
+| Tier | Metric | Baseline | Candidate | Delta | Scope |
+| --- | --- | ---: | ---: | ---: | --- |
+| VALIDATION | Accuracy | 0.5000 | 1.0000 | +0.5000 | Frozen validation cases |
+| HOLDOUT | Accuracy | Not measured | 1.0000 | Not comparable | 2 sealed cases, 3 repeatability runs |
+
+The HOLDOUT row reports the verified candidate score only; no baseline HOLDOUT evaluation was run, so its delta is intentionally not calculated.
+
 This is an end-to-end smoke on a small synthetic evaluator, not a general benchmark result.
 
 ## Live provider receipts

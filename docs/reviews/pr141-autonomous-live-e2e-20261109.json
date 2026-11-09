@@ -22,8 +22,8 @@
   "changed_paths": ["src/optimizer/model/ranker.py"],
   "baseline_snapshot_id": "32158428189e00b3137bd5f136855b3cb5dc67a4",
   "candidate_snapshot_id": "49f29a2dbcac240e5f6d11bb4bd66787a73c563d",
-  "validation": {"baseline": 0.5, "candidate": 1.0, "delta": 0.5},
-  "holdout": {"status": "VERIFIED", "metric": 1.0, "cases": 2, "repeatability_runs": 3},
+  "validation": {"metric": "accuracy", "baseline": 0.5, "candidate": 1.0, "delta": 0.5},
+  "holdout": {"status": "VERIFIED", "metric": "accuracy", "baseline": null, "candidate": 1.0, "delta": null, "cases": 2, "repeatability_runs": 3},
   "budget": {
     "agent_calls": {"cap": 2, "spent": 2},
     "evaluator_calls": {"cap": 12, "spent": 12},
