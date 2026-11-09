@@ -6,6 +6,20 @@ export async function getJson<T>(path:string, token:string='', signal?:AbortSign
  if(!response.ok)throw new Error(response.status===401?'Требуется токен локального BananLoop API':`BananLoop API: HTTP ${response.status}`);
  return await response.json() as T;
 }
+export type DeviceLogin = {phase:'idle'|'pending'|'completed'|'failed'|'expired'|'cancelled';verification_url:string|null;user_code:string|null};
+async function loginPost(path:string, token:string):Promise<DeviceLogin>{
+ const response=await fetch(endpoint+path,{
+  method:'POST',headers:{'Content-Type':'application/json',...(token?{'Authorization':`Bearer ${token}`}:{})},
+  body:'{}',cache:'no-store'
+ });
+ if(!response.ok)throw new Error(response.status===401?'Требуется токен локального API':
+  response.status===409?'Codex app-server недоступен или вход запрещён настройками':
+  `BananLoop login: HTTP ${response.status}`);
+ return await response.json() as DeviceLogin;
+}
+export const startCodexLogin=(token:string)=>loginPost('/v1/providers/codex/login/start',token);
+export const cancelCodexLogin=(token:string)=>loginPost('/v1/providers/codex/login/cancel',token);
+export const getCodexLogin=(token:string,signal?:AbortSignal)=>getJson<DeviceLogin>('/v1/providers/codex/login/status',token,signal);
 const urlFor=(id:string)=>`/v1/campaigns/${encodeURIComponent(id)}`;
 export const getCampaigns=(token:string,signal?:AbortSignal)=>getJson<CampaignList>('/v1/campaigns',token,signal);
 export const getView=(id:string,token:string,signal?:AbortSignal)=>getJson<CampaignView>(urlFor(id)+'/view',token,signal);
