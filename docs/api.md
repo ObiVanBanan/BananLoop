@@ -82,3 +82,33 @@ bananloop campaigns list --repo . --json
 curl 'http://127.0.0.1:8765/v1/campaigns/c-0123456789abcdef0123456789abcdef/snapshot'
 ```
 
+
+## Local Studio (opt-in; no project directory)
+
+Run `bananloop serve --studio` instead of `--repo` to automatically create an
+isolated, minimal Git source workspace in the current user's application data
+directory. It never replaces an existing unrelated directory. Engine bootstrap
+still requires a trustworthy evaluator; an empty source project is not evidence
+of readiness. This option is mutually exclusive with `--repo`.
+
+Studio endpoints (loopback, existing optional bearer authentication):
+
+- `GET /v1/studio/info`: whether project-free Studio is available.
+- `POST /v1/studio/discuss`: one real Codex CLI planning turn using a bounded,
+  tool-isolated operator chat; input is a user message and recent conversation.
+- `POST /v1/studio/launch`: bounded goal, budgets, explicit mode and stable
+  idempotency key, then fixed `bananloop start` invocation with no browser-
+  supplied path, shell, evaluator or executable.
+- `POST /v1/studio/launch/confirm`: separate explicit execution of a previously
+  prepared Supervised launch.
+- `GET /v1/studio/launch/status?request_id=...`: process phase and campaign ID,
+  no raw logs.
+
+`Supervised` in this slice means **prepare-only + explicit execute** using the
+current v1 CLI, not the complete v0.2 HITL/pivot policy from PR #141. Every
+POST requires `application/json` and an allowed local-origin request. The
+client never sends a model instruction to the execution endpoint. A successful
+launcher process creation is not proof the Engine achieved a goal. An absent
+benchmark/evaluator yields `NEEDS_INPUT`, never invented scores.
+
+See [chat-first Studio UX](ui/studio-chat-first-launcher.md).
