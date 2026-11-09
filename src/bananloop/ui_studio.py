@@ -164,7 +164,12 @@ def discuss_via_codex(body: Any, *, worker: Path | None = None, runner: Any = su
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise StudioUnavailable("Codex planning turn is unavailable or timed out") from exc
     if result.returncode != 0:
-        raise StudioUnavailable("Codex planning failed (no campaign was launched)")
+        # The worker reports a bounded code, never raw CLI output or credentials.
+        match = re.search(r"STUDIO_ERROR_CODE:([a-z_]{3,40})", result.stderr[-1500:])
+        known = {"unsafe_config", "app_server_unavailable", "model_timeout",
+                 "model_incomplete", "provider_unavailable"}
+        code = match.group(1) if match and match.group(1) in known else "provider_unavailable"
+        raise StudioUnavailable(code)
     try:
         parsed = json.loads(result.stdout)
     except (TypeError, json.JSONDecodeError) as exc:
