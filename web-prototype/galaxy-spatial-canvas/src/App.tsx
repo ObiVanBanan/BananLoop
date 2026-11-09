@@ -2,7 +2,8 @@ import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {Galaxy} from './Galaxy';
 import {toGalaxyFixture} from './domain/live';
 import type {CampaignSummary,CampaignView,CampaignSnapshot,EngineEvent,CodexStatus} from './domain/live';
-import {getCampaigns,getCodexStatus,getEvents,getSnapshot,getView,streamEvents} from './api/client';
+import {cancelCodexLogin,getCampaigns,getCodexLogin,getCodexStatus,getEvents,getSnapshot,getView,startCodexLogin,streamEvents} from './api/client';
+import type {DeviceLogin} from './api/client';
 
 type Screen='galaxy'|'mission'|'decisions'|'settings';
 const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -29,6 +30,9 @@ export function App(){
  const [snapshot,setSnapshot]=useState<CampaignSnapshot|null>(null);
  const [events,setEvents]=useState<EngineEvent[]>([]);
  const [codex,setCodex]=useState<CodexStatus|null>(null);
+ const [login,setLogin]=useState<DeviceLogin|null>(null);
+ const [loginBusy,setLoginBusy]=useState(false);
+ const [loginError,setLoginError]=useState('');
  const [error,setError]=useState('');
  const [loading,setLoading]=useState(true);
  const [connected,setConnected]=useState(false);
@@ -38,6 +42,37 @@ export function App(){
   try{setCodex(await getCodexStatus(token))}catch{setCodex(null)}
  },[token]);
  useEffect(()=>{void refreshProviders()},[refreshProviders]);
+ useEffect(()=>{
+  if(screen!=='settings')return;
+  let active=true;
+  void getCodexLogin(token).then(s=>{if(active)setLogin(s)}).catch(()=>{});
+  return()=>{active=false};
+ },[screen,token]);
+ useEffect(()=>{
+  if(screen!=='settings'||login?.phase!=='pending')return;
+  let active=true;
+  const timer=window.setInterval(()=>{
+   void getCodexLogin(token).then(s=>{
+    if(!active)return;
+    setLogin(s);
+    if(s.phase==='completed'){setLoginError('');void refreshProviders()}
+    if(s.phase==='failed'||s.phase==='expired')setLoginError('Не удалось завершить авторизацию. Попробуй ещё раз или используй codex login.');
+   }).catch(()=>{if(active)setLoginError('Потеряна связь с локальным API')});
+  },1800);
+  return()=>{active=false;window.clearInterval(timer)};
+ },[screen,token,login?.phase,refreshProviders]);
+ const beginLogin=async()=>{
+  setLoginBusy(true);setLoginError('');
+  try{setLogin(await startCodexLogin(token))}
+  catch(e){setLoginError(String(e))}
+  finally{setLoginBusy(false)}
+ };
+ const stopLogin=async()=>{
+  setLoginBusy(true);setLoginError('');
+  try{setLogin(await cancelCodexLogin(token))}
+  catch(e){setLoginError(String(e))}
+  finally{setLoginBusy(false)}
+ };
  useEffect(()=>{
   const abort=new AbortController();let alive=true;
   async function reload(){try{
@@ -119,7 +154,22 @@ export function App(){
     {snapshot?.pivot_review?.proposal?<section className="live-card" style={{marginTop:26,maxWidth:740}}><h2>Предложение смены архитектуры</h2><p><strong>{snapshot.pivot_review.proposal.proposed_architecture}</strong></p><p>{snapshot.pivot_review.proposal.rationale}</p><p>Ожидаемый эффект: {snapshot.pivot_review.proposal.expected_effect}</p><p>Статус: {snapshot.pivot_review.status} · Проверка целостности: {String(snapshot.pivot_review.integrity_valid)}</p><p className="live-note">Любое подтверждение требует отдельного доверенного операторского действия.</p></section>
     :<div className="live-empty">{view?.source_schema===2?'Для v2 Decision Center пока нет безопасной проекции решений в API. Не показываем синтетические approvals.':'Нет ожидающих подтверждений в доступном snapshot.'}</div>}</>}
    {screen==='settings'&&<><div className="live-head"><span className="live-tag">SETTINGS / AI PROVIDERS</span><h1>ChatGPT / Codex CLI</h1><p>BananLoop использует локальный Codex CLI. Авторизация ChatGPT проверяется на компьютере с запущенным BananLoop API, без передачи токенов браузеру.</p></div>
-    <div className="live-cards"><section className="live-card"><h2>Подключение модели</h2><div className="live-metric">{codex?.auth_mode==='chatgpt'?'CONNECTED':codex?.auth_mode==='api_key'?'API KEY':'NOT READY'}</div><p>{providerText(codex)}</p><p className="live-note">Запусти в терминале, где работает BananLoop:</p><pre>codex login</pre><p>Для устройства без браузера: <code>codex login --device-auth</code></p><button onClick={()=>void refreshProviders()}>Обновить статус подключения</button><p className="live-note">BananLoop UI не хранит OAuth-токены и не использует неофициальные API ChatGPT. Прямая авторизация внутри интерфейса — отдельная интеграция через Codex app-server.</p></section>
+    <div className="live-cards"><section className="live-card"><h2>Подключение модели</h2><div className="live-metric">{codex?.auth_mode==='chatgpt'?'CONNECTED':codex?.auth_mode==='api_key'?'API KEY':'NOT READY'}</div><p>{providerText(codex)}</p><div className="provider-actions">
+        <button disabled={loginBusy||login?.phase==='pending'||codex?.auth_mode==='chatgpt'} onClick={()=>void beginLogin()}>{loginBusy?'Подключение…':'Подключить ChatGPT'}</button>
+        <button disabled={loginBusy} onClick={()=>void refreshProviders()}>Обновить статус</button>
+        {login?.phase==='pending'&&<button disabled={loginBusy} onClick={()=>void stopLogin()}>Отменить вход</button>}
+      </div>
+      {login?.phase==='pending'&&login.user_code&&login.verification_url&&<div className="device-login" role="status">
+        <h3>Подтверждение ChatGPT</h3>
+        <p>Открой официальный сайт и введи одноразовый код. После входа статус обновится автоматически.</p>
+        <a href={login.verification_url} target="_blank" rel="noopener noreferrer">Открыть страницу подтверждения</a>
+        <code className="device-code">{login.user_code}</code>
+      </div>}
+      {login?.phase==='completed'&&<p className="live-status">Codex подтвердил авторизацию. Проверяю статус подписки…</p>}
+      {loginError&&<p className="live-warning" role="alert">{loginError}</p>}
+      <p className="live-note">Альтернатива в терминале на компьютере, где работает BananLoop:</p>
+      <pre>codex login</pre><p>Для устройства без браузера: <code>codex login --device-auth</code></p>
+      <p className="live-note">Данные аккаунта хранит Codex CLI, не браузер и не BananLoop. API-key тарификация — отдельная от ChatGPT подписки. Для device-code входа может потребоваться разрешение в настройках аккаунта.</p></section>
      <section className="live-card"><h2>Локальный API BananLoop</h2><p>При необходимости введи bearer-токен от <code>bananloop serve --token</code>.</p><input type="password" autoComplete="off" aria-label="Токен локального API" value={token} onChange={e=>setToken(e.target.value)} placeholder="Не нужен без --token"/><p className="live-note">Токен хранится только в памяти этой вкладки и исчезает при перезагрузке. Никогда не вставляй сюда ChatGPT OAuth или Codex auth.json.</p><p className="live-status">{connected?'SSE подключён':'Ожидание соединения'}</p></section></div>
    </>}
    {error&&<div className="live-warning" role="alert">Связь с BananLoop: {error}. Проверь, что запущен <code>bananloop serve --repo /path/to/project</code>, и указана нужная директория с кампаниями.</div>}
