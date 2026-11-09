@@ -84,3 +84,25 @@ Existing `/snapshot` and `/events`/`events/stream` endpoints are reused. SSE rec
 ## After PR #141 is complete
 
 Keep this PR independent and unmerged while #141 is under development. Once #141 and its parent #140 are validated and merged into the intended v0.2 integration branch, merge that **integrated and verified** branch into `codex/ui-live-integration-2026-11-08` (or rebase via a fresh integration branch), resolve API/registry schema differences, then repeat all regression tests with real campaigns. Do not merge unfinished draft PR #141 into this branch now.
+## UI-05 — project-free, chat-first Studio (same PR)
+
+The frontend now opens on a **Home** screen even when the registry is empty.
+If the API was launched as `bananloop serve --studio`, **New Campaign** opens a
+Codex-backed planning conversation. Codex proposes a campaign goal and bounded
+budgets in the right-hand card. The `Full Auto` or `Supervised` choice lives at
+the bottom of the composer. `Review & Start` always asks for a second explicit
+confirmation before invoking the real `bananloop start` CLI. A Supervised
+preparation must complete successfully and then be explicitly confirmed for
+execution. This is a UI-level gate, not full v0.2 HITL semantics.
+
+The Studio workspace is internally managed in the user's application data;
+there is no requirement to provide or create an external project directory.
+It is a minimal Git checkout, not a ready evaluator or a benchmark. If the
+existing Engine bootstrap cannot produce and verify an evaluator, it stops
+with `NEEDS_INPUT` and the UI says so. Codex planning uses the existing
+read-only, no-tools operator app-server bridge; CLI account calls use the
+user's own subscription or API-key billing mode as configured.
+
+Development run: in the PR checkout, start `bananloop serve --studio` and
+`npm run dev` from `web-prototype/galaxy-spatial-canvas`. A packaged one-command
+desktop distribution is out of scope. See `docs/ui/studio-chat-first-launcher.md`.
