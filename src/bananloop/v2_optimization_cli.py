@@ -1,6 +1,7 @@
 """Owner-facing execution of an already-approved v2 Optimization child."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -11,6 +12,7 @@ from typing import Any, Callable
 
 from .chatgpt_plan import ChatGPTPlanAuth, SIWCError
 from .chatgpt_responses import ChatGPTPlanIntegrationVerifier, ChatGPTPlanOptimizer
+from .budget_ledger import BudgetLedger
 from .contracts import OptimizationCampaignSpecV2, RuntimePaths, utc_now
 from .evaluator_verification import (
     EvaluatorVerificationError, EvaluatorProtocolAuthority,
@@ -68,6 +70,51 @@ def _write_cli_report(state_root: Path, report: dict[str, Any], *, campaign_id: 
         if os.path.exists(temporary):
             os.unlink(temporary)
     return str(target)
+
+
+def _mark_optimization_complete(database: Path, spec: OptimizationCampaignSpecV2,
+                                report: dict[str, Any]) -> None:
+    """Record terminal campaign state only after the scheduler reports completion."""
+    from .lock import CampaignLock
+
+    if report.get("status") != "ALL_NODES_COMPLETE":
+        raise V2OptimizationCLIError("only a fully completed optimization can become terminal")
+    report_digest = hashlib.sha256(json.dumps(
+        report, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    lock = CampaignLock(database.parent / "campaign.lock")
+    lock.acquire()
+    conn = None
+    try:
+        conn = sqlite3.connect(database, timeout=30, isolation_level=None)
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT spec_hash,status FROM campaigns WHERE id=1").fetchone()
+        if row is None or row[0] != spec.approved_hash():
+            raise V2OptimizationCLIError("campaign identity changed before terminal recording")
+        if row[1] == "GOAL_MET":
+            conn.commit()
+            return
+        if row[1] not in {"READY", "RUNNING"}:
+            raise V2OptimizationCLIError("campaign cannot enter GOAL_MET from its current state")
+        now = utc_now()
+        conn.execute("UPDATE campaigns SET status='GOAL_MET',updated_at=? WHERE id=1", (now,))
+        conn.execute(
+            "INSERT INTO events(event_type,payload_json,created_at) VALUES(?,?,?)",
+            ("V2_CAMPAIGN_TERMINAL", json.dumps({
+                "campaign_id": report.get("campaign_id"),
+                "spec_hash": spec.approved_hash(), "status": "GOAL_MET",
+                "scheduler_status": report["status"], "report_digest": report_digest,
+            }, sort_keys=True, separators=(",", ":")), now),
+        )
+        conn.commit()
+    except Exception:
+        if conn is not None and conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        if conn is not None:
+            conn.close()
+        lock.release()
 
 
 def _role_transport(role: Any, role_id: str) -> None:
@@ -296,11 +343,19 @@ def run_v2_optimize(args: Namespace, *,
 
         def bounded_optimizer(public_input: dict[str, Any], **pin: Any) -> dict[str, Any]:
             consume_approval()
-            return optimizer(public_input, **pin)
+            result = optimizer(public_input, **pin)
+            bounded_optimizer.last_usage = getattr(optimizer, "last_usage", None)
+            return result
+
+        bounded_optimizer.last_usage = None
 
         def bounded_verifier(request: dict[str, Any], gateway: Any, **pin: Any) -> dict[str, Any]:
             consume_approval()
-            return verifier._dispatch_verifier(request, gateway, **pin)
+            result = verifier._dispatch_verifier(request, gateway, **pin)
+            bounded_verifier.last_usage = getattr(verifier, "last_usage", None)
+            return result
+
+        bounded_verifier.last_usage = None
 
         verifier_executor = PinnedRoleExecutorV1.from_manifest(
             manifest, verifier_members[0].instance_id, bounded_verifier,
@@ -325,6 +380,20 @@ def run_v2_optimize(args: Namespace, *,
                 },
                 "automatic_replay": False,
             })
+            if result.get("status") == "ALL_NODES_COMPLETE":
+                _mark_optimization_complete(database, spec, result)
+                allocation_closed = False
+                if spec.parent is not None:
+                    settlement_ledger = BudgetLedger(registry.path)
+                    try:
+                        settlement_ledger.close_child(
+                            spec.parent.allocation_id, terminal_status="GOAL_MET",
+                        )
+                    finally:
+                        settlement_ledger.close()
+                    allocation_closed = True
+                result["campaign_terminal_status"] = "GOAL_MET"
+                result["child_allocation_closed"] = allocation_closed
             return result
         except _CallAllowanceReached as exc:
             report = {

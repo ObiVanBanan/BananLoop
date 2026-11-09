@@ -353,6 +353,7 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
 
         def __call__(self, public_input, **_pin):
             assert public_input == {"offline_cli_check": True}
+            self.last_usage = {"total_tokens": 31}
             receipt = {
                 "request_id": "resp_offline_cli_optimizer", "status": "COMPLETED",
                 "dispatched": True, "usage": {"total_tokens": 31},
@@ -388,6 +389,7 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
                 model="gpt-6-luna", model_version="offline-v1",
                 prompt_digest="a" * 64, max_model_tokens=100,
             )
+            assert kwargs["model_reply"].last_usage == {"total_tokens": 31}
             executor = kwargs["integration_verifier_executor"]
             member = executor.member
             kwargs["integration_verifier_executor"].dispatch({

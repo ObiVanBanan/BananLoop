@@ -22,6 +22,7 @@ from urllib.error import HTTPError
 import pytest
 
 from bananloop.api import create_server
+from bananloop.budget_ledger import BudgetLedger
 from bananloop.chatgpt_responses import (
     INTEGRATION_VERIFIER_INSTRUCTIONS, OPTIMIZER_INSTRUCTIONS,
     PROTOCOL_VERIFIER_INSTRUCTIONS,
@@ -780,6 +781,7 @@ sys.stdout.write(json.dumps({"prediction": prediction}, separators=(",", ":")))
                         "request_id": "resp_integrated_optimizer", "status": "COMPLETED",
                         "dispatched": True, "usage": {"total_tokens": 31},
                     }
+                    self.last_usage = receipt["usage"]
                     self.request_history.append(receipt)
                     self.call_observer(receipt)
                     return {
@@ -821,6 +823,7 @@ sys.stdout.write(json.dumps({"prediction": prediction}, separators=(",", ":")))
                         "request_id": "resp_integrated_verifier", "status": "COMPLETED",
                         "dispatched": True, "usage": {"total_tokens": 19},
                     }
+                    self.last_usage = receipt["usage"]
                     self.request_history.append(receipt)
                     self.call_observer(receipt)
                     return output
@@ -881,6 +884,8 @@ sys.stdout.write(json.dumps({"prediction": prediction}, separators=(",", ":")))
             assert optimize_args.func(optimize_args) == 0
             optimized = json.loads(capsys.readouterr().out)
             assert optimized["status"] == "ALL_NODES_COMPLETE"
+            assert optimized["campaign_terminal_status"] == "GOAL_MET"
+            assert optimized["child_allocation_closed"] is True
             assert optimized["live_model_called"] is True
             assert optimized["provider"] == "chatgpt_plan"
             assert optimized["provider_call_attempts"] == 2
@@ -944,6 +949,19 @@ sys.stdout.write(json.dumps({"prediction": prediction}, separators=(",", ":")))
                 "dev", "validation",
             }
             assert final_report["optimization_report"]["holdout"]["tier_manifest_sha256"] == holdout_manifest_digest
+            child_spec = child_graph.campaign_spec()
+            assert child_spec.parent is not None
+            assert child_graph.conn.execute(
+                "SELECT status FROM campaigns WHERE id=1",
+            ).fetchone()[0] == "GOAL_MET"
+            ledger = BudgetLedger(registry.path)
+            try:
+                assert ledger.conn.execute(
+                    "SELECT state FROM child_allocations WHERE allocation_id=?",
+                    (child_spec.parent.allocation_id,),
+                ).fetchone()[0] == "CLOSED"
+            finally:
+                ledger.close()
         finally:
             child_queue.close()
             child_graph.close()

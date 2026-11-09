@@ -167,11 +167,13 @@ def make_researcher_invoke(
             ),
         }
         # The broker controls provider/model selection; worker content cannot.
+        invoke.last_usage = None
         raw = model_reply(
             public_input, provider=provider, model=model,
             model_version=model_version, prompt_digest=prompt_digest,
             max_model_tokens=max_model_tokens,
         )
+        invoke.last_usage = getattr(model_reply, "last_usage", None)
         reply = ResearcherReplyV1.model_validate(raw)
         protocol_draft = reply.protocol_draft
         bound_protocol_artifacts: dict[str, bytes] = {}

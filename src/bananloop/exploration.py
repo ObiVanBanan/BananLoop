@@ -392,10 +392,15 @@ class EvidenceOnlyAttemptAdapter:
                    "role_context": role_context.model_dump(mode="json", exclude_unset=True),
                    "team_manifest_digest": team_manifest.manifest_digest,
                    "role_registry_digest": team_manifest.registry_digest}
+        resource_bounds = {"agent_calls": 1}
+        if spec.budget.max_model_tokens is not None:
+            resource_bounds["model_tokens"] = max(
+                1, researcher.role.tokens_per_instance // researcher.role.calls_per_instance,
+            )
         return self.queue.enqueue(
             job_id=job_id, enqueue_key=job_id, campaign_id=self.campaign_id,
             action_id=action_id, resource="agent_calls", upper_bound=1,
-            request=request,
+            resource_bounds=resource_bounds, request=request,
             role_allocation={
                 "manifest_digest": team_manifest.manifest_digest,
                 "role_instance_id": researcher.instance_id,
@@ -520,9 +525,19 @@ class EvidenceOnlyAttemptAdapter:
             receipt_digest = _sha(_canonical({"job_id": job_id, "fence": fence,
                                              "request_hash": lease["request_hash"],
                                              "output_digest": output_digest}).encode())
-            return self.queue.complete(job_id, worker_id, fence, output_digest=output_digest,
-                                       actual_amount=1, receipt_digest=receipt_digest,
-                                       result_payload=result)
+            usage = getattr(executor._invoke, "last_usage", None)
+            model_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
+            if (isinstance(model_tokens, bool) or not isinstance(model_tokens, int)
+                    or model_tokens < 0):
+                model_tokens = None
+            actual_usage: dict[str, int | None] = {"agent_calls": 1}
+            if "model_tokens" in lease["resource_bounds"]:
+                actual_usage["model_tokens"] = model_tokens
+            return self.queue.complete(
+                job_id, worker_id, fence, output_digest=output_digest,
+                actual_amount=1, actual_usage=actual_usage,
+                receipt_digest=receipt_digest, result_payload=result,
+            )
         except Exception as exc:
             try:
                 self.queue.cancel(job_id, reason=f"evidence attempt failed: {type(exc).__name__}")

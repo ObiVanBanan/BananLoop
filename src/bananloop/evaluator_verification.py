@@ -1378,10 +1378,16 @@ class EvaluatorVerificationAdapter:
                             "proposal_digest": proposal.proposal_digest,
                             "role_instance_id": verifier.instance_id,
                             "action_id": action_id})[:40]
+        resource_bounds = {"agent_calls": 1}
+        if campaign_spec.budget.max_model_tokens is not None:
+            resource_bounds["model_tokens"] = max(
+                1, verifier.role.tokens_per_instance // verifier.role.calls_per_instance,
+            )
         return self.queue.enqueue(
             job_id=f"verify-{identity}", enqueue_key=f"verify-{identity}",
             campaign_id=self.campaign_id, action_id=action_id,
-            resource="agent_calls", upper_bound=1, request=request,
+            resource="agent_calls", upper_bound=1,
+            resource_bounds=resource_bounds, request=request,
             role_allocation={
                 "manifest_digest": manifest.manifest_digest,
                 "role_instance_id": verifier.instance_id,
@@ -1418,6 +1424,11 @@ class EvaluatorVerificationAdapter:
         try:
             self.queue.mark_dispatched(verifier_job_id, worker_id, fence)
             raw = executor.dispatch(dict(lease["request"]), None)
+            usage = getattr(executor._invoke, "last_usage", None)
+            model_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
+            if (isinstance(model_tokens, bool) or not isinstance(model_tokens, int)
+                    or model_tokens < 0):
+                model_tokens = None
             output = ProtocolVerifierOutputV1.model_validate(raw)
             if output.proposal_digest != lease["request"].get("proposal_digest"):
                 raise EvaluatorVerificationError("verifier returned a decision for another proposal")
@@ -1425,9 +1436,13 @@ class EvaluatorVerificationAdapter:
             output_digest = _digest(payload)
             queue_receipt = _digest({"request_hash": lease["request_hash"], "fence": fence,
                                      "output_digest": output_digest})
+            actual_usage: dict[str, int | None] = {"agent_calls": 1}
+            if "model_tokens" in lease["resource_bounds"]:
+                actual_usage["model_tokens"] = model_tokens
             self.queue.complete(
                 verifier_job_id, worker_id, fence, output_digest=output_digest,
-                actual_amount=1, receipt_digest=queue_receipt, result_payload=payload,
+                actual_amount=1, actual_usage=actual_usage,
+                receipt_digest=queue_receipt, result_payload=payload,
             )
         except Exception:
             # Once dispatched, failure is unknown spend; never release it as
@@ -1527,10 +1542,16 @@ class IntegrationVerificationAdapter:
                             "evidence_digest": evidence.evidence_digest,
                             "role_instance_id": member.instance_id,
                             "action_id": action_id})[:40]
+        resource_bounds = {"agent_calls": 1}
+        if spec.budget.max_model_tokens is not None:
+            resource_bounds["model_tokens"] = max(
+                1, member.role.tokens_per_instance // member.role.calls_per_instance,
+            )
         job = self.queue.enqueue(
             job_id=f"integration-{identity}", enqueue_key=f"integration-{identity}",
             campaign_id=self.campaign_id, action_id=action_id,
-            resource="agent_calls", upper_bound=1, request=request,
+            resource="agent_calls", upper_bound=1,
+            resource_bounds=resource_bounds, request=request,
             role_allocation={
                 "manifest_digest": manifest.manifest_digest,
                 "role_instance_id": member.instance_id, "role_id": member.role.role_id,
@@ -1607,9 +1628,13 @@ class IntegrationVerificationAdapter:
         fence = int(lease["fence"])
         try:
             self.queue.mark_dispatched(verifier_job_id, worker_id, fence)
-            output = IntegrationVerifierOutputV1.model_validate(
-                executor.dispatch(dict(lease["request"]), None),
-            )
+            raw_output = executor.dispatch(dict(lease["request"]), None)
+            usage = getattr(executor._invoke, "last_usage", None)
+            model_tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
+            if (isinstance(model_tokens, bool) or not isinstance(model_tokens, int)
+                    or model_tokens < 0):
+                model_tokens = None
+            output = IntegrationVerifierOutputV1.model_validate(raw_output)
             request = lease["request"]
             if (output.candidate_snapshot_id != request.get("candidate_snapshot_id")
                     or output.protocol_digest != request.get("protocol_digest")):
@@ -1618,9 +1643,13 @@ class IntegrationVerificationAdapter:
             output_digest = _digest(payload)
             queue_receipt = _digest({"request_hash": lease["request_hash"],
                                      "fence": fence, "output_digest": output_digest})
+            actual_usage: dict[str, int | None] = {"agent_calls": 1}
+            if "model_tokens" in lease["resource_bounds"]:
+                actual_usage["model_tokens"] = model_tokens
             self.queue.complete(
                 verifier_job_id, worker_id, fence, output_digest=output_digest,
-                actual_amount=1, receipt_digest=queue_receipt, result_payload=payload,
+                actual_amount=1, actual_usage=actual_usage,
+                receipt_digest=queue_receipt, result_payload=payload,
             )
         except Exception:
             try:
