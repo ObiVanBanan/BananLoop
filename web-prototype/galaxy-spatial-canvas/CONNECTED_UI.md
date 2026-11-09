@@ -36,13 +36,32 @@ codex login
 codex login --device-auth
 ```
 
-Settings reports **ChatGPT**, **API key**, **unknown**, or **disconnected** by calling `codex login status` without shell invocation. It does *not* read or reveal `.codex/auth.json`, paste OAuth access tokens, or promise that an API-key login is subscription-funded. The "Connect ChatGPT" interaction in this version is terminal-assisted. A true in-app ChatGPT OAuth screen would require a separate securely implemented app-server `account/login/start` flow and browser callback. See official Codex app-server docs before implementing it.
+Settings reports **ChatGPT**, **API key**, **unknown**, or **disconnected** by calling `codex login status` without shell invocation. It does *not* read or reveal `.codex/auth.json`, paste OAuth access tokens, or promise that an API-key login is subscription-funded. **Settings now also offers "Подключить ChatGPT"**. This starts the official
+Codex app-server device-code flow (`account/login/start` with
+`type: "chatgptDeviceCode"`) on the *local API host*. The UI displays only the
+approved `https://auth.openai.com/codex/device` URL and one-time `userCode`,
+and polls for `account/login/completed`. Codex, not BananLoop, stores and
+refreshes credentials. The browser never handles OAuth access or refresh tokens.
+
+- Device-code login may need enabling in ChatGPT security/workspace settings.
+- It is scoped to **one local browser/API instance** and has a ten-minute
+  local expiration; cancel immediately if the code was not requested.
+- On this dev server, JSON POST is restricted to trusted loopback UI origins.
+  Do not expose the BananLoop API or Vite to your LAN or the internet.
+- This only authenticates the **underlying Codex CLI**. It does not add a new
+  ChatGPT chat/LLM execution endpoint to Mission Control or change usage limits.
+- For unsupported installations, run `codex login` in a terminal.
+
+Reference: https://learn.chatgpt.com/docs/app-server
 
 ## New API endpoints
 
 - `GET /v1/campaigns`: safe active/initialized campaign list from CampaignRegistry.
 - `GET /v1/campaigns/{id}/view`: safe graph projection: v2 nodes + typed edges + AND/OR groups, or v1 hypotheses with **no inferred edges**.
 - `GET /v1/providers/codex/status`: installed/authenticated **mode**, no secrets, account names, CLI stdout or environment values.
+- `POST /v1/providers/codex/login/start`: starts managed Codex app-server device-code login.
+- `GET /v1/providers/codex/login/status`: reports `idle`, `pending`, `completed`, `expired`, `failed` or `cancelled` and the temporary user code/verified link only while pending.
+- `POST /v1/providers/codex/login/cancel`: cancels an unfinished device-code flow.
 
 Existing `/snapshot` and `/events`/`events/stream` endpoints are reused. SSE reconnects after the last committed sequence number and reads snapshots again on graph changes; poll refresh is the fallback. Any disconnected or partial state is labelled; SSE receipt never means an Engine command succeeded.
 
@@ -57,10 +76,10 @@ Existing `/snapshot` and `/events`/`events/stream` endpoints are reused. SSE rec
 
 ## Checks / remaining gates
 
-- Local: 15 Node model/boundary tests, 4 Python read-model contract tests, TS/TSX source syntax transpilation and Python `py_compile`.
-- **Pending on operator machine:** install npm packages, `npm run typecheck`, `npm run build`, full React Flow browser E2E, test against actual v1/v2 campaign SQLite stores, Codex login/CLI status in your environment, SSE disconnect/recovery, Windows and Manjaro, reduced-motion and resize QA.
+- Local: 15 Node model/boundary tests, 4 Python read-model contract tests, 4 additional simulated Codex app-server login tests; TS/TSX syntax transpilation and Python `py_compile`. The new login tests use a **fake CLI** and never contact ChatGPT.
+- **Pending on operator machine:** validate real ChatGPT device-code sign-in, install npm packages, `npm run typecheck`, `npm run build`, full React Flow browser E2E, test against actual v1/v2 campaign SQLite stores, Codex login/CLI status in your environment, SSE disconnect/recovery, Windows and Manjaro, reduced-motion and resize QA.
 - Hosted GitHub CI is not considered passed without an actual run on this PR head.
-- This is a functional read-only integration, **not yet** a complete interactive control console, mission chat, in-browser OAuth provider app, or v2 human approval workflow.
+- This is a functional read-only integration plus an **unverified real-device sign-in flow**, **not yet** a complete interactive control console, mission chat, independent provider billing integration, or v2 human approval workflow.
 
 ## After PR #141 is complete
 
