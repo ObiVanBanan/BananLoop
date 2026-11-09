@@ -57,6 +57,6 @@ describe('Studio chat desktop runtime',()=>{
     await waitFor(()=>expect(screen.getByText('Давай определим метрику.')).toBeTruthy());
     expect(mockDiscuss).toHaveBeenCalledTimes(2);
     expect(mockDiscuss.mock.calls[1][1].message).toBe('Улучшим RAG-поиск');
-    expect(screen.getAllByText('Улучшим RAG-поиск')).toHaveLength(1);
+    expect(document.querySelectorAll('.studio-transcript-turn.turn-user')).toHaveLength(1);
   });
 });
