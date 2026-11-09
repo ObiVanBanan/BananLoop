@@ -1,3 +1,5 @@
+> **Current branch / PR #142:** this is now the real-data Connected UI, not only the original UI-01.3 synthetic canvas. The program opens on Home without campaigns. Start the API with `bananloop serve --studio`, then use **New Campaign** to discuss a goal with Codex, review a proposed budget, and explicitly prepare/start the BananLoop CLI. The older material below documents the original UI-01.3 source milestone. See [Connected UI](CONNECTED_UI.md) and [Studio](../../docs/ui/studio-chat-first-launcher.md) for current capabilities, limits and launch instructions.
+
 # Connected BananLoop UI — 08.11.2026
 
 **Start here:** [CONNECTED_UI.md](CONNECTED_UI.md). The UI now reads real campaign data from the existing loopback BananLoop API through the Vite `/api` development proxy. React Flow Galaxy, Mission Control observation, Decision Center (existing v1 proposals only), and Codex CLI connection status are wired to real data. No synthetic fallbacks, no Engine writes, no in-browser ChatGPT OAuth yet.
