@@ -94,3 +94,18 @@ def test_chat_run_no_fallback(monkeypatch,tmp_path):
     assert observed[0][0]==['/usr/bin/node',str(worker)]
     with pytest.raises(mod.StudioUnavailable):
         mod.discuss_via_codex({"message":"hey","history":[]},worker=worker,runner=lambda *a,**k:SimpleNamespace(returncode=2,stdout="",stderr=""))
+
+def test_chat_failure_reports_only_stable_safe_category(monkeypatch,tmp_path):
+    monkeypatch.setattr(mod.shutil, "which", lambda name: "/usr/bin/node")
+    worker=tmp_path/"worker.mjs"
+    worker.write_text("fake worker")
+    def runner(*a,**k):
+        return SimpleNamespace(returncode=2, stdout="", stderr="ignored path /home/person\nSTUDIO_ERROR_CODE:unsafe_config\n")
+    with pytest.raises(mod.StudioUnavailable, match="^unsafe_config$"):
+        mod.discuss_via_codex({"message":"Test a measurable research goal","history":[]},
+                              worker=worker,runner=runner)
+    def untrusted_runner(*a,**k):
+        return SimpleNamespace(returncode=2,stdout="",stderr="STUDIO_ERROR_CODE:credentials_secret")
+    with pytest.raises(mod.StudioUnavailable, match="^provider_unavailable$"):
+        mod.discuss_via_codex({"message":"Test a measurable research goal","history":[]},
+                              worker=worker,runner=untrusted_runner)
