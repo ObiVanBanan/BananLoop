@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "status": "LIVE_E2E_PASS_FINALIZED",
+  "date": "2026-11-10",
+  "campaign_id": "c-d2f1322cc4ee387e922d97950cea5486",
+  "child_campaign_id": "c-bde7eb039db079521a3791cb161bf36b",
+  "allocation_id": "alloc-d06d3ab3b3b4e55aead5ee36581b0a8b61e4e9e7",
+  "parent_protocol_preseeded": false,
+  "independent_protocol_verifier_used": true,
+  "owner_approval_digest": "835ff1a9175a3b655d23ed75b1e0303352a84d432c276f1f1f12b74075e3621a",
+  "provider": "openai_chatgpt_subscription",
+  "model": "gpt-6-luna",
+  "automatic_retries": 0,
+  "calls": [
+    {
+      "dispatched": true,
+      "request_id": "resp_081ab8225263d20f016af27fe6051c87d288ab62e2b9a51c5b",
+      "role_id": "optimizer",
+      "status": "COMPLETED",
+      "usage": {
+        "input_tokens": 435,
+        "output_tokens": 90,
+        "total_tokens": 525
+      }
+    },
+    {
+      "dispatched": true,
+      "request_id": "resp_08019f93b60fb008016af27feb00f887d29e70c0bd498c8131",
+      "role_id": "integration_verifier",
+      "status": "COMPLETED",
+      "usage": {
+        "input_tokens": 657,
+        "output_tokens": 144,
+        "total_tokens": 801
+      }
+    }
+  ],
+  "provider_event_count": 2,
+  "changed_paths": [
+    "src/optimizer/model/ranker.py"
+  ],
+  "baseline_snapshot_id": "0c9cb677b476f4bffc5c9e796d0e1d69dbb91458",
+  "candidate_snapshot_id": "df4e4bfefbed32504d50b902b47b6009183cf39b",
+  "validation": {
+    "metric": "accuracy",
+    "baseline": 0.5,
+    "candidate": 1.0,
+    "delta": 0.5,
+    "repeatability_runs": 3,
+    "cases": 2
+  },
+  "integration_verifier": {
+    "decision": "PASS",
+    "evidence_digest": "b3be440ea8d170337561cedc50afb1b5cc28a7b9f3dba4a66da5913da81c8479"
+  },
+  "holdout": {
+    "status": "VERIFIED",
+    "metric": "accuracy",
+    "candidate": 1.0,
+    "cases": 2,
+    "repeatability_runs": 3,
+    "baseline": null,
+    "delta": null
+  },
+  "terminalization": {
+    "child_campaign_status": "GOAL_MET",
+    "parent_status": "ALL_NODES_COMPLETE",
+    "allocation_state": "CLOSED",
+    "closed_at": "2026-11-10T02:40:03.447143+00:00",
+    "recovery_mode": "FINALIZATION_ONLY",
+    "recovery_live_model_calls": 0
+  },
+  "budget": {
+    "agent_calls": {
+      "cap": 2,
+      "spent": 2,
+      "reserved": 0,
+      "unknown": 0
+    },
+    "attempts": {
+      "cap": 8,
+      "spent": 1,
+      "reserved": 0,
+      "unknown": 0
+    },
+    "evaluator_calls": {
+      "cap": 12,
+      "spent": 12,
+      "reserved": 0,
+      "unknown": 0
+    },
+    "experiments": {
+      "cap": 2,
+      "spent": 1,
+      "reserved": 0,
+      "unknown": 0
+    },
+    "model_tokens": {
+      "cap": 8192,
+      "spent": 1326,
+      "reserved": 0,
+      "unknown": 0
+    }
+  },
+  "monetary_cost": "UNKNOWN",
+  "report_paths": {
+    "parent_json": "campaigns/c-d2f1322cc4ee387e922d97950cea5486/reports/v2-final-c-d2f1322cc4ee387e922d97950cea5486.json",
+    "parent_markdown": "campaigns/c-d2f1322cc4ee387e922d97950cea5486/reports/v2-final-c-d2f1322cc4ee387e922d97950cea5486.md",
+    "child_json": "campaigns/c-bde7eb039db079521a3791cb161bf36b/reports/v2-optimization-c-bde7eb039db079521a3791cb161bf36b.json",
+    "failed_cli_attempt": "campaigns/c-bde7eb039db079521a3791cb161bf36b/reports/v2-optimization-cli-c-bde7eb039db079521a3791cb161bf36b.json",
+    "recovery_cli_report": "campaigns/c-bde7eb039db079521a3791cb161bf36b/reports/v2-optimization-cli-c-bde7eb039db079521a3791cb161bf36b-recovery.json"
+  }
+}

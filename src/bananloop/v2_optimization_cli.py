@@ -54,10 +54,14 @@ def _record_provider_call(database: Path, receipt: dict[str, Any]) -> None:
         conn.close()
 
 
-def _write_cli_report(state_root: Path, report: dict[str, Any], *, campaign_id: str) -> str:
+def _write_cli_report(state_root: Path, report: dict[str, Any], *, campaign_id: str,
+                      suffix: str | None = None) -> str:
     reports = state_root / "reports"
     reports.mkdir(parents=True, exist_ok=True)
-    target = reports / f"v2-optimization-cli-{campaign_id}.json"
+    label = f"v2-optimization-cli-{campaign_id}"
+    if suffix:
+        label += f"-{suffix}"
+    target = reports / f"{label}.json"
     payload = (json.dumps(report, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode()
     descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=reports)
     try:
@@ -115,6 +119,45 @@ def _mark_optimization_complete(database: Path, spec: OptimizationCampaignSpecV2
         if conn is not None:
             conn.close()
         lock.release()
+
+
+def _close_completed_child_allocation(result: dict[str, Any], *,
+                                      spec: OptimizationCampaignSpecV2,
+                                      database: Path, registry: CampaignRegistry) -> dict[str, Any]:
+    if result.get("status") != "ALL_NODES_COMPLETE":
+        return result
+    _mark_optimization_complete(database, spec, result)
+    allocation_closed = False
+    if spec.parent is not None:
+        settlement_ledger = BudgetLedger(registry.path)
+        try:
+            settlement_ledger.close_child(
+                spec.parent.allocation_id, terminal_status="GOAL_MET",
+            )
+        finally:
+            settlement_ledger.close()
+        allocation_closed = True
+    result["campaign_terminal_status"] = "GOAL_MET"
+    result["child_allocation_closed"] = allocation_closed
+    return result
+
+
+def _saved_completed_run_report(state_root: Path, campaign_id: str) -> dict[str, Any] | None:
+    path = state_root / "reports" / f"v2-optimization-{campaign_id}.json"
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(report, dict) or report.get("campaign_id") != campaign_id
+            or report.get("status") != "ALL_NODES_COMPLETE"
+            or not isinstance(report.get("baseline_candidate_delta"), dict)
+            or report["baseline_candidate_delta"].get("status") != "VERIFIED"
+            or not any(item.get("status") == "INDEPENDENT_VERIFICATION_PASS"
+                       for item in report.get("verification", []) if isinstance(item, dict))
+            or not isinstance(report.get("holdout"), dict)
+            or report["holdout"].get("status") != "VERIFIED"):
+        return None
+    return report
 
 
 def _role_transport(role: Any, role_id: str) -> None:
@@ -263,6 +306,35 @@ def run_v2_optimize(args: Namespace, *,
         )
         plan = runtime.plan()
         if args.approve_up_to_calls == 0:
+            saved_report = _saved_completed_run_report(state_root, args.campaign_id)
+            if plan.reason == "ALL_NODES_COMPLETE" and saved_report is not None:
+                # A completed graph with durable verification/HOLDOUT evidence
+                # can recover terminal state without auth, model calls, or
+                # repeating evaluator work after a report-writing failure.
+                result = runtime.run_campaign(
+                    visible_paths=visible_paths, write_paths=write_paths,
+                    max_steps=args.max_steps, worker_id="v2-optimization-cli-recovery",
+                )
+                result.update({
+                    "mode": "OPTIMIZATION", "profile": "FULL",
+                    "role_registry_digest": role_registry.digest(),
+                    "live_model_called": False, "provider_call_attempts": 0,
+                    "request_history": {"optimizer": [], "integration_verifier": []},
+                    "automatic_replay": False,
+                    "recovery_mode": "FINALIZATION_ONLY",
+                    "recovered_report_path": str(
+                        state_root / "reports" / f"v2-optimization-{args.campaign_id}.json"
+                    ),
+                })
+                result = _close_completed_child_allocation(
+                    result, spec=spec, database=database, registry=registry,
+                )
+                recovery_path = _write_cli_report(
+                    state_root, result, campaign_id=args.campaign_id, suffix="recovery",
+                )
+                result["recovery_report_path"] = recovery_path
+                result["state_dir"] = str(state_root)
+                return result
             return {
                 "status": "READY_FOR_OWNER_APPROVAL", "mode": "OPTIMIZATION",
                 "profile": "FULL", "campaign_id": args.campaign_id,
@@ -380,20 +452,9 @@ def run_v2_optimize(args: Namespace, *,
                 },
                 "automatic_replay": False,
             })
-            if result.get("status") == "ALL_NODES_COMPLETE":
-                _mark_optimization_complete(database, spec, result)
-                allocation_closed = False
-                if spec.parent is not None:
-                    settlement_ledger = BudgetLedger(registry.path)
-                    try:
-                        settlement_ledger.close_child(
-                            spec.parent.allocation_id, terminal_status="GOAL_MET",
-                        )
-                    finally:
-                        settlement_ledger.close()
-                    allocation_closed = True
-                result["campaign_terminal_status"] = "GOAL_MET"
-                result["child_allocation_closed"] = allocation_closed
+            result = _close_completed_child_allocation(
+                result, spec=spec, database=database, registry=registry,
+            )
             return result
         except _CallAllowanceReached as exc:
             report = {

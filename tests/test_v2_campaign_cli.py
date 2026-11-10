@@ -430,6 +430,61 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
     finally:
         conn.close()
 
+    # Simulate a process/reporting failure after the runtime durably completed
+    # the graph. Recovery must finalize from the saved trusted evidence without
+    # reconstructing provider clients or dispatching another request.
+    saved_report = {
+        "campaign_id": entry.campaign_id,
+        "status": "ALL_NODES_COMPLETE",
+        "baseline_candidate_delta": {"status": "VERIFIED"},
+        "verification": [{"status": "INDEPENDENT_VERIFICATION_PASS"}],
+        "holdout": {"status": "VERIFIED"},
+    }
+    reports_dir = state_root / "reports"
+    reports_dir.mkdir(exist_ok=True)
+    (reports_dir / f"v2-optimization-{entry.campaign_id}.json").write_text(
+        json.dumps(saved_report), encoding="utf-8",
+    )
+    reset_conn = __import__("sqlite3").connect(state_root / "campaign.sqlite3")
+    try:
+        reset_conn.execute("ALTER TABLE campaigns ADD COLUMN updated_at TEXT")
+        reset_conn.execute("UPDATE campaigns SET status='READY' WHERE id=1")
+        reset_conn.commit()
+    finally:
+        reset_conn.close()
+
+    class CompletedRuntime:
+        def __init__(self, **_kwargs):
+            pass
+
+        def plan(self):
+            return SimpleNamespace(reason="ALL_NODES_COMPLETE")
+
+        def run_campaign(self, **kwargs):
+            assert "model_reply" not in kwargs
+            assert "integration_verifier_executor" not in kwargs
+            return {"status": "ALL_NODES_COMPLETE", "campaign_id": entry.campaign_id}
+
+    monkeypatch.setattr("bananloop.v2_optimization_cli.ChatGPTPlanAuth", NoAuthAllowed)
+    monkeypatch.setattr("bananloop.v2_optimization_cli.V2OptimizationRuntime", CompletedRuntime)
+    recovered = run_v2_optimize(Namespace(
+        repo=str(repo), state_dir=str(state_dir), campaign_id=entry.campaign_id,
+        role_registry=str(role_path), visible_path=["data/train.csv", "src/model.json"],
+        write_path=["src/model.json"], approve_up_to_calls=0, max_steps=8,
+        timeout_seconds=60,
+    ))
+    assert recovered["status"] == "ALL_NODES_COMPLETE"
+    assert recovered["recovery_mode"] == "FINALIZATION_ONLY"
+    assert recovered["provider_call_attempts"] == 0
+    assert recovered["live_model_called"] is False
+    assert recovered["campaign_terminal_status"] == "GOAL_MET"
+    assert Path(recovered["recovery_report_path"]).is_file()
+    terminal_conn = __import__("sqlite3").connect(state_root / "campaign.sqlite3")
+    try:
+        assert terminal_conn.execute("SELECT status FROM campaigns WHERE id=1").fetchone()[0] == "GOAL_MET"
+    finally:
+        terminal_conn.close()
+
 
 def test_cli_entrypoint_creates_persisted_v2_campaign_without_auth(tmp_path):
     repo = _repo(tmp_path)

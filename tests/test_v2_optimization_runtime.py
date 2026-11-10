@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import sqlite3
+from pathlib import Path
+
 import pytest
 
 from bananloop.v2_optimization_runtime import (
@@ -39,6 +43,95 @@ def test_optimizer_proposal_normalizes_one_string_limitation_losslessly():
         "limitations": "Needs follow-up testing.",
     })
     assert proposal.limitations == ("Needs follow-up testing.",)
+
+
+def test_final_optimization_report_resolves_parent_from_custom_registry_root(tmp_path, monkeypatch):
+    from bananloop.contracts import RuntimePaths
+    from bananloop.registry import CampaignRegistry
+    from bananloop.v2_optimization_runtime import V2OptimizationRuntime
+
+    repo = tmp_path / "source"
+    repo.mkdir()
+    custom_state = tmp_path / "custom-state"
+    registry = CampaignRegistry(repo, paths=RuntimePaths.for_repo(repo, custom_state))
+    parent, parent_state, _ = registry.reserve("parent goal", "parent-request")
+    child, child_state, _ = registry.reserve("child goal", "child-request")
+    parent_report_dir = parent_state / "reports"
+    parent_report_dir.mkdir(parents=True)
+    (parent_report_dir / f"v2-exploration-{parent.campaign_id}.json").write_text(
+        json.dumps({"campaign_id": parent.campaign_id, "status": "PERSISTED_GRAPH_SNAPSHOT"}),
+        encoding="utf-8",
+    )
+
+    class ParentRef:
+        parent_campaign_id = parent.campaign_id
+        allocation_id = "allocation-1"
+
+        def model_dump(self, *, mode):
+            assert mode == "json"
+            return {"parent_campaign_id": self.parent_campaign_id,
+                    "allocation_id": self.allocation_id}
+
+    class Spec:
+        goal = "child goal"
+        source_repo = str(repo)
+        parent = ParentRef()
+
+    class Graph:
+        campaign_id = child.campaign_id
+
+        def __init__(self):
+            self.conn = sqlite3.connect(":memory:")
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute(
+                "CREATE TABLE events (seq INTEGER PRIMARY KEY, event_type TEXT, payload_json TEXT)"
+            )
+            self.conn.execute(
+                "CREATE TABLE evaluator_run_receipts (receipt_digest TEXT, "
+                "candidate_snapshot_id TEXT, receipt_json TEXT, campaign_id TEXT)"
+            )
+            self.conn.execute(
+                "CREATE TABLE evaluator_integration_evidence (evidence_digest TEXT, "
+                "decision TEXT, baseline_run_receipt_digest TEXT, "
+                "candidate_run_receipt_digest TEXT, campaign_id TEXT)"
+            )
+
+        def scheduling_snapshot(self):
+            return {"nodes": [], "graph_revision": 0}
+
+        def campaign_spec(self):
+            return Spec()
+
+    class NoChampion:
+        def __init__(self, *_args):
+            pass
+
+        def current(self):
+            return {"campaign_id": child.campaign_id, "snapshot_id": "candidate"}
+
+    monkeypatch.setattr("bananloop.v2_optimization_runtime.EvaluatorProtocolAuthority", lambda _conn: object())
+    monkeypatch.setattr("bananloop.champion_promotion.ChampionPromotionService", NoChampion)
+    queue = registry.worker_queue()
+    graph = Graph()
+    runtime = object.__new__(V2OptimizationRuntime)
+    runtime.graph = graph
+    runtime.queue = queue
+    runtime.campaign_id = child.campaign_id
+    runtime.state_root = child_state
+    runtime._build_baseline_candidate_delta = lambda _champion: {
+        "status": "INCOMPLETE", "comparison_table": [],
+    }
+    try:
+        result = runtime._finish_campaign_run({
+            "status": "ALL_NODES_COMPLETE", "steps": [], "holdout": {"status": "VERIFIED"},
+        })
+        final_report = json.loads(Path(result["final_report_path"]).read_text(encoding="utf-8"))
+        assert final_report["campaign_id"] == parent.campaign_id
+        assert final_report["optimization_campaign_id"] == child.campaign_id
+        assert final_report["exploration_report"]["status"] == "PERSISTED_GRAPH_SNAPSHOT"
+    finally:
+        graph.conn.close()
+        queue.close()
 
 
 def test_optimizer_model_bridge_exposes_only_allowlisted_text_and_gateway_writes():

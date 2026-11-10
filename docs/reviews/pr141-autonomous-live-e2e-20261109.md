@@ -48,3 +48,8 @@ The code now meters model-token usage for Researcher, Protocol Verifier, Optimiz
 ## Current evidence availability
 
 During the 2026-11-10 follow-up audit, the parent and child SQLite campaign databases and separate role/evaluator receipts for these campaign IDs were not present in the available state directories. The values above are preserved in this contemporaneous run report, but the historical campaign status, budget settlement, and metrics could not be independently reconstructed from durable state during this audit. Treat this report as recorded live-run evidence, not as independently revalidated acceptance evidence. A fresh campaign on the metering fixes is in progress separately and is waiting at its explicit owner pivot gate.
+
+
+## Follow-up on 2026-11-10
+
+The fresh campaign previously described as waiting at the owner pivot gate has since completed. Its durable campaign databases were available under the explicit Linux `--state-dir`; a CLI parent-registry lookup bug prevented terminal report finalization. Zero-call recovery finalized it, closed the child allocation, and preserved the two provider-call events. See [the fresh machine-readable live report](pr141-live-e2e-20261110.json) and [summary](pr141-live-e2e-20261110.md). The historical campaign above remains unavailable for independent reconstruction; these are distinct campaign IDs and evidence.

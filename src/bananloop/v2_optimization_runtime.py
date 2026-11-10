@@ -26,7 +26,7 @@ from .capabilities import (
     BubblewrapBackend, CapabilityAuthority, CapabilityDenied, CapabilityGrantV1,
     LocalBackend, PermissionEngine, SandboxUnavailable, ToolGateway,
 )
-from .contracts import OptimizationCampaignSpecV2, utc_now
+from .contracts import OptimizationCampaignSpecV2, RuntimePaths, utc_now
 from .evaluator_verification import EvaluatorProtocolAuthority
 from .graph_store import AddEdge, AddNode, MutateGraph, TransitionNodeStatus
 from .optimization_lifecycle import OptimizationAttemptCoordinator
@@ -93,6 +93,21 @@ def _render_final_report_markdown(report: dict[str, Any]) -> str:
             f"- Cases: {holdout.get('case_count', 'UNKNOWN')}",
             f"- Repeatability runs: {holdout.get('repeatability_runs', 'UNKNOWN')}",
         ])
+    provider_calls = optimization.get("provider_calls", [])
+    if provider_calls:
+        lines.extend([
+            "", "## Provider calls", "",
+            "| Role | Request ID | Status | Input tokens | Output tokens | Total tokens |",
+            "| --- | --- | --- | ---: | ---: | ---: |",
+        ])
+        for call in provider_calls:
+            usage = call.get("usage") if isinstance(call.get("usage"), dict) else {}
+            lines.append(
+                f"| {call.get('role_id', 'unknown')} | `{call.get('request_id') or 'UNKNOWN'}` "
+                f"| {call.get('status', 'UNKNOWN')} | {usage.get('input_tokens', 'UNKNOWN')} "
+                f"| {usage.get('output_tokens', 'UNKNOWN')} "
+                f"| {usage.get('total_tokens', 'UNKNOWN')} |"
+            )
     limitations = report.get("limitations", optimization.get("limitations", []))
     if limitations:
         lines.extend(["", "## Limitations", ""])
@@ -1205,6 +1220,26 @@ class V2OptimizationRuntime:
                 "WHERE campaign_id=? ORDER BY rowid", (self.campaign_id,),
             )
         ]
+        provider_calls = []
+        for row in self.graph.conn.execute(
+            "SELECT payload_json FROM events WHERE event_type='V2_PROVIDER_CALL' ORDER BY seq"
+        ):
+            receipt = json.loads(row["payload_json"])
+            usage = receipt.get("usage")
+            if isinstance(usage, dict):
+                usage = {
+                    key: usage.get(key)
+                    for key in ("input_tokens", "output_tokens", "total_tokens")
+                }
+            else:
+                usage = "UNKNOWN"
+            provider_calls.append({
+                "role_id": receipt.get("role_id"),
+                "request_id": receipt.get("request_id"),
+                "status": receipt.get("status", "UNKNOWN"),
+                "dispatched": receipt.get("dispatched") is True,
+                "usage": usage,
+            })
         report = {
             "schema_version": 1, "campaign_id": self.campaign_id,
             "mode": "OPTIMIZATION", "goal": spec.goal,
@@ -1213,6 +1248,7 @@ class V2OptimizationRuntime:
             "evaluation_receipts": evaluation_receipts,
             "baseline_candidate_delta": baseline_candidate_delta,
             "integration_evidence": integration_evidence,
+            "provider_calls": provider_calls,
             "parent": spec.parent.model_dump(mode="json") if spec.parent else None,
             "champion": champion_report,
             "verification": [step for step in result.get("steps", [])
@@ -1238,7 +1274,14 @@ class V2OptimizationRuntime:
         if spec.parent is not None:
             from .registry import CampaignRegistry
 
-            parent_state, _ = CampaignRegistry(Path(spec.source_repo)).resolve_readonly(
+            source_repo = Path(spec.source_repo)
+            # The worker queue points at the exact project registry selected by
+            # the CLI, including an operator-supplied --state-dir. Reconstruct
+            # RuntimePaths from that registry so parent lookup stays inside the
+            # same durable campaign store as this child.
+            registry_root = Path(self.queue.path).resolve().parent
+            registry_paths = RuntimePaths.for_repo(source_repo, registry_root)
+            parent_state, _ = CampaignRegistry(source_repo, paths=registry_paths).resolve_readonly(
                 spec.parent.parent_campaign_id,
             )
             parent_report_path = (parent_state / "reports" /
