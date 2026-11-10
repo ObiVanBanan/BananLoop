@@ -1,7 +1,7 @@
 # PR #141 benchmark orchestration (diagnostic, no implicit model calls)
 
 This is an **operator-side staging and scoring wrapper** around the already present
-\`benchmark_generate\`, \`benchmark_sealed\`, \`benchmark_batches\` and \`benchmark_live_codex\`
+`benchmark_generate`, `benchmark_sealed`, `benchmark_batches` and `benchmark_live_codex`
 modules. It does not replace the signed RPDI-14 protocol, launch unapproved
 ChatGPT requests, or turn synthetic/public tasks into independent release scores.
 
@@ -12,7 +12,7 @@ the selected SQLite campaign database. Do not invent four roles for a team
 which pinned only two. An Exploration and an Optimization campaign may need
 **separate** role diagnostic runs to cover all four roles.
 
-\`\`\`bash
+```bash
 python -m bananloop.benchmark_export_roster \
   --repo . --campaign-id c-EXACT_CAMPAIGN_ID \
   --out /tmp/role-roster-actual
@@ -24,14 +24,14 @@ python -m bananloop.benchmark_suite prepare-roles \
   --public-root /tmp/benchmark-public-001 \
   --batches-root /tmp/benchmark-batches-001 \
   --per-role 10 --batch-size 2
-\`\`\`
+```
 
 With all four roles pinned, this generates 40 cases, split into
 **8 DEV, 8 VALIDATION, 24 HOLDOUT**. The generation uses cryptographic
 randomness; each fresh run gets new case IDs/values and a private 256-bit
-oracle nonce. The resulting \`public/cases.json\` never contains answer
-keys. The private root contains \`authored.json\`, \`oracle/oracle.json\` and
-\`oracle/nonce.json\`, and **must not be copied to the model host**.
+oracle nonce. The resulting `public/cases.json` never contains answer
+keys. The private root contains `authored.json`, `oracle/oracle.json` and
+`oracle/nonce.json`, and **must not be copied to the model host**.
 If only two roles are pinned, only those roles' cases are staged and the
 manifest reports the reduced denominator explicitly.
 
@@ -51,7 +51,7 @@ explicit execution switch. See
 [Live sealed role benchmark](../benchmarks/live-sealed-role-benchmark.md)
 for the complete authorization fields and resource accounting limitations.
 
-\`\`\`bash
+```bash
 python -m bananloop.benchmark_live_codex \
   --cases /worker/batches/batch-000.json \
   --registry /worker/public/registry.json \
@@ -59,7 +59,7 @@ python -m bananloop.benchmark_live_codex \
   --authorization /worker/approval-batch-000.json \
   --out /worker/runs/batch-000 \
   --i-authorize-codex-exec
-\`\`\`
+```
 
 The CLI uses the existing ChatGPT subscription where available, not a
 separately billed API key. Usage is **CLI-observed**, not provider-signed.
@@ -73,7 +73,7 @@ operator/scorer machine. Do not bring back hidden oracles to the worker host.
 
 On an operator machine physically isolated from the model worker:
 
-\`\`\`bash
+```bash
 python -m bananloop.benchmark_suite score-roles \
   --private-root /secure/operator/roles-001 \
   --public-root /operator/public-001 \
@@ -82,31 +82,31 @@ python -m bananloop.benchmark_suite score-roles \
   --run-dir /operator/runs/batch-001 \
   --merged-root /operator/merged-001 \
   --score-root /secure/operator/scored-001
-\`\`\`
+```
 
-Optional \`--meter-ledger /operator/runs/batch-000/usage.observed.json\`
+Optional `--meter-ledger /operator/runs/batch-000/usage.observed.json`
 can be repeated. The scorer verifies the public suite commitment and private
 oracle nonce, preserves frozen case denominators, marks every missing answer
-\`INCOMPLETE\` and reports scores by **split and role**. The status is always
-\`SEALED_LOCAL_DIAGNOSTIC_NOT_RPDI14\`, even with a perfect score. Costs remain
-\`UNKNOWN\` unless specific non-provider-signed estimation evidence exists.
+`INCOMPLETE` and reports scores by **split and role**. The status is always
+`SEALED_LOCAL_DIAGNOSTIC_NOT_RPDI14`, even with a perfect score. Costs remain
+`UNKNOWN` unless specific non-provider-signed estimation evidence exists.
 
 ## D. Stage DiscoveryBench for an E2E/public DEV diagnostic
 
-\`\`\`bash
+```bash
 python -m bananloop.benchmark_suite stage-discoverybench \
   --source-dir examples/exploration_diagnostic_v1/discoverybench_boardgames \
   --out /tmp/discoverybench-pair-001
-\`\`\`
+```
 
 This checks the bundled board-games CSV has exactly **500 rows / 42 columns**,
-copies only \`TASK.md\` and \`data.csv\` to
-\`arms/bananloop/\` and \`arms/codex/\`, and records exact SHA-256 digests.
+copies only `TASK.md` and `data.csv` to
+`arms/bananloop/` and `arms/codex/`, and records exact SHA-256 digests.
 No gold answers, model clients, evaluator credentials or hidden cases are
 staged. It is the **same public task** in both isolated arm folders.
 
-For the BananLoop arm, use the **existing** \`bananloop v2 explore\` / explicit
-\`v2-pivot decision\` / \`v2-pivot execute\` / \`v2 optimize\` workflow with its
+For the BananLoop arm, use the **existing** `bananloop v2 explore` / explicit
+`v2-pivot decision` / `v2-pivot execute` / `v2 optimize` workflow with its
 frozen permissions, evaluator and separately authorized provider calls.
 Codex Direct must receive equivalent DEV information and iterative access,
 not a one-shot prompt. Staging is not execution and this public DiscoveryBench
@@ -115,7 +115,7 @@ sample is not a sealed independent scoring set.
 The shell commands and exact role/goal/fixture flags for a full benchmark
 cannot be decided by this wrapper; they require a frozen task/evaluator
 protocol with a valid independent scorer. The preexisting
-\`benchmarks/v02_full/\` signed gating and scorer must remain the authority
+`benchmarks/v02_full/` signed gating and scorer must remain the authority
 for RPDI-14 Full vs iterative Codex Direct. Do **not** use synthetic role
 accuracy or published DiscoveryBench answers as a release comparison.
 
@@ -139,7 +139,7 @@ win until those gates pass.**
 
 Offline regression:
 
-\`\`\`bash
+```bash
 python -m pytest tests/test_benchmark_suite.py \
   tests/test_benchmark_batches.py tests/test_live_sealed_benchmark.py -q
-\`\`\`
+```
