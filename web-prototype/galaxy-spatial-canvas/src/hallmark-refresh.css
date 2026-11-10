@@ -44,6 +44,7 @@ html,body { overflow-x: clip; }
 :is(.studio-desktop,.live-shell,.galaxy-app) button { transition: background-color .14s ease, border-color .14s ease, color .14s ease, transform .14s ease; }
 
 /* Studio: an editorial research workbench, not a generic chat landing page. */
+.studio-mobile-scrim { display: none; }
 .studio-desktop { height: 100dvh; min-height: 0; font: 14px/1.5 var(--bn-font-body); }
 .studio-chat-sidebar {
   flex-basis: 266px;
@@ -503,7 +504,7 @@ html,body { overflow-x: clip; }
     flex-basis: auto;
   }
   .studio-mobile-menu { display: grid; }
-  .studio-mobile-scrim { position: fixed; z-index: 19; inset: 0; background: #050705b8; border: 0; }
+  .studio-mobile-scrim { display: block; position: fixed; z-index: 19; inset: 0; background: #050705b8; border: 0; }
   .studio-chat-main { width: 100%; }
   .studio-chat-header { min-height: 62px; padding: 0 17px; }
   .studio-chat-heading { font-size: 14px; max-width: 48vw; }
