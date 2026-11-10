@@ -439,6 +439,7 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
         "baseline_candidate_delta": {"status": "VERIFIED"},
         "verification": [{"status": "INDEPENDENT_VERIFICATION_PASS"}],
         "holdout": {"status": "VERIFIED"},
+        "provider_calls": [{"request_id": "previous-live-call"}],
     }
     reports_dir = state_root / "reports"
     reports_dir.mkdir(exist_ok=True)
@@ -476,9 +477,13 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
     assert recovered["status"] == "ALL_NODES_COMPLETE"
     assert recovered["recovery_mode"] == "FINALIZATION_ONLY"
     assert recovered["provider_call_attempts"] == 0
+    assert recovered["campaign_provider_call_count"] == 1
     assert recovered["live_model_called"] is False
     assert recovered["campaign_terminal_status"] == "GOAL_MET"
     assert Path(recovered["recovery_report_path"]).is_file()
+    recovery_json = json.loads(Path(recovered["recovery_report_path"]).read_text(encoding="utf-8"))
+    assert recovery_json["recovery_report_path"] == recovered["recovery_report_path"]
+    assert recovery_json["campaign_provider_call_count"] == 1
     terminal_conn = __import__("sqlite3").connect(state_root / "campaign.sqlite3")
     try:
         assert terminal_conn.execute("SELECT status FROM campaigns WHERE id=1").fetchone()[0] == "GOAL_MET"

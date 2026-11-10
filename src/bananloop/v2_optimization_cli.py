@@ -322,6 +322,7 @@ def run_v2_optimize(args: Namespace, *,
                     "request_history": {"optimizer": [], "integration_verifier": []},
                     "automatic_replay": False,
                     "recovery_mode": "FINALIZATION_ONLY",
+                    "campaign_provider_call_count": len(saved_report.get("provider_calls", [])),
                     "recovered_report_path": str(
                         state_root / "reports" / f"v2-optimization-{args.campaign_id}.json"
                     ),
@@ -329,11 +330,14 @@ def run_v2_optimize(args: Namespace, *,
                 result = _close_completed_child_allocation(
                     result, spec=spec, database=database, registry=registry,
                 )
-                recovery_path = _write_cli_report(
+                result["recovery_report_path"] = str(
+                    state_root / "reports" /
+                    f"v2-optimization-cli-{args.campaign_id}-recovery.json"
+                )
+                result["state_dir"] = str(state_root)
+                _write_cli_report(
                     state_root, result, campaign_id=args.campaign_id, suffix="recovery",
                 )
-                result["recovery_report_path"] = recovery_path
-                result["state_dir"] = str(state_root)
                 return result
             return {
                 "status": "READY_FOR_OWNER_APPROVAL", "mode": "OPTIMIZATION",
