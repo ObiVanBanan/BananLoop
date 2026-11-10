@@ -32,7 +32,8 @@ export function Studio({token,onBack,onOpenCampaign}:StudioProps){
  useEffect(()=>{saveStudioChats(safeStore(),chats)},[chats]);
  useEffect(()=>{
   // scrollIntoView can return a Promise in some browsers; NEVER return it from useEffect.
-  scrollAnchor.current?.scrollIntoView?.({behavior:'smooth',block:'end'});
+  const reduceMotion=typeof window.matchMedia==='function'&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  scrollAnchor.current?.scrollIntoView?.({behavior:reduceMotion?'auto':'smooth',block:'end'});
  },[current?.messages.length,busyId,current?.launch?.phase]);
  const selectChat=(id:string)=>{setChats(s=>({...s,activeId:id}));setInput('');setReview(false);setError(null);setRetryMessage(null)};
  const newChat=()=>{
