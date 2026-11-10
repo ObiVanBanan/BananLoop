@@ -61,6 +61,28 @@ python -m bananloop.benchmark_live_codex \
   --i-authorize-codex-exec
 ```
 
+
+For multiple **individually authorized** batches, the wrapper can dispatch
+successive batches with no automatic retries, stopping at the first unknown or
+failed settlement. It defaults to a **zero-call plan**, with only one batch
+selected by default:
+
+~~~bash
+python -m bananloop.benchmark_suite run-role-batches \
+  --public-root /worker/public \
+  --batches-root /worker/batches \
+  --authorizations-root /worker/approvals \
+  --run-root /worker/new-run-root \
+  --max-batches 2
+~~~
+
+To actually spend subscription requests, create **one valid owner approval
+file per selected batch** (for example `approval-batch-000.json`), review
+every SHA and budget, then explicitly add
+`--i-authorize-codex-exec`. Every invocation must use a **fresh**
+`--run-root`; do not replay partial/unknown batches. This runner cannot
+enforce a provider-side hard subscription quota.
+
 The CLI uses the existing ChatGPT subscription where available, not a
 separately billed API key. Usage is **CLI-observed**, not provider-signed.
 A stopped/unknown call must not be retried automatically. One batch is two
