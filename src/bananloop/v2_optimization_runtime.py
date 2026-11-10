@@ -26,7 +26,7 @@ from .capabilities import (
     BubblewrapBackend, CapabilityAuthority, CapabilityDenied, CapabilityGrantV1,
     LocalBackend, PermissionEngine, SandboxUnavailable, ToolGateway,
 )
-from .contracts import OptimizationCampaignSpecV2, utc_now
+from .contracts import OptimizationCampaignSpecV2, RuntimePaths, utc_now
 from .evaluator_verification import EvaluatorProtocolAuthority
 from .graph_store import AddEdge, AddNode, MutateGraph, TransitionNodeStatus
 from .optimization_lifecycle import OptimizationAttemptCoordinator
@@ -43,6 +43,112 @@ class V2OptimizationError(RuntimeError):
     """A v2 candidate cannot safely be proposed, executed, or published."""
 
 
+def _format_report_metric(metric: dict[str, Any] | None) -> str:
+    if not isinstance(metric, dict) or metric.get("value") is None:
+        return "UNKNOWN"
+    value = metric["value"]
+    unit = metric.get("unit")
+    return f"{value} {unit}" if unit else str(value)
+
+
+def _provider_call_summaries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    calls = []
+    for row in conn.execute(
+        "SELECT payload_json FROM events WHERE event_type='V2_PROVIDER_CALL' ORDER BY seq"
+    ):
+        receipt = json.loads(row[0])
+        raw_usage = receipt.get("usage")
+        usage = ({key: raw_usage.get(key) for key in
+                  ("input_tokens", "output_tokens", "total_tokens")}
+                 if isinstance(raw_usage, dict) else "UNKNOWN")
+        calls.append({
+            "role_id": receipt.get("role_id"),
+            "request_id": receipt.get("request_id"),
+            "status": receipt.get("status", "UNKNOWN"),
+            "dispatched": receipt.get("dispatched") is True,
+            "usage": usage,
+        })
+    return calls
+
+
+def _render_final_report_markdown(report: dict[str, Any]) -> str:
+    """Render a public, owner-readable campaign summary beside the JSON report."""
+    optimization = report.get("optimization_report", report)
+    comparison = optimization.get("baseline_candidate_delta", {})
+    lines = [
+        f"# BananLoop campaign {report.get('campaign_id', optimization.get('campaign_id', 'unknown'))}",
+        "",
+        f"- Status: `{report.get('status', optimization.get('status', 'UNKNOWN'))}`",
+        f"- Goal: {optimization.get('goal', 'Not recorded.')}",
+        "",
+        "## Validation baseline / candidate / delta",
+        "",
+    ]
+    rows = comparison.get("comparison_table", []) if isinstance(comparison, dict) else []
+    if comparison.get("status") == "VERIFIED" and rows:
+        lines.extend([
+            "| Tier | Metric | Baseline | Candidate | Delta | Directional improvement |",
+            "| --- | --- | ---: | ---: | ---: | ---: |",
+        ])
+        for row in rows:
+            baseline = row.get("baseline")
+            candidate = row.get("candidate")
+            delta = row.get("delta")
+            directional = row.get("directional_improvement")
+            lines.append(
+                f"| {row.get('tier', 'VALIDATION')} | {row.get('metric_id', 'unknown')} "
+                f"| {baseline} | {candidate} | {delta:+} | {directional:+} |"
+            )
+    else:
+        lines.append(
+            f"Comparison `{comparison.get('status', 'INCOMPLETE')}`: "
+            f"{comparison.get('reason', 'validation receipts are unavailable.')}"
+        )
+    holdout = optimization.get("holdout")
+    if isinstance(holdout, dict):
+        lines.extend([
+            "", "## Trusted HOLDOUT", "",
+            f"- Status: `{holdout.get('status', 'UNKNOWN')}`",
+            f"- Metric: {_format_report_metric(holdout.get('metric'))}",
+            f"- Cases: {holdout.get('case_count', 'UNKNOWN')}",
+            f"- Repeatability runs: {holdout.get('repeatability_runs', 'UNKNOWN')}",
+        ])
+    provider_calls = report.get("provider_calls", optimization.get("provider_calls", []))
+    if provider_calls:
+        lines.extend([
+            "", "## Provider calls", "",
+            "| Role | Request ID | Status | Input tokens | Output tokens | Total tokens |",
+            "| --- | --- | --- | ---: | ---: | ---: |",
+        ])
+        for call in provider_calls:
+            usage = call.get("usage") if isinstance(call.get("usage"), dict) else {}
+            lines.append(
+                f"| {call.get('role_id', 'unknown')} | `{call.get('request_id') or 'UNKNOWN'}` "
+                f"| {call.get('status', 'UNKNOWN')} | {usage.get('input_tokens', 'UNKNOWN')} "
+                f"| {usage.get('output_tokens', 'UNKNOWN')} "
+                f"| {usage.get('total_tokens', 'UNKNOWN')} |"
+            )
+    limitations = report.get("limitations", optimization.get("limitations", []))
+    if limitations:
+        lines.extend(["", "## Limitations", ""])
+        lines.extend(f"- {item}" for item in limitations)
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _atomic_write_report(path: Path, raw: bytes) -> None:
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(raw)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 class OptimizationCandidateProposalV1(BaseModel):
     """Untrusted optimizer output: complete file replacements, never commands."""
 
@@ -52,6 +158,14 @@ class OptimizationCandidateProposalV1(BaseModel):
     rationale: str = Field(min_length=1, max_length=4000)
     changes: dict[str, str] = Field(min_length=1, max_length=16)
     limitations: tuple[str, ...] = Field(default=(), max_length=32)
+
+    @field_validator("limitations", mode="before")
+    @classmethod
+    def normalize_single_limitation(cls, value: Any) -> Any:
+        # LLMs occasionally serialize one optional limitation as a scalar
+        # string. This has an unambiguous lossless interpretation; malformed
+        # non-string values remain rejected by the typed contract.
+        return (value,) if isinstance(value, str) else value
 
     @field_validator("limitations")
     @classmethod
@@ -195,10 +309,21 @@ def make_optimizer_invoke(model_reply: OptimizerModelReply) -> Callable[..., dic
 def _run_git(args: list[str], cwd: Path, *, timeout: int = 60) -> str:
     try:
         return subprocess.check_output(
-            ["git", *args], cwd=cwd, stderr=subprocess.PIPE, timeout=timeout,
+            ["git", "-C", str(cwd), "-c", "core.longpaths=true", *args],
+            stderr=subprocess.PIPE, timeout=timeout,
         ).decode("utf-8").strip()
-    except (OSError, subprocess.SubprocessError, UnicodeError):
-        raise V2OptimizationError("trusted Core Git snapshot operation failed") from None
+    except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+        detail = getattr(exc, "stderr", None)
+        if isinstance(detail, bytes):
+            detail = detail.decode("utf-8", errors="replace")
+        if not isinstance(detail, str) or not detail.strip():
+            detail = str(exc)
+        detail = " ".join(detail.split())[:500]
+        raise V2OptimizationError(
+            f"trusted Core Git snapshot operation failed "
+            f"(git {args[0] if args else 'operation'}; target_is_directory={cwd.is_dir()}; "
+            f"{type(exc).__name__}: {detail})"
+        ) from None
 
 
 def _safe_mkdir(root: Path, *parts: str) -> Path:
@@ -612,14 +737,23 @@ class V2OptimizationCandidateAdapter:
     def _commit_candidate(self, request: dict[str, Any], workspace: Path,
                           paths: tuple[str, ...], *, build_id: str) -> str:
         source_repo = Path(request["source_repo"]).resolve()
-        builds = _safe_mkdir(self.state_root, "v2_optimization", "builds")
-        build = builds / build_id
+        builds = _safe_mkdir(self.state_root, "v2o", "b")
+        # The durable state root can be deeply nested (notably under Windows
+        # pytest temp roots). Keep transient clone path components short so
+        # subprocess cwd and Git's internal hook paths remain below MAX_PATH.
+        build = builds / hashlib.sha256(build_id.encode("utf-8")).hexdigest()[:24]
         if build.exists():
             raise V2OptimizationError("candidate build workspace already exists")
-        snapshots = _safe_mkdir(self.state_root, "v2_optimization", "snapshots",
-                                self.campaign_id)
+        # Keep the durable repository path short too: publish_completed later
+        # asks Git to open it, and Git for Windows rejects deep paths even
+        # when `core.longpaths` is enabled for the transient clone.
+        snapshots = _safe_mkdir(self.state_root, "s", self.campaign_id)
         try:
-            subprocess.run(["git", "clone", "--no-hardlinks", "--quiet",
+            # pytest and user campaign state can be nested deeply on Windows;
+            # Git for Windows otherwise fails while materializing template
+            # hook files below .git/hooks once the full path exceeds MAX_PATH.
+            subprocess.run(["git", "-c", "core.longpaths=true", "clone",
+                            "--no-hardlinks", "--quiet",
                             str(source_repo), str(build)], check=True,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
             _run_git(["checkout", "--detach", request["source_snapshot_id"]], build)
@@ -646,7 +780,7 @@ class V2OptimizationCandidateAdapter:
             if len(candidate_id) not in {40, 64} or any(c not in "0123456789abcdef" for c in candidate_id):
                 raise V2OptimizationError("Git returned a noncanonical candidate commit ID")
             _run_git(["merge-base", "--is-ancestor", request["source_snapshot_id"], candidate_id], build)
-            final = snapshots / candidate_id
+            final = snapshots / hashlib.sha256(candidate_id.encode("ascii")).hexdigest()[:16]
             if final.exists():
                 raise V2OptimizationError("candidate snapshot ID is already registered")
             os.replace(build, final)
@@ -654,7 +788,16 @@ class V2OptimizationCandidateAdapter:
         except V2OptimizationError:
             raise
         except (OSError, subprocess.SubprocessError) as exc:
-            raise V2OptimizationError("trusted Core could not commit the candidate snapshot") from exc
+            detail = getattr(exc, "stderr", None)
+            if isinstance(detail, bytes):
+                detail = detail.decode("utf-8", errors="replace")
+            if not isinstance(detail, str) or not detail.strip():
+                detail = str(exc)
+            detail = " ".join(detail.split())[:500]
+            raise V2OptimizationError(
+                f"trusted Core could not commit the candidate snapshot "
+                f"({type(exc).__name__}: {detail})"
+            ) from exc
 
     def publish_completed(self, job_id: str) -> dict[str, Any]:
         job = self.queue.get_job(job_id)
@@ -669,9 +812,9 @@ class V2OptimizationCandidateAdapter:
                 or result.get("source_snapshot_id") != job["request"].get("source_snapshot_id")):
             raise V2OptimizationError("durable optimizer result failed integrity or scope validation")
         candidate_id = result.get("candidate_snapshot_id")
-        snapshot_repo = (self.state_root / "v2_optimization" / "snapshots"
-                         / self.campaign_id / str(candidate_id)).resolve()
-        expected_root = (self.state_root / "v2_optimization" / "snapshots" / self.campaign_id).resolve()
+        snapshot_key = hashlib.sha256(str(candidate_id).encode("ascii")).hexdigest()[:16]
+        snapshot_repo = (self.state_root / "s" / self.campaign_id / snapshot_key).resolve()
+        expected_root = (self.state_root / "s" / self.campaign_id).resolve()
         if (not snapshot_repo.is_relative_to(expected_root) or snapshot_repo.is_symlink()
                 or not snapshot_repo.is_dir()):
             raise V2OptimizationError("durable candidate repository is unavailable")
@@ -1072,6 +1215,7 @@ class V2OptimizationRuntime:
             ).current()
         except ChampionPromotionError:
             champion_report = None
+        baseline_candidate_delta = self._build_baseline_candidate_delta(champion_report)
         evaluation_receipts = []
         for row in self.graph.conn.execute(
             "SELECT receipt_digest,candidate_snapshot_id,receipt_json "
@@ -1096,13 +1240,16 @@ class V2OptimizationRuntime:
                 "WHERE campaign_id=? ORDER BY rowid", (self.campaign_id,),
             )
         ]
+        provider_calls = _provider_call_summaries(self.graph.conn)
         report = {
             "schema_version": 1, "campaign_id": self.campaign_id,
             "mode": "OPTIMIZATION", "goal": spec.goal,
             "status": result["status"], "graph_revision": snapshot["graph_revision"],
             "steps": result.get("steps", []), "nodes": nodes,
             "evaluation_receipts": evaluation_receipts,
+            "baseline_candidate_delta": baseline_candidate_delta,
             "integration_evidence": integration_evidence,
+            "provider_calls": provider_calls,
             "parent": spec.parent.model_dump(mode="json") if spec.parent else None,
             "champion": champion_report,
             "verification": [step for step in result.get("steps", [])
@@ -1119,22 +1266,61 @@ class V2OptimizationRuntime:
         reports.mkdir(parents=True, exist_ok=True)
         target = reports / f"v2-optimization-{self.campaign_id}.json"
         raw = (json.dumps(report, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-        descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=reports)
-        try:
-            with os.fdopen(descriptor, "wb") as output:
-                output.write(raw)
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temporary, target)
-        finally:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
+        _atomic_write_report(target, raw)
+        markdown_target = target.with_suffix(".md")
+        _atomic_write_report(
+            markdown_target, _render_final_report_markdown(report).encode("utf-8"),
+        )
+        result["report_markdown_path"] = str(markdown_target)
         if spec.parent is not None:
             from .registry import CampaignRegistry
 
-            parent_state, _ = CampaignRegistry(Path(spec.source_repo)).resolve_readonly(
+            source_repo = Path(spec.source_repo)
+            # The worker queue points at the exact project registry selected by
+            # the CLI, including an operator-supplied --state-dir. Reconstruct
+            # RuntimePaths from that registry so parent lookup stays inside the
+            # same durable campaign store as this child.
+            registry_root = Path(self.queue.path).resolve().parent
+            registry_paths = RuntimePaths.for_repo(source_repo, registry_root)
+            parent_state, _ = CampaignRegistry(source_repo, paths=registry_paths).resolve_readonly(
                 spec.parent.parent_campaign_id,
             )
+            parent_db = parent_state / "campaign.sqlite3"
+            parent_provider_calls = []
+            verifier_row = None
+            owner_row = None
+            if parent_db.is_symlink():
+                raise V2OptimizationError("parent campaign database is unsafe")
+            if parent_db.is_file():
+                parent_conn = sqlite3.connect(parent_db.resolve().as_uri() + "?mode=ro", uri=True)
+                parent_conn.row_factory = sqlite3.Row
+                try:
+                    parent_identity = parent_conn.execute(
+                        "SELECT spec_hash FROM campaigns WHERE id=1",
+                    ).fetchone()
+                    parent_spec_hash = getattr(spec.parent, "parent_spec_hash", None)
+                    if (parent_identity is None or (parent_spec_hash is not None
+                            and parent_identity["spec_hash"] != parent_spec_hash)):
+                        raise V2OptimizationError(
+                            "parent campaign spec identity does not match frozen child lineage",
+                        )
+                    parent_provider_calls = _provider_call_summaries(parent_conn)
+                    tables = {row[0] for row in parent_conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'",
+                    )}
+                    verifier_row = (parent_conn.execute(
+                        "SELECT proposal_digest,protocol_digest,approval_digest,decision,receipt_digest "
+                        "FROM evaluator_verifier_receipts WHERE campaign_id=? "
+                        "ORDER BY rowid DESC LIMIT 1", (spec.parent.parent_campaign_id,),
+                    ).fetchone() if "evaluator_verifier_receipts" in tables else None)
+                    pivot_decision_id = getattr(spec.parent, "pivot_decision_id", None)
+                    if pivot_decision_id and "v2_pivot_decisions" in tables:
+                        owner_row = parent_conn.execute(
+                            "SELECT proposal_id,digest,decision,status FROM v2_pivot_decisions "
+                            "WHERE request_id=?", (pivot_decision_id,),
+                        ).fetchone()
+                finally:
+                    parent_conn.close()
             parent_report_path = (parent_state / "reports" /
                                   f"v2-exploration-{spec.parent.parent_campaign_id}.json")
             exploration_report = None
@@ -1175,14 +1361,44 @@ class V2OptimizationRuntime:
                         }
                     finally:
                         parent_conn.close()
+            if (isinstance(exploration_report, dict)
+                    and exploration_report.get("status") == "PROTOCOL_REVIEW_PENDING"
+                    and verifier_row is not None
+                    and verifier_row["decision"] == "APPROVE"):
+                exploration_report = dict(exploration_report)
+                exploration_report["status_at_exploration_stop"] = "PROTOCOL_REVIEW_PENDING"
+                exploration_report["status"] = "PROTOCOL_APPROVED"
+                exploration_report["protocol_review"] = {
+                    "status": "APPROVED",
+                    "proposal_digest": verifier_row["proposal_digest"],
+                    "protocol_digest": verifier_row["protocol_digest"],
+                    "approval_digest": verifier_row["approval_digest"],
+                    "receipt_digest": verifier_row["receipt_digest"],
+                }
+            if isinstance(exploration_report, dict) and owner_row is not None:
+                exploration_report = dict(exploration_report)
+                exploration_report["owner_pivot"] = {
+                    "status": owner_row["status"],
+                    "decision": owner_row["decision"],
+                    "proposal_id": owner_row["proposal_id"],
+                    "proposal_digest": owner_row["digest"],
+                }
             final_report = {
                 "schema_version": 1,
                 "campaign_id": spec.parent.parent_campaign_id,
                 "status": result["status"],
                 "exploration_campaign_id": spec.parent.parent_campaign_id,
                 "optimization_campaign_id": self.campaign_id,
+                "campaign_terminal_status": "PENDING_PARENT_FINALIZATION",
                 "exploration_report": exploration_report,
                 "optimization_report": report,
+                "provider_calls": [
+                    {"campaign_id": spec.parent.parent_campaign_id, **call}
+                    for call in parent_provider_calls
+                ] + [
+                    {"campaign_id": self.campaign_id, **call}
+                    for call in provider_calls
+                ],
                 "limitations": report["limitations"] + ([] if exploration_report else [
                     "Parent Exploration report was unavailable when this Optimization run completed.",
                 ]),
@@ -1193,20 +1409,116 @@ class V2OptimizationRuntime:
             final_target = parent_reports / f"v2-final-{spec.parent.parent_campaign_id}.json"
             final_raw = (json.dumps(final_report, sort_keys=True, indent=2,
                                     ensure_ascii=False) + "\n").encode("utf-8")
-            final_fd, final_temporary = tempfile.mkstemp(
-                prefix=f".{final_target.name}.", dir=parent_reports,
+            _atomic_write_report(final_target, final_raw)
+            final_markdown_target = final_target.with_suffix(".md")
+            _atomic_write_report(
+                final_markdown_target,
+                _render_final_report_markdown(final_report).encode("utf-8"),
             )
-            try:
-                with os.fdopen(final_fd, "wb") as output:
-                    output.write(final_raw)
-                    output.flush()
-                    os.fsync(output.fileno())
-                os.replace(final_temporary, final_target)
-            finally:
-                if os.path.exists(final_temporary):
-                    os.unlink(final_temporary)
             result["final_report_path"] = str(final_target)
-        return {**result, "report_path": str(target)}
+            result["final_report_markdown_path"] = str(final_markdown_target)
+        return {**result, "report_path": str(target),
+                "report_markdown_path": str(markdown_target)}
+
+    def _build_baseline_candidate_delta(self, champion_report: dict[str, Any] | None) -> dict[str, Any]:
+        """Build an owner-only baseline/candidate comparison from VALIDATION receipts."""
+        incomplete = {
+            "status": "INCOMPLETE", "tier": "validation",
+            "comparison_table": [],
+        }
+        if not isinstance(champion_report, dict):
+            return {**incomplete, "reason": "campaign has no pinned champion"}
+        champion_id = champion_report.get("snapshot_id")
+        if not isinstance(champion_id, str):
+            return {**incomplete, "reason": "champion snapshot identity is unavailable"}
+
+        from .evaluator_verification import EvaluatorProtocolAuthority
+        from .trusted_evaluator import EvaluatorRunReceiptV1
+
+        spec = self.graph.campaign_spec()
+        authority = EvaluatorProtocolAuthority(self.graph.conn)
+        proposal, _ = authority.approved_protocol(spec.evaluation.approval_digest)
+        protocol = proposal.protocol
+        if champion_id != protocol.source_snapshot_id:
+            self.trusted_evaluator._snapshot_files(
+                spec, protocol.source_snapshot_id, champion_id,
+            )
+        receipt_rows = self.graph.conn.execute(
+            "SELECT receipt_json FROM evaluator_run_receipts "
+            "WHERE campaign_id=? ORDER BY rowid",
+            (self.campaign_id,),
+        ).fetchall()
+        receipts = []
+        for row in receipt_rows:
+            try:
+                receipt = EvaluatorRunReceiptV1.model_validate_json(row["receipt_json"])
+            except Exception:
+                raise V2OptimizationError("durable evaluator receipt is malformed while building final comparison") from None
+            if receipt.tier == "validation":
+                receipts.append(receipt)
+        baseline = next((item for item in reversed(receipts)
+                         if item.candidate_snapshot_id == protocol.source_snapshot_id), None)
+        candidate = next((item for item in reversed(receipts)
+                          if item.candidate_snapshot_id == champion_id), None)
+        if baseline is None or candidate is None:
+            missing = []
+            if baseline is None:
+                missing.append("baseline VALIDATION receipt")
+            if candidate is None:
+                missing.append("champion VALIDATION receipt")
+            return {**incomplete, "reason": " and ".join(missing) + " unavailable"}
+
+        baseline_metric = self.trusted_evaluator.owner_validation_metric_summary(baseline)
+        candidate_metric = self.trusted_evaluator.owner_validation_metric_summary(candidate)
+        if (baseline.tier_manifest_sha256 != candidate.tier_manifest_sha256
+                or baseline.case_count != candidate.case_count
+                or baseline.protocol_digest != candidate.protocol_digest
+                or baseline_metric["metric_id"] != candidate_metric["metric_id"]
+                or baseline_metric["direction"] != candidate_metric["direction"]
+                or baseline_metric["unit"] != candidate_metric["unit"]):
+            raise V2OptimizationError("baseline and champion VALIDATION receipts have different frozen scopes")
+        absolute_delta = candidate_metric["value"] - baseline_metric["value"]
+        directional_improvement = (
+            absolute_delta if candidate_metric["direction"] == "MAXIMIZE" else -absolute_delta
+        )
+        relative_improvement = (
+            directional_improvement / abs(baseline_metric["value"]) * 100
+            if baseline_metric["value"] != 0 else None
+        )
+        row = {
+            "tier": "VALIDATION",
+            "metric_id": candidate_metric["metric_id"],
+            "metric_field": candidate_metric["metric_field"],
+            "unit": candidate_metric["unit"],
+            "direction": candidate_metric["direction"],
+            "baseline": baseline_metric["value"],
+            "candidate": candidate_metric["value"],
+            "delta": absolute_delta,
+            "directional_improvement": directional_improvement,
+        }
+        return {
+            "status": "VERIFIED",
+            "tier": "validation",
+            "protocol_digest": protocol.content_digest(),
+            "tier_manifest_sha256": baseline.tier_manifest_sha256,
+            "case_count": baseline.case_count,
+            "repeatability_runs": {
+                "baseline": baseline.repeatability_runs,
+                "candidate": candidate.repeatability_runs,
+            },
+            "baseline_receipt_digest": baseline.receipt_digest,
+            "candidate_receipt_digest": candidate.receipt_digest,
+            "baseline_snapshot_id": baseline.candidate_snapshot_id,
+            "candidate_snapshot_id": candidate.candidate_snapshot_id,
+            "baseline_metric": baseline_metric,
+            "candidate_metric": candidate_metric,
+            "delta": {
+                "absolute": absolute_delta,
+                "directional_improvement": directional_improvement,
+                "relative_improvement_percent": relative_improvement,
+            },
+            "comparison_table": [row],
+        }
 
     def _baseline_validation_receipt(self, *, worker_id: str):
         spec = self.graph.campaign_spec()

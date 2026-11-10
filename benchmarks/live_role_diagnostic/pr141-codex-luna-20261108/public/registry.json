@@ -1,0 +1,132 @@
+{
+  "registry_id": "bananloop-v2-owner-researcher",
+  "roles": [
+    {
+      "adapter": "codex",
+      "calls_per_instance": 1,
+      "capability_policy": {
+        "backend": "ISOLATED",
+        "network_access": false,
+        "policy_version": 1,
+        "read_paths": [],
+        "tools": [],
+        "write_paths": []
+      },
+      "context_fields": [
+        "campaign_goal",
+        "public_task"
+      ],
+      "max_instances": 1,
+      "min_instances": 0,
+      "model": "gpt-6-luna",
+      "model_version": "siwc-responses-v1",
+      "priority": 100,
+      "prompt_digest": "d43a2062f949993f35a9f9887a80ca0bddabbb8b582d52ab56537d53318558a6",
+      "provider": "openai",
+      "role_id": "independent_verifier",
+      "tokens_per_instance": 2048
+    },
+    {
+      "adapter": "codex",
+      "calls_per_instance": 1,
+      "capability_policy": {
+        "backend": "ISOLATED",
+        "network_access": false,
+        "policy_version": 1,
+        "read_paths": [],
+        "tools": [],
+        "write_paths": []
+      },
+      "context_fields": [
+        "campaign_goal",
+        "public_task"
+      ],
+      "max_instances": 1,
+      "min_instances": 0,
+      "model": "gpt-6-luna",
+      "model_version": "siwc-responses-v1",
+      "priority": 100,
+      "prompt_digest": "4ca44c41522f40cc5721adf84194404cb3b254a9870d1d3941dfad5597b18af3",
+      "provider": "openai",
+      "role_id": "integration_verifier",
+      "tokens_per_instance": 2048
+    },
+    {
+      "adapter": "codex",
+      "calls_per_instance": 1,
+      "capability_policy": {
+        "backend": "LOCAL",
+        "network_access": false,
+        "policy_version": 1,
+        "read_paths": [
+          "README.md"
+        ],
+        "tools": [
+          "commit_candidate",
+          "read_file",
+          "write_file"
+        ],
+        "write_paths": []
+      },
+      "context_fields": [
+        "budget_remaining",
+        "campaign_goal",
+        "constraints",
+        "dev_summary",
+        "evidence_refs",
+        "node_id",
+        "node_phase",
+        "public_task"
+      ],
+      "max_instances": 1,
+      "min_instances": 0,
+      "model": "gpt-6-luna",
+      "model_version": "siwc-responses-v1",
+      "priority": 100,
+      "prompt_digest": "baf48a50e8e3a9bc388f957bcc3cf8c71b6646f442dcbb8ad5b4df40115698ea",
+      "provider": "openai",
+      "role_id": "optimizer",
+      "tokens_per_instance": 2048
+    },
+    {
+      "adapter": "codex",
+      "calls_per_instance": 1,
+      "capability_policy": {
+        "backend": "LOCAL",
+        "network_access": false,
+        "policy_version": 1,
+        "read_paths": [
+          "README.md"
+        ],
+        "tools": [
+          "commit_candidate",
+          "list_files",
+          "read_file",
+          "write_artifact"
+        ],
+        "write_paths": [
+          "**"
+        ]
+      },
+      "context_fields": [
+        "budget_remaining",
+        "campaign_goal",
+        "dev_summary",
+        "evidence_refs",
+        "node_id",
+        "node_phase",
+        "public_task"
+      ],
+      "max_instances": 1,
+      "min_instances": 0,
+      "model": "gpt-6-luna",
+      "model_version": "siwc-responses-v1",
+      "priority": 100,
+      "prompt_digest": "44cb70a3b531c1942bda3fd5ab52470c94f0e86af98597fccf083cb90e3ec81a",
+      "provider": "openai",
+      "role_id": "researcher",
+      "tokens_per_instance": 2048
+    }
+  ],
+  "version": 1
+}

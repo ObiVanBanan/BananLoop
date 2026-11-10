@@ -22,7 +22,7 @@ from .budget_ledger import BudgetLedger
 from .contracts import ExplorationCampaignSpecV2, utc_now
 from .exploration import EvidenceAdapterError, EvidenceOnlyAttemptAdapter, EvidenceOnlyOutputV2
 from .experiment_intent import same_experiment_intent
-from .evaluator_verification import EvaluatorProtocolDraftV1
+from .evaluator_verification import EvaluatorProtocolDraftV1, EvaluatorProtocolIntentV1
 from .graph_store import AddEdge, AddNode, GraphRepository, MutateGraph
 from .human_decision import HumanDecisionRequestV1, StrategyChangeProposalV1
 from .research_ledger import ResearchLedger
@@ -63,6 +63,7 @@ class ResearcherReplyV1(BaseModel):
     artifact_text: dict[str, str] = Field(default_factory=dict)
     artifact_base64: dict[str, str] = Field(default_factory=dict)
     protocol_draft: EvaluatorProtocolDraftV1 | None = None
+    protocol_intent: EvaluatorProtocolIntentV1 | None = None
     strategy_change_request: StrategyChangeProposalV1 | None = None
 
 
@@ -76,7 +77,12 @@ MAX_ALL_VISIBLE_CHARS = 160_000
 MAX_ARTIFACT_BYTES = 96_000
 
 
-def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, Any]]:
+def make_researcher_invoke(
+    model_reply: ModelReply, *,
+    protocol_binder: Callable[[EvaluatorProtocolIntentV1, str], tuple[
+        EvaluatorProtocolDraftV1, dict[str, bytes],
+    ]] | None = None,
+) -> Callable[..., dict[str, Any]]:
     """Adapt a one-shot *trusted isolated model transport* to a pinned role.
 
     The model receives only public DEV role context and explicitly allowlisted
@@ -86,10 +92,12 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
     """
     if not callable(model_reply):
         raise TypeError("a trusted one-shot model transport is required")
+    protocol_intent_bound = False
 
     def invoke(request: dict[str, Any], gateway: Any, *, adapter: str, provider: str,
                model: str, model_version: str, prompt_digest: str,
                max_model_tokens: int) -> dict[str, Any]:
+        nonlocal protocol_intent_bound
         if adapter != "codex" or provider != "openai":
             raise V2RuntimeError("this bridge only accepts the pinned OpenAI Codex researcher")
         if type(max_model_tokens) is not int or max_model_tokens < 1:
@@ -145,19 +153,59 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
                 "return only strategy_change_request with current_strategy, proposed_strategy, "
                 "rationale, expected_effect, and changed_scope. This creates a request for "
                 "owner review only; it does not authorize a pivot or run another experiment."
+                + "\nTrusted frozen source_snapshot_id: "
+                + str(request.get("base_commit", ""))
+                + ". Copy this exact value into any requested protocol_draft; do not "
+                "guess or derive a different snapshot ID."
+                + ("\nA trusted evaluator fixture is available. When the campaign asks "
+                   "for an evaluator protocol, return protocol_intent with protocol_id, "
+                   "version, metric_id, metric_field, direction, aggregation, "
+                   "repeatability_runs, and timeout_seconds. Do not return a full "
+                   "protocol_draft, hashes, manifests, evaluator code, or tier inputs; "
+                   "Core binds those from the owner-supplied fixture after your response."
+                   if protocol_binder is not None else "")
             ),
         }
         # The broker controls provider/model selection; worker content cannot.
+        invoke.last_usage = None
         raw = model_reply(
             public_input, provider=provider, model=model,
             model_version=model_version, prompt_digest=prompt_digest,
             max_model_tokens=max_model_tokens,
         )
+        invoke.last_usage = getattr(model_reply, "last_usage", None)
         reply = ResearcherReplyV1.model_validate(raw)
+        protocol_draft = reply.protocol_draft
+        bound_protocol_artifacts: dict[str, bytes] = {}
+        if protocol_binder is not None and reply.strategy_change_request is None:
+            if protocol_draft is not None:
+                raise V2RuntimeError(
+                    "fixture campaigns require a Researcher intent; full model-authored protocols are forbidden"
+                )
+            if reply.protocol_intent is None:
+                if not protocol_intent_bound:
+                    raise V2RuntimeError(
+                        "fixture campaign's first ordinary Researcher response must propose protocol_intent"
+                    )
+            elif protocol_intent_bound:
+                raise V2RuntimeError("fixture protocol intent may be proposed only once per runtime invocation")
+            else:
+                try:
+                    protocol_draft, bound_protocol_artifacts = protocol_binder(
+                        reply.protocol_intent, str(request.get("base_commit", "")),
+                    )
+                except Exception as exc:
+                    raise V2RuntimeError(
+                        "Core could not bind Researcher protocol intent to trusted evaluator assets"
+                    ) from exc
+                protocol_intent_bound = True
+        elif reply.protocol_intent is not None:
+            raise V2RuntimeError("protocol intent requires a trusted evaluator fixture")
         if reply.strategy_change_request is not None:
             if (reply.next_experiment is not None or reply.hypotheses
                     or reply.selected_hypothesis_id is not None or reply.evidence_refs
-                    or reply.limitations or reply.research_findings or reply.artifact_text):
+                    or reply.limitations or reply.research_findings or reply.artifact_text
+                    or reply.artifact_base64 or reply.protocol_draft or reply.protocol_intent):
                 raise V2RuntimeError(
                     "strategy-change request must be the only researcher action"
                 )
@@ -271,6 +319,7 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
             raise V2RuntimeError("too many researcher artifacts")
         artifacts: list[dict[str, str]] = []
         bytes_total = 0
+        researcher_bytes_total = 0
         artifact_bytes: dict[str, bytes] = {}
         for name, text in reply.artifact_text.items():
             if not isinstance(name, str) or not isinstance(text, str):
@@ -289,10 +338,17 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
             if base64.b64encode(raw).decode("ascii") != encoded:
                 raise V2RuntimeError("base64 artifact is not in canonical encoding")
             artifact_bytes[name] = raw
+        if set(artifact_bytes) & set(bound_protocol_artifacts):
+            raise V2RuntimeError("Researcher artifact path collides with a trusted protocol asset")
+        researcher_bytes_total = sum(len(raw) for raw in artifact_bytes.values())
+        if researcher_bytes_total > MAX_ARTIFACT_BYTES:
+            raise V2RuntimeError("Researcher artifacts exceed the 96 KB model artifact budget")
+        researcher_artifact_names = set(artifact_bytes)
+        artifact_bytes.update(bound_protocol_artifacts)
         for name, raw_bytes in sorted(artifact_bytes.items()):
             bytes_total += len(raw_bytes)
-            if bytes_total > MAX_ARTIFACT_BYTES:
-                raise V2RuntimeError("researcher artifacts exceed artifact budget")
+            if bytes_total > 25_000_000:
+                raise V2RuntimeError("Researcher and trusted protocol assets exceed artifact budget")
             # ToolGateway is the only write authority.
             gateway.write_artifact(name, raw_bytes)
             artifacts.append({"path": name, "sha256": hashlib.sha256(raw_bytes).hexdigest()})
@@ -303,7 +359,12 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
         # Only trusted Core may bind claims to produced artifact digests.
         # The LLM need not guess SHA-256 values and may not invent refs to
         # unavailable artifacts. Findings remain unverified.
-        produced_refs = {f"artifact://sha256/{item['sha256']}" for item in artifacts}
+        if portfolio is not None:
+            researcher_artifact_names.add("research/hypothesis-portfolio.json")
+        produced_refs = {
+            f"artifact://sha256/{item['sha256']}"
+            for item in artifacts if item["path"] in researcher_artifact_names
+        }
         findings: list[dict[str, Any]] = []
         for raw_finding in reply.research_findings:
             finding = dict(raw_finding)
@@ -323,8 +384,11 @@ def make_researcher_invoke(model_reply: ModelReply) -> Callable[..., dict[str, A
             "limitations": reply.limitations,
             "next_experiment": next_experiment,
             "research_findings": findings,
-            "protocol_draft": (reply.protocol_draft.model_dump(mode="json")
-                               if reply.protocol_draft is not None else None),
+            "protocol_draft": (protocol_draft.model_dump(mode="json")
+                               if protocol_draft is not None else None),
+            "protocol_intent": (reply.protocol_intent.model_dump(mode="json")
+                                if protocol_binder is not None and reply.protocol_intent is not None
+                                else None),
         })
         if not output.artifacts and not output.research_findings and not output.evidence_refs:
             raise V2RuntimeError("researcher returned no auditable evidence")
@@ -498,6 +562,16 @@ class V2ResearchRuntime:
                           else current.reason)
                 return self._finish_campaign_run(status, completed)
             completed.append(result)
+            job_id = result.get("job_id")
+            if isinstance(job_id, str):
+                durable = self.queue.get_result(job_id)
+                model_output = durable.get("result") if isinstance(durable, dict) else None
+                if (isinstance(model_output, dict)
+                        and model_output.get("protocol_draft") is not None):
+                    # A protocol proposal changes what Researcher may do next:
+                    # stop this lane so the pinned independent verifier reviews
+                    # the frozen protocol before any further live exploration.
+                    return self._finish_campaign_run("PROTOCOL_REVIEW_PENDING", completed)
             if result.get("human_decision_request") is not None:
                 return self._finish_campaign_run("PAUSED_NEEDS_INPUT", completed)
             self._recover_followups()

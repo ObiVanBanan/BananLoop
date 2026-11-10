@@ -8,7 +8,10 @@ from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator,
+    model_serializer, model_validator,
+)
 
 
 class Direction(StrEnum):
@@ -943,8 +946,17 @@ class _CampaignSpecV2Base(BaseModel):
     autonomy: AutonomySpecV2
     budget: BudgetSpecV2
     role_registry_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # Optional owner-provided fixture digest. Omitted from legacy hashes when absent.
+    evaluator_fixture_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     feature_flags: FeatureFlagsV2 = Field(default_factory=FeatureFlagsV2)
     parent: ParentCampaignRefV2 | None = None
+
+    @model_serializer(mode="wrap")
+    def serialize_v2_compatibly(self, handler):
+        data = handler(self)
+        if data.get("evaluator_fixture_digest") is None:
+            data.pop("evaluator_fixture_digest", None)
+        return data
 
     def approved_hash(self) -> str:
         """Return the v2 canonical digest without modifying v1 hash semantics."""
@@ -955,6 +967,10 @@ class _CampaignSpecV2Base(BaseModel):
             data["autonomy"].pop("scope", None)
         if isinstance(data.get("evaluation"), dict) and data["evaluation"].get("approval_digest") is None:
             data["evaluation"].pop("approval_digest", None)
+        if data.get("optimization_task") is None:
+            data.pop("optimization_task", None)
+        if data.get("evaluator_fixture_digest") is None:
+            data.pop("evaluator_fixture_digest", None)
         if isinstance(data.get("parent"), dict):
             data["parent"] = {
                 key: value for key, value in data["parent"].items()
@@ -973,9 +989,33 @@ class ExplorationCampaignSpecV2(_CampaignSpecV2Base):
     evaluation: None = None
 
 
+class OptimizationTaskV2(BaseModel):
+    """Researcher-selected hypothesis frozen into an owner-approved child."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    hypothesis_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,79}$")
+    hypothesis: str = Field(min_length=1, max_length=4000)
+    source_campaign_id: str = Field(min_length=1, max_length=200)
+    source_node_id: str = Field(min_length=1, max_length=200)
+    source_job_id: str = Field(min_length=1, max_length=120)
+    source_snapshot_id: str = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+    source_artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence_refs: tuple[str, ...] = Field(default=(), max_length=32)
+
+    @field_validator("evidence_refs")
+    @classmethod
+    def valid_evidence_refs(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not re.fullmatch(r"artifact://sha256/[0-9a-f]{64}", item)
+               for item in values):
+            raise ValueError("Optimization task evidence must use content-addressed artifact refs")
+        return tuple(sorted(set(values)))
+
+
 class OptimizationCampaignSpecV2(_CampaignSpecV2Base):
     mode: Literal["OPTIMIZATION"]
     evaluation: FrozenEvaluatorRefV2
+    optimization_task: OptimizationTaskV2 | None = None
 
 
 CampaignSpecV2 = Annotated[

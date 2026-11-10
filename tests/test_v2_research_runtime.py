@@ -249,6 +249,30 @@ def test_two_real_exploration_nodes_use_refutation_memory_and_preserve_pins(tmp_
         graph.close()
 
 
+def test_research_lane_stops_when_worker_proposes_protocol_for_independent_review(tmp_path, monkeypatch):
+    runtime, graph, queue = _runtime(tmp_path, max_agent_calls=4)
+    calls = []
+    monkeypatch.setattr(queue, "get_result", lambda _job_id: {
+        "result": {"protocol_draft": {"protocol_id": "frozen-by-core"}},
+    })
+
+    def completed_with_protocol(*, node_id, **_kwargs):
+        calls.append(node_id)
+        return {"job_id": "completed-proposal-job", "status": "EXPLORATION_COMPLETED"}
+
+    monkeypatch.setattr(runtime, "run_one", completed_with_protocol)
+    try:
+        result = runtime.run_campaign(
+            visible_paths=["README.md"], invoke=lambda *_a, **_k: {}, max_iterations=3,
+        )
+        assert result["status"] == "PROTOCOL_REVIEW_PENDING"
+        assert result["iterations_this_call"] == 1
+        assert len(calls) == 1
+    finally:
+        queue.close()
+        graph.close()
+
+
 def test_researcher_rejects_score_and_no_evidence(tmp_path):
     runtime, graph, queue = _runtime(tmp_path)
     try:
@@ -692,9 +716,14 @@ def test_hypothesis_portfolio_rejects_action_not_bound_to_selected_candidate(tmp
 def test_completed_research_job_is_projected_after_runtime_restart_without_redelivery(tmp_path):
     runtime, graph, queue = _runtime(tmp_path)
     calls = []
+    frozen_snapshot_id = []
 
-    def model_reply(*_args, **_kwargs):
+    def model_reply(public_input, **_kwargs):
         calls.append("called")
+        assert (
+            f"Trusted frozen source_snapshot_id: {frozen_snapshot_id[0]}."
+            in public_input["instruction"]
+        )
         return {
             "next_experiment": "repeat with a matched control",
             "artifact_text": {"observation.txt": "observed once"},
@@ -703,6 +732,7 @@ def test_completed_research_job_is_projected_after_runtime_restart_without_redel
     try:
         invoke = make_researcher_invoke(model_reply)
         job = runtime.adapter.enqueue(node_id="explore", visible_paths=["README.md"])
+        frozen_snapshot_id.append(job["request"]["base_commit"])
         _manifest, _member, executor = _pinned_executor(
             queue, graph, "campaign-test", runtime.role_registry, job, invoke,
         )

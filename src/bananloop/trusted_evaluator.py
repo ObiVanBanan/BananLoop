@@ -1006,6 +1006,49 @@ class TrustedEvaluatorAdapter:
             "n": metric.n,
         }
 
+    def owner_validation_metric_summary(self, receipt: EvaluatorRunReceiptV1) -> dict[str, Any]:
+        """Return a protected VALIDATION aggregate for the final owner report.
+
+        This is intentionally separate from model-facing role context. Callers
+        must not pass this summary to Researcher, Optimizer, or verifier roles.
+        """
+        from .contracts import OptimizationCampaignSpecV2
+        from .evaluator_verification import EvaluatorProtocolAuthority
+
+        if not isinstance(receipt, EvaluatorRunReceiptV1) or receipt.tier != "validation":
+            raise TrustedEvaluatorError("owner validation summary requires a VALIDATION receipt")
+        spec = self.graph.campaign_spec()
+        if not isinstance(spec, OptimizationCampaignSpecV2):
+            raise TrustedEvaluatorError("owner validation summary requires an Optimization campaign")
+        reference = spec.evaluation
+        authority = EvaluatorProtocolAuthority(self.graph.conn)
+        authority.require_frozen_reference(
+            reference.protocol_id, reference.version, reference.content_sha256,
+            reference.approval_digest, campaign_id=self.campaign_id,
+        )
+        proposal, _ = authority.approved_protocol(reference.approval_digest)
+        protocol = proposal.protocol
+        durable_receipt = authority.require_run_receipt(
+            receipt.receipt_digest, campaign_id=self.campaign_id,
+            spec_hash=spec.approved_hash(), approval_digest=reference.approval_digest,
+            protocol_digest=protocol.content_digest(),
+            candidate_snapshot_id=receipt.candidate_snapshot_id,
+        )
+        if durable_receipt != receipt or durable_receipt.result_digest != receipt.result_digest:
+            raise TrustedEvaluatorError("owner validation summary receipt is stale or untrusted")
+        result = self._load_evaluation_result(receipt.result_digest)
+        metric = result.metrics.get(protocol.metric_field)
+        if result.status != "ok" or metric is None or not math.isfinite(metric.value):
+            raise TrustedEvaluatorError("trusted VALIDATION aggregate metric is invalid")
+        return {
+            "metric_id": protocol.metric_id,
+            "metric_field": protocol.metric_field,
+            "direction": protocol.direction,
+            "value": metric.value,
+            "unit": metric.unit,
+            "n": metric.n,
+        }
+
     def create_integration_evidence(self, *, baseline_run_receipt_digest: str,
                                     candidate_run_receipt_digest: str):
         """Derive candidate-vs-baseline integration checks inside trusted Core.
@@ -1260,18 +1303,26 @@ class TrustedEvaluatorAdapter:
         repo = Path(spec.source_repo).resolve()
         if not repo.is_dir() or repo.is_symlink():
             raise TrustedEvaluatorError("frozen campaign source repository is unavailable")
+
+        def git(args: list[str], *, timeout: int = 15) -> bytes:
+            # Candidate snapshots live under a deeply nested campaign state
+            # directory on Windows. Keep Git for Windows' long-path support
+            # enabled for every read against that repository, not only when
+            # the optimizer originally cloned it.
+            return subprocess.check_output(
+                ["git", "-C", str(repo), "-c", "core.longpaths=true", *args],
+                stderr=subprocess.PIPE, timeout=timeout,
+            )
+
         # v2 Optimizer candidates are committed into a Core-owned private Git
         # snapshot repository. Never import their objects into the user's
         # source repository; resolve the exact content-addressed path instead.
         try:
-            subprocess.check_output(
-                ["git", "-C", str(repo), "cat-file", "-e", f"{candidate_snapshot_id}^{{commit}}"],
-                stderr=subprocess.PIPE, timeout=15,
-            )
+            git(["cat-file", "-e", f"{candidate_snapshot_id}^{{commit}}"])
         except (OSError, subprocess.SubprocessError):
-            snapshot_root = (self.state_root / "v2_optimization" / "snapshots"
-                             / self.campaign_id).resolve()
-            candidate_repo = snapshot_root / candidate_snapshot_id
+            snapshot_root = (self.state_root / "s" / self.campaign_id).resolve()
+            snapshot_key = hashlib.sha256(candidate_snapshot_id.encode("ascii")).hexdigest()[:16]
+            candidate_repo = snapshot_root / snapshot_key
             try:
                 candidate_resolved = candidate_repo.resolve(strict=True)
                 candidate_resolved.relative_to(snapshot_root)
@@ -1285,30 +1336,23 @@ class TrustedEvaluatorAdapter:
             repo = candidate_resolved
         for commit in (source_snapshot_id, candidate_snapshot_id):
             try:
-                resolved = subprocess.check_output(
-                    ["git", "-C", str(repo), "rev-parse", "--verify", "--end-of-options",
-                     f"{commit}^{{commit}}"], stderr=subprocess.PIPE, timeout=15,
-                ).decode("ascii").strip().lower()
+                resolved = git([
+                    "rev-parse", "--verify", "--end-of-options", f"{commit}^{{commit}}",
+                ]).decode("ascii").strip().lower()
             except (OSError, subprocess.SubprocessError, UnicodeError):
                 raise TrustedEvaluatorError("protocol source or candidate snapshot is not available in the pinned repository") from None
             if resolved != commit:
                 raise TrustedEvaluatorError("source and candidate snapshots must be full canonical Git object IDs")
-        ancestor = subprocess.run(
-            ["git", "-C", str(repo), "merge-base", "--is-ancestor", source_snapshot_id,
-             candidate_snapshot_id], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=15, check=False,
-        )
-        if ancestor.returncode != 0:
+        try:
+            git(["merge-base", "--is-ancestor", source_snapshot_id, candidate_snapshot_id])
+        except subprocess.CalledProcessError:
             raise TrustedEvaluatorError("candidate snapshot is not descended from the approved evaluator source")
         policy = getattr(spec.autonomy, "capability_policy", None)
         allowlist = tuple(getattr(policy, "read_paths", ())) if policy is not None else ()
         if not allowlist:
             raise TrustedEvaluatorError("candidate evaluator materialization requires explicit approved read paths")
         try:
-            listing = subprocess.check_output(
-                ["git", "-C", str(repo), "ls-tree", "-rz", "--full-tree", candidate_snapshot_id],
-                stderr=subprocess.PIPE, timeout=30,
-            )
+            listing = git(["ls-tree", "-rz", "--full-tree", candidate_snapshot_id], timeout=30)
         except (OSError, subprocess.SubprocessError):
             raise TrustedEvaluatorError("candidate Git tree cannot be resolved") from None
         files: dict[str, bytes] = {}
@@ -1330,17 +1374,11 @@ class TrustedEvaluatorAdapter:
             if any(part.lower() in _PROTECTED_SEGMENTS for part in PurePosixPath(path).parts):
                 raise TrustedEvaluatorError("candidate snapshot scope includes protected evaluator material")
             try:
-                size = int(subprocess.check_output(
-                    ["git", "-C", str(repo), "cat-file", "-s", oid],
-                    stderr=subprocess.PIPE, timeout=10,
-                ).strip())
+                size = int(git(["cat-file", "-s", oid], timeout=10).strip())
                 total += size
                 if total > _MAX_CANDIDATE_BYTES:
                     raise TrustedEvaluatorError("candidate snapshot exceeds the materialization limit")
-                contents = subprocess.check_output(
-                    ["git", "-C", str(repo), "cat-file", "blob", oid],
-                    stderr=subprocess.PIPE, timeout=15,
-                )
+                contents = git(["cat-file", "blob", oid], timeout=15)
             except TrustedEvaluatorError:
                 raise
             except (OSError, subprocess.SubprocessError, ValueError):

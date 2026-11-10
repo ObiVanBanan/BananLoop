@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -18,8 +19,10 @@ from .chatgpt_responses import (
 )
 from .contracts import (
     AutonomyScopeV2, ExplorationCampaignSpecV2, OptimizationCampaignSpecV2,
+    OptimizationTaskV2,
     PivotExecutionPlanV2, PivotProposal, PivotResourceRequest, RuntimePaths, utc_now,
 )
+from .evaluator_fixture import EvaluatorFixtureV1
 from .graph_store import GraphRepository
 from .migrations import create_v5_graph_schema
 from .registry import CampaignRegistry
@@ -31,6 +34,15 @@ from .worker_queue import DurableWorkerQueue
 
 class V2CampaignCLIError(ValueError):
     """A v2 campaign could not be safely prepared or advanced."""
+
+
+def _required_optimization_evaluator_calls(repeatability_runs: int) -> int:
+    """Minimum evaluator jobs for one candidate to reach a final report."""
+    if (isinstance(repeatability_runs, bool) or not isinstance(repeatability_runs, int)
+            or not 2 <= repeatability_runs <= 10):
+        raise V2CampaignCLIError("approved protocol repeatability count is invalid")
+    # Candidate DEV, baseline/candidate VALIDATION, final champion HOLDOUT.
+    return 4 * repeatability_runs
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -75,7 +87,10 @@ def _read_paths(repo: Path, paths: list[str]) -> tuple[str, ...]:
 
 def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
                 max_agent_calls: int, max_model_tokens: int, model: str,
-                optimization_write_paths: tuple[str, ...] = ()):
+                max_evaluator_calls: int = 16,
+                max_iterations: int = 2,
+                optimization_write_paths: tuple[str, ...] = (),
+                evaluator_fixture_digest: str | None = None):
     if max_agent_calls < 4:
         raise V2CampaignCLIError("--max-agent-calls must be at least 4 to fund the four pinned v2 roles")
     if not set(optimization_write_paths) <= set(paths):
@@ -88,8 +103,13 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
         "backend": "LOCAL",
         "network_access": False,
     }
-    optimizer_calls = max(1, max_agent_calls // 3)
-    researcher_calls = max_agent_calls - optimizer_calls - 2
+    # A bounded Optimization epoch needs one optimizer call and one independent
+    # integration-verifier call. Allocate these as matched pairs, while keeping
+    # room for the requested Exploration iterations and one protocol verifier.
+    researcher_calls = min(max_iterations, max_agent_calls - 3)
+    optimization_pair_budget = max_agent_calls - researcher_calls - 1
+    optimizer_calls = max(1, optimization_pair_budget // 2)
+    integration_calls = optimizer_calls
     optimizer_policy = CapabilityPolicyV2(
         tools=("read_file", "write_file", "commit_candidate"),
         read_paths=paths, write_paths=optimization_write_paths,
@@ -136,8 +156,8 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
                 prompt_digest=hashlib.sha256(INTEGRATION_VERIFIER_INSTRUCTIONS.encode("utf-8")).hexdigest(),
                 capability_policy=verifier_policy,
                 context_fields=("campaign_goal", "public_task"),
-                min_instances=0, max_instances=1, calls_per_instance=1,
-                tokens_per_instance=max_model_tokens,
+                min_instances=0, max_instances=1, calls_per_instance=integration_calls,
+                tokens_per_instance=integration_calls * max_model_tokens,
             ),
         ),
     )
@@ -154,9 +174,11 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
         },
         "budget": {
             "max_agent_calls": max_agent_calls,
+            "max_evaluator_calls": max_evaluator_calls,
             "max_model_tokens": max_agent_calls * max_model_tokens,
         },
         "role_registry_digest": roles.digest(), "evaluation": None,
+        "evaluator_fixture_digest": evaluator_fixture_digest,
     })
     return spec, roles, policy
 
@@ -234,6 +256,124 @@ def _persist_role_registry(state_root: Path, roles: RoleRegistryV1) -> Path:
     return target
 
 
+def _selected_optimization_task(*, proposal: Any, graph: GraphRepository,
+                                state_root: Path,
+                                queue: DurableWorkerQueue,
+                                campaign_id: str) -> OptimizationTaskV2:
+    """Load the Core-ranked Researcher hypothesis that this approved protocol came with."""
+    job = queue.get_job(proposal.source_job_id)
+    durable = queue.get_result(proposal.source_job_id)
+    if (job.get("campaign_id") != campaign_id or job.get("state") != "COMPLETED"
+            or int(durable.get("fence", -1)) != int(job.get("fence", -2))
+            or durable.get("output_digest") != hashlib.sha256(json.dumps(
+                durable.get("result"), sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, allow_nan=False,
+            ).encode("utf-8")).hexdigest()):
+        raise V2CampaignCLIError("approved protocol source Researcher job has no current durable receipt")
+    result = durable.get("result")
+    if not isinstance(result, dict):
+        raise V2CampaignCLIError("approved protocol source Researcher output is missing")
+    artifact = next((item for item in result.get("artifacts", ())
+                     if item.get("path") == "research/hypothesis-portfolio.json"), None)
+    if not isinstance(artifact, dict) or not isinstance(artifact.get("sha256"), str):
+        raise V2CampaignCLIError("approved protocol source has no Core-ranked hypothesis portfolio")
+    artifact_ref = f"artifact://sha256/{artifact['sha256']}"
+    row = graph.conn.execute(
+        "SELECT payload_json FROM events WHERE seq=? AND event_type='EXPLORATION_COMPLETED'",
+        (proposal.source_event_cursor,),
+    ).fetchone()
+    if row is None:
+        raise V2CampaignCLIError("Researcher portfolio has no committed completion event")
+    graph_event = json.loads(row[0])
+    if (graph_event.get("job_id") != proposal.source_job_id
+            or artifact["sha256"] not in graph_event.get("artifact_digests", ())):
+        raise V2CampaignCLIError("Researcher portfolio is absent from its committed evidence event")
+    artifact_path = (state_root / "rpdi05" / "artifacts"
+                     / f"{proposal.source_job_id}-f{durable['fence']}"
+                     / "research" / "hypothesis-portfolio.json")
+    if (artifact_path.is_symlink() or not artifact_path.is_file()
+            or not artifact_path.resolve().is_relative_to(
+                (state_root / "rpdi05" / "artifacts").resolve(),
+            )):
+        raise V2CampaignCLIError("Researcher hypothesis portfolio escaped its artifact root")
+    raw = artifact_path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != artifact["sha256"]:
+        raise V2CampaignCLIError("Researcher hypothesis portfolio digest changed after completion")
+    try:
+        portfolio = json.loads(raw)
+        selected_id = portfolio["core_selection"]["selected_hypothesis_id"]
+        selected = next(item for item in portfolio["candidates"] if item["id"] == selected_id)
+        resolved_evidence_refs: set[str] = {artifact_ref}
+        for evidence_id in selected.get("evidence_refs", ()):
+            if isinstance(evidence_id, str) and evidence_id.startswith("artifact://sha256/"):
+                resolved_evidence_refs.add(evidence_id)
+                continue
+            if not isinstance(evidence_id, str) or not re.fullmatch(r"[0-9a-f]{64}", evidence_id):
+                raise V2CampaignCLIError("selected hypothesis cites an invalid research evidence id")
+            evidence = graph.conn.execute(
+                "SELECT campaign_id, source_job_id, source_fence, output_digest, event_cursor, "
+                "evidence_refs_json, classification FROM research_evidence WHERE evidence_id=?",
+                (evidence_id,),
+            ).fetchone()
+            if evidence is None or evidence["campaign_id"] != campaign_id or evidence["classification"] != "PUBLIC_DEV":
+                raise V2CampaignCLIError("selected hypothesis cites evidence outside public DEV scope")
+            evidence_job = queue.get_job(evidence["source_job_id"])
+            evidence_result = queue.get_result(evidence["source_job_id"])
+            if (evidence_job.get("campaign_id") != campaign_id
+                    or evidence_job.get("state") != "COMPLETED"
+                    or int(evidence_job.get("fence", -1)) != int(evidence["source_fence"])
+                    or int(evidence_result.get("fence", -1)) != int(evidence["source_fence"])
+                    or evidence_result.get("output_digest") != evidence["output_digest"]):
+                raise V2CampaignCLIError("selected hypothesis evidence has no current durable job receipt")
+            evidence_event_row = graph.conn.execute(
+                "SELECT payload_json FROM events WHERE seq=? AND event_type='EXPLORATION_COMPLETED'",
+                (evidence["event_cursor"],),
+            ).fetchone()
+            evidence_event = json.loads(evidence_event_row[0]) if evidence_event_row else None
+            if (not isinstance(evidence_event, dict)
+                    or evidence_event.get("job_id") != evidence["source_job_id"]
+                    or evidence_event.get("output_digest") != evidence["output_digest"]):
+                raise V2CampaignCLIError("selected hypothesis evidence is absent from committed graph history")
+            evidence_result_body = evidence_result.get("result")
+            if not isinstance(evidence_result_body, dict):
+                raise V2CampaignCLIError("selected hypothesis evidence job has no durable result body")
+            source_artifacts = {
+                item.get("sha256"): item.get("path")
+                for item in evidence_result_body.get("artifacts", ())
+                if isinstance(item, dict)
+            }
+            evidence_refs = json.loads(evidence["evidence_refs_json"])
+            if not isinstance(evidence_refs, list):
+                raise V2CampaignCLIError("selected hypothesis evidence references are malformed")
+            for evidence_ref in evidence_refs:
+                match = re.fullmatch(r"artifact://sha256/([0-9a-f]{64})", evidence_ref)
+                if not match or match.group(1) not in source_artifacts:
+                    raise V2CampaignCLIError("selected hypothesis evidence does not resolve to a source artifact")
+                evidence_job_id = evidence["source_job_id"]
+                evidence_fence = evidence["source_fence"]
+                source_path = (state_root / "rpdi05" / "artifacts"
+                               / f"{evidence_job_id}-f{evidence_fence}"
+                               / source_artifacts[match.group(1)])
+                artifact_root = (state_root / "rpdi05" / "artifacts").resolve()
+                if (source_path.is_symlink() or not source_path.is_file()
+                        or not source_path.resolve().is_relative_to(artifact_root)
+                        or hashlib.sha256(source_path.read_bytes()).hexdigest() != match.group(1)):
+                    raise V2CampaignCLIError("selected hypothesis evidence artifact failed integrity check")
+                resolved_evidence_refs.add(evidence_ref)
+        task = OptimizationTaskV2(
+            hypothesis_id=selected_id, hypothesis=selected["hypothesis"],
+            source_campaign_id=campaign_id,
+            source_node_id=proposal.source_node_id,
+            source_job_id=proposal.source_job_id,
+            source_snapshot_id=proposal.source_snapshot_id,
+            source_artifact_sha256=artifact["sha256"],
+            evidence_refs=tuple(resolved_evidence_refs),
+        )
+    except Exception as exc:
+        raise V2CampaignCLIError("Core-ranked Researcher hypothesis portfolio is malformed") from exc
+    return task
+
+
 def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
                                         registry_root: Path,
                                         campaign_id: str, parent_spec: ExplorationCampaignSpecV2,
@@ -249,6 +389,10 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
         return {"status": "NEEDS_EXPLICIT_OPTIMIZATION_WRITE_PATH"}
     authority = EvaluatorProtocolAuthority(graph.conn)
     proposal, receipt = authority.approved_protocol(approval_digest)
+    optimization_task = _selected_optimization_task(
+        proposal=proposal, graph=graph, state_root=state_root, queue=queue,
+        campaign_id=campaign_id,
+    )
     researcher_calls = roles.role("researcher").calls_per_instance
     optimizer_calls = roles.role("optimizer").calls_per_instance
     integration_calls = roles.role("integration_verifier").calls_per_instance
@@ -265,7 +409,11 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
     )
     payload = parent_spec.model_dump(mode="json")
     payload["mode"] = "OPTIMIZATION"
-    payload["goal"] = f"Optimize: {parent_spec.goal}"[:4000]
+    payload["goal"] = (
+        f"Optimize Researcher hypothesis {optimization_task.hypothesis_id}: "
+        f"{optimization_task.hypothesis}"
+    )[:4000]
+    payload["optimization_task"] = optimization_task.model_dump(mode="json")
     payload["evaluation"] = {
         "protocol_id": proposal.protocol.protocol_id,
         "version": proposal.protocol.version,
@@ -279,6 +427,24 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
         "capability_policy": child_policy.model_dump(mode="json"),
     }
     payload["budget"]["max_agent_calls"] = child_calls
+    # One supervised pivot currently represents one candidate experiment. Fund
+    # its complete trusted lifecycle: candidate DEV, baseline VALIDATION,
+    # candidate VALIDATION, and final champion HOLDOUT. Each receipt requires
+    # the repeatability count fixed by the independently approved protocol.
+    # The scheduler records the Optimization task itself and the single
+    # candidate as separate experiment work, so reserve two slots here.
+    payload["budget"]["max_experiments"] = 2
+    required_evaluator_calls = _required_optimization_evaluator_calls(
+        proposal.protocol.repeatability_runs,
+    )
+    if parent_spec.budget.max_evaluator_calls < required_evaluator_calls:
+        raise V2CampaignCLIError(
+            "parent evaluator budget cannot fund the approved one-candidate lifecycle: "
+            f"requires {required_evaluator_calls} calls for repeatability="
+            f"{proposal.protocol.repeatability_runs}, has "
+            f"{parent_spec.budget.max_evaluator_calls}"
+        )
+    payload["budget"]["max_evaluator_calls"] = required_evaluator_calls
     if parent_spec.budget.max_model_tokens is not None:
         per_call = parent_spec.budget.max_model_tokens // parent_spec.budget.max_agent_calls
         payload["budget"]["max_model_tokens"] = child_calls * per_call
@@ -297,7 +463,9 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
         current_architecture="Exploration campaign without an Optimization child",
         proposed_architecture="Protocol-backed v2 Optimization child",
         rationale=("A distinct pinned independent_verifier approved the frozen public evaluator protocol "
-                   f"with approval digest {receipt.approval_digest}."),
+                   f"with approval digest {receipt.approval_digest}. The child is bound to the "
+                   f"Core-selected Researcher hypothesis {optimization_task.hypothesis_id}: "
+                   f"{optimization_task.hypothesis}"),
         expected_effect="Run bounded candidate edits against the frozen trusted evaluator.",
         changed_scope=write_paths,
         resources=PivotResourceRequest(
@@ -409,7 +577,9 @@ def _complete_pending_protocol_reviews(*, graph: GraphRepository, queue: Durable
             receipt = authority.record_completed_verifier_job(queue, verifier_job_id)
             results.append({"proposal_digest": proposal.proposal_digest,
                             "verifier_job_id": verifier_job_id, "decision": receipt.decision,
-                            "approval_digest": receipt.approval_digest})
+                            "approval_digest": receipt.approval_digest,
+                            "checks": receipt.checks, "rationale": receipt.rationale,
+                            "public_diagnostics": receipt.public_diagnostics})
             continue
         if job["state"] != "READY":
             results.append({"proposal_digest": proposal.proposal_digest,
@@ -440,7 +610,9 @@ def _complete_pending_protocol_reviews(*, graph: GraphRepository, queue: Durable
         )
         results.append({"proposal_digest": proposal.proposal_digest,
                         "verifier_job_id": verifier_job_id, "decision": receipt.decision,
-                        "approval_digest": receipt.approval_digest})
+                        "approval_digest": receipt.approval_digest,
+                        "checks": receipt.checks, "rationale": receipt.rationale,
+                        "public_diagnostics": receipt.public_diagnostics})
     return {"calls_used": used_calls, "reviews": results,
             "pending_proposal_digests": [item.proposal_digest
                                           for item in authority.pending_proposals(campaign_id)],
@@ -467,17 +639,37 @@ def _remaining_researcher_calls(queue: DurableWorkerQueue, campaign_id: str,
     return max(0, capacity - int(used))
 
 
-def _aggregate_reported_usage(call_history: list[dict[str, Any]]) -> dict[str, int] | str:
-    """Sum provider usage only when every dispatched request reports same-shaped counters."""
+def _aggregate_reported_usage(call_history: list[dict[str, Any]]) -> dict[str, int | str] | str:
+    """Sum known scalar token counters while ignoring provider-specific nested detail."""
     records = [item.get("usage") for item in call_history if item.get("dispatched")]
     if not records or any(not isinstance(item, dict) or not item for item in records):
         return "UNKNOWN"
-    keys = set(records[0])
-    if any(set(item) != keys for item in records):
+    totals: dict[str, int | str] = {}
+    for key in ("input_tokens", "output_tokens", "total_tokens"):
+        values = [item.get(key) for item in records]
+        if all(type(value) is int and value >= 0 for value in values):
+            totals[key] = sum(values)
+        else:
+            totals[key] = "UNKNOWN"
+    if all(value == "UNKNOWN" for value in totals.values()):
         return "UNKNOWN"
-    if any(type(value) is not int or value < 0 for item in records for value in item.values()):
-        return "UNKNOWN"
-    return {key: sum(item[key] for item in records) for key in sorted(keys)}
+    return totals
+
+
+def _safe_failure_diagnostics(exc: Exception) -> list[dict[str, Any]]:
+    """Return schema locations/messages without copying untrusted response values."""
+    errors = getattr(exc, "errors", None)
+    if not callable(errors):
+        return []
+    try:
+        records = errors(include_input=False, include_context=False, include_url=False)
+    except TypeError:
+        records = errors()
+    return [{
+        "location": [str(part)[:120] for part in item.get("loc", ())[:12]],
+        "type": str(item.get("type", "unknown"))[:120],
+        "message": str(item.get("msg", "validation failed"))[:400],
+    } for item in records[:12] if isinstance(item, dict)]
 
 
 def run_v2_explore(args: Any) -> dict[str, Any]:
@@ -486,6 +678,8 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
     if not isinstance(goal, str) or not goal.strip() or len(goal) > 4000 or "\x00" in goal:
         raise V2CampaignCLIError("--goal must contain 1 to 4000 non-NUL characters")
     if (isinstance(args.max_agent_calls, bool) or not 4 <= args.max_agent_calls <= 100
+            or isinstance(getattr(args, "max_evaluator_calls", 16), bool)
+            or not 1 <= getattr(args, "max_evaluator_calls", 16) <= 1000
             or isinstance(args.max_model_tokens, bool) or not 1 <= args.max_model_tokens <= 100_000
             or isinstance(args.approve_up_to_calls, bool)
             or not 0 <= args.approve_up_to_calls <= args.max_agent_calls
@@ -503,10 +697,20 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
     write_paths = _read_paths(repo, requested_write_paths) if requested_write_paths else ()
     if not set(write_paths) <= set(paths):
         raise V2CampaignCLIError("--optimization-write-path values must also appear in --read-path")
+    fixture = None
+    fixture_path_arg = getattr(args, "evaluator_fixture", None)
+    if fixture_path_arg:
+        try:
+            fixture = EvaluatorFixtureV1.load(fixture_path_arg)
+        except ValueError as exc:
+            raise V2CampaignCLIError(f"--evaluator-fixture is invalid: {exc}") from exc
     spec, roles, _policy = _build_spec(
         repo, goal, paths, max_agent_calls=args.max_agent_calls,
         max_model_tokens=args.max_model_tokens, model=args.model,
+        max_evaluator_calls=getattr(args, "max_evaluator_calls", 16),
+        max_iterations=args.max_iterations,
         optimization_write_paths=write_paths,
+        evaluator_fixture_digest=fixture.content_digest() if fixture else None,
     )
     runtime_paths = RuntimePaths.for_repo(
         repo, Path(args.state_dir).expanduser() if args.state_dir else None,
@@ -515,6 +719,32 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
     entry, state_root, _created = registry.reserve(goal, args.request_id, activate=False)
     database = state_root / "campaign.sqlite3"
     _initialize_campaign(database, spec)
+    if fixture is not None:
+        fixture_bytes = fixture.canonical_bytes()
+        fixture_digest = fixture.content_digest()
+        fixture_dir = state_root / "rpdi05" / "published"
+        fixture_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fixture_asset = fixture_dir / fixture_digest
+        if fixture_asset.is_symlink():
+            raise V2CampaignCLIError("persisted evaluator fixture asset is a symlink")
+        if fixture_asset.exists():
+            if not fixture_asset.is_file() or hashlib.sha256(fixture_asset.read_bytes()).hexdigest() != fixture_digest:
+                raise V2CampaignCLIError("persisted evaluator fixture asset failed integrity check")
+        else:
+            fixture_asset.write_bytes(fixture_bytes)
+            fixture_asset.chmod(0o400)
+        fixture_copy = state_root / "trusted-evaluator-fixture.json"
+        if fixture_copy.is_symlink():
+            raise V2CampaignCLIError("persisted evaluator fixture copy is a symlink")
+        if fixture_copy.exists():
+            try:
+                if EvaluatorFixtureV1.load(fixture_copy).content_digest() != fixture_digest:
+                    raise V2CampaignCLIError("evaluator fixture differs from the frozen campaign digest")
+            except ValueError as exc:
+                raise V2CampaignCLIError("persisted evaluator fixture is invalid") from exc
+        else:
+            fixture_copy.write_bytes(fixture_bytes)
+            fixture_copy.chmod(0o600)
     roles_path = _persist_role_registry(state_root, roles)
 
     ledger = registry.budget_ledger()
@@ -548,6 +778,7 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
         runtime = V2ResearchRuntime(
             graph=graph, queue=queue, campaign_id=entry.campaign_id,
             state_root=state_root, role_registry=roles,
+            trusted_artifact_digests=((fixture.content_digest(),) if fixture else ()),
         )
         if args.approve_up_to_calls == 0:
             return {
@@ -595,17 +826,33 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             researcher_capacity = _remaining_researcher_calls(
                 queue, entry.campaign_id, args.max_agent_calls - 1,
             )
-            iterations = min(args.max_iterations, remaining_approved, researcher_capacity)
+            protocol_gate_closed = bool(
+                reviews_before["pending_proposal_digests"]
+                or (fixture is not None and reviews_before["approved_protocols"])
+            )
+            iterations = (0 if protocol_gate_closed else min(
+                args.max_iterations, remaining_approved, researcher_capacity,
+            ))
             if iterations:
                 result = runtime.run_campaign(
-                    visible_paths=paths, invoke=make_researcher_invoke(researcher),
+                    visible_paths=paths, invoke=make_researcher_invoke(
+                        researcher,
+                        protocol_binder=(
+                            (lambda intent, source: fixture.bind(
+                                intent, source_snapshot_id=source,
+                            )) if fixture else None
+                        ),
+                    ),
                     max_iterations=iterations,
                 )
             else:
                 result = {
-                    "status": ("PROTOCOL_REVIEW_PENDING" if reviews_before["pending_proposal_digests"]
-                               else "CALL_ALLOWANCE_EXHAUSTED" if remaining_approved == 0
-                               else "RESEARCH_ROLE_ALLOCATION_EXHAUSTED"),
+                    "status": (
+                        "PROTOCOL_REVIEW_PENDING" if reviews_before["pending_proposal_digests"]
+                        else "PROTOCOL_APPROVED_AWAITING_OWNER" if protocol_gate_closed
+                        else "CALL_ALLOWANCE_EXHAUSTED" if remaining_approved == 0
+                        else "RESEARCH_ROLE_ALLOCATION_EXHAUSTED"
+                    ),
                     "campaign_id": entry.campaign_id, "iterations_this_call": 0,
                     "completed": [],
                 }
@@ -646,6 +893,9 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
                 "usage": "UNKNOWN", "failure_type": type(exc).__name__,
                 "automatic_replay": False,
             }
+            diagnostics = _safe_failure_diagnostics(exc)
+            if diagnostics:
+                report["failure_diagnostics"] = diagnostics
             report["report_path"] = _write_live_report(state_root, report)
             return {
                 **report, "state_dir": str(state_root),

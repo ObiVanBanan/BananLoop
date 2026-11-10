@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-09",
+  "kind": "FULL_OFFLINE_PYTEST_SUITE",
+  "base_commit": "a7e93aae719bf3a7c5fbeb5f9c53380357c47063",
+  "tracked_src_tests_diff_sha256": "301443c1b831a5c0ea1fe95a0c1f26f5779ffa55f682cc88708f9274b44d59d5",
+  "environment": {
+    "python": "3.12.15",
+    "pytest": "9.2.0",
+    "home": "/tmp/bananloop-full-offline-home",
+    "live_model_flags": false
+  },
+  "command": "env -u BANANLOOP_LIVE_INTEGRATED_OPTIMIZATION -u BANANLOOP_TITANIC_LIVE HOME=/tmp/bananloop-full-offline-home XDG_CONFIG_HOME=/tmp/bananloop-full-offline-home/.config XDG_STATE_HOME=/tmp/bananloop-full-offline-home/.local/state .venv/bin/python -m pytest -o addopts= -vv -ra",
+  "duration_seconds": 65.20,
+  "result": {
+    "passed": 1021,
+    "failed": 0,
+    "skipped": 2,
+    "subtests_passed": 7
+  },
+  "skip_reasons": [
+    "Pinned selector source commit cd753c97c62148c3ccd3f030251e96a4d19b23bd is unavailable in this checkout.",
+    "Windows ACL/reparse-point contract."
+  ],
+  "git_diff_check": "passed",
+  "live_model_calls": 0,
+  "autonomous_full_live_campaign_proven": false,
+  "note": "An initial unisolated run was interrupted after detecting SQLite WAL writes under the user home; the completed suite was rerun with HOME and XDG paths under /tmp."
+}

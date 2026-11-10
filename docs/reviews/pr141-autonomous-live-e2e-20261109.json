@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "status": "LIVE_E2E_PASS_WITH_MODEL_TOKEN_METERING_FOLLOWUP",
+  "date": "2026-11-09",
+  "campaign_id": "c-5ba8c2fc90ff620b19c25cb2964c7ffb",
+  "child_campaign_id": "c-e9d1a7e61554325b87810130adf53357",
+  "parent_spec_hash": "ac9c2759f5712cac69a0ac28c4b1b477ffb983b628c828569e9dcdf1c6973e1e",
+  "child_spec_hash": "93f01b36a12f02ffa3efecc45fabe4682af35233cf5b2599614442e297e23dcb",
+  "parent_protocol_preseeded": false,
+  "protocol_verifier_fixture_answer": false,
+  "owner_approval_digest": "1f41577b3a546bfb30186d5f6a71e2a6d39063b1fe3a2ca965de8d7e0bc858d9",
+  "protocol_approval_digest": "b2ac3c6acf1105a765dfaed3293062a5ebb2b4a04d951961051ee763f8e68bb9",
+  "provider": "openai",
+  "model": "gpt-6-luna",
+  "automatic_retries": 0,
+  "calls": [
+    {
+      "role": "researcher",
+      "request_id": "resp_0ed4dadf251d0872016af1e313b0a087d2b5c640ca5e1c7ff3",
+      "total_tokens": 2889
+    },
+    {
+      "role": "independent_verifier",
+      "request_id": "resp_0e4866da82715b45016af1e332794087d2af3e3f9c713714e1",
+      "total_tokens": 3106
+    },
+    {
+      "role": "optimizer",
+      "request_id": "resp_0f943c8b029050c3016af1f197260887d29a7d3bf994b369ae",
+      "total_tokens": 660
+    },
+    {
+      "role": "integration_verifier",
+      "request_id": "resp_0476e9328d226712016af1f19e3b3487d2b018ebd97de93251",
+      "total_tokens": 907
+    }
+  ],
+  "changed_paths": [
+    "src/optimizer/model/ranker.py"
+  ],
+  "baseline_snapshot_id": "32158428189e00b3137bd5f136855b3cb5dc67a4",
+  "candidate_snapshot_id": "49f29a2dbcac240e5f6d11bb4bd66787a73c563d",
+  "validation": {
+    "metric": "accuracy",
+    "baseline": 0.5,
+    "candidate": 1.0,
+    "delta": 0.5
+  },
+  "holdout": {
+    "status": "VERIFIED",
+    "metric": "accuracy",
+    "baseline": null,
+    "candidate": 1.0,
+    "delta": null,
+    "cases": 2,
+    "repeatability_runs": 3
+  },
+  "budget": {
+    "agent_calls": {
+      "cap": 2,
+      "spent": 2
+    },
+    "evaluator_calls": {
+      "cap": 12,
+      "spent": 12
+    },
+    "optimizer_model_tokens": {
+      "cap": 16384,
+      "spent": 660,
+      "unknown": 0
+    },
+    "reported_integration_verifier_tokens_not_charged": 907,
+    "accounting_status": "UNDERCOUNTED_IN_ORIGINAL_RUN"
+  },
+  "monetary_cost": "UNKNOWN",
+  "current_audit": {
+    "audited_at": "2026-11-10",
+    "parent_and_child_campaign_databases_available": false,
+    "independent_reconstruction_status": "NOT_VERIFIED",
+    "fresh_followup_campaign_available": true,
+    "fresh_followup_campaign_id": "c-d2f1322cc4ee387e922d97950cea5486",
+    "fresh_followup_child_campaign_id": "c-bde7eb039db079521a3791cb161bf36b",
+    "note": "Historical 2026-11-09 databases remain unavailable; a distinct fresh campaign completed on 2026-11-10 and is documented in pr141-live-e2e-20261110.json."
+  },
+  "follow_up": "Fresh campaign completed; see pr141-live-e2e-20261110.json. Historical campaign remains not independently verified."
+}

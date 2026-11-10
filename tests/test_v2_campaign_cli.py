@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pydantic import BaseModel, ValidationError
 
 from bananloop.budget_ledger import BudgetLedger
 from bananloop.cli import cmd_v2_explore, cmd_v2_optimize, parser
@@ -16,7 +17,11 @@ from bananloop.contracts import OptimizationCampaignSpecV2
 from bananloop.contracts import RuntimePaths
 from bananloop.graph_store import GraphRepository
 from bananloop.registry import CampaignRegistry, RegistryError
-from bananloop.v2_campaign_cli import V2CampaignCLIError, run_v2_explore
+from bananloop.v2_campaign_cli import (
+    V2CampaignCLIError, _aggregate_reported_usage, _required_optimization_evaluator_calls,
+    _safe_failure_diagnostics,
+    run_v2_explore,
+)
 from bananloop.v2_optimization_cli import V2OptimizationCLIError, _safe_paths
 from bananloop.v2_optimization_cli import run_v2_optimize
 
@@ -31,6 +36,31 @@ def _repo(tmp_path):
     subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "public baseline"], check=True)
     return repo
+
+
+def test_v2_usage_aggregation_keeps_scalar_tokens_from_nested_siwc_usage():
+    calls = [
+        {"dispatched": True, "usage": {"input_tokens": 993, "output_tokens": 972,
+                                          "total_tokens": 1965, "attribution": {"a": {}}}},
+        {"dispatched": True, "usage": {"input_tokens": 1163, "output_tokens": 1136,
+                                          "total_tokens": 2299, "attribution": {"b": {}}}},
+    ]
+    assert _aggregate_reported_usage(calls) == {
+        "input_tokens": 2156, "output_tokens": 2108, "total_tokens": 4264,
+    }
+    assert _aggregate_reported_usage([{"dispatched": True, "usage": "UNKNOWN"}]) == "UNKNOWN"
+
+
+def test_failure_diagnostics_report_schema_location_without_echoing_model_input():
+    class StrictOutput(BaseModel):
+        decision: str
+
+    with pytest.raises(ValidationError) as caught:
+        StrictOutput.model_validate({"decision": {"private": "untrusted model payload"}})
+    diagnostics = _safe_failure_diagnostics(caught.value)
+    assert diagnostics
+    assert "decision" in diagnostics[0]["location"]
+    assert all("private" not in json.dumps(item) for item in diagnostics)
 
 
 def _args(repo, state_dir, **overrides):
@@ -53,6 +83,59 @@ def test_cli_explore_is_a_separate_v2_route():
     assert args.approve_up_to_calls == 0
     assert args.model == "gpt-6-luna"
     assert args.max_agent_calls == 8
+    assert args.max_evaluator_calls == 16
+    assert args.evaluator_fixture is None
+
+
+@pytest.mark.parametrize(("repeats", "expected"), [(2, 8), (3, 12), (10, 40)])
+def test_one_candidate_optimization_budget_covers_all_trusted_tiers(repeats, expected):
+    assert _required_optimization_evaluator_calls(repeats) == expected
+
+
+@pytest.mark.parametrize("repeats", [True, 1, 11, 3.0])
+def test_optimization_budget_rejects_invalid_protocol_repeatability(repeats):
+    with pytest.raises(V2CampaignCLIError, match="repeatability count is invalid"):
+        _required_optimization_evaluator_calls(repeats)
+
+
+def test_evaluator_fixture_is_frozen_and_persisted_before_any_live_call(tmp_path):
+    import base64
+    import hashlib
+
+    from bananloop.evaluator_fixture import EvaluatorFixtureV1
+    from bananloop.graph_store import GraphRepository
+
+    repo = _repo(tmp_path)
+    state_dir = tmp_path / "campaign-state"
+    fixture_path = tmp_path / "fixture.json"
+    encode = lambda raw: base64.b64encode(raw).decode("ascii")
+    fixture = EvaluatorFixtureV1.model_validate({
+        "schema_version": 1,
+        "evaluator_bundle_base64": encode(b"evaluator bundle"),
+        "entrypoint": ["python3", "{evaluator}/evaluate.py"],
+        "tiers": [
+            {"tier": tier, "cases": [{"case_id": f"{tier}-1", "input_base64": encode(tier.encode())}]}
+            for tier in ("dev", "holdout", "validation")
+        ],
+    })
+    fixture_path.write_bytes(fixture.canonical_bytes())
+
+    result = run_v2_explore(_args(
+        repo, state_dir, evaluator_fixture=str(fixture_path),
+    ))
+
+    assert result["status"] == "READY_FOR_OWNER_APPROVAL"
+    assert result["live_model_called"] is False
+    state_root = Path(result["state_dir"])
+    graph = GraphRepository.open(str(state_root / "campaign.sqlite3"), campaign_id=result["campaign_id"])
+    try:
+        spec = graph.campaign_spec()
+        assert spec.evaluator_fixture_digest == fixture.content_digest()
+        assert (state_root / "trusted-evaluator-fixture.json").is_file()
+        published = state_root / "rpdi05" / "published" / fixture.content_digest()
+        assert hashlib.sha256(published.read_bytes()).hexdigest() == fixture.content_digest()
+    finally:
+        graph.close()
 
 
 def test_v2_exploration_budget_reserves_one_tool_free_protocol_review_call(tmp_path):
@@ -67,13 +150,11 @@ def test_v2_exploration_budget_reserves_one_tool_free_protocol_review_call(tmp_p
     verifier = roles.role("independent_verifier")
     optimizer = roles.role("optimizer")
     integration_verifier = roles.role("integration_verifier")
-    assert spec.budget.max_agent_calls == sum(
-        role.calls_per_instance for role in roles.roles
-    )
-    assert spec.budget.max_model_tokens == sum(role.tokens_per_instance for role in roles.roles)
+    assert sum(role.calls_per_instance for role in roles.roles) <= spec.budget.max_agent_calls
+    assert sum(role.tokens_per_instance for role in roles.roles) <= spec.budget.max_model_tokens
     assert researcher.calls_per_instance == 2
     assert verifier.calls_per_instance == 1
-    assert optimizer.calls_per_instance == 2
+    assert optimizer.calls_per_instance == 1
     assert integration_verifier.calls_per_instance == 1
     assert researcher.min_instances == verifier.min_instances == 0
     assert optimizer.min_instances == integration_verifier.min_instances == 0
@@ -81,6 +162,39 @@ def test_v2_exploration_budget_reserves_one_tool_free_protocol_review_call(tmp_p
     assert verifier.capability_policy.read_paths == ()
     assert verifier.capability_policy.write_paths == ()
     assert verifier.capability_policy.network_access is False
+
+
+def test_v2_default_call_budget_preserves_exploration_and_funds_two_paired_epochs(tmp_path):
+    from bananloop.v2_campaign_cli import _build_spec
+
+    repo = _repo(tmp_path)
+    spec, roles, _policy = _build_spec(
+        repo, "Explore then optimize", ("README.md",),
+        max_agent_calls=8, max_model_tokens=128, model="gpt-6-luna",
+    )
+    assert spec.budget.max_agent_calls == 8
+    assert spec.budget.max_evaluator_calls == 16
+    assert roles.role("researcher").calls_per_instance == 2
+    assert roles.role("independent_verifier").calls_per_instance == 1
+    assert roles.role("optimizer").calls_per_instance == 2
+    assert roles.role("integration_verifier").calls_per_instance == 2
+    assert sum(role.calls_per_instance for role in roles.roles) == 7
+
+
+def test_v2_nine_call_budget_funds_three_paired_optimization_epochs(tmp_path):
+    from bananloop.v2_campaign_cli import _build_spec
+
+    repo = _repo(tmp_path)
+    spec, roles, _policy = _build_spec(
+        repo, "Explore then optimize", ("README.md",),
+        max_agent_calls=9, max_model_tokens=128, model="gpt-6-luna",
+    )
+    assert spec.budget.max_agent_calls == 9
+    assert roles.role("researcher").calls_per_instance == 2
+    assert roles.role("independent_verifier").calls_per_instance == 1
+    assert roles.role("optimizer").calls_per_instance == 3
+    assert roles.role("integration_verifier").calls_per_instance == 3
+    assert sum(role.calls_per_instance for role in roles.roles) == 9
 
 
 def test_cli_optimize_is_a_separate_owner_approved_v2_route():
@@ -239,6 +353,7 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
 
         def __call__(self, public_input, **_pin):
             assert public_input == {"offline_cli_check": True}
+            self.last_usage = {"total_tokens": 31}
             receipt = {
                 "request_id": "resp_offline_cli_optimizer", "status": "COMPLETED",
                 "dispatched": True, "usage": {"total_tokens": 31},
@@ -274,6 +389,7 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
                 model="gpt-6-luna", model_version="offline-v1",
                 prompt_digest="a" * 64, max_model_tokens=100,
             )
+            assert kwargs["model_reply"].last_usage == {"total_tokens": 31}
             executor = kwargs["integration_verifier_executor"]
             member = executor.member
             kwargs["integration_verifier_executor"].dispatch({
@@ -313,6 +429,185 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
         ).fetchone()[0] == 1
     finally:
         conn.close()
+
+    # Simulate a process/reporting failure after the runtime durably completed
+    # the graph. Recovery must finalize from the saved trusted evidence without
+    # reconstructing provider clients or dispatching another request.
+    saved_report = {
+        "campaign_id": entry.campaign_id,
+        "status": "ALL_NODES_COMPLETE",
+        "baseline_candidate_delta": {"status": "VERIFIED"},
+        "integration_evidence": [{"decision": "PASS"}],
+        "holdout": {"status": "VERIFIED"},
+        "provider_calls": [{"request_id": "previous-live-call"}],
+    }
+    reports_dir = state_root / "reports"
+    reports_dir.mkdir(exist_ok=True)
+    (reports_dir / f"v2-optimization-{entry.campaign_id}.json").write_text(
+        json.dumps(saved_report), encoding="utf-8",
+    )
+    reset_conn = __import__("sqlite3").connect(state_root / "campaign.sqlite3")
+    try:
+        reset_conn.execute("ALTER TABLE campaigns ADD COLUMN updated_at TEXT")
+        reset_conn.execute("UPDATE campaigns SET status='READY' WHERE id=1")
+        reset_conn.commit()
+    finally:
+        reset_conn.close()
+
+    class CompletedRuntime:
+        def __init__(self, **_kwargs):
+            pass
+
+        def plan(self):
+            return SimpleNamespace(reason="ALL_NODES_COMPLETE")
+
+        def run_campaign(self, **kwargs):
+            assert "model_reply" not in kwargs
+            assert "integration_verifier_executor" not in kwargs
+            return {"status": "ALL_NODES_COMPLETE", "campaign_id": entry.campaign_id}
+
+    monkeypatch.setattr("bananloop.v2_optimization_cli.ChatGPTPlanAuth", NoAuthAllowed)
+    monkeypatch.setattr("bananloop.v2_optimization_cli.V2OptimizationRuntime", CompletedRuntime)
+    recovered = run_v2_optimize(Namespace(
+        repo=str(repo), state_dir=str(state_dir), campaign_id=entry.campaign_id,
+        role_registry=str(role_path), visible_path=["data/train.csv", "src/model.json"],
+        write_path=["src/model.json"], approve_up_to_calls=0, max_steps=8,
+        timeout_seconds=60,
+    ))
+    assert recovered["status"] == "ALL_NODES_COMPLETE"
+    assert recovered["recovery_mode"] == "FINALIZATION_ONLY"
+    assert recovered["provider_call_attempts"] == 0
+    assert recovered["campaign_provider_call_count"] == 1
+    assert recovered["live_model_called"] is False
+    assert recovered["campaign_terminal_status"] == "GOAL_MET"
+    assert Path(recovered["recovery_report_path"]).is_file()
+    recovery_json = json.loads(Path(recovered["recovery_report_path"]).read_text(encoding="utf-8"))
+    assert recovery_json["recovery_report_path"] == recovered["recovery_report_path"]
+    assert recovery_json["campaign_provider_call_count"] == 1
+    terminal_conn = __import__("sqlite3").connect(state_root / "campaign.sqlite3")
+    try:
+        assert terminal_conn.execute("SELECT status FROM campaigns WHERE id=1").fetchone()[0] == "GOAL_MET"
+    finally:
+        terminal_conn.close()
+
+
+def test_completed_pivot_child_finalizes_parent_from_frozen_approval_lineage(tmp_path):
+    from types import SimpleNamespace
+
+    from bananloop.v2_optimization_cli import _mark_parent_campaign_complete
+
+    repo = _repo(tmp_path)
+    state_dir = tmp_path / "registry-state"
+    registry = CampaignRegistry(repo, paths=RuntimePaths.for_repo(repo, state_dir))
+    parent, parent_state, _ = registry.reserve("Complete approved research campaign", "parent-finalize")
+    child_entry, child_state, _ = registry.reserve("Completed child", "child-finalize")
+    child_id = child_entry.campaign_id
+    parent_spec_hash = "1" * 64
+    child_spec_hash = "2" * 64
+    proposal_id = "pivot-" + "3" * 24
+    proposal_digest = "4" * 64
+    decision_id = "owner-approval-1"
+    handoff_digest = "5" * 64
+    protocol_approval = "6" * 64
+    parent_db = parent_state / "campaign.sqlite3"
+    conn = __import__("sqlite3").connect(parent_db)
+    try:
+        conn.executescript("""
+            CREATE TABLE campaigns (
+                id INTEGER PRIMARY KEY, spec_hash TEXT NOT NULL, status TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE events (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL, created_at TEXT NOT NULL
+            );
+            CREATE TABLE v2_pivot_decisions (
+                request_id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, digest TEXT NOT NULL,
+                decision TEXT NOT NULL, status TEXT NOT NULL
+            );
+        """)
+        conn.execute(
+            "INSERT INTO campaigns VALUES(1,?,'PAUSED_NEEDS_INPUT','now')",
+            (parent_spec_hash,),
+        )
+        conn.execute(
+            "INSERT INTO v2_pivot_decisions VALUES(?,?,?,?,?)",
+            (decision_id, proposal_id, proposal_digest, "approve", "APPROVED"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    child_db = __import__("sqlite3").connect(child_state / "campaign.sqlite3")
+    try:
+        child_db.executescript("""
+            CREATE TABLE campaigns (id INTEGER PRIMARY KEY, spec_hash TEXT, status TEXT);
+            CREATE TABLE evaluator_protocol_handoffs (
+                handoff_digest TEXT NOT NULL, child_spec_hash TEXT NOT NULL,
+                approval_digest TEXT NOT NULL, parent_campaign_id TEXT NOT NULL,
+                child_campaign_id TEXT NOT NULL
+            );
+        """)
+        child_db.execute(
+            "INSERT INTO campaigns VALUES(1,?,'GOAL_MET')", (child_spec_hash,),
+        )
+        child_db.execute(
+            "INSERT INTO evaluator_protocol_handoffs VALUES(?,?,?,?,?)",
+            (handoff_digest, child_spec_hash, protocol_approval,
+             parent.campaign_id, child_id),
+        )
+        child_db.commit()
+    finally:
+        child_db.close()
+    reports = parent_state / "reports"
+    reports.mkdir()
+    report_path = reports / f"v2-final-{parent.campaign_id}.json"
+    report_path.write_text(json.dumps({
+        "campaign_id": parent.campaign_id, "status": "ALL_NODES_COMPLETE",
+        "optimization_campaign_id": child_id,
+        "exploration_report": {"protocol_review": {"approval_digest": protocol_approval}},
+    }), encoding="utf-8")
+
+    parent_ref = SimpleNamespace(
+            parent_campaign_id=parent.campaign_id,
+            parent_spec_hash=parent_spec_hash,
+            allocation_id="allocation-1",
+            pivot_decision_id=decision_id,
+            pivot_proposal_id=proposal_id,
+            pivot_proposal_digest=proposal_digest,
+            protocol_handoff_digest=handoff_digest,
+        )
+
+    class ChildSpec:
+        parent = parent_ref
+
+        def approved_hash(self):
+            return child_spec_hash
+
+    result = _mark_parent_campaign_complete({
+        "campaign_id": child_id, "status": "ALL_NODES_COMPLETE",
+    }, spec=ChildSpec(), database=child_state / "campaign.sqlite3", registry=registry)
+    assert result["parent_campaign_terminal_status"] == "GOAL_MET"
+    final_report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert final_report["campaign_terminal_status"] == "GOAL_MET"
+    parent_conn = __import__("sqlite3").connect(parent_db)
+    try:
+        assert parent_conn.execute("SELECT status FROM campaigns WHERE id=1").fetchone()[0] == "GOAL_MET"
+        assert parent_conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type='V2_CAMPAIGN_TERMINAL'",
+        ).fetchone()[0] == 1
+    finally:
+        parent_conn.close()
+
+    _mark_parent_campaign_complete({
+        "campaign_id": child_id, "status": "ALL_NODES_COMPLETE",
+    }, spec=ChildSpec(), database=child_state / "campaign.sqlite3", registry=registry)
+    parent_conn = __import__("sqlite3").connect(parent_db)
+    try:
+        assert parent_conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type='V2_CAMPAIGN_TERMINAL'",
+        ).fetchone()[0] == 1
+    finally:
+        parent_conn.close()
 
 
 def test_cli_entrypoint_creates_persisted_v2_campaign_without_auth(tmp_path):

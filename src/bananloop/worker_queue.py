@@ -760,6 +760,84 @@ class DurableWorkerQueue:
             self._event(job_id, "UNKNOWN_RECONCILED", int(job["fence"]), response)
             return response
 
+    def reconcile_completed_usage(
+        self, job_id: str, *, actual_usage: dict[str, int],
+        provider_receipt_digest: str, output_digest: str,
+    ) -> dict[str, Any]:
+        """Settle secondary resources omitted from an otherwise completed job.
+
+        The caller must verify the provider receipt. The original worker result,
+        output digest, fence, and all already-known resource amounts remain
+        pinned; this only replaces previously UNKNOWN secondary usage.
+        """
+        self._validate_job_id(job_id)
+        self._validate_digest(provider_receipt_digest, "provider_receipt_digest")
+        self._validate_digest(output_digest, "output_digest")
+        if not isinstance(actual_usage, dict) or not actual_usage:
+            raise WorkerQueueError("actual_usage must be a nonempty mapping")
+        if any(not isinstance(key, str) or isinstance(value, bool)
+               or not isinstance(value, int) or value < 0
+               for key, value in actual_usage.items()):
+            raise WorkerQueueError("actual_usage amounts must be nonnegative integers")
+        with self._transaction():
+            job = self.conn.execute("SELECT * FROM worker_jobs WHERE job_id=?", (job_id,)).fetchone()
+            prior = self.conn.execute("SELECT * FROM worker_results WHERE job_id=?", (job_id,)).fetchone()
+            if job is None or prior is None or job["state"] != "COMPLETED":
+                raise WorkerQueueError("usage reconciliation requires a completed job result")
+            if int(prior["fence"]) != int(job["fence"]) or prior["output_digest"] != output_digest:
+                raise WorkerQueueError("usage reconciliation does not match the completed result")
+            response = json.loads(prior["response_json"])
+            usage = response.get("actual_usage")
+            if not isinstance(usage, dict):
+                raise WorkerQueueError("completed result has no resource usage record")
+            unknown = {key for key, value in usage.items() if value is None}
+            already = response.get("usage_reconciliations", {})
+            if not unknown:
+                if (all(usage.get(key) == value for key, value in actual_usage.items())
+                        and all(already.get(key) == provider_receipt_digest
+                                for key in actual_usage)):
+                    return response
+                raise WorkerQueueError("completed job has no unresolved resource usage")
+            if set(actual_usage) != unknown:
+                raise WorkerQueueError("reconciliation must resolve every UNKNOWN resource exactly once")
+            bounds = self._resource_bounds(job_id)
+            if any(key not in bounds for key in unknown):
+                raise WorkerQueueError("unknown usage resource is outside the job reservation")
+            reservations = {row["resource"]: row for row in self._reservation_rows(job)}
+            for resource, amount in actual_usage.items():
+                reservation = reservations.get(resource)
+                if reservation is None:
+                    raise WorkerQueueError("unknown usage resource has no durable reservation")
+                self.ledger.settle_action(
+                    reservation["reservation_id"], actual=amount, quality="actual",
+                    receipt_digest=provider_receipt_digest,
+                    fence=int(job["fence"]), authoritative=True,
+                )
+                usage[resource] = amount
+            reconciliations = dict(already)
+            reconciliations.update({key: provider_receipt_digest for key in actual_usage})
+            response["actual_usage"] = usage
+            response["usage_reconciliations"] = reconciliations
+            response["usage_quality"] = "actual"
+            snapshot = self.ledger.snapshot(job["campaign_id"])
+            breached = {
+                name: snapshot[name]["spent"] + snapshot[name]["reserved"]
+                + snapshot[name]["unknown"] > snapshot[name]["cap"]
+                for name in usage
+            }
+            response["budget_breached_by_resource"] = breached
+            response["budget_breached"] = any(breached.values())
+            self.conn.execute(
+                "UPDATE worker_results SET response_json=? WHERE job_id=?",
+                (_canonical(response), job_id),
+            )
+            self._event(job_id, "USAGE_RECONCILED", int(job["fence"]), {
+                "actual_usage": actual_usage,
+                "provider_receipt_digest": provider_receipt_digest,
+                "output_digest": output_digest,
+            })
+            return response
+
     def get_job(self, job_id: str) -> dict[str, Any]:
         row = self.conn.execute("SELECT * FROM worker_jobs WHERE job_id=?", (job_id,)).fetchone()
         if row is None:
