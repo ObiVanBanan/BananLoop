@@ -51,6 +51,26 @@ def _format_report_metric(metric: dict[str, Any] | None) -> str:
     return f"{value} {unit}" if unit else str(value)
 
 
+def _provider_call_summaries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    calls = []
+    for row in conn.execute(
+        "SELECT payload_json FROM events WHERE event_type='V2_PROVIDER_CALL' ORDER BY seq"
+    ):
+        receipt = json.loads(row[0])
+        raw_usage = receipt.get("usage")
+        usage = ({key: raw_usage.get(key) for key in
+                  ("input_tokens", "output_tokens", "total_tokens")}
+                 if isinstance(raw_usage, dict) else "UNKNOWN")
+        calls.append({
+            "role_id": receipt.get("role_id"),
+            "request_id": receipt.get("request_id"),
+            "status": receipt.get("status", "UNKNOWN"),
+            "dispatched": receipt.get("dispatched") is True,
+            "usage": usage,
+        })
+    return calls
+
+
 def _render_final_report_markdown(report: dict[str, Any]) -> str:
     """Render a public, owner-readable campaign summary beside the JSON report."""
     optimization = report.get("optimization_report", report)
@@ -93,7 +113,7 @@ def _render_final_report_markdown(report: dict[str, Any]) -> str:
             f"- Cases: {holdout.get('case_count', 'UNKNOWN')}",
             f"- Repeatability runs: {holdout.get('repeatability_runs', 'UNKNOWN')}",
         ])
-    provider_calls = optimization.get("provider_calls", [])
+    provider_calls = report.get("provider_calls", optimization.get("provider_calls", []))
     if provider_calls:
         lines.extend([
             "", "## Provider calls", "",
@@ -1220,26 +1240,7 @@ class V2OptimizationRuntime:
                 "WHERE campaign_id=? ORDER BY rowid", (self.campaign_id,),
             )
         ]
-        provider_calls = []
-        for row in self.graph.conn.execute(
-            "SELECT payload_json FROM events WHERE event_type='V2_PROVIDER_CALL' ORDER BY seq"
-        ):
-            receipt = json.loads(row["payload_json"])
-            usage = receipt.get("usage")
-            if isinstance(usage, dict):
-                usage = {
-                    key: usage.get(key)
-                    for key in ("input_tokens", "output_tokens", "total_tokens")
-                }
-            else:
-                usage = "UNKNOWN"
-            provider_calls.append({
-                "role_id": receipt.get("role_id"),
-                "request_id": receipt.get("request_id"),
-                "status": receipt.get("status", "UNKNOWN"),
-                "dispatched": receipt.get("dispatched") is True,
-                "usage": usage,
-            })
+        provider_calls = _provider_call_summaries(self.graph.conn)
         report = {
             "schema_version": 1, "campaign_id": self.campaign_id,
             "mode": "OPTIMIZATION", "goal": spec.goal,
@@ -1284,6 +1285,42 @@ class V2OptimizationRuntime:
             parent_state, _ = CampaignRegistry(source_repo, paths=registry_paths).resolve_readonly(
                 spec.parent.parent_campaign_id,
             )
+            parent_db = parent_state / "campaign.sqlite3"
+            parent_provider_calls = []
+            verifier_row = None
+            owner_row = None
+            if parent_db.is_symlink():
+                raise V2OptimizationError("parent campaign database is unsafe")
+            if parent_db.is_file():
+                parent_conn = sqlite3.connect(parent_db.resolve().as_uri() + "?mode=ro", uri=True)
+                parent_conn.row_factory = sqlite3.Row
+                try:
+                    parent_identity = parent_conn.execute(
+                        "SELECT spec_hash FROM campaigns WHERE id=1",
+                    ).fetchone()
+                    parent_spec_hash = getattr(spec.parent, "parent_spec_hash", None)
+                    if (parent_identity is None or (parent_spec_hash is not None
+                            and parent_identity["spec_hash"] != parent_spec_hash)):
+                        raise V2OptimizationError(
+                            "parent campaign spec identity does not match frozen child lineage",
+                        )
+                    parent_provider_calls = _provider_call_summaries(parent_conn)
+                    tables = {row[0] for row in parent_conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'",
+                    )}
+                    verifier_row = (parent_conn.execute(
+                        "SELECT proposal_digest,protocol_digest,approval_digest,decision,receipt_digest "
+                        "FROM evaluator_verifier_receipts WHERE campaign_id=? "
+                        "ORDER BY rowid DESC LIMIT 1", (spec.parent.parent_campaign_id,),
+                    ).fetchone() if "evaluator_verifier_receipts" in tables else None)
+                    pivot_decision_id = getattr(spec.parent, "pivot_decision_id", None)
+                    if pivot_decision_id and "v2_pivot_decisions" in tables:
+                        owner_row = parent_conn.execute(
+                            "SELECT proposal_id,digest,decision,status FROM v2_pivot_decisions "
+                            "WHERE request_id=?", (pivot_decision_id,),
+                        ).fetchone()
+                finally:
+                    parent_conn.close()
             parent_report_path = (parent_state / "reports" /
                                   f"v2-exploration-{spec.parent.parent_campaign_id}.json")
             exploration_report = None
@@ -1324,14 +1361,44 @@ class V2OptimizationRuntime:
                         }
                     finally:
                         parent_conn.close()
+            if (isinstance(exploration_report, dict)
+                    and exploration_report.get("status") == "PROTOCOL_REVIEW_PENDING"
+                    and verifier_row is not None
+                    and verifier_row["decision"] == "APPROVE"):
+                exploration_report = dict(exploration_report)
+                exploration_report["status_at_exploration_stop"] = "PROTOCOL_REVIEW_PENDING"
+                exploration_report["status"] = "PROTOCOL_APPROVED"
+                exploration_report["protocol_review"] = {
+                    "status": "APPROVED",
+                    "proposal_digest": verifier_row["proposal_digest"],
+                    "protocol_digest": verifier_row["protocol_digest"],
+                    "approval_digest": verifier_row["approval_digest"],
+                    "receipt_digest": verifier_row["receipt_digest"],
+                }
+            if isinstance(exploration_report, dict) and owner_row is not None:
+                exploration_report = dict(exploration_report)
+                exploration_report["owner_pivot"] = {
+                    "status": owner_row["status"],
+                    "decision": owner_row["decision"],
+                    "proposal_id": owner_row["proposal_id"],
+                    "proposal_digest": owner_row["digest"],
+                }
             final_report = {
                 "schema_version": 1,
                 "campaign_id": spec.parent.parent_campaign_id,
                 "status": result["status"],
                 "exploration_campaign_id": spec.parent.parent_campaign_id,
                 "optimization_campaign_id": self.campaign_id,
+                "campaign_terminal_status": "PENDING_PARENT_FINALIZATION",
                 "exploration_report": exploration_report,
                 "optimization_report": report,
+                "provider_calls": [
+                    {"campaign_id": spec.parent.parent_campaign_id, **call}
+                    for call in parent_provider_calls
+                ] + [
+                    {"campaign_id": self.campaign_id, **call}
+                    for call in provider_calls
+                ],
                 "limitations": report["limitations"] + ([] if exploration_report else [
                     "Parent Exploration report was unavailable when this Optimization run completed.",
                 ]),

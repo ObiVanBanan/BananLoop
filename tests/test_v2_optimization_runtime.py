@@ -62,6 +62,34 @@ def test_final_optimization_report_resolves_parent_from_custom_registry_root(tmp
         json.dumps({"campaign_id": parent.campaign_id, "status": "PERSISTED_GRAPH_SNAPSHOT"}),
         encoding="utf-8",
     )
+    parent_db = sqlite3.connect(parent_state / "campaign.sqlite3")
+    try:
+        parent_db.executescript("""
+            CREATE TABLE campaigns (id INTEGER PRIMARY KEY, spec_hash TEXT, status TEXT);
+            CREATE TABLE events (seq INTEGER PRIMARY KEY, event_type TEXT, payload_json TEXT);
+            CREATE TABLE evaluator_verifier_receipts (
+                proposal_digest TEXT, protocol_digest TEXT, approval_digest TEXT,
+                decision TEXT, receipt_digest TEXT, campaign_id TEXT
+            );
+        """)
+        parent_db.execute("INSERT INTO campaigns VALUES(1,'parent-spec','PAUSED_NEEDS_INPUT')")
+        for role, request_id in (("researcher", "research-request"),
+                                 ("independent_verifier", "protocol-review-request")):
+            parent_db.execute(
+                "INSERT INTO events VALUES(NULL,'V2_PROVIDER_CALL',?)",
+                (json.dumps({"role_id": role, "request_id": request_id,
+                             "status": "COMPLETED", "dispatched": True,
+                             "usage": {"input_tokens": 10, "output_tokens": 5,
+                                       "total_tokens": 15}}),),
+            )
+        parent_db.execute(
+            "INSERT INTO evaluator_verifier_receipts VALUES(?,?,?,?,?,?)",
+            ("proposal", "protocol", "approval", "APPROVE", "verifier-receipt",
+             parent.campaign_id),
+        )
+        parent_db.commit()
+    finally:
+        parent_db.close()
 
     class ParentRef:
         parent_campaign_id = parent.campaign_id
@@ -113,6 +141,15 @@ def test_final_optimization_report_resolves_parent_from_custom_registry_root(tmp
     monkeypatch.setattr("bananloop.champion_promotion.ChampionPromotionService", NoChampion)
     queue = registry.worker_queue()
     graph = Graph()
+    for role, request_id in (("optimizer", "optimizer-request"),
+                             ("integration_verifier", "integration-request")):
+        graph.conn.execute(
+            "INSERT INTO events(event_type,payload_json) VALUES('V2_PROVIDER_CALL',?)",
+            (json.dumps({"role_id": role, "request_id": request_id,
+                         "status": "COMPLETED", "dispatched": True,
+                         "usage": {"input_tokens": 20, "output_tokens": 5,
+                                   "total_tokens": 25}}),),
+        )
     runtime = object.__new__(V2OptimizationRuntime)
     runtime.graph = graph
     runtime.queue = queue
@@ -129,6 +166,12 @@ def test_final_optimization_report_resolves_parent_from_custom_registry_root(tmp
         assert final_report["campaign_id"] == parent.campaign_id
         assert final_report["optimization_campaign_id"] == child.campaign_id
         assert final_report["exploration_report"]["status"] == "PERSISTED_GRAPH_SNAPSHOT"
+        assert [call["role_id"] for call in final_report["provider_calls"]] == [
+            "researcher", "independent_verifier", "optimizer", "integration_verifier",
+        ]
+        rendered = Path(result["final_report_markdown_path"]).read_text(encoding="utf-8")
+        for role in ("researcher", "independent_verifier", "optimizer", "integration_verifier"):
+            assert f"| {role} |" in rendered
     finally:
         graph.conn.close()
         queue.close()

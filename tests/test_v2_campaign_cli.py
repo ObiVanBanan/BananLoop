@@ -437,7 +437,7 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
         "campaign_id": entry.campaign_id,
         "status": "ALL_NODES_COMPLETE",
         "baseline_candidate_delta": {"status": "VERIFIED"},
-        "verification": [{"status": "INDEPENDENT_VERIFICATION_PASS"}],
+        "integration_evidence": [{"decision": "PASS"}],
         "holdout": {"status": "VERIFIED"},
         "provider_calls": [{"request_id": "previous-live-call"}],
     }
@@ -489,6 +489,125 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
         assert terminal_conn.execute("SELECT status FROM campaigns WHERE id=1").fetchone()[0] == "GOAL_MET"
     finally:
         terminal_conn.close()
+
+
+def test_completed_pivot_child_finalizes_parent_from_frozen_approval_lineage(tmp_path):
+    from types import SimpleNamespace
+
+    from bananloop.v2_optimization_cli import _mark_parent_campaign_complete
+
+    repo = _repo(tmp_path)
+    state_dir = tmp_path / "registry-state"
+    registry = CampaignRegistry(repo, paths=RuntimePaths.for_repo(repo, state_dir))
+    parent, parent_state, _ = registry.reserve("Complete approved research campaign", "parent-finalize")
+    child_entry, child_state, _ = registry.reserve("Completed child", "child-finalize")
+    child_id = child_entry.campaign_id
+    parent_spec_hash = "1" * 64
+    child_spec_hash = "2" * 64
+    proposal_id = "pivot-" + "3" * 24
+    proposal_digest = "4" * 64
+    decision_id = "owner-approval-1"
+    handoff_digest = "5" * 64
+    protocol_approval = "6" * 64
+    parent_db = parent_state / "campaign.sqlite3"
+    conn = __import__("sqlite3").connect(parent_db)
+    try:
+        conn.executescript("""
+            CREATE TABLE campaigns (
+                id INTEGER PRIMARY KEY, spec_hash TEXT NOT NULL, status TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE events (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL, created_at TEXT NOT NULL
+            );
+            CREATE TABLE v2_pivot_decisions (
+                request_id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL, digest TEXT NOT NULL,
+                decision TEXT NOT NULL, status TEXT NOT NULL
+            );
+        """)
+        conn.execute(
+            "INSERT INTO campaigns VALUES(1,?,'PAUSED_NEEDS_INPUT','now')",
+            (parent_spec_hash,),
+        )
+        conn.execute(
+            "INSERT INTO v2_pivot_decisions VALUES(?,?,?,?,?)",
+            (decision_id, proposal_id, proposal_digest, "approve", "APPROVED"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    child_db = __import__("sqlite3").connect(child_state / "campaign.sqlite3")
+    try:
+        child_db.executescript("""
+            CREATE TABLE campaigns (id INTEGER PRIMARY KEY, spec_hash TEXT, status TEXT);
+            CREATE TABLE evaluator_protocol_handoffs (
+                handoff_digest TEXT NOT NULL, child_spec_hash TEXT NOT NULL,
+                approval_digest TEXT NOT NULL, parent_campaign_id TEXT NOT NULL,
+                child_campaign_id TEXT NOT NULL
+            );
+        """)
+        child_db.execute(
+            "INSERT INTO campaigns VALUES(1,?,'GOAL_MET')", (child_spec_hash,),
+        )
+        child_db.execute(
+            "INSERT INTO evaluator_protocol_handoffs VALUES(?,?,?,?,?)",
+            (handoff_digest, child_spec_hash, protocol_approval,
+             parent.campaign_id, child_id),
+        )
+        child_db.commit()
+    finally:
+        child_db.close()
+    reports = parent_state / "reports"
+    reports.mkdir()
+    report_path = reports / f"v2-final-{parent.campaign_id}.json"
+    report_path.write_text(json.dumps({
+        "campaign_id": parent.campaign_id, "status": "ALL_NODES_COMPLETE",
+        "optimization_campaign_id": child_id,
+        "exploration_report": {"protocol_review": {"approval_digest": protocol_approval}},
+    }), encoding="utf-8")
+
+    parent_ref = SimpleNamespace(
+            parent_campaign_id=parent.campaign_id,
+            parent_spec_hash=parent_spec_hash,
+            allocation_id="allocation-1",
+            pivot_decision_id=decision_id,
+            pivot_proposal_id=proposal_id,
+            pivot_proposal_digest=proposal_digest,
+            protocol_handoff_digest=handoff_digest,
+        )
+
+    class ChildSpec:
+        parent = parent_ref
+
+        def approved_hash(self):
+            return child_spec_hash
+
+    result = _mark_parent_campaign_complete({
+        "campaign_id": child_id, "status": "ALL_NODES_COMPLETE",
+    }, spec=ChildSpec(), database=child_state / "campaign.sqlite3", registry=registry)
+    assert result["parent_campaign_terminal_status"] == "GOAL_MET"
+    final_report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert final_report["campaign_terminal_status"] == "GOAL_MET"
+    parent_conn = __import__("sqlite3").connect(parent_db)
+    try:
+        assert parent_conn.execute("SELECT status FROM campaigns WHERE id=1").fetchone()[0] == "GOAL_MET"
+        assert parent_conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type='V2_CAMPAIGN_TERMINAL'",
+        ).fetchone()[0] == 1
+    finally:
+        parent_conn.close()
+
+    _mark_parent_campaign_complete({
+        "campaign_id": child_id, "status": "ALL_NODES_COMPLETE",
+    }, spec=ChildSpec(), database=child_state / "campaign.sqlite3", registry=registry)
+    parent_conn = __import__("sqlite3").connect(parent_db)
+    try:
+        assert parent_conn.execute(
+            "SELECT COUNT(*) FROM events WHERE event_type='V2_CAMPAIGN_TERMINAL'",
+        ).fetchone()[0] == 1
+    finally:
+        parent_conn.close()
 
 
 def test_cli_entrypoint_creates_persisted_v2_campaign_without_auth(tmp_path):

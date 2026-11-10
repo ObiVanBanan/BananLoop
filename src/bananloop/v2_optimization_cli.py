@@ -25,7 +25,10 @@ from .roles import (
     TeamManifestAuthority, TeamRequestV1,
 )
 from .trusted_evaluator import TrustedEvaluatorAdapter, TrustedEvaluatorError
-from .v2_optimization_runtime import V2OptimizationError, V2OptimizationRuntime, _safe_path
+from .v2_optimization_runtime import (
+    V2OptimizationError, V2OptimizationRuntime, _atomic_write_report,
+    _render_final_report_markdown, _safe_path,
+)
 
 
 class V2OptimizationCLIError(ValueError):
@@ -137,8 +140,146 @@ def _close_completed_child_allocation(result: dict[str, Any], *,
         finally:
             settlement_ledger.close()
         allocation_closed = True
+        result = _mark_parent_campaign_complete(
+            result, spec=spec, database=database, registry=registry,
+        )
     result["campaign_terminal_status"] = "GOAL_MET"
     result["child_allocation_closed"] = allocation_closed
+    return result
+
+
+def _mark_parent_campaign_complete(result: dict[str, Any], *,
+                                   spec: OptimizationCampaignSpecV2,
+                                   database: Path,
+                                   registry: CampaignRegistry) -> dict[str, Any]:
+    """Finalize a supervised parent after its approved child fully completes."""
+    parent_ref = spec.parent
+    if parent_ref is None or result.get("status") != "ALL_NODES_COMPLETE":
+        return result
+    if not (parent_ref.parent_spec_hash and parent_ref.pivot_decision_id
+            and parent_ref.pivot_proposal_id and parent_ref.pivot_proposal_digest
+            and parent_ref.protocol_handoff_digest):
+        result["parent_campaign_terminal_status"] = "NOT_FINALIZED_MISSING_PIVOT_LINEAGE"
+        return result
+    child_id = result.get("campaign_id")
+    if not isinstance(child_id, str) or not child_id:
+        raise V2OptimizationCLIError("completed optimization result lacks its campaign identity")
+
+    parent_state, resolved_id = registry.resolve_readonly(parent_ref.parent_campaign_id)
+    if resolved_id != parent_ref.parent_campaign_id:
+        raise V2OptimizationCLIError("resolved parent campaign identity does not match child lineage")
+    parent_db = parent_state / "campaign.sqlite3"
+    report_path = parent_state / "reports" / f"v2-final-{parent_ref.parent_campaign_id}.json"
+    if (not parent_db.is_file() or parent_db.is_symlink()
+            or not report_path.is_file() or report_path.is_symlink()):
+        raise V2OptimizationCLIError("completed child has no safe parent database and final report")
+    try:
+        final_report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise V2OptimizationCLIError("parent final report is unreadable") from None
+    if (not isinstance(final_report, dict)
+            or final_report.get("campaign_id") != parent_ref.parent_campaign_id
+            or final_report.get("optimization_campaign_id") != child_id
+            or final_report.get("status") != "ALL_NODES_COMPLETE"):
+        raise V2OptimizationCLIError("parent final report does not prove this completed optimization")
+
+    if not database.is_file() or database.is_symlink():
+        raise V2OptimizationCLIError("completed child database is missing or unsafe")
+    child_conn = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)
+    child_conn.row_factory = sqlite3.Row
+    try:
+        child = child_conn.execute(
+            "SELECT spec_hash,status FROM campaigns WHERE id=1",
+        ).fetchone()
+        handoff = child_conn.execute(
+            "SELECT handoff_digest,child_spec_hash,approval_digest "
+            "FROM evaluator_protocol_handoffs WHERE parent_campaign_id=? AND child_campaign_id=?",
+            (parent_ref.parent_campaign_id, child_id),
+        ).fetchone()
+    finally:
+        child_conn.close()
+    exploration = final_report.get("exploration_report")
+    review = exploration.get("protocol_review", {}) if isinstance(exploration, dict) else {}
+    if (child is None or child["spec_hash"] != spec.approved_hash()
+            or child["status"] != "GOAL_MET"
+            or handoff is None or handoff["handoff_digest"] != parent_ref.protocol_handoff_digest
+            or handoff["child_spec_hash"] != spec.approved_hash()
+            or handoff["approval_digest"] != review.get("approval_digest")):
+        raise V2OptimizationCLIError("parent protocol handoff does not match the completed child")
+
+    from .lock import CampaignLock
+
+    lock = CampaignLock(parent_db.parent / "campaign.lock")
+    lock.acquire()
+    conn = None
+    try:
+        conn = sqlite3.connect(parent_db, timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        campaign = conn.execute(
+            "SELECT spec_hash,status FROM campaigns WHERE id=1",
+        ).fetchone()
+        if campaign is None or campaign["spec_hash"] != parent_ref.parent_spec_hash:
+            raise V2OptimizationCLIError("parent campaign spec changed before finalization")
+        if campaign["status"] not in {"PAUSED_NEEDS_INPUT", "GOAL_MET"}:
+            raise V2OptimizationCLIError("parent campaign cannot enter GOAL_MET from its current state")
+        decision = conn.execute(
+            "SELECT proposal_id,digest,decision,status FROM v2_pivot_decisions WHERE request_id=?",
+            (parent_ref.pivot_decision_id,),
+        ).fetchone()
+        if (decision is None or decision["proposal_id"] != parent_ref.pivot_proposal_id
+                or decision["digest"] != parent_ref.pivot_proposal_digest
+                or decision["decision"] != "approve" or decision["status"] != "APPROVED"):
+            raise V2OptimizationCLIError("parent owner approval does not match frozen child lineage")
+        if campaign["status"] != "GOAL_MET":
+            now = utc_now()
+            final_report["campaign_terminal_status"] = "GOAL_MET"
+            final_report["terminalized_at"] = now
+            digest = hashlib.sha256(json.dumps(
+                final_report, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, allow_nan=False,
+            ).encode("utf-8")).hexdigest()
+            conn.execute(
+                "UPDATE campaigns SET status='GOAL_MET',updated_at=? WHERE id=1", (now,),
+            )
+            conn.execute(
+                "INSERT INTO events(event_type,payload_json,created_at) VALUES(?,?,?)",
+                ("V2_CAMPAIGN_TERMINAL", json.dumps({
+                    "campaign_id": parent_ref.parent_campaign_id,
+                    "spec_hash": parent_ref.parent_spec_hash,
+                    "status": "GOAL_MET", "scheduler_status": "ALL_NODES_COMPLETE",
+                    "child_campaign_id": child_id, "report_digest": digest,
+                }, sort_keys=True, separators=(",", ":")), now),
+            )
+        else:
+            terminal_event = conn.execute(
+                "SELECT created_at FROM events WHERE event_type='V2_CAMPAIGN_TERMINAL' "
+                "ORDER BY seq DESC LIMIT 1",
+            ).fetchone()
+            final_report["campaign_terminal_status"] = "GOAL_MET"
+            final_report.setdefault(
+                "terminalized_at", terminal_event["created_at"] if terminal_event else utc_now(),
+            )
+        conn.commit()
+    except Exception:
+        if conn is not None and conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        if conn is not None:
+            conn.close()
+        lock.release()
+
+    raw = (json.dumps(final_report, sort_keys=True, indent=2,
+                      ensure_ascii=False) + "\n").encode("utf-8")
+    _atomic_write_report(report_path, raw)
+    _atomic_write_report(
+        report_path.with_suffix(".md"),
+        _render_final_report_markdown(final_report).encode("utf-8"),
+    )
+    result["parent_campaign_terminal_status"] = "GOAL_MET"
+    result["final_report_path"] = str(report_path)
+    result["final_report_markdown_path"] = str(report_path.with_suffix(".md"))
     return result
 
 
@@ -148,12 +289,19 @@ def _saved_completed_run_report(state_root: Path, campaign_id: str) -> dict[str,
         report = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    verification_pass = (isinstance(report, dict) and any(
+        item.get("status") == "INDEPENDENT_VERIFICATION_PASS"
+        for item in report.get("verification", []) if isinstance(item, dict)
+    ))
+    integration_pass = (isinstance(report, dict) and any(
+        item.get("decision") == "PASS"
+        for item in report.get("integration_evidence", []) if isinstance(item, dict)
+    ))
     if (not isinstance(report, dict) or report.get("campaign_id") != campaign_id
             or report.get("status") != "ALL_NODES_COMPLETE"
             or not isinstance(report.get("baseline_candidate_delta"), dict)
             or report["baseline_candidate_delta"].get("status") != "VERIFIED"
-            or not any(item.get("status") == "INDEPENDENT_VERIFICATION_PASS"
-                       for item in report.get("verification", []) if isinstance(item, dict))
+            or not (verification_pass or integration_pass)
             or not isinstance(report.get("holdout"), dict)
             or report["holdout"].get("status") != "VERIFIED"):
         return None
@@ -315,6 +463,15 @@ def run_v2_optimize(args: Namespace, *,
                     visible_paths=visible_paths, write_paths=write_paths,
                     max_steps=args.max_steps, worker_id="v2-optimization-cli-recovery",
                 )
+                campaign_call_count = len(saved_report.get("provider_calls", []))
+                final_report_path = result.get("final_report_path")
+                if isinstance(final_report_path, str):
+                    try:
+                        final_report = json.loads(Path(final_report_path).read_text(encoding="utf-8"))
+                        if isinstance(final_report, dict):
+                            campaign_call_count = len(final_report.get("provider_calls", []))
+                    except (OSError, ValueError):
+                        pass
                 result.update({
                     "mode": "OPTIMIZATION", "profile": "FULL",
                     "role_registry_digest": role_registry.digest(),
@@ -322,7 +479,8 @@ def run_v2_optimize(args: Namespace, *,
                     "request_history": {"optimizer": [], "integration_verifier": []},
                     "automatic_replay": False,
                     "recovery_mode": "FINALIZATION_ONLY",
-                    "campaign_provider_call_count": len(saved_report.get("provider_calls", [])),
+                    "campaign_provider_call_count": campaign_call_count,
+                    "optimization_child_provider_call_count": len(saved_report.get("provider_calls", [])),
                     "recovered_report_path": str(
                         state_root / "reports" / f"v2-optimization-{args.campaign_id}.json"
                     ),
