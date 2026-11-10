@@ -69,3 +69,24 @@ describe('Studio chat desktop runtime',()=>{
     expect(document.querySelectorAll('.studio-transcript-turn.turn-user')).toHaveLength(1);
   });
 });
+describe('Studio mobile navigation',()=>{
+  it('starts with a closed sidebar on small screens and closes the overlay explicitly',()=>{
+    const previous=window.matchMedia;
+    Object.defineProperty(window,'matchMedia',{configurable:true,value:(query:string)=>({
+      matches:query==='(max-width: 760px)',media:query,addListener:()=>{},removeListener:()=>{},
+      addEventListener:()=>{},removeEventListener:()=>{},dispatchEvent:()=>false,
+    })});
+    try {
+      render(<Studio token="" onBack={()=>{}} onOpenCampaign={()=>{}}/>);
+      expect(screen.queryByRole('button',{name:'Закрыть историю чатов'})).toBeNull();
+      fireEvent.click(screen.getByRole('button',{name:'Показать историю чатов'}));
+      const scrim=screen.getByRole('button',{name:'Закрыть историю чатов'});
+      expect(scrim).toBeTruthy();
+      fireEvent.click(scrim);
+      expect(screen.queryByRole('button',{name:'Закрыть историю чатов'})).toBeNull();
+    } finally {
+      cleanup();
+      Object.defineProperty(window,'matchMedia',{configurable:true,value:previous});
+    }
+  });
+});
