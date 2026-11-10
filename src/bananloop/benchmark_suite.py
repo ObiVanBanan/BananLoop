@@ -224,6 +224,99 @@ def stage_discoverybench(*, source_dir: str, output_root: str) -> dict:
     return result
 
 
+
+def run_approved_batches(*, public_root: str, batches_root: str,
+                         authorizations_root: str, run_root: str,
+                         batch_start: int = 0, max_batches: int = 1,
+                         execute: bool = False, codex_executable: str = "codex") -> dict:
+    """Plan or explicitly dispatch approved model-only Codex role diagnostics.
+
+    Every selected batch needs its own exact suite/roster-bound owner approval.
+    Each fresh invocation has a fresh output root; completed/unknown calls are
+    never automatically retried. The default is strictly NO MODEL CALLS.
+    """
+    import re
+    from .agent_benchmark import digest
+    from .benchmark_live_codex import run_live
+
+    if (type(batch_start) is not int or batch_start < 0
+            or type(max_batches) is not int or not 1 <= max_batches <= 20):
+        raise BenchmarkError("batch_start must be nonnegative and max_batches 1..20")
+    public = Path(public_root).expanduser().resolve()
+    batches = Path(batches_root).expanduser().resolve()
+    authorizations = Path(authorizations_root).expanduser().resolve()
+    output = _outside_checkout(Path(run_root))
+    if any(output == p or output in p.parents or p in output.parents
+           for p in (public, batches, authorizations)):
+        raise BenchmarkError("run root must not overlap public cases, batches or approvals")
+    if execute and output.exists():
+        raise BenchmarkError("batch output root already exists (no automatic retries)")
+    manifest = read_json(batches / "batches.json")
+    _, registry_sha, team_sha = _frozen_members(
+        str(public / "registry.json"), str(public / "team.json"))
+    if (manifest.get("registry_sha256") != registry_sha
+            or manifest.get("team_manifest_sha256") != team_sha
+            or manifest.get("full_suite_sha256") != digest(read_json(public / "cases.json"))):
+        raise BenchmarkError("batch manifest does not match frozen public suite/roster")
+    entries = manifest.get("batches")
+    if not isinstance(entries, list) or not entries or batch_start >= len(entries):
+        raise BenchmarkError("requested batch index is outside the frozen manifest")
+    selected = entries[batch_start:batch_start + max_batches]
+    prepared = []
+    for entry in selected:
+        name = entry.get("path")
+        if not isinstance(name, str) or not re.fullmatch(r"batch-[0-9]{3}\.json", name):
+            raise BenchmarkError("batch filename must be canonical")
+        task = read_json(batches / name)
+        if (digest(task) != entry.get("suite_sha256")
+                or [case["case_id"] for case in task.get("cases", [])] != entry.get("case_ids")):
+            raise BenchmarkError("public batch cases differ from the frozen manifest")
+        approval = authorizations / ("approval-" + name)
+        if execute:
+            if approval.is_symlink() or not approval.is_file():
+                raise BenchmarkError("missing exact-digest owner authorization for " + name)
+            auth = read_json(approval)
+            if (auth.get("suite_sha256") != digest(task)
+                    or auth.get("registry_sha256") != registry_sha
+                    or auth.get("team_manifest_sha256") != team_sha
+                    or auth.get("mode") != "CODEX_SUBSCRIPTION_NONQUALIFYING_DIAGNOSTIC"
+                    or auth.get("acknowledge_subscription_usage_unverified") is not True
+                    or auth.get("acknowledge_token_caps_observational") is not True):
+                raise BenchmarkError("owner authorization pins do not match " + name)
+        prepared.append({"batch": name, "cases": len(task["cases"]),
+                         "approval_present": approval.is_file(),
+                         "batch_sha256": digest(task), "approval_path": str(approval)})
+    if not execute:
+        return {"schema_version": 1, "status": "PLAN_ONLY_NO_MODEL_CALLS",
+                "selected_batches": prepared, "provider_requests": 0,
+                "release_eligible": False}
+
+    # All requested approvals are validated before the first model dispatch.
+    output.mkdir(parents=True, mode=0o700)
+    completed = []
+    for entry in prepared:
+        name = entry["batch"]
+        outcome = run_live(
+            cases_path=str(batches / name), registry_path=str(public / "registry.json"),
+            team_path=str(public / "team.json"),
+            authorization_path=entry["approval_path"],
+            output_dir=str(output / name.removesuffix(".json")),
+            codex_executable=codex_executable)
+        completed.append({"batch": name, "status": outcome["status"],
+                          "completed_cases": outcome["completed_cases"],
+                          "attempted_cases": outcome["attempted_cases"]})
+        if outcome["status"] != "COMPLETED_DIAGNOSTIC":
+            break
+    result = {"schema_version": 1, "status": (
+        "ALL_SELECTED_BATCHES_COMPLETED" if len(completed) == len(prepared)
+        and all(x["status"] == "COMPLETED_DIAGNOSTIC" for x in completed)
+        else "STOPPED_CHECK_RUN_STATUSES_NO_REPLAY"),
+        "selected_batch_count": len(prepared), "executed_batches": completed,
+        "model_calls_may_have_occurred": True, "release_eligible": False}
+    _write(output / "batch-orchestration-status.json", result)
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Prepare and score bounded PR #141 diagnostics; never run models implicitly")
@@ -242,6 +335,13 @@ def main(argv: list[str] | None = None) -> int:
     discovery = sub.add_parser("stage-discoverybench", help="copy public DEV task to paired arms")
     discovery.add_argument("--source-dir", required=True)
     discovery.add_argument("--out", required=True)
+    run = sub.add_parser("run-role-batches", help="plan by default; opt-in Codex subscription batches")
+    for key in ("public-root", "batches-root", "authorizations-root", "run-root"):
+        run.add_argument("--" + key, required=True)
+    run.add_argument("--batch-start", type=int, default=0)
+    run.add_argument("--max-batches", type=int, default=1)
+    run.add_argument("--codex-executable", default="codex")
+    run.add_argument("--i-authorize-codex-exec", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare-roles":
@@ -250,6 +350,14 @@ def main(argv: list[str] | None = None) -> int:
                 private_root=args.private_root, public_root=args.public_root,
                 batches_root=args.batches_root, per_role=args.per_role,
                 batch_size=args.batch_size)
+        elif args.command == "run-role-batches":
+            result = run_approved_batches(
+                public_root=args.public_root, batches_root=args.batches_root,
+                authorizations_root=args.authorizations_root,
+                run_root=args.run_root,
+                batch_start=args.batch_start, max_batches=args.max_batches,
+                execute=args.i_authorize_codex_exec,
+                codex_executable=args.codex_executable)
         elif args.command == "score-roles":
             result = score_roles(
                 private_root=args.private_root, public_root=args.public_root,
