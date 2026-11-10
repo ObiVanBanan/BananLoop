@@ -2,8 +2,11 @@
   "schema_version": 1,
   "status": "LIVE_E2E_PASS_FINALIZED",
   "date": "2026-11-10",
+  "code_revision": "0f293fdf5d75a3ff1397a6a96e76d367e8ba25d5",
   "campaign_id": "c-d2f1322cc4ee387e922d97950cea5486",
+  "parent_terminal_status": "GOAL_MET",
   "child_campaign_id": "c-bde7eb039db079521a3791cb161bf36b",
+  "child_terminal_status": "GOAL_MET",
   "allocation_id": "alloc-d06d3ab3b3b4e55aead5ee36581b0a8b61e4e9e7",
   "parent_protocol_preseeded": false,
   "independent_protocol_verifier_used": true,
@@ -13,6 +16,31 @@
   "automatic_retries": 0,
   "calls": [
     {
+      "campaign_id": "c-d2f1322cc4ee387e922d97950cea5486",
+      "dispatched": true,
+      "request_id": "resp_06c2cb30a21a465a016af2182e45a087d2b8ec15913c8e1878",
+      "role_id": "researcher",
+      "status": "COMPLETED",
+      "usage": {
+        "input_tokens": 1512,
+        "output_tokens": 959,
+        "total_tokens": 2471
+      }
+    },
+    {
+      "campaign_id": "c-d2f1322cc4ee387e922d97950cea5486",
+      "dispatched": true,
+      "request_id": "resp_0265bbe3c3d17559016af21842858887d29cf26e2da636a61d",
+      "role_id": "independent_verifier",
+      "status": "COMPLETED",
+      "usage": {
+        "input_tokens": 2868,
+        "output_tokens": 602,
+        "total_tokens": 3470
+      }
+    },
+    {
+      "campaign_id": "c-bde7eb039db079521a3791cb161bf36b",
       "dispatched": true,
       "request_id": "resp_081ab8225263d20f016af27fe6051c87d288ab62e2b9a51c5b",
       "role_id": "optimizer",
@@ -24,6 +52,7 @@
       }
     },
     {
+      "campaign_id": "c-bde7eb039db079521a3791cb161bf36b",
       "dispatched": true,
       "request_id": "resp_08019f93b60fb008016af27feb00f887d29e70c0bd498c8131",
       "role_id": "integration_verifier",
@@ -35,7 +64,11 @@
       }
     }
   ],
-  "provider_event_count": 2,
+  "provider_event_counts": {
+    "parent": 2,
+    "child": 2,
+    "total": 4
+  },
   "changed_paths": [
     "src/optimizer/model/ranker.py"
   ],
@@ -63,51 +96,121 @@
     "delta": null
   },
   "terminalization": {
+    "report_status": "ALL_NODES_COMPLETE",
+    "parent_campaign_status": "GOAL_MET",
     "child_campaign_status": "GOAL_MET",
-    "parent_status": "ALL_NODES_COMPLETE",
+    "exploration_report_status": "PROTOCOL_APPROVED",
     "allocation_state": "CLOSED",
     "closed_at": "2026-11-10T02:40:03.447143+00:00",
     "recovery_mode": "FINALIZATION_ONLY",
     "recovery_live_model_calls": 0
   },
   "budget": {
-    "agent_calls": {
-      "cap": 2,
-      "spent": 2,
-      "reserved": 0,
-      "unknown": 0
+    "parent": {
+      "agent_calls": {
+        "cap": 4,
+        "spent": 4,
+        "reserved": 0,
+        "unknown": 0
+      },
+      "attempts": {
+        "cap": 8,
+        "spent": 1,
+        "reserved": 0,
+        "unknown": 0
+      },
+      "evaluator_calls": {
+        "cap": 12,
+        "spent": 12,
+        "reserved": 0,
+        "unknown": 0
+      },
+      "experiments": {
+        "cap": 5,
+        "spent": 1,
+        "reserved": 0,
+        "unknown": 0
+      },
+      "model_tokens": {
+        "cap": 16384,
+        "spent": 7267,
+        "reserved": 0,
+        "unknown": 0
+      }
     },
-    "attempts": {
-      "cap": 8,
-      "spent": 1,
-      "reserved": 0,
-      "unknown": 0
-    },
-    "evaluator_calls": {
-      "cap": 12,
-      "spent": 12,
-      "reserved": 0,
-      "unknown": 0
-    },
-    "experiments": {
-      "cap": 2,
-      "spent": 1,
-      "reserved": 0,
-      "unknown": 0
-    },
-    "model_tokens": {
-      "cap": 8192,
-      "spent": 1326,
-      "reserved": 0,
-      "unknown": 0
+    "child_allocation": {
+      "agent_calls": {
+        "cap": 2,
+        "spent": 2,
+        "reserved": 0,
+        "unknown": 0
+      },
+      "attempts": {
+        "cap": 8,
+        "spent": 1,
+        "reserved": 0,
+        "unknown": 0
+      },
+      "evaluator_calls": {
+        "cap": 12,
+        "spent": 12,
+        "reserved": 0,
+        "unknown": 0
+      },
+      "experiments": {
+        "cap": 2,
+        "spent": 1,
+        "reserved": 0,
+        "unknown": 0
+      },
+      "model_tokens": {
+        "cap": 8192,
+        "spent": 1326,
+        "reserved": 0,
+        "unknown": 0
+      }
     }
   },
   "monetary_cost": "UNKNOWN",
+  "limitations": [
+    "Single optimization experiment, not multi-epoch live evidence.",
+    "Researcher evidence remains PUBLIC_DEV; the evaluation protocol was independently reviewed and trusted evaluation verified the candidate.",
+    "Synthetic diagnostic uses two cases per evaluator tier; not a general benchmark score."
+  ],
   "report_paths": {
     "parent_json": "campaigns/c-d2f1322cc4ee387e922d97950cea5486/reports/v2-final-c-d2f1322cc4ee387e922d97950cea5486.json",
     "parent_markdown": "campaigns/c-d2f1322cc4ee387e922d97950cea5486/reports/v2-final-c-d2f1322cc4ee387e922d97950cea5486.md",
     "child_json": "campaigns/c-bde7eb039db079521a3791cb161bf36b/reports/v2-optimization-c-bde7eb039db079521a3791cb161bf36b.json",
     "failed_cli_attempt": "campaigns/c-bde7eb039db079521a3791cb161bf36b/reports/v2-optimization-cli-c-bde7eb039db079521a3791cb161bf36b.json",
     "recovery_cli_report": "campaigns/c-bde7eb039db079521a3791cb161bf36b/reports/v2-optimization-cli-c-bde7eb039db079521a3791cb161bf36b-recovery.json"
+  },
+  "offline_verification": {
+    "command": ".venv/bin/python -m pytest tests/test_v2_optimization_runtime.py tests/test_v2_campaign_cli.py tests/test_v2_pivot_saga.py -q",
+    "result": "PASSED",
+    "test_count": 118,
+    "exact_code_revision": "66715869d212794d75750f707292dc6638aed8e5"
+  },
+  "exact_head_ci": {
+    "revision": "66715869d212794d75750f707292dc6638aed8e5",
+    "pytest_matrix": "PASSED",
+    "pytest_matrix_url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42750204810",
+    "chromium": "PASSED",
+    "chromium_url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42750204624",
+    "no_provider": "PASSED",
+    "no_provider_url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42750204736",
+    "windows_pytest": "PASSED"
+  },
+  "provider_event_count": 4,
+  "revisions": {
+    "baseline_source_commit": "0c9cb677b476f4bffc5c9e796d0e1d69dbb91458",
+    "live_dispatch_revision_recorded": "0f293fdf5d75a3ff1397a6a96e76d367e8ba25d5",
+    "finalization_fix_commit": "c0a871e79e833bceae478451e5858da15ee30777",
+    "current_pr_head": "66715869d212794d75750f707292dc6638aed8e5",
+    "note": "Live provider receipts do not themselves pin the source revision. 0f293fdf was recorded in the initial run summary; c0a871e fixed finalization and was used for zero-call recovery."
+  },
+  "local_verification": {
+    "runtime_cli_pivot_saga": "118 passed",
+    "integrated_acceptance": "2 parameterized cases passed",
+    "tested_revision": "66715869d212794d75750f707292dc6638aed8e5"
   }
 }
