@@ -2,7 +2,6 @@
   "schema_version": 1,
   "status": "LIVE_E2E_PASS_FINALIZED",
   "date": "2026-11-10",
-  "code_revision": "0f293fdf5d75a3ff1397a6a96e76d367e8ba25d5",
   "campaign_id": "c-d2f1322cc4ee387e922d97950cea5486",
   "parent_terminal_status": "GOAL_MET",
   "child_campaign_id": "c-bde7eb039db079521a3791cb161bf36b",
@@ -198,7 +197,12 @@
     "chromium_url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42750204624",
     "no_provider": "PASSED",
     "no_provider_url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42750204736",
-    "windows_pytest": "PASSED"
+    "windows_pytest": "PASSED",
+    "report_only_head": "b35227e81e027d873d3dbf10faec5f337f3ec1af",
+    "report_only_head_checks": "PASSED",
+    "report_only_pytest_url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42751543190",
+    "report_only_chromium_url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42751543132",
+    "report_only_no_provider_url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42751543391"
   },
   "provider_event_count": 4,
   "revisions": {
@@ -206,11 +210,14 @@
     "live_dispatch_revision_recorded": "0f293fdf5d75a3ff1397a6a96e76d367e8ba25d5",
     "finalization_fix_commit": "c0a871e79e833bceae478451e5858da15ee30777",
     "current_pr_head": "66715869d212794d75750f707292dc6638aed8e5",
-    "note": "Live provider receipts do not themselves pin the source revision. 0f293fdf was recorded in the initial run summary; c0a871e fixed finalization and was used for zero-call recovery."
+    "note": "Provider receipts do not bind a source revision. The initial run summary listed 0f293fdf, but that commit timestamp postdates all four provider events; the actual live dispatch revision is UNKNOWN. c0a871e fixed finalization and was used for zero-call recovery.",
+    "live_dispatch_revision": null,
+    "initial_summary_reported_revision": "0f293fdf5d75a3ff1397a6a96e76d367e8ba25d5"
   },
   "local_verification": {
     "runtime_cli_pivot_saga": "118 passed",
     "integrated_acceptance": "2 parameterized cases passed",
     "tested_revision": "66715869d212794d75750f707292dc6638aed8e5"
-  }
+  },
+  "revision_status": "LIVE_DISPATCH_REVISION_NOT_PINNED_BY_PROVIDER_RECEIPTS"
 }
