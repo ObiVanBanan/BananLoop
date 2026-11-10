@@ -14,6 +14,12 @@ service as the HTTP handlers.
 ## Routes
 
 - `GET /healthz`
+- `GET /v1/campaigns` (safe local registry summary)
+- `GET /v1/providers/codex/status` (installed/authenticated CLI mode only; no credentials)
+- `POST /v1/providers/codex/login/start` (explicit local-only ChatGPT device login)
+- `GET /v1/providers/codex/login/status` (device login progress)
+- `POST /v1/providers/codex/login/cancel` (cancel pending device login)
+- `GET /v1/campaigns/{campaign_id}/view` (UI read-only v1/v2 graph projection)
 - `GET /v1/campaigns/{campaign_id}/snapshot`
 - `GET /v1/campaigns/{campaign_id}/graph` (v2 campaigns)
 - `GET /v1/campaigns/{campaign_id}/events?after=0&limit=100`
@@ -45,6 +51,28 @@ the persisted receipt and reuse with different content is rejected. The CLI
 offers equivalent `bananloop graph snapshot` and `bananloop graph mutate`
 commands.
 
+The UI consumes the campaign `/view` read model, never the raw graph store:
+for v2, the endpoint presents public node id, phase, status, readiness,
+blockers, typed edges and AND/OR groups. It never emits raw node payload,
+sealed evaluation data, state paths, provider tokens or holdout/validation
+scores. For legacy v1, it presents committed hypothesis titles/statuses as
+**unconnected** nodes because v1 does not have the v2 dependency graph.
+The projection checks the graph revision before returning to avoid silently
+mixing nodes and edges from different commits. The UI only controls local
+layout and annotations; engine mutation controls remain out of scope.
+
+The Codex status endpoint executes only `codex login status` on the local
+machine using a bounded subprocess, and returns a narrow authentication
+mode (ChatGPT, API key, unknown, or disconnected). It never reads credential
+files or returns account tokens. A separate explicit POST device-login route
+starts `codex app-server` and uses the official `chatgptDeviceCode` RPC to
+return a one-time code and the official verification URL. This endpoint only
+accepts JSON POSTs from the local UI origin and supports status/cancel; Codex
+itself owns credential persistence and refresh. Device login may be disabled
+by account or workspace policy; `codex login` remains a fallback. A ChatGPT
+account is not an API key, and API-key billing is separate from ChatGPT plan
+usage.
+
 Example:
 
 ```sh
@@ -54,3 +82,33 @@ bananloop campaigns list --repo . --json
 curl 'http://127.0.0.1:8765/v1/campaigns/c-0123456789abcdef0123456789abcdef/snapshot'
 ```
 
+
+## Local Studio (opt-in; no project directory)
+
+Run `bananloop serve --studio` instead of `--repo` to automatically create an
+isolated, minimal Git source workspace in the current user's application data
+directory. It never replaces an existing unrelated directory. Engine bootstrap
+still requires a trustworthy evaluator; an empty source project is not evidence
+of readiness. This option is mutually exclusive with `--repo`.
+
+Studio endpoints (loopback, existing optional bearer authentication):
+
+- `GET /v1/studio/info`: whether project-free Studio is available.
+- `POST /v1/studio/discuss`: one real Codex CLI planning turn using a bounded,
+  tool-isolated operator chat; input is a user message and recent conversation.
+- `POST /v1/studio/launch`: bounded goal, budgets, explicit mode and stable
+  idempotency key, then fixed `bananloop start` invocation with no browser-
+  supplied path, shell, evaluator or executable.
+- `POST /v1/studio/launch/confirm`: separate explicit execution of a previously
+  prepared Supervised launch.
+- `GET /v1/studio/launch/status?request_id=...`: process phase and campaign ID,
+  no raw logs.
+
+`Supervised` in this slice means **prepare-only + explicit execute** using the
+current v1 CLI, not the complete v0.2 HITL/pivot policy from PR #141. Every
+POST requires `application/json` and an allowed local-origin request. The
+client never sends a model instruction to the execution endpoint. A successful
+launcher process creation is not proof the Engine achieved a goal. An absent
+benchmark/evaluator yields `NEEDS_INPUT`, never invented scores.
+
+See [chat-first Studio UX](ui/studio-chat-first-launcher.md).

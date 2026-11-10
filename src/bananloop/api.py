@@ -15,13 +15,16 @@ from urllib.parse import parse_qs, urlsplit
 from pydantic import ValidationError
 
 from .application import CampaignApplication
+from .ui_read_models import campaign_ui_view, list_ui_campaigns, codex_connection_status
+from .ui_codex_login import CodexDeviceLogin, LoginUnavailable
+from .ui_studio import StudioLauncher, StudioError, StudioUnavailable, discuss_via_codex
 from .contracts import PivotDecisionCommand, PivotProposal
 from .graph_store import GraphStoreError
 from .registry import RegistryError
 from .store import StoreError
 
 MAX_BODY_BYTES = 64 * 1024
-_CAMPAIGN_PATH = re.compile(r"^/v1/campaigns/([^/]+)(?:/(snapshot|events|events/stream|graph|graph/commands|commands/(pause|resume|stop)|pivot-decisions|v2/pivot-proposals|v2/pivot-decisions|v2/pivot-executions))?$")
+_CAMPAIGN_PATH = re.compile(r"^/v1/campaigns/([^/]+)(?:/(snapshot|view|events|events/stream|graph|graph/commands|commands/(pause|resume|stop)|pivot-decisions|v2/pivot-proposals|v2/pivot-decisions|v2/pivot-executions))?$")
 
 
 def _openapi() -> dict[str, Any]:
@@ -30,6 +33,17 @@ def _openapi() -> dict[str, Any]:
         "info": {"title": "BananLoop Local API", "version": "0.2.0"},
         "paths": {
             "/healthz": {"get": {"operationId": "health", "responses": {"200": {"description": "Healthy"}}}},
+            "/v1/campaigns": {"get": {"operationId": "uiCampaignList", "responses": {"200": {"description": "Safe campaign registry summary"}}}},
+            "/v1/studio/info": {"get": {"operationId": "studioInfo", "responses": {"200": {"description": "Local managed Studio availability"}}}},
+            "/v1/studio/discuss": {"post": {"operationId": "discussStudioCampaign", "responses": {"200": {"description": "Real, tool-isolated Codex planning reply"}}}},
+            "/v1/studio/launch": {"post": {"operationId": "launchStudioCampaign", "responses": {"200": {"description": "Bounded Engine launch receipt"}}}},
+            "/v1/studio/launch/confirm": {"post": {"operationId": "confirmStudioLaunch", "responses": {"200": {"description": "Explicit prepared campaign execution"}}}},
+            "/v1/studio/launch/status": {"get": {"operationId": "studioLaunchStatus", "responses": {"200": {"description": "Current local launch process status"}}}},
+            "/v1/providers/codex/status": {"get": {"operationId": "codexConnectionStatus", "responses": {"200": {"description": "Codex CLI authentication mode (no credentials)"}}}},
+            "/v1/providers/codex/login/status": {"get": {"operationId": "codexDeviceLoginStatus", "responses": {"200": {"description": "Device login progress (no credentials)"}}}},
+            "/v1/providers/codex/login/start": {"post": {"operationId": "startCodexDeviceLogin", "responses": {"200": {"description": "Official verification URL and one-time user code"}}}},
+            "/v1/providers/codex/login/cancel": {"post": {"operationId": "cancelCodexDeviceLogin", "responses": {"200": {"description": "Device login cancelled"}}}},
+            "/v1/campaigns/{campaign_id}/view": {"get": {"operationId": "campaignReadOnlyView", "responses": {"200": {"description": "Safe read-only UI graph projection"}}}},
             "/v1/campaigns/{campaign_id}/snapshot": {"get": {"operationId": "campaignSnapshot", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "Redacted campaign snapshot"}}}},
             "/v1/campaigns/{campaign_id}/graph": {"get": {"operationId": "researchGraphSnapshot", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}], "responses": {"200": {"description": "Redacted v2 graph scheduling snapshot"}}}},
             "/v1/campaigns/{campaign_id}/graph/commands": {"post": {"operationId": "mutateResearchGraph", "parameters": [{"name": "campaign_id", "in": "path", "required": True, "schema": {"type": "string"}}, {"name": "Idempotency-Key", "in": "header", "required": True, "schema": {"type": "string"}}], "requestBody": {"required": True, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/GraphMutation"}}}}, "responses": {"200": {"description": "Canonical graph mutation receipt"}}}},
@@ -64,13 +78,16 @@ def _safe_json(value: Any) -> bytes:
 
 def create_server(
     repo: str, host: str = "127.0.0.1", port: int = 8765, *, token: str | None = None,
-    poll_seconds: float = 0.5,
+    poll_seconds: float = 0.5, studio_mode: bool = False,
 ) -> ThreadingHTTPServer:
     """Create a loopback-only HTTP server for local clients and dashboards."""
     if not 0.05 <= poll_seconds <= 10:
         raise ValueError("SSE poll interval must be between 0.05 and 10 seconds")
     if host.lower() not in {"127.0.0.1", "localhost"}:
         raise ValueError("API binds are restricted to loopback until TLS transport is configured")
+
+    device_login = CodexDeviceLogin()
+    studio = StudioLauncher(repo) if studio_mode else None
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "BananLoopAPI/0.2"
@@ -124,6 +141,37 @@ def create_server(
             if parsed.path == "/openapi.json":
                 self._json(HTTPStatus.OK, _openapi())
                 return
+            if parsed.path == "/v1/studio/info":
+                self._json(HTTPStatus.OK, {"enabled": studio is not None,
+                    "workspace_kind": "managed_local" if studio else None,
+                    "planning_provider": "codex_cli" if studio else None,
+                    "modes": ["full_auto", "supervised"] if studio else []})
+                return
+            if parsed.path == "/v1/studio/launch/status":
+                if studio is None:
+                    self._json(HTTPStatus.NOT_FOUND, {"error": "studio_disabled"})
+                    return
+                try:
+                    request_ids = parse_qs(parsed.query).get("request_id", [])
+                    if len(request_ids) != 1:
+                        raise StudioError("one request_id is required")
+                    self._json(HTTPStatus.OK, studio.status(request_ids[0]))
+                except StudioError:
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid_studio_request"})
+                return
+            if parsed.path in {"/v1/campaigns", "/v1/providers/codex/status", "/v1/providers/codex/login/status"}:
+                try:
+                    if parsed.path == "/v1/campaigns":
+                        self._json(HTTPStatus.OK, list_ui_campaigns(repo))
+                    elif parsed.path == "/v1/providers/codex/login/status":
+                        self._json(HTTPStatus.OK, device_login.status())
+                    else:
+                        self._json(HTTPStatus.OK, codex_connection_status())
+                except (RegistryError, StoreError, ValueError):
+                    self._json(HTTPStatus.CONFLICT, {"error": "registry_unavailable"})
+                except Exception:
+                    self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal_error"})
+                return
             match = _CAMPAIGN_PATH.fullmatch(parsed.path)
             if not match:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
@@ -134,6 +182,8 @@ def create_server(
             try:
                 if endpoint == "snapshot":
                     self._json(HTTPStatus.OK, app.snapshot())
+                elif endpoint == "view":
+                    self._json(HTTPStatus.OK, campaign_ui_view(repo, campaign_id))
                 elif endpoint == "graph":
                     self._json(HTTPStatus.OK, app.graph_snapshot())
                 elif endpoint == "events":
@@ -188,6 +238,67 @@ def create_server(
         def do_POST(self) -> None:  # noqa: N802
             if not self._authorized():
                 self._json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
+                return
+            studio_path = urlsplit(self.path).path
+            if studio_path in {"/v1/studio/discuss", "/v1/studio/launch", "/v1/studio/launch/confirm"}:
+                if studio is None:
+                    self._json(HTTPStatus.NOT_FOUND, {"error": "studio_disabled"})
+                    return
+                allowed = {
+                    "http://127.0.0.1:5173", "http://localhost:5173",
+                    f"http://127.0.0.1:{self.server.server_address[1]}",
+                    f"http://localhost:{self.server.server_address[1]}",
+                }
+                origin = self.headers.get("Origin", "")
+                content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                if origin not in allowed or content_type != "application/json":
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "origin_or_content_type_rejected"})
+                    return
+                try:
+                    data = self._body()
+                    if studio_path == "/v1/studio/discuss":
+                        response = discuss_via_codex(data)
+                    elif studio_path == "/v1/studio/launch":
+                        response = studio.launch(data)
+                    else:
+                        response = studio.launch(data, confirm=True)
+                    self._json(HTTPStatus.OK, response)
+                except OverflowError:
+                    self._json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": "request_too_large"})
+                except (StudioError, TypeError, ValueError):
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid_studio_request"})
+                except StudioUnavailable as exc:
+                    known = {"unsafe_config", "app_server_unavailable", "model_timeout",
+                             "model_incomplete", "provider_unavailable"}
+                    code = str(exc) if str(exc) in known else "studio_provider_unavailable"
+                    self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": code})
+                except Exception:
+                    self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "studio_internal_error"})
+                return
+            if studio_path in {"/v1/providers/codex/login/start", "/v1/providers/codex/login/cancel"}:
+                # An explicit browser gesture is required. Reject cross-site
+                # form posts even though the API is loopback-only.
+                origin = self.headers.get("Origin", "")
+                allowed_origins = {
+                    "http://127.0.0.1:5173", "http://localhost:5173",
+                    f"http://127.0.0.1:{self.server.server_address[1]}",
+                    f"http://localhost:{self.server.server_address[1]}",
+                }
+                content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                if origin not in allowed_origins or content_type != "application/json":
+                    self._json(HTTPStatus.FORBIDDEN, {"error": "origin_or_content_type_rejected"})
+                    return
+                try:
+                    if self._body():
+                        raise ValueError
+                    payload = device_login.start() if self.path == "/v1/providers/codex/login/start" else device_login.cancel()
+                    self._json(HTTPStatus.OK, payload)
+                except LoginUnavailable:
+                    self._json(HTTPStatus.CONFLICT, {"error": "codex_login_unavailable"})
+                except (ValueError, TypeError):
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid_request"})
+                except Exception:
+                    self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "internal_error"})
                 return
             match = _CAMPAIGN_PATH.fullmatch(urlsplit(self.path).path)
             if not match:
@@ -261,6 +372,7 @@ def create_server(
     original_shutdown = server.shutdown
 
     def shutdown() -> None:
+        device_login.close()
         server.shutdown_requested.set()  # type: ignore[attr-defined]
         original_shutdown()
 
