@@ -21,6 +21,9 @@
   --bn-success: #9cd9a6;
   --bn-focus: #ffe297;
   --bn-shadow: 0 16px 56px #080b0888;
+  --bn-composer-shadow: 0 8px 30px #080b083d;
+  --bn-overlay: #050705ab;
+  --bn-overlay-mobile: #050705b8;
   --bn-font-body: 'DM Sans', system-ui, sans-serif;
   --bn-font-display: 'DM Sans', system-ui, sans-serif;
   --bn-font-mono: 'JetBrains Mono', ui-monospace, monospace;
@@ -272,7 +275,7 @@ html,body { overflow-x: clip; }
   background: var(--bn-surface);
   border: 1px solid var(--bn-divider-strong);
   border-radius: 11px;
-  box-shadow: 0 8px 30px #080b083d;
+  box-shadow: var(--bn-composer-shadow);
 }
 .studio-chat-composer:focus-within { border-color: var(--bn-accent); }
 .studio-chat-composer textarea {
@@ -312,7 +315,7 @@ html,body { overflow-x: clip; }
 .studio-chat-send:hover:not(:disabled) { background: var(--bn-accent-hover); }
 .studio-chat-send:disabled { background: var(--bn-surface-raised); color: var(--bn-muted); }
 .studio-chat-footnote { margin: 10px 0 0; color: var(--bn-muted); font-size: 11px; }
-.studio-review-backdrop { background: #050705ab; }
+.studio-review-backdrop { background: var(--bn-overlay); }
 .studio-review-panel {
   background: var(--bn-sidebar);
   border-color: var(--bn-divider-strong);
@@ -504,7 +507,7 @@ html,body { overflow-x: clip; }
     flex-basis: auto;
   }
   .studio-mobile-menu { display: grid; }
-  .studio-mobile-scrim { display: block; position: fixed; z-index: 19; inset: 0; background: #050705b8; border: 0; }
+  .studio-mobile-scrim { display: block; position: fixed; z-index: 19; inset: 0; background: var(--bn-overlay-mobile); border: 0; }
   .studio-chat-main { width: 100%; }
   .studio-chat-header { min-height: 62px; padding: 0 17px; }
   .studio-chat-heading { font-size: 14px; max-width: 48vw; }
