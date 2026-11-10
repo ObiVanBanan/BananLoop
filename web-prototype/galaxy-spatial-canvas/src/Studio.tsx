@@ -23,7 +23,7 @@ export function Studio({token,onBack,onOpenCampaign}:StudioProps){
  const [review,setReview]=useState(false);
  const [error,setError]=useState<{id:string;message:string}|null>(null);
  const [retryMessage,setRetryMessage]=useState<string|null>(null);
- const [sidebarOpen,setSidebarOpen]=useState(true);
+ const [sidebarOpen,setSidebarOpen]=useState(()=>typeof window==='undefined'||typeof window.matchMedia!=='function'||!window.matchMedia('(max-width: 760px)').matches);
  const scrollAnchor=useRef<HTMLDivElement|null>(null);
  const inputRef=useRef<HTMLTextAreaElement|null>(null);
  const current=useMemo(()=>chats.threads.find(t=>t.id===chats.activeId)||null,[chats]);
@@ -117,6 +117,7 @@ export function Studio({token,onBack,onOpenCampaign}:StudioProps){
  },[chats.threads.map(t=>`${t.id}:${t.launch?.phase??''}`).join('|'),token]);
 
  return <div className="studio-desktop">
+  {sidebarOpen&&<button type="button" className="studio-mobile-scrim" onClick={()=>setSidebarOpen(false)} aria-label="Закрыть историю чатов"/>}
   <aside className={`studio-chat-sidebar ${sidebarOpen?'':'studio-chat-sidebar-collapsed'}`} aria-label="История диалогов">
    <div className="studio-sidebar-top">
     <button className="studio-icon-control" onClick={()=>setSidebarOpen(x=>!x)} aria-label={sidebarOpen?'Свернуть панель чатов':'Открыть панель чатов'} title="Боковая панель">☰</button>
@@ -137,14 +138,22 @@ export function Studio({token,onBack,onOpenCampaign}:StudioProps){
     <span className="studio-chat-heading">{current?.messages.length?current.title:'BananLoop'} <i>▾</i></span>
     <div className="studio-chat-header-actions">
      {current?.draft&&<button onClick={()=>setReview(true)} className="studio-plan-open">◇ <span>План кампании</span></button>}
-     <span className="studio-provider-pill">Codex <i/></span>
+     <span className="studio-provider-pill">Codex CLI</span>
     </div>
    </header>
    <div className="studio-chat-scroll">
     {(!current||current.messages.length===0)&&<div className="studio-empty-state">
-     <div className="studio-brand-mark" aria-hidden="true">✳</div>
-     <h1>С чего начнём?</h1>
-     <p>Опиши исследовательскую задачу. Мы обсудим подход перед запуском.</p>
+     <div className="studio-empty-copy">
+      <div className="studio-brand-mark" aria-hidden="true">✳</div>
+      <h1>С чего начнём?</h1>
+      <p>Опиши исследовательскую задачу. Мы обсудим подход перед запуском.</p>
+      <p className="studio-empty-hint">Цель / гипотеза / независимая проверка</p>
+     </div>
+     <div className="studio-orbit-art" aria-hidden="true">
+      <span className="studio-orbit-node first"/><span className="studio-orbit-node second"/><span className="studio-orbit-node third"/>
+      <span className="studio-orbit-core">?</span>
+      <span className="studio-orbit-caption">от идеи к проверке</span>
+     </div>
     </div>}
     {!!current?.messages.length&&<div className="studio-chat-transcript">
      {current.messages.map((m,i)=><div key={i} className={`studio-transcript-turn ${m.role==='user'?'turn-user':'turn-assistant'}`}>
