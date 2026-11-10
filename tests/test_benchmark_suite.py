@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from bananloop.agent_benchmark import BenchmarkError, prepare_demo
-from bananloop.benchmark_suite import prepare_roles, score_roles, stage_discoverybench
+from bananloop.benchmark_suite import (prepare_roles, score_roles, stage_discoverybench,
+                                      run_approved_batches)
 
 
 @pytest.fixture
@@ -122,3 +123,96 @@ def test_discoverybench_rejects_modified_source_schema(tmp_path):
     (source / "data.csv").write_text("a,b\n1,2\n")
     with pytest.raises(BenchmarkError, match="schema"):
         stage_discoverybench(source_dir=str(source), output_root=str(tmp_path / "staged"))
+
+
+def test_role_batch_runner_is_plan_only_by_default(prepared, monkeypatch):
+    tmp_path, _, public, batches, _ = prepared
+
+    def forbid(*args, **kwargs):
+        raise AssertionError("no provider invocation is allowed during planning")
+
+    monkeypatch.setattr("bananloop.benchmark_live_codex.run_live", forbid)
+    plan = run_approved_batches(
+        public_root=str(public), batches_root=str(batches),
+        authorizations_root=str(tmp_path / "not-created-approvals"),
+        run_root=str(tmp_path / "not-created-runs"),
+        max_batches=2)
+    assert plan["status"] == "PLAN_ONLY_NO_MODEL_CALLS"
+    assert len(plan["selected_batches"]) == 2
+    assert plan["provider_requests"] == 0
+    assert not (tmp_path / "not-created-runs").exists()
+
+
+def test_role_batch_runner_requires_exact_approvals_before_dispatch(prepared, monkeypatch):
+    tmp_path, _, public, batches, _ = prepared
+    approvals = tmp_path / "approvals"
+    approvals.mkdir()
+    manifest = json.loads((batches / "batches.json").read_text())
+    first = manifest["batches"][0]
+    (approvals / "approval-batch-000.json").write_text(json.dumps({
+        "mode": "CODEX_SUBSCRIPTION_NONQUALIFYING_DIAGNOSTIC",
+        "suite_sha256": first["suite_sha256"],
+        "registry_sha256": manifest["registry_sha256"],
+        "team_manifest_sha256": manifest["team_manifest_sha256"],
+        "acknowledge_subscription_usage_unverified": True,
+        "acknowledge_token_caps_observational": True,
+    }))
+    dispatched = []
+
+    def fake_run(**kwargs):
+        dispatched.append(kwargs)
+        return {"status": "COMPLETED_DIAGNOSTIC", "completed_cases": 2,
+                "attempted_cases": 2}
+
+    monkeypatch.setattr("bananloop.benchmark_live_codex.run_live", fake_run)
+    with pytest.raises(BenchmarkError, match="missing exact-digest owner authorization"):
+        run_approved_batches(
+            public_root=str(public), batches_root=str(batches),
+            authorizations_root=str(approvals), run_root=str(tmp_path / "new-runs"),
+            max_batches=2, execute=True)
+    assert dispatched == []
+    assert not (tmp_path / "new-runs").exists()
+
+    result = run_approved_batches(
+        public_root=str(public), batches_root=str(batches),
+        authorizations_root=str(approvals), run_root=str(tmp_path / "new-runs"),
+        max_batches=1, execute=True)
+    assert result["status"] == "ALL_SELECTED_BATCHES_COMPLETED"
+    assert len(dispatched) == 1
+    assert (tmp_path / "new-runs" / "batch-orchestration-status.json").exists()
+    with pytest.raises(BenchmarkError, match="no automatic retries"):
+        run_approved_batches(
+            public_root=str(public), batches_root=str(batches),
+            authorizations_root=str(approvals), run_root=str(tmp_path / "new-runs"),
+            max_batches=1, execute=True)
+
+
+def test_role_batch_runner_stops_at_unknown_settlement(prepared, monkeypatch):
+    tmp_path, _, public, batches, _ = prepared
+    approvals = tmp_path / "approvals"
+    approvals.mkdir()
+    manifest = json.loads((batches / "batches.json").read_text())
+    for i in range(2):
+        batch = manifest["batches"][i]
+        (approvals / ("approval-" + batch["path"])).write_text(json.dumps({
+            "mode": "CODEX_SUBSCRIPTION_NONQUALIFYING_DIAGNOSTIC",
+            "suite_sha256": batch["suite_sha256"],
+            "registry_sha256": manifest["registry_sha256"],
+            "team_manifest_sha256": manifest["team_manifest_sha256"],
+            "acknowledge_subscription_usage_unverified": True,
+            "acknowledge_token_caps_observational": True,
+        }))
+    calls = []
+
+    def fake_run(**kwargs):
+        calls.append(kwargs)
+        return {"status": "STOPPED_UNKNOWN_USAGE_OR_INVALID_OUTPUT",
+                "completed_cases": 0, "attempted_cases": 1}
+
+    monkeypatch.setattr("bananloop.benchmark_live_codex.run_live", fake_run)
+    result = run_approved_batches(
+        public_root=str(public), batches_root=str(batches),
+        authorizations_root=str(approvals), run_root=str(tmp_path / "runs"),
+        max_batches=2, execute=True)
+    assert result["status"] == "STOPPED_CHECK_RUN_STATUSES_NO_REPLAY"
+    assert len(calls) == 1
