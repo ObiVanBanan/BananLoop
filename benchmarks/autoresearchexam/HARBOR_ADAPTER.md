@@ -213,6 +213,29 @@ The combined benchmark status and public DEV smoke record are in
 A Harbor `nop`, public baseline, or direct-writing agent is not a BananLoop
 benchmark result.
 
+## SOPCC public DEV runner — 2026-11-12
+
+`public_sopcc_dev.py` now runs the selected SOPCC task's public `dev_eval.py`
+inside a networkless, read-only container. The runner verifies the local image
+ID before execution, mounts only candidate `policy.py` read-only at
+`/app/solution`, bounds output, and returns aggregate reward/failure metrics.
+Its default panel is a smoke sample (draw 0, one instance, four episodes), not
+the official 6,400-episode DEV panel. It does not call the model or grader and
+is not yet wired as a BananLoop campaign backend.
+
+Build the image from the pinned public task environment:
+
+```bash
+docker buildx build --load --platform linux/amd64 \
+  --tag bananloop-are-sopcc-public-dev:2026-11-12 \
+  --file Dockerfile .
+```
+
+The observed image ID was
+`sha256:5fc63eccd0a3448db1dd9240c3fe7ecb4cef02511bafc77e2c91f294c3d82b8e`.
+The baseline smoke report, including the runner source digest, is
+`results/sopcc-public-dev-baseline-smoke-2026-11-12.json`.
+
 
 ## Safe overlay Harbor dry-run for all selected tasks — 2026-11-12
 
