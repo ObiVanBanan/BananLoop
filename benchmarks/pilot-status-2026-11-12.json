@@ -159,6 +159,32 @@
       "fix_revision": "463d5d42c86d922e346b57e172dc732efcb84f30",
       "focused_regression_test": "test_registered_experiment_catalog_is_opt_in_to_researcher_transport"
     },
+    "structured_output_smoke": {
+      "campaign_id": "c-7d4031215d5b963ab0c60facdb5d2c78",
+      "state_dir": "/home/sonik/bananloop-benchmark-env/runs/boardgames-one-task-smoke-v2",
+      "source_revision": "68fc291d1082a55f584f43bd32a6590f2a5f5baf",
+      "status": "FAILED_VALIDATION_BEFORE_ANALYSIS",
+      "model_calls": 1,
+      "call_status": "COMPLETED",
+      "input_tokens": 6242,
+      "output_tokens": 925,
+      "total_tokens": 7167,
+      "elapsed_model_dispatch_seconds": 20.1,
+      "failure_type": "ValidationError",
+      "diagnostic_locations": [
+        "hypotheses.0.next_experiment",
+        "hypotheses.1.next_experiment",
+        "hypotheses.2.next_experiment"
+      ],
+      "diagnosis": "the model returned structured JSON plans; the ResearchHypothesis schema accepted strings only",
+      "response_text_persisted": false,
+      "analysis_executed": false,
+      "replayed": false,
+      "fix": "bounded dict/list next_experiment values are canonicalized to JSON text; prompt now states this contract",
+      "fix_committed": true,
+      "fix_revision": "2a42f8cd57b6f43b0d21bad973b4e05faee2e1cc",
+      "focused_regression_test": "test_structured_next_experiment_is_canonicalized_without_losing_fields"
+    },
     "series_driver": {
       "path": "benchmarks/discoverybench_boardgames/series_runner.py",
       "status": "IMPLEMENTED_NOT_RUN",
@@ -413,17 +439,17 @@
   },
   "schema": "bananloop-benchmark-pilot-status-v1",
   "verification": {
-    "collected": 1102,
+    "collected": 1103,
     "exit_code": 0,
     "failed": 0,
     "focused_overlay_tests": "6 passed",
     "git_diff_check": "passed",
-    "passed": 1100,
+    "passed": 1101,
     "pytest_log": "not captured to a file; terminal exit code and .pytest_cache lastfailed=0 verified",
     "skipped": 2,
     "focused_public_dev_tests": "32 passed",
-    "latest_full_suite": "working tree at source revision 463d5d42c86d922e346b57e172dc732efcb84f30; 1,102 collected, 1,100 passed, 2 skipped, exit code 0",
-    "full_suite_run": "working tree after SIWC registered-experiment input allowlist fix, attestation staging, and sequential Board Games series runner"
+    "latest_full_suite": "source revision 2a42f8cd57b6f43b0d21bad973b4e05faee2e1cc; 1,103 collected, 1,101 passed, 2 skipped, exit code 0",
+    "full_suite_run": "source revision after SIWC registered-experiment allowlist and structured next_experiment normalization fixes, attestation staging, and sequential Board Games series runner"
   },
   "worktree": {
     "branch": "codex/autoresearchexam-verifier-evidence",
