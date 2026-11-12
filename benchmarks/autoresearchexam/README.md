@@ -110,16 +110,16 @@ The current implementation gap and safety boundary are recorded in
 writing Harbor agent and report it as a BananLoop result. The task shortlist is in
 [task-selection.json](task-selection.json).
 
-As of 2026-11-13, `harbor_agent.py` has task-specific dispatch for imputation,
-SOPCC, CARPS, DCTAB, and shortest-CI. CARPS, DCTAB, and shortest-CI each have
-an observed read-only public MCP contract, a content-pinned DEV/VALIDATION
-fixture, and a passing local public DEV baseline smoke. Those smokes are not
-BananLoop optimization results. The other five tasks still need task-specific
-integration; covtype currently has no identified public DEV scorer. The current
-DEV evaluators run in separate networkless Docker containers and do not include
-the grader service. `HARBOR_ADAPTER.md` tracks the remaining integration work.
-The adapter still lacks a prepared, independently approved ten-task campaign,
-so no AutoResearchExam series score is available.
+As of 2026-11-13, `harbor_agent.py` has task-specific dispatch for all ten of
+the selected tasks: imputation, SOPCC, CARPS, DCTAB, shortest-CI, sketched
+Newton, label-risk, CPU decoder, CPU LLM, and a CovType external proxy. The
+CovType adapter is diagnostic and does not implement the official dynamic
+market protocol. Each adapter has task-specific public
+DEV/VALIDATION fixtures, a public-only MCP contract, and a passing starter
+baseline smoke. These are evaluator preflights, not BananLoop optimization
+results. `HARBOR_ADAPTER.md` and
+[`TASK-ADAPTER-INVENTORY-2026-11-12.md`](TASK-ADAPTER-INVENTORY-2026-11-12.md)
+track the integration details and remaining gaps.
 
 The no-model Harbor lifecycle probe against the original task directory once
 collected its declared `/var/lib/are` grader artifact with verification
@@ -135,13 +135,49 @@ task-container MCP client for independent review. It does not read the grader
 sidecar or private tests; see
 [`HARBOR_ADAPTER.md`](HARBOR_ADAPTER.md) for the reproducible command.
 
-The first live independent protocol review approved the digest-pinned public
-imputation DEV/VALIDATION protocol in campaign
-`c-5ed94ff2d7dc592556dede3c68d4c0da` (fixture SHA-256
-`582b2d30516fbefdcafa4d3fc037464b7fd41b62a333a26d6706c4b104d77eb4`). The
-campaign is paused before Optimization pending the owner's decision on its
-`iterative_ridge` pivot. No candidate optimization or BananLoop score has been
-produced yet.
+The first digest-pinned public imputation DEV/VALIDATION protocol was approved
+in campaign `c-5ed94ff2d7dc592556dede3c68d4c0da` (fixture SHA-256
+`582b2d30516fbefdcafa4d3fc037464b7fd41b62a333a26d6706c4b104d77eb4`). Its
+owner-approved `iterative_ridge` child made one GPT-6 Luna call and two DEV
+evaluations. The candidate R² was `-0.7818` versus the starter DEV baseline
+`-0.0017`, so it was a negative experiment, not a task score. A subsequent
+public VALIDATION submit attempt has durable state `SUBMISSION_UNKNOWN` with no
+ID. No retry was made; the at-most-once ledger prevents safely resubmitting it.
+The child report remains `STEP_LIMIT` with Integration Verifier pending. Its
+logs and SQLite records are archived at
+`/home/sonik/bananloop-benchmark-env/runs/are-iterative-ridge-child/`.
+
+No ten-task AutoResearchExam campaign configs or series score exist yet. The
+current `series_runner.py` dispatches only prepared jobs; it does not create and
+advance five candidate children per task.
 
 The consolidated status, benchmark traces, validation counts, and remaining gaps
 are recorded in [`../pilot-status-2026-11-12.json`](../pilot-status-2026-11-12.json).
+
+## CovType external public diagnostic
+
+CovType still has no task-provided labelled public DEV panel. A separate
+diagnostic panel is now reproducibly generated from the public UCI CoverType
+archive, excluding the exact 250,000 source rows selected by the task's public
+data-preparation script. It uses 30,000 external labelled training rows and
+10,000 external evaluation rows, with the task's public feature/class
+anonymization transform. Its simplified market uses static prices because the
+official dynamic pricing formula is not documented publicly. The result is a
+proxy diagnostic only; it must not be reported as an AutoResearchExam score.
+
+Build the local panel with:
+
+```bash
+python -m benchmarks.autoresearchexam.build_covtype_proxy \
+  --archive /home/sonik/bananloop-benchmark-env/sources/covertype-public-uci.zip \
+  --output /home/sonik/bananloop-benchmark-env/runs/covtype-external-public-proxy-2026-11-13
+```
+
+The archive is SHA-256 pinned in the builder. The generated manifest and
+arrays are in the output directory above. The CovType Harbor adapter and
+trusted evaluator runner are implemented, and the public-only fixture was
+built and its backend bundle verified. The starter policy scored balanced
+accuracy `0.46194230556880844` on the 10,000-row panel in 32.73 seconds, with
+2,000 acquired labels. This is an evaluator smoke, not a BananLoop campaign or
+official AutoResearchExam score. The static-price proxy still needs independent
+protocol review before a campaign can use it.

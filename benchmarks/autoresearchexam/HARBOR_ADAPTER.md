@@ -4,11 +4,13 @@ Status: **one negative public DEV candidate result is recorded; end-to-end scori
 
 The isolated copy contains a Harbor `BaseAgent`, a public MCP client, a
 `TrustedEvaluatorRunner` backend seam, and a durable public-submission ledger.
-The bridge has task-pinned candidate/evaluator mappings for imputation and
-SOPCC, each still requiring its own approved protocol and Optimization run.
-`series_runner.py` dispatches only already-prepared task configs; it does not
-prepare or approve campaigns or protocols, implement the outer child-campaign
-loop, or map the other eight task outputs and evaluators. No completed
+The bridge has task-pinned candidate/evaluator mappings for all ten selected
+tasks. CovType uses an explicitly external static-price diagnostic proxy and
+is not official benchmark-compatible scoring. Each task still requires its
+own approved protocol and Optimization run. `series_runner.py` dispatches only
+already-prepared task configs; it does not prepare or approve campaigns or
+protocols, implement the outer child-campaign loop, or automatically create
+the ten task configs. No completed
 AutoResearchExam task score has been produced.
 
 ## Verified environment

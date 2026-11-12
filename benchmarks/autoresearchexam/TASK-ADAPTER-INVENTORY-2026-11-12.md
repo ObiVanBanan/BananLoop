@@ -29,7 +29,7 @@ This follow-up inspected only public instructions, task manifests, public task e
 
 | Task | Public-only DEV path | Fidelity and implementation notes | Current adapter |
 |---|---|---|---|
-| `budgeted-covtype-dual-market-open` | No public labels or public DEV scorer were identified; the public pool is unlabeled. | Do not invent a proxy and present it as benchmark-compatible. Defer until an explicitly owner-approved public scoring panel exists. | Missing |
+| `budgeted-covtype-dual-market-open` | Public pool is unlabeled. A separate external UCI CoverType panel now supplies a labelled diagnostic DEV evaluator; it uses a static-price proxy, not the undisclosed official dynamic market. | Report only as a nonofficial external proxy; keep official public VALIDATION separate. | Proxy evaluator, Harbor adapter, and fixture implemented; independent protocol review and campaign remain outstanding. |
 | `budgeted-imputation-mcar50` | Public six-dataset NPZ panel and task `devkit.py`/cellspec/cellrunner. | Existing public DEV/VALIDATION bridge. | Implemented; first pilot had a protocol-context failure before verifier dispatch. |
 | `carps-star-discrepancy-subset-select` | Eight public example clouds and exact metric in the public instruction. | A deterministic exact L-infinity star-discrepancy evaluator over the visible clouds is feasible; it is a DEV diagnostic, not the sealed score. Runtime must be bounded. | Public evaluator, Harbor backend, fixture, and candidate mapping implemented; baseline smoke passed |
 | `cpu-decoder-graph-executor` | Public reference executor, graph spec, harness, benchmark, worker, 16 seeds. | Faithful numeric and speed comparison is public; a small fixed seed subset can serve DEV, with the full panel too expensive for every iteration. | Public pilot DEV evaluator and Harbor adapter integrated; fixture and status probe passed (see below). |
@@ -39,6 +39,29 @@ This follow-up inspected only public instructions, task manifests, public task e
 | `shortest-valid-ci-l2-ece` | Public 24-setting `dev_panel.json` and `panel.py` with known per-replication target values. | A bounded seeded public panel can measure coverage and relative interval length; report its uncertainty and reduced replication count. | Public evaluator, Harbor backend, fixture, and candidate mapping implemented; baseline smoke passed |
 | `sketched-newton-cov-estimator` | Public runner and two DEV instances with exact target arrays. | Strong public protocol; each stream has 300,000 steps, so repetition count needs an explicit wall-time cap. | Public evaluator, Harbor backend, fixture, and candidate mapping implemented; baseline smoke passed (see below). |
 | `sopcc-online-chance-constrained-policy` | Public `dev_eval.py`, runner, problem module, baseline. | Existing pinned public DEV/VALIDATION adapter and smoke baseline. | Implemented; independent protocol review still needs a bounded live pass. |
+
+### CovType external public diagnostic data (2026-11-13)
+
+The pinned UCI CoverType archive used by the task's public data-preparation
+script was downloaded and verified against SHA-256
+`89a975c2457cd48e824238ae43c5a3cb762e42c4b4078d9b44a4514055105f6d`. A
+reproducible builder now excludes the exact first 250,000 source rows selected
+by that public script, then creates an independent labelled pool of 30,000
+rows and an evaluation panel of 10,000 rows from the remainder. It applies the
+public feature and class anonymization transforms. The generated data and
+manifest are in `/home/sonik/bananloop-benchmark-env/runs/covtype-external-public-proxy-2026-11-13/`.
+
+This closes the data-availability question for a clearly labelled external
+diagnostic, but it does not make CovType benchmark-compatible: the official
+dynamic market transition is not specified in public task material. The
+builder therefore pins a static-price proxy only. A networkless worker, trusted
+DEV runner, Harbor candidate adapter, and public-only DEV/VALIDATION fixture
+are now implemented. The starter policy scored balanced accuracy
+`0.46194230556880844` in 32.73 seconds on the 10,000-row external panel; this
+is evaluator smoke evidence, not a BananLoop result. A read-only public MCP
+contract probe and status-only Harbor bridge probe completed with zero public
+submissions and zero model calls. Independent protocol review and a campaign
+remain outstanding.
 
 The task-specific public DEV evaluators are implemented as separate modules. Their public-only MCP contracts were observed using `initialize`, `tools/list`, and read-only `status`; status showed zero submissions and zero active grading jobs. Task-specific Harbor backend runners and DEV/VALIDATION fixtures were built, and starter baselines passed their pinned local DEV panels. CARPS baseline mean exact discrepancy was `0.374694`; DCTAB mean ROC-AUC was `0.624757` over six fixed draws; shortest-CI task score was `1.0` over 24 settings x 32 replications. These are evaluator smokes, not BananLoop optimization results or official leaderboard scores. Evidence is in `/home/sonik/bananloop-benchmark-env/runs/are-public-contract-probes-2026-11-13/` and `/home/sonik/bananloop-benchmark-env/runs/are-public-evaluator-fixtures-2026-11-13/`.
 
