@@ -61,11 +61,15 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
-        dir_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
+        # Windows cannot open a directory handle with os.open(O_RDONLY).
+        # File contents were already flushed above; retain directory fsync on
+        # POSIX, where it makes the atomic replacement durable across crashes.
+        if os.name != "nt":
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -274,7 +278,9 @@ def validate_prepared_job(
 def build_command(*, harbor_binary: str, harbor_config: Path) -> list[str]:
     if not isinstance(harbor_binary, str) or not harbor_binary:
         raise ValueError("harbor_binary must be a nonempty executable path")
-    return [harbor_binary, "run", "--config", str(harbor_config), "--disable-verification"]
+    # Harbor paths refer to its POSIX task environment even when the dispatcher
+    # itself runs on Windows. Path.as_posix preserves that CLI contract.
+    return [harbor_binary, "run", "--config", harbor_config.as_posix(), "--disable-verification"]
 
 
 def inspect_harbor_result(job_dir: Path, *, task_id: str, overlay_path: str) -> dict[str, Any]:
