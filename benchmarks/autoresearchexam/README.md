@@ -4,6 +4,8 @@ This directory pins a ten-task shortlist and contains a partial Harbor bridge.
 It does not yet provide a complete BananLoop campaign or a BananLoop score on
 AutoResearchExam.
 
+The public output/API and DEV-harness requirements for all ten selected tasks are inventoried in [TASK-ADAPTER-INVENTORY-2026-11-12.md](TASK-ADAPTER-INVENTORY-2026-11-12.md).
+
 `series_runner.py` is a durable dispatcher for already-prepared per-task Harbor
 job configs. It validates the selected task/version and frozen config and
 overlay digests, limits each Harbor process to one hour, and records uncertain
