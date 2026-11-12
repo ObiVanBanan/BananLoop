@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import re
 import subprocess
 import tempfile
@@ -18,7 +17,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .public_devkit import _run_bounded_container, _stop_container
+from .public_devkit import _run_bounded_container
 
 TASK_ID = "cpu-decoder-graph-executor"
 TASK_VERSION = "1.1.0"
@@ -96,24 +95,6 @@ def verify_public_inputs(task_root: Path) -> dict[str, Any]:
         raise PublicCPUDecoderError("public task identity or frozen resource envelope changed")
     return {"task_sha256": TASK_SHA256, "instruction_sha256": INSTRUCTION_SHA256,
             "public_files": len(_PUBLIC_FILES), "public_seeds": list(PUBLIC_SEEDS)}
-
-
-def _container_entry(candidate_dir: Path, controller: Path, *, timeout_seconds: int) -> dict[str, Any]:
-    """Entry point invoked inside the task image; public benchmark only."""
-    import json as _json
-    import subprocess as _subprocess
-    result_path = "/tmp/bananloop-cpudecoder-result.json"
-    run = _subprocess.run(
-        ["python3", "/app/bench.py", "--dir", str(candidate_dir),
-         "--seeds", ",".join(map(str, PUBLIC_SEEDS)), "--json", result_path],
-        capture_output=True, text=True, timeout=timeout_seconds, check=False,
-    )
-    if run.returncode != 0:
-        raise PublicCPUDecoderError("public benchmark command failed: " + run.stderr[-2000:])
-    with open(result_path, encoding="utf-8") as stream:
-        record = _json.load(stream)
-    print(_RESULT_PREFIX + _json.dumps(record, sort_keys=True, separators=(",", ":")))
-    return record
 
 
 def evaluate_candidate(candidate: bytes, *, image: str = DEFAULT_IMAGE,

@@ -37,10 +37,12 @@ from .dctabeval_runner import AREPublicDCTABEvalEvaluatorRunner
 from .shortest_ci_runner import AREPublicShortestCIEvaluatorRunner
 from .sketched_newton_runner import AREPublicSketchedNewtonEvaluatorRunner
 from .labelrisk_runner import AREPublicLabelRiskEvaluatorRunner
+from .cpudecoder_runner import AREPublicCPUDecoderEvaluatorRunner
 from .public_sopcc_dev import run_public_sopcc_dev
 from .public_shortest_ci_dev import run_public_shortest_ci_dev
 from .public_sketched_newton_dev import run_public_newton_dev
 from .public_labelrisk_dev import run_public_labelrisk_dev
+from .public_cpudecoder_dev import run_public_cpudecoder_dev
 from .public_mcp_contract import validate_public_mcp_contract
 from .public_grader import PublicAREGrader
 from .public_devkit import run_public_devkit
@@ -62,10 +64,13 @@ _NEWTON_PUBLIC_OUTPUT = "/app/output/estimator.py"
 _NEWTON_CANDIDATE_PATH = "benchmarks/autoresearchexam/solutions/sketched_newton/estimator.py"
 _LABELRISK_PUBLIC_OUTPUT = "/app/output/estimator.py"
 _LABELRISK_CANDIDATE_PATH = "benchmarks/autoresearchexam/solutions/label_risk/estimator.py"
+_CPUDECODER_PUBLIC_OUTPUT = "/app/output/executor.py"
+_CPUDECODER_CANDIDATE_PATH = "benchmarks/autoresearchexam/solutions/cpu_decoder/executor.py"
 _PUBLIC_OUTPUT_ALLOWLIST = {
     _PUBLIC_OUTPUT, _SOPCC_PUBLIC_OUTPUT, _CARPS_PUBLIC_OUTPUT,
     _DCTAB_PUBLIC_OUTPUT, _SHORTEST_CI_PUBLIC_OUTPUT, _NEWTON_PUBLIC_OUTPUT,
     _LABELRISK_PUBLIC_OUTPUT,
+    _CPUDECODER_PUBLIC_OUTPUT,
 }
 
 
@@ -79,8 +84,8 @@ class AREBananLoopOptimizationAgent(BaseAgent):
     options_model = AREBridgeOptions
     # Harbor merges task-level MCP servers into custom agents and rejects the
     # trial unless the agent explicitly declares that it can use them. The
-    # adapter calls only the task's public submit/result tools through the
-    # environment bridge; it never exposes private verifier services.
+    # adapter calls only public grader tools and, during zero-call setup,
+    # may discover their schemas; it never exposes private verifier services.
     capabilities = AgentCapabilities(mcp_servers=True)
 
     def __init__(self, *args: Any, config_path: str | None = None, **kwargs: Any):
@@ -89,6 +94,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         super().__init__(*args, config_path=config_path, **kwargs)
         self.config_path = Path(config_path).expanduser().resolve() if config_path else None
         self._mcp_state: dict[str, Any] = {"session_id": None, "request_id": 1}
+        self._mcp_probe_metadata: dict[str, Any] = {}
         self._public_output_path = _PUBLIC_OUTPUT
 
     @staticmethod
@@ -110,12 +116,16 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         raw = json.loads(self.config_path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise RuntimeError("Harbor bridge config must be a JSON object")
+        contract_probe_only = raw.get("contract_probe_only", False)
+        if not isinstance(contract_probe_only, bool):
+            raise RuntimeError("contract_probe_only must be a boolean")
         required = {
             "repo", "state_dir", "campaign_id", "role_registry", "task_id",
-            "task_version", "task_instruction_sha256", "mcp_contract_sha256",
-            "mcp_contract_path", "model_call_limit", "timeout_seconds",
+            "task_version", "task_instruction_sha256", "model_call_limit", "timeout_seconds",
             "visible_path", "write_path", "public_dev_image", "public_dev_image_id",
         }
+        if not contract_probe_only:
+            required |= {"mcp_contract_sha256", "mcp_contract_path"}
         if required - set(raw):
             raise RuntimeError("Harbor bridge config is missing required pinned fields")
         repo = Path(raw["repo"]).expanduser().resolve()
@@ -131,13 +141,6 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 or task.get("instruction_sha256") != raw["task_instruction_sha256"]
                 or instruction_digest != raw["task_instruction_sha256"]):
             raise RuntimeError("Harbor task instruction or version differs from the pinned shortlist")
-        contract_path = Path(raw["mcp_contract_path"]).expanduser()
-        if contract_path.is_symlink():
-            raise RuntimeError("public ARE MCP contract file is missing or unsafe")
-        contract_path = contract_path.resolve()
-        if not contract_path.is_file() or contract_path.stat().st_size > 128_000:
-            raise RuntimeError("public ARE MCP contract file is missing or unsafe")
-        contract = json.loads(contract_path.read_text(encoding="utf-8"))
         adapter_id = raw.get("adapter_id", "imputation-public-v2")
         adapter_specs = {
             "imputation-public-v2": (
@@ -174,31 +177,48 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 _LABELRISK_PUBLIC_OUTPUT, AREPublicLabelRiskEvaluatorRunner,
                 AREPublicLabelRiskEvaluatorRunner.default_dev_cell_count,
             ),
+            "cpudecoder-public-v1": (
+                "cpu-decoder-graph-executor", _CPUDECODER_CANDIDATE_PATH,
+                _CPUDECODER_PUBLIC_OUTPUT, AREPublicCPUDecoderEvaluatorRunner,
+                AREPublicCPUDecoderEvaluatorRunner.default_dev_cell_count,
+            ),
         }
         if adapter_id not in adapter_specs:
             raise RuntimeError("Harbor bridge adapter_id is not in the pinned allowlist")
         expected_task, expected_candidate, expected_output, runner_type, expected_cells = adapter_specs[adapter_id]
         if raw["task_id"] != expected_task:
             raise RuntimeError("Harbor bridge adapter is bound to the wrong task ID")
-        discovered_names = {
-            item.get("name") for item in contract.get("discovered_tools", [])
-            if isinstance(item, dict)
-        }
-        if (contract.get("contract_sha256") != raw["mcp_contract_sha256"]
-                or contract.get("task_id") != raw["task_id"]
-                or contract.get("task_version") != raw["task_version"]
-                or contract.get("task_instruction_sha256") != raw["task_instruction_sha256"]
-                or contract.get("public_endpoint") != "http://grader:8000/mcp"
-                or not {"submit", "result"} <= discovered_names):
-            raise RuntimeError("public MCP contract does not match the pinned task or tool allowlist")
-        try:
-            validate_public_mcp_contract(
-                contract, task_id=raw["task_id"], task_version=raw["task_version"],
-                task_sha256=task["task_sha256"],
-                task_instruction_sha256=raw["task_instruction_sha256"],
-            )
-        except ValueError as exc:
-            raise RuntimeError("public ARE MCP contract digest or task pin is invalid") from exc
+        if contract_probe_only:
+            if raw.get("status_probe_only") is not True or raw.get("model_call_limit") != 0:
+                raise RuntimeError("contract discovery requires a zero-call status-only probe")
+            raw["mcp_contract_sha256"] = "0" * 64
+        else:
+            contract_path = Path(raw["mcp_contract_path"]).expanduser()
+            if contract_path.is_symlink():
+                raise RuntimeError("public ARE MCP contract file is missing or unsafe")
+            contract_path = contract_path.resolve()
+            if not contract_path.is_file() or contract_path.stat().st_size > 128_000:
+                raise RuntimeError("public ARE MCP contract file is missing or unsafe")
+            contract = json.loads(contract_path.read_text(encoding="utf-8"))
+            discovered_names = {
+                item.get("name") for item in contract.get("discovered_tools", [])
+                if isinstance(item, dict)
+            }
+            if (contract.get("contract_sha256") != raw["mcp_contract_sha256"]
+                    or contract.get("task_id") != raw["task_id"]
+                    or contract.get("task_version") != raw["task_version"]
+                    or contract.get("task_instruction_sha256") != raw["task_instruction_sha256"]
+                    or contract.get("public_endpoint") != "http://grader:8000/mcp"
+                    or not {"submit", "result"} <= discovered_names):
+                raise RuntimeError("public MCP contract does not match the pinned task or tool allowlist")
+            try:
+                validate_public_mcp_contract(
+                    contract, task_id=raw["task_id"], task_version=raw["task_version"],
+                    task_sha256=task["task_sha256"],
+                    task_instruction_sha256=raw["task_instruction_sha256"],
+                )
+            except ValueError as exc:
+                raise RuntimeError("public ARE MCP contract digest or task pin is invalid") from exc
         for field in ("model_call_limit", "timeout_seconds"):
             value = raw[field]
             if isinstance(value, bool) or not isinstance(value, int):
@@ -230,7 +250,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         expected_image_id = getattr(runner_type, "default_dev_image_id", None)
         if expected_image_id and raw["public_dev_image_id"] != expected_image_id:
             raise RuntimeError("public DEV image ID differs from the task adapter pin")
-        if adapter_id in {"carps-public-v1", "dctabeval-public-v1", "sketched-newton-public-v1", "labelrisk-public-v1"}:
+        if adapter_id in {"carps-public-v1", "dctabeval-public-v1", "sketched-newton-public-v1", "labelrisk-public-v1", "cpudecoder-public-v1"}:
             task_root = Path(raw.get("public_task_root", "")).expanduser()
             if task_root.is_symlink() or not task_root.is_dir() or task_root.name != raw["task_id"]:
                 raise RuntimeError("public task root is missing or does not match the adapter task")
@@ -241,6 +261,9 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         if adapter_id == "labelrisk-public-v1":
             if raw.get("validation_metric_semantics") != AREPublicLabelRiskEvaluatorRunner.validation_metric_semantics:
                 raise RuntimeError("label-risk validation score semantics are not explicitly pinned")
+        if adapter_id == "cpudecoder-public-v1":
+            if raw.get("validation_metric_semantics") != AREPublicCPUDecoderEvaluatorRunner.validation_metric_semantics:
+                raise RuntimeError("CPU-decoder validation score semantics are not explicitly pinned")
         self._public_output_path = expected_output
         raw["adapter_id"] = adapter_id
         if (raw.get("max_candidate_iterations", 5) != 5
@@ -257,8 +280,8 @@ class AREBananLoopOptimizationAgent(BaseAgent):
     async def _call_public_tool(
         self, environment: BaseEnvironment, tool: str, arguments: Mapping[str, Any],
     ) -> dict[str, Any]:
-        if tool not in {"submit", "result", "status"}:
-            raise RuntimeError("ARE bridge only permits public submit/result and read-only status MCP tools")
+        if tool not in {"submit", "result", "status", "discover_contract"}:
+            raise RuntimeError("ARE bridge only permits public grader tools and read-only contract discovery")
         remote_request = f"/tmp/bananloop_are_request_{uuid4().hex}.json"
         request_body = {
             "tool": tool,
@@ -314,6 +337,9 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 "session_id": response.get("session_id"),
                 "request_id": response.get("request_id", 1),
             }
+            for key in ("protocol_version", "server_info"):
+                if response.get(key) is not None:
+                    self._mcp_probe_metadata[key] = response[key]
             payload = response.get("result")
             if not isinstance(payload, dict):
                 raise RuntimeError("ARE public MCP call returned no sanitized payload")
@@ -349,9 +375,21 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         if check.return_code != 0:
             raise RuntimeError("ARE output directory or starter file is unavailable")
         if raw.get("status_probe_only") is True:
+            discovered_tools = None
+            if raw.get("contract_probe_only") is True:
+                discovered = await self._call_public_tool(environment, "discover_contract", {})
+                discovered_tools = discovered.get("tools")
             status = await self._call_public_tool(environment, "status", {})
             context.metadata = {
                 **(context.metadata or {}),
+                **({"bananloop_are_contract_probe": {
+                    "endpoint": "http://grader:8000/mcp",
+                    "protocol_version": self._mcp_probe_metadata.get("protocol_version"),
+                    "server": self._mcp_probe_metadata.get("server_info"),
+                    "tools": discovered_tools,
+                    "submit_called": False, "result_called": False,
+                    "model_called": False,
+                }} if raw.get("contract_probe_only") is True else {}),
                 "bananloop_are_status_probe": {
                     key: status[key] for key in (
                         "status", "submissions", "queued_or_grading",
@@ -405,6 +443,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 "shortest-ci-public-v1": AREPublicShortestCIEvaluatorRunner,
                 "sketched-newton-public-v1": AREPublicSketchedNewtonEvaluatorRunner,
                 "labelrisk-public-v1": AREPublicLabelRiskEvaluatorRunner,
+                "cpudecoder-public-v1": AREPublicCPUDecoderEvaluatorRunner,
             }
             runner_type = runner_types[adapter_id]
             expected_backend = runner_type.backend_id
@@ -450,6 +489,14 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                     }
                 if adapter_id == "labelrisk-public-v1":
                     return run_public_labelrisk_dev(
+                        candidate,
+                        task_root=Path(raw["public_task_root"]),
+                        image=raw["public_dev_image"],
+                        expected_image_id=raw["public_dev_image_id"],
+                        timeout_seconds=min(3600, timeout_seconds),
+                    )
+                if adapter_id == "cpudecoder-public-v1":
+                    return run_public_cpudecoder_dev(
                         candidate,
                         task_root=Path(raw["public_task_root"]),
                         image=raw["public_dev_image"],
@@ -512,6 +559,13 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                     dev_image_id=raw["public_dev_image_id"],
                 )
             if adapter_id == "labelrisk-public-v1":
+                return runner_type(
+                    **common,
+                    source_task_root=Path(raw["public_task_root"]),
+                    dev_image=raw["public_dev_image"],
+                    dev_image_id=raw["public_dev_image_id"],
+                )
+            if adapter_id == "cpudecoder-public-v1":
                 return runner_type(
                     **common,
                     source_task_root=Path(raw["public_task_root"]),
