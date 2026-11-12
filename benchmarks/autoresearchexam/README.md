@@ -75,5 +75,13 @@ task-container MCP client for independent review. It does not read the grader
 sidecar or private tests; see
 [`HARBOR_ADAPTER.md`](HARBOR_ADAPTER.md) for the reproducible command.
 
+The first live independent protocol review approved the digest-pinned public
+imputation DEV/VALIDATION protocol in campaign
+`c-5ed94ff2d7dc592556dede3c68d4c0da` (fixture SHA-256
+`582b2d30516fbefdcafa4d3fc037464b7fd41b62a333a26d6706c4b104d77eb4`). The
+campaign is paused before Optimization pending the owner's decision on its
+`iterative_ridge` pivot. No candidate optimization or BananLoop score has been
+produced yet.
+
 The consolidated status, benchmark traces, validation counts, and remaining gaps
 are recorded in [`../pilot-status-2026-11-12.json`](../pilot-status-2026-11-12.json).

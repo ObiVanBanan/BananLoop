@@ -98,17 +98,17 @@ produced.
 
 ## Remaining work before an AutoResearchExam score
 
-1. Obtain independent approval for the task-pinned DEV/VALIDATION protocol. A
-   first review rejected the generic argv interpretation; the bounded review
-   context now explains the Core-registered backend contract and includes its
-   exact digest-bound source, then receives one fresh review.
-2. Implement an outer durable campaign driver that creates the approved parent
+1. The task-pinned DEV/VALIDATION protocol is approved in live campaign
+   `c-5ed94ff2d7dc592556dede3c68d4c0da`. Its next action is the pending owner
+   decision on the `iterative_ridge` Optimization pivot.
+2. Complete one single-task BananLoop acceptance through the safe Harbor overlay.
+3. Implement an outer durable campaign driver that creates the approved parent
    and up to five child Optimization campaigns, carries evidence between them,
    and resumes without duplicating evaluation.
-3. Generalize candidate/output mapping and independent evaluator protocol setup
+4. Generalize candidate/output mapping and independent evaluator protocol setup
    for all ten selected tasks.
-4. The no-model Harbor lifecycle probe is complete through the safe overlay. Run
-   one complete single-task BananLoop pilot before starting the ten-task series.
+5. Run the ten-task series after the single-task acceptance and durable driver
+   are complete.
 
 ## Harbor lifecycle preflight and artifact boundary
 
