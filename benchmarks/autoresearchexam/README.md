@@ -69,9 +69,10 @@ AutoResearchExam BananLoop score.
 
 The imputation task now has a public-only `DEV` + `VALIDATION` fixture builder:
 `uv run python -m benchmarks.autoresearchexam.build_public_fixture`. Its frozen
-bundle includes the exact host DEV runner, task devkit, MCP contract, Optimization
-backend, public grading ledger, and task-container MCP client for independent
-review. It does not read the grader sidecar or private tests; see
+bundle includes the exact host DEV runner, public task instructions, `cellspec.py`,
+`cellrunner.py`, MCP contract, Optimization backend, public grading ledger, and
+task-container MCP client for independent review. It does not read the grader
+sidecar or private tests; see
 [`HARBOR_ADAPTER.md`](HARBOR_ADAPTER.md) for the reproducible command.
 
 The consolidated status, benchmark traces, validation counts, and remaining gaps

@@ -46,6 +46,9 @@ def _bundle(task_id="are-task", version="1.1.0", contract_sha="f" * 64,
         "optimization_runner_sha256": hashlib.sha256(backend_source).hexdigest(),
         "public_grader_sha256": hashlib.sha256(grader_source).hexdigest(),
         "mcp_client_sha256": hashlib.sha256(mcp_client_source).hexdigest(),
+        "task_instruction_sha256": hashlib.sha256(b"Public task instruction\n").hexdigest(),
+        "cellspec_sha256": hashlib.sha256(b"public cellspec source").hexdigest(),
+        "cellrunner_sha256": hashlib.sha256(b"public cellrunner source").hexdigest(),
         "task_devkit_sha256": hashlib.sha256(task_source).hexdigest(),
         "mcp_contract_source_sha256": hashlib.sha256(contract_source).hexdigest(),
         "public_dev_image": AREPublicEvaluatorRunner.default_dev_image,
@@ -68,6 +71,9 @@ def _bundle(task_id="are-task", version="1.1.0", contract_sha="f" * 64,
         archive.writestr("optimization_runner.py", backend_source)
         archive.writestr("public_grader.py", grader_source)
         archive.writestr("are_public_mcp_client.py", mcp_client_source)
+        archive.writestr("task-instruction.md", b"Public task instruction\n")
+        archive.writestr("cellspec.py", b"public cellspec source")
+        archive.writestr("cellrunner.py", b"public cellrunner source")
         archive.writestr("task-devkit.py", task_source)
         archive.writestr("public-mcp-contract.json", contract_source)
     return buffer.getvalue()

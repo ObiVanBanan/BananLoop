@@ -281,7 +281,8 @@ class AREPublicEvaluatorRunner:
                     "are-public-backend.json", "public_devkit.py", "task-devkit.py",
                     "public-mcp-contract.json", "optimization_runner.py",
                     "public_grader.py", "are_public_mcp_client.py",
-                } or len(archive.infolist()) != 7:
+                    "task-instruction.md", "cellspec.py", "cellrunner.py",
+                } or len(archive.infolist()) != 10:
                     raise ValueError
                 infos = [item for item in archive.infolist()
                          if item.filename == "are-public-backend.json" and not item.is_dir()]
@@ -301,6 +302,12 @@ class AREPublicEvaluatorRunner:
                                 if item.filename == "public_grader.py" and not item.is_dir()]
                 mcp_client_infos = [item for item in archive.infolist()
                                     if item.filename == "are_public_mcp_client.py" and not item.is_dir()]
+                instruction_infos = [item for item in archive.infolist()
+                                     if item.filename == "task-instruction.md" and not item.is_dir()]
+                cellspec_infos = [item for item in archive.infolist()
+                                  if item.filename == "cellspec.py" and not item.is_dir()]
+                cellrunner_infos = [item for item in archive.infolist()
+                                    if item.filename == "cellrunner.py" and not item.is_dir()]
                 runtime_backend_source = Path(__file__).read_bytes()
                 runtime_grader_source = Path(__file__).with_name("public_grader.py").read_bytes()
                 runtime_mcp_client_source = Path(__file__).with_name(
@@ -309,12 +316,17 @@ class AREPublicEvaluatorRunner:
                 if (len(runner_infos) != 1 or len(task_infos) != 1 or len(contract_infos) != 1
                         or len(backend_infos) != 1 or len(grader_infos) != 1
                         or len(mcp_client_infos) != 1
+                        or len(instruction_infos) != 1 or len(cellspec_infos) != 1
+                        or len(cellrunner_infos) != 1
                         or runner_infos[0].file_size > 32 * 1024
                         or task_infos[0].file_size > 64 * 1024
                         or contract_infos[0].file_size > 128 * 1024
                         or backend_infos[0].file_size > 32 * 1024
                         or grader_infos[0].file_size > 32 * 1024
                         or mcp_client_infos[0].file_size > 12 * 1024
+                        or instruction_infos[0].file_size > 64 * 1024
+                        or cellspec_infos[0].file_size > 16 * 1024
+                        or cellrunner_infos[0].file_size > 4 * 1024
                         or archive.read(runner_infos[0]) != runtime_source):
                     raise ValueError
                 task_source = archive.read(task_infos[0])
@@ -322,6 +334,9 @@ class AREPublicEvaluatorRunner:
                 backend_source = archive.read(backend_infos[0])
                 grader_source = archive.read(grader_infos[0])
                 mcp_client_source = archive.read(mcp_client_infos[0])
+                instruction_source = archive.read(instruction_infos[0])
+                cellspec_source = archive.read(cellspec_infos[0])
+                cellrunner_source = archive.read(cellrunner_infos[0])
                 contract = json.loads(contract_source.decode("utf-8"))
                 if (not task_source or len(task_source) > 64 * 1024
                         or backend_source != runtime_backend_source):
@@ -352,6 +367,9 @@ class AREPublicEvaluatorRunner:
             "optimization_runner_sha256": hashlib.sha256(backend_source).hexdigest(),
             "public_grader_sha256": hashlib.sha256(grader_source).hexdigest(),
             "mcp_client_sha256": hashlib.sha256(mcp_client_source).hexdigest(),
+            "task_instruction_sha256": hashlib.sha256(instruction_source).hexdigest(),
+            "cellspec_sha256": hashlib.sha256(cellspec_source).hexdigest(),
+            "cellrunner_sha256": hashlib.sha256(cellrunner_source).hexdigest(),
             "task_devkit_sha256": hashlib.sha256(task_source).hexdigest(),
             "mcp_contract_source_sha256": hashlib.sha256(contract_source).hexdigest(),
         }

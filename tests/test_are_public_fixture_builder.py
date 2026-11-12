@@ -32,8 +32,12 @@ def test_are_public_fixture_builder_pins_public_runtime_and_omits_private_sideca
     (source_task / "environment/app").mkdir(parents=True)
     instruction = b"Public benchmark instruction\n"
     devkit = b"# public devkit\ndef main(): pass\n"
+    cellspec = b"# public cellspec\n"
+    cellrunner = b"# public cellrunner\n"
     (source_task / "instruction.md").write_bytes(instruction)
     (source_task / "environment/app/devkit.py").write_bytes(devkit)
+    (source_task / "environment/app/cellspec.py").write_bytes(cellspec)
+    (source_task / "environment/app/cellrunner.py").write_bytes(cellrunner)
     (source_task / "are-grader-ctx").mkdir()
     (source_task / "are-grader-ctx/private.txt").write_text("private sentinel")
     instruction_digest = hashlib.sha256(instruction).hexdigest()
@@ -63,7 +67,7 @@ def test_are_public_fixture_builder_pins_public_runtime_and_omits_private_sideca
         assert set(archive.namelist()) == {
             "are-public-backend.json", "public_devkit.py", "task-devkit.py",
             "public-mcp-contract.json", "optimization_runner.py", "public_grader.py",
-            "are_public_mcp_client.py",
+            "are_public_mcp_client.py", "task-instruction.md", "cellspec.py", "cellrunner.py",
         }
         assert archive.read("task-devkit.py") == devkit
         assert b"private sentinel" not in b"".join(archive.read(name) for name in archive.namelist())
@@ -99,7 +103,7 @@ def test_are_public_fixture_builder_pins_public_runtime_and_omits_private_sideca
     assert set(reviewed) == {
         "are-public-backend.json", "public_devkit.py", "task-devkit.py",
         "public-mcp-contract.json", "optimization_runner.py", "public_grader.py",
-        "are_public_mcp_client.py",
+        "are_public_mcp_client.py", "task-instruction.md", "cellspec.py", "cellrunner.py",
     }
     assert reviewed["public_devkit.py"].encode() == (source_root / "public_devkit.py").read_bytes()
     assert reviewed["optimization_runner.py"].encode() == (
@@ -109,8 +113,11 @@ def test_are_public_fixture_builder_pins_public_runtime_and_omits_private_sideca
     assert reviewed["are_public_mcp_client.py"].encode() == (
         source_root / "are_public_mcp_client.py"
     ).read_bytes()
+    assert reviewed["task-instruction.md"].encode() == instruction
+    assert reviewed["cellspec.py"].encode() == cellspec
+    assert reviewed["cellrunner.py"].encode() == cellrunner
     assert reviewed["task-devkit.py"].encode() == devkit
     assert json.loads(reviewed["public-mcp-contract.json"])["contract_sha256"] == contract_digest
     assert material["public_attestations"]
-    assert len(json.dumps(material, separators=(",", ":"))) <= 96_000
+    assert len(json.dumps(material, separators=(",", ":"))) <= 104_000
 

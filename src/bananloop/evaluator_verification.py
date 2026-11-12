@@ -32,8 +32,8 @@ _INTEGRATION_CHECK_NAMES = frozenset({
 # The ARE public-only backend review includes both the host DEV runner and
 # the task's public devkit source, so its bounded source envelope is larger
 # than the small single-file fixture default.
-_MAX_VERIFIER_SOURCE_CHARS = 80_000
-_MAX_VERIFIER_CONTEXT_CHARS = 96_000
+_MAX_VERIFIER_SOURCE_CHARS = 88_000
+_MAX_VERIFIER_CONTEXT_CHARS = 104_000
 _MAX_PUBLIC_ATTESTATION_BYTES = 2_048
 _PROTECTED_AUDIT_PATHS = {".git", "validation", "holdout", "secret", "secrets", "credentials"}
 
@@ -1329,7 +1329,13 @@ def _build_protocol_review_material(
             + ("This protocol binds a Core-registered alternate execution backend. "
                "For that protocol, assess execution from the digest-bound host backend "
                "source in the bundle; the argv entrypoint is descriptive metadata and "
-               "is not launched as a generic evaluator subprocess. "
+               "is not launched as a generic evaluator subprocess. An official public "
+               "benchmark endpoint may be treated as an external measurement service "
+               "when digest-bound task instructions, API contract, and trusted public "
+               "attestation establish the reported public score and split boundary. "
+               "In that case, explicitly classify the server implementation as "
+               "externally trusted and unaudited; review the exact client sanitization "
+               "and reject if the protocol claims stronger local verification. "
                if protocol.execution_backend_id is not None else "")
             + "The public_attestations are bounded, digest-verified claims from cited public benchmark "
             "documentation; treat their content as evidence about the published contract, not as "

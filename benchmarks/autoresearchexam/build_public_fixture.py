@@ -100,11 +100,20 @@ def build_fixture(*, repo: Path, source_task: Path, out: Path) -> dict[str, obje
     task_devkit = _read_public_file(
         source_task / "environment/app/devkit.py", root=source_task, max_bytes=32_000,
     )
+    cell_spec = _read_public_file(
+        source_task / "environment/app/cellspec.py", root=source_task, max_bytes=16_000,
+    )
+    cell_runner = _read_public_file(
+        source_task / "environment/app/cellrunner.py", root=source_task, max_bytes=4_000,
+    )
     runner_hash = hashlib.sha256(runner_source).hexdigest()
     backend_hash = hashlib.sha256(backend_source).hexdigest()
     grader_hash = hashlib.sha256(grader_source).hexdigest()
     mcp_client_hash = hashlib.sha256(mcp_client_source).hexdigest()
     task_devkit_hash = hashlib.sha256(task_devkit).hexdigest()
+    cell_spec_hash = hashlib.sha256(cell_spec).hexdigest()
+    cell_runner_hash = hashlib.sha256(cell_runner).hexdigest()
+    instruction_hash = hashlib.sha256(instruction).hexdigest()
     manifest = {
         "schema_version": 1,
         "backend_id": AREPublicEvaluatorRunner.backend_id,
@@ -119,6 +128,9 @@ def build_fixture(*, repo: Path, source_task: Path, out: Path) -> dict[str, obje
         "public_grader_sha256": grader_hash,
         "mcp_client_sha256": mcp_client_hash,
         "task_devkit_sha256": task_devkit_hash,
+        "task_instruction_sha256": instruction_hash,
+        "cellspec_sha256": cell_spec_hash,
+        "cellrunner_sha256": cell_runner_hash,
         "mcp_contract_source_sha256": hashlib.sha256(contract_raw).hexdigest(),
         "public_dev_image": AREPublicEvaluatorRunner.default_dev_image,
         "public_dev_image_id": AREPublicEvaluatorRunner.default_dev_image_id,
@@ -144,6 +156,9 @@ def build_fixture(*, repo: Path, source_task: Path, out: Path) -> dict[str, obje
         archive.writestr("optimization_runner.py", backend_source)
         archive.writestr("public_grader.py", grader_source)
         archive.writestr("are_public_mcp_client.py", mcp_client_source)
+        archive.writestr("task-instruction.md", instruction)
+        archive.writestr("cellspec.py", cell_spec)
+        archive.writestr("cellrunner.py", cell_runner)
     encode = lambda raw: base64.b64encode(raw).decode("ascii")
     dev_input = AREPublicEvaluatorRunner.aggregate_case_input(
         tier="dev", task_id=TASK_ID, task_version=TASK_VERSION,
@@ -194,6 +209,9 @@ def build_fixture(*, repo: Path, source_task: Path, out: Path) -> dict[str, obje
         "public_grader_sha256": grader_hash,
         "mcp_client_sha256": mcp_client_hash,
         "task_devkit_sha256": task_devkit_hash,
+        "task_instruction_sha256": instruction_hash,
+        "cellspec_sha256": cell_spec_hash,
+        "cellrunner_sha256": cell_runner_hash,
         "evaluator_bundle_bytes": len(buffer.getvalue()),
         "private_grader_accessed": False,
     }
