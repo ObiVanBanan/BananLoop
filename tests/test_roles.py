@@ -198,6 +198,21 @@ def test_context_is_fresh_role_scoped_and_discards_unapproved_fields():
         build_role_context(member, {"campaign_goal": "raw caller value"})
 
 
+def test_public_task_context_supports_bounded_full_protocol_review_material():
+    from bananloop.roles import RoleContextV1
+
+    review = RoleContextV1(
+        role_id="independent_verifier", campaign_goal="Review the public evaluator.",
+        public_task="x" * 24_538,
+    )
+    assert len(review.public_task) == 24_538
+    with pytest.raises(ValidationError):
+        RoleContextV1(
+            role_id="independent_verifier", campaign_goal="Review the public evaluator.",
+            public_task="x" * 32_001,
+        )
+
+
 def test_pinned_executor_supplies_manifest_config_and_rejects_request_tampering():
     pinned = registry(role())
     manifest = TeamFactoryV1.build(pinned, request(), expected_registry_digest=pinned.digest())
