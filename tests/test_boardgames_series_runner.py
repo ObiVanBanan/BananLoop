@@ -1,10 +1,30 @@
 import json
+import os
 import subprocess
+import sys
+import types
 from pathlib import Path
 
 import pytest
 
 from benchmarks.discoverybench_boardgames import series_runner
+
+
+def test_windows_lock_fallback_uses_one_nonblocking_byte(monkeypatch, tmp_path):
+    calls = []
+    fake_msvcrt = types.ModuleType("msvcrt")
+    fake_msvcrt.LK_NBLCK = 1
+    fake_msvcrt.locking = lambda fd, mode, count: calls.append((fd, mode, count))
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr(series_runner, "fcntl", None)
+    lock_path = tmp_path / "series.lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        series_runner._lock_nonblocking(fd)
+    finally:
+        os.close(fd)
+    assert lock_path.read_bytes() == b"\0"
+    assert calls == [(fd, fake_msvcrt.LK_NBLCK, 1)]
 
 
 def _runner(tmp_path, process_runner):

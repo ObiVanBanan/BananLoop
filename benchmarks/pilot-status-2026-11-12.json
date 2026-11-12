@@ -248,6 +248,22 @@
       "containers_started": false,
       "scope": "Harbor config/task metadata dry-run only; no task agent setup or execution",
       "known_invocation_pitfall": "direct flags did not select a task; confirmed by rerunning with Harbor JSON job configs"
+    },
+    "prepared_series_dispatcher": {
+      "path": "benchmarks/autoresearchexam/series_runner.py",
+      "status": "IMPLEMENTED_DISPATCH_ONLY",
+      "prepared_task_job_descriptor_count": 0,
+      "ten_task_configs_prepared": false,
+      "limit_seconds_per_task": 3600,
+      "max_candidate_iterations": 5,
+      "sequential": true,
+      "harbor_verification_disabled": true,
+      "automatic_retries": 0,
+      "durable_resume": true,
+      "interrupted_or_unknown_runs_replayed": false,
+      "extracts_harbor_and_bananloop_status_usage": true,
+      "focused_tests": "series runner + ARE runner/overlay + BoardGames runner + v2 integrated acceptance passed locally",
+      "remaining": "No task-specific candidate/output adapters or approved evaluator configurations for all ten tasks; dispatcher does not create or approve campaigns/protocols."
     }
   },
   "boardgames": {

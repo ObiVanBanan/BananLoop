@@ -69,6 +69,34 @@ def _api_json(url: str, *, method="GET", payload=None, key=None):
         raise AssertionError(f"API {method} {url} returned {exc.code}: {exc.read().decode()}") from exc
 
 
+def _nested_bwrap_available(binary: str) -> bool:
+    """The real-bwrap fixture launches a candidate sandbox inside evaluator bwrap."""
+    if not binary:
+        return False
+    outer = [binary, "--die-with-parent", "--new-session", "--unshare-user",
+             "--unshare-pid", "--unshare-net", "--clearenv"]
+    for system in ("/usr", "/bin", "/lib", "/lib64"):
+        if os.path.exists(system):
+            outer.extend(["--ro-bind", system, system])
+    outer.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+                  "--chdir", "/tmp", binary, "--die-with-parent", "--new-session",
+                  "--unshare-user", "--unshare-pid", "--unshare-net", "--clearenv"])
+    for system in ("/usr", "/bin", "/lib", "/lib64"):
+        if os.path.exists(system):
+            outer.extend(["--ro-bind", system, system])
+    outer.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+                  "/usr/bin/true"])
+    try:
+        result = subprocess.run(
+            outer, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"},
+            timeout=10, check=False,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 @pytest.mark.parametrize("real_isolation", [False, True], ids=["test-runner", "real-bwrap"])
 def test_exploration_research_handoff_child_agrees_through_api_and_cli(
     tmp_path, capsys, monkeypatch, real_isolation,
@@ -695,6 +723,9 @@ sys.stdout.write(json.dumps({"prediction": prediction}, separators=(",", ":")))
             real_runner = TrustedEvaluatorRunner() if real_isolation else None
             if real_runner is not None and not real_runner._sandbox_available():
                 pytest.skip("host does not permit production bubblewrap namespaces")
+            if (real_runner is not None
+                    and not _nested_bwrap_available(real_runner.bwrap_binary)):
+                pytest.skip("host does not permit the nested bubblewrap namespace used by this fixture")
             if real_runner is None:
                 class DeterministicRunner(TrustedEvaluatorRunner):
                     def __init__(self):

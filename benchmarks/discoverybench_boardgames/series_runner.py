@@ -8,7 +8,6 @@ the exact argv and logs, and avoids resubmitting an interrupted/ambiguous task.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -20,6 +19,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
+
+try:  # Windows CI should be able to import the runner too.
+    import fcntl
+except ImportError:  # pragma: no cover - exercised on Windows CI
+    fcntl = None  # type: ignore[assignment]
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -42,6 +46,24 @@ _PILOT_INPUTS = (
     "benchmarks/discoverybench_boardgames/pilot_manifest.json",
     "examples/exploration_diagnostic_v1/discoverybench_boardgames/data.csv",
 )
+
+
+def _lock_nonblocking(fd: int) -> None:
+    """Acquire the series lock without blocking on POSIX or Windows."""
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+    import msvcrt  # type: ignore[import-not-found]
+
+    # msvcrt.locking locks a byte range starting at the current file offset.
+    # Ensure byte zero exists before taking the one-byte process lock.
+    if os.fstat(fd).st_size == 0:
+        os.write(fd, b"\0")
+    os.lseek(fd, 0, os.SEEK_SET)
+    try:
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    except OSError:
+        raise BlockingIOError("series lock is already held") from None
 
 
 def _now() -> str:
@@ -421,7 +443,7 @@ class BoardGamesSeriesRunner:
         lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
             try:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _lock_nonblocking(lock_fd)
             except BlockingIOError:
                 raise RuntimeError("another Board Games series process holds the run lock") from None
             report = self._load_or_create()

@@ -4,6 +4,44 @@ This directory pins a ten-task shortlist and contains a partial Harbor bridge.
 It does not yet provide a complete BananLoop campaign or a BananLoop score on
 AutoResearchExam.
 
+`series_runner.py` is a durable dispatcher for already-prepared per-task Harbor
+job configs. It validates the selected task/version and frozen config and
+overlay digests, limits each Harbor process to one hour, and records uncertain
+outcomes without replaying them. It does not create or approve campaigns or
+evaluator protocols, supply task-specific candidate/evaluator adapters, or make
+the ten-task benchmark runnable by itself.
+
+## Dispatching prepared jobs
+
+Before dispatch, prepare exactly one descriptor JSON per selected task in
+`<job-config-dir>/<task_id>.json`. Each descriptor must use schema
+`bananloop-are-prepared-harbor-job-v1` and include `task_id`, `task_version`,
+`task_instruction_sha256`, `overlay_path`, `overlay_task_sha256`,
+`bananloop_config_path`, `bananloop_config_sha256`, `harbor_config_path`, and
+`harbor_config_sha256`. The two referenced JSON configs and the overlay
+`task.toml` must match those digests. The BananLoop config must pin the same task
+and version, `max_candidate_iterations: 5`, and `time_limit_seconds: 3600`.
+The Harbor config must run that safe overlay through the BananLoop ARE agent,
+with one attempt and retries disabled. The dispatcher supplies
+`--disable-verification` itself.
+
+Once those independently reviewed configs exist, dispatch (or resume) them with:
+
+```bash
+python -m benchmarks.autoresearchexam.series_runner \
+  --overlay-index /path/to/safe-overlays/index.json \
+  --job-config-dir /path/to/prepared-job-configs \
+  --series-dir /path/to/run-state/are-series-001 \
+  --run-id are-series-001 \
+  --harbor /path/to/harbor
+```
+
+The runner validates all ten task/version/config/overlay pins before starting.
+It writes `series.json` atomically, continues to later tasks after a task
+failure, and never replays a task left `RUNNING`, timed out, or failed. No
+prepared ten-task job-config directory currently exists, so this command is a
+usage contract and is not yet a runnable benchmark command.
+
 ## Verify the pinned shortlist
 
 ```bash
@@ -43,8 +81,9 @@ probe passed after this fix with zero submissions and zero active jobs. The
 probe did not modify or reconcile the old submission ledger.
 
 A Harbor `BaseAgent`, public-grader adapter, durable one-hour ledger, and
-isolated public DEV runner exist, but the durable outer five-child campaign
-driver is not implemented.
+isolated public DEV runner exist. `series_runner.py` dispatches only prepared
+Harbor jobs; the outer five-child campaign driver, task-specific adapters, and
+protocol preparation are still missing.
 A verifier-disabled, no-model probe discovered the
 public MCP tools `submit`, `result`, and `status`; the observed schemas and
 fingerprint are in

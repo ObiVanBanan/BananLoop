@@ -5,10 +5,11 @@ Status: **one negative public DEV candidate result is recorded; end-to-end scori
 The isolated copy contains a Harbor `BaseAgent`, a public MCP client, a
 `TrustedEvaluatorRunner` backend seam, and a durable public-submission ledger.
 The bridge is currently specialized to `budgeted-imputation-mcar50` and a
-pre-created Optimization child. It is not a complete benchmark runner: no outer
-loop creates up to five Optimization children, and the other nine selected tasks
-have no candidate/output mapping. No completed AutoResearchExam task score has
-been produced.
+pre-created Optimization child. `series_runner.py` adds durable dispatch only
+for already-prepared task configs; it does not prepare or approve campaigns or
+protocols, implement the outer child-campaign loop, or map candidate outputs
+and evaluators for the other nine tasks. No completed AutoResearchExam task
+score has been produced.
 
 ## Verified environment
 
