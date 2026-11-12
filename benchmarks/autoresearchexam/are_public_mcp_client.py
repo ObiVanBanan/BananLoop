@@ -1,6 +1,7 @@
 """Minimal task-container MCP client used by the Harbor bridge agent.
 
-Only the public `submit`, `result`, and read-only `status` tools are allowed.
+Only the public `submit`, `result`, and read-only `status` tools are allowed;
+`discover_contract` is a local action that performs MCP `tools/list` only.
 The JSON written to stdout is sanitized before it leaves the task container;
 raw grader output is discarded.
 """
@@ -114,6 +115,38 @@ def _tool_payload(response: dict[str, Any], tool: str) -> dict[str, Any]:
     return safe
 
 
+def _tool_list_payload(response: dict[str, Any]) -> dict[str, Any]:
+    """Keep public MCP schemas while dropping arbitrary top-level metadata."""
+    if "error" in response:
+        return {"transport_error": True, "transport_category": "jsonrpc_error"}
+    result = response.get("result")
+    if not isinstance(result, dict) or result.get("isError") is True:
+        return {"transport_error": True, "transport_category": "malformed_response"}
+    tools = result.get("tools")
+    if not isinstance(tools, list) or len(tools) > 64:
+        return {"transport_error": True, "transport_category": "malformed_response"}
+    sanitized = []
+    names: set[str] = set()
+    for item in tools:
+        if not isinstance(item, dict):
+            return {"transport_error": True, "transport_category": "malformed_response"}
+        name, description = item.get("name"), item.get("description", "")
+        input_schema, output_schema = item.get("inputSchema", {}), item.get("outputSchema", {})
+        if (not isinstance(name, str) or not name or len(name) > 120 or name in names
+                or not isinstance(description, str) or len(description) > 8192
+                or not isinstance(input_schema, dict) or not isinstance(output_schema, dict)):
+            return {"transport_error": True, "transport_category": "malformed_response"}
+        names.add(name)
+        sanitized.append({
+            "name": name, "description": description,
+            "inputSchema": input_schema, "outputSchema": output_schema,
+        })
+    encoded = json.dumps(sanitized, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > 128_000:
+        return {"transport_error": True, "transport_category": "oversized_response"}
+    return {"tools": sanitized}
+
+
 def main() -> int:
     try:
         with open(sys.argv[1], encoding="utf-8") as request_stream:
@@ -138,7 +171,7 @@ def main() -> int:
         if not isinstance(request, dict):
             raise _MCPFailure("request_shape_error")
         tool = request["tool"]
-        if not isinstance(tool, str) or tool not in ALLOWED_TOOLS:
+        if not isinstance(tool, str) or tool not in (*ALLOWED_TOOLS, "discover_contract"):
             raise _MCPFailure("tool_not_allowed")
         arguments = request.get("arguments", {})
         if not isinstance(arguments, dict):
@@ -149,6 +182,8 @@ def main() -> int:
         request_id = request.get("request_id", 1)
         if isinstance(request_id, bool) or not isinstance(request_id, int) or request_id < 1:
             raise _MCPFailure("request_id_error")
+        server_info = None
+        protocol_version = None
         if session_id is None:
             initialized, session_id = _post({
                 "jsonrpc": "2.0", "id": request_id,
@@ -161,17 +196,35 @@ def main() -> int:
             }, None)
             if not initialized or "error" in initialized:
                 raise _MCPFailure("initialize_error")
+            initialize_result = initialized.get("result") if isinstance(initialized, dict) else None
+            if isinstance(initialize_result, dict):
+                candidate_protocol = initialize_result.get("protocolVersion")
+                if isinstance(candidate_protocol, str) and len(candidate_protocol) <= 120:
+                    protocol_version = candidate_protocol
+                candidate_info = initialize_result.get("serverInfo")
+                if isinstance(candidate_info, dict):
+                    name, version = candidate_info.get("name"), candidate_info.get("version")
+                    if (isinstance(name, str) and len(name) <= 120
+                            and isinstance(version, str) and len(version) <= 120):
+                        server_info = {"name": name, "version": version}
             _post({"jsonrpc": "2.0", "method": "notifications/initialized"}, session_id)
             request_id += 1
+        method = "tools/list" if tool == "discover_contract" else "tools/call"
+        params = {} if tool == "discover_contract" else {"name": tool, "arguments": arguments}
+        if tool == "discover_contract" and arguments:
+            raise _MCPFailure("arguments_shape_error")
         response, session_id = _post({
             "jsonrpc": "2.0", "id": request_id,
-            "method": "tools/call",
-            "params": {"name": tool, "arguments": arguments},
+            "method": method, "params": params,
         }, session_id)
         if response is None:
             raise _MCPFailure("empty_tool_response")
-        result = _tool_payload(response, tool)
+        result = _tool_list_payload(response) if tool == "discover_contract" else _tool_payload(response, tool)
         output = {"session_id": session_id, "request_id": request_id + 1, "result": result}
+        if protocol_version is not None:
+            output["protocol_version"] = protocol_version
+        if server_info is not None:
+            output["server_info"] = server_info
         sys.stdout.write(json.dumps(output, sort_keys=True, separators=(",", ":")) + "\n")
         return 0
     except _MCPFailure as exc:

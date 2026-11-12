@@ -15,6 +15,7 @@ from bananloop.trusted_evaluator import (
 )
 
 from .optimization_runner import AREPublicEvaluatorRunner
+from .public_mcp_contract import validate_public_mcp_contract
 
 
 class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
@@ -84,7 +85,7 @@ class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
         expected_names = {
             "are-public-sopcc-backend.json", "public_sopcc_dev.py", "public_devkit.py",
             "optimization_runner.py", "public_grader.py", "are_public_mcp_client.py",
-            "sopcc_runner.py",
+            "sopcc_runner.py", "public_mcp_contract.py",
             "public-mcp-contract.json", "task-instruction.md", "task-Dockerfile",
             "task-requirements.txt", "task-dev_eval.py", "task-runner.py",
             "task-sopcc.py", "task-policy_worker.py",
@@ -95,12 +96,13 @@ class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
                     raise ValueError
                 manifest = json.loads(archive.read("are-public-sopcc-backend.json"))
                 contract_bytes = archive.read("public-mcp-contract.json")
-                contract = json.loads(contract_bytes)
+                contract = validate_public_mcp_contract(json.loads(contract_bytes))
                 source_pairs = {
                     "public_sopcc_dev.py": Path(__file__).with_name("public_sopcc_dev.py").read_bytes(),
                     "public_devkit.py": Path(__file__).with_name("public_devkit.py").read_bytes(),
                     "optimization_runner.py": Path(__file__).with_name("optimization_runner.py").read_bytes(),
                     "sopcc_runner.py": Path(__file__).read_bytes(),
+                    "public_mcp_contract.py": Path(__file__).with_name("public_mcp_contract.py").read_bytes(),
                     "public_grader.py": Path(__file__).with_name("public_grader.py").read_bytes(),
                     "are_public_mcp_client.py": Path(__file__).with_name("are_public_mcp_client.py").read_bytes(),
                 }
@@ -131,6 +133,7 @@ class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
                     "public_runner_sha256": hashlib.sha256(source_pairs["public_sopcc_dev.py"]).hexdigest(),
                     "optimization_runner_sha256": hashlib.sha256(source_pairs["optimization_runner.py"]).hexdigest(),
                     "sopcc_runner_sha256": hashlib.sha256(source_pairs["sopcc_runner.py"]).hexdigest(),
+                    "public_mcp_contract_sha256": hashlib.sha256(source_pairs["public_mcp_contract.py"]).hexdigest(),
                     "public_devkit_sha256": hashlib.sha256(source_pairs["public_devkit.py"]).hexdigest(),
                     "public_grader_sha256": hashlib.sha256(source_pairs["public_grader.py"]).hexdigest(),
                     "mcp_client_sha256": hashlib.sha256(source_pairs["are_public_mcp_client.py"]).hexdigest(),

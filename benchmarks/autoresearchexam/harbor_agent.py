@@ -16,6 +16,7 @@ import tempfile
 from argparse import Namespace
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Mapping
 from uuid import uuid4
 
@@ -30,6 +31,9 @@ from bananloop.trusted_evaluator import TrustedEvaluatorError
 from bananloop.v2_optimization_cli import run_v2_optimize
 
 from .optimization_runner import AREPublicEvaluatorRunner
+from .sopcc_runner import AREPublicSOPCCEvaluatorRunner
+from .public_sopcc_dev import run_public_sopcc_dev
+from .public_mcp_contract import validate_public_mcp_contract
 from .public_grader import PublicAREGrader
 from .public_devkit import run_public_devkit
 
@@ -38,6 +42,8 @@ _MCP_CLIENT = Path(__file__).with_name("are_public_mcp_client.py")
 _REMOTE_MCP_CLIENT = "/tmp/bananloop_are_public_mcp_client.py"
 _PUBLIC_OUTPUT = "/app/output/impute.py"
 _CANDIDATE_PATH = "benchmarks/autoresearchexam/solutions/impute.py"
+_SOPCC_PUBLIC_OUTPUT = "/app/solution/policy.py"
+_SOPCC_CANDIDATE_PATH = "benchmarks/autoresearchexam/solutions/sopcc/policy.py"
 
 
 class AREBridgeOptions(AgentOptions):
@@ -60,6 +66,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         super().__init__(*args, config_path=config_path, **kwargs)
         self.config_path = Path(config_path).expanduser().resolve() if config_path else None
         self._mcp_state: dict[str, Any] = {"session_id": None, "request_id": 1}
+        self._public_output_path = _PUBLIC_OUTPUT
 
     @staticmethod
     def name() -> str:
@@ -74,12 +81,6 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         if not _MCP_CLIENT.is_file() or _MCP_CLIENT.is_symlink():
             raise RuntimeError("public ARE MCP client script is missing or unsafe")
         await environment.upload_file(_MCP_CLIENT, _REMOTE_MCP_CLIENT)
-        check = await environment.exec(
-            "test -d /app/output && test ! -L /app/output/impute.py",
-            timeout_sec=10,
-        )
-        if check.return_code != 0:
-            raise RuntimeError("ARE output directory or starter file is unavailable")
 
     def _load_config(self, instruction: str) -> dict[str, Any]:
         assert self.config_path is not None
@@ -107,10 +108,16 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 or task.get("instruction_sha256") != raw["task_instruction_sha256"]
                 or instruction_digest != raw["task_instruction_sha256"]):
             raise RuntimeError("Harbor task instruction or version differs from the pinned shortlist")
-        contract_path = Path(raw["mcp_contract_path"]).expanduser().resolve()
-        if not contract_path.is_file() or contract_path.is_symlink():
+        contract_path = Path(raw["mcp_contract_path"]).expanduser()
+        if contract_path.is_symlink():
+            raise RuntimeError("public ARE MCP contract file is missing or unsafe")
+        contract_path = contract_path.resolve()
+        if not contract_path.is_file() or contract_path.stat().st_size > 128_000:
             raise RuntimeError("public ARE MCP contract file is missing or unsafe")
         contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        adapter_id = raw.get("adapter_id", "imputation-public-v2")
+        if adapter_id not in {"imputation-public-v2", "sopcc-public-v1"}:
+            raise RuntimeError("Harbor bridge adapter_id is not in the pinned allowlist")
         discovered_names = {
             item.get("name") for item in contract.get("discovered_tools", [])
             if isinstance(item, dict)
@@ -122,6 +129,15 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 or contract.get("public_endpoint") != "http://grader:8000/mcp"
                 or not {"submit", "result"} <= discovered_names):
             raise RuntimeError("public MCP contract does not match the pinned task or tool allowlist")
+        if adapter_id == "sopcc-public-v1":
+            try:
+                validate_public_mcp_contract(
+                    contract, task_id=raw["task_id"], task_version=raw["task_version"],
+                    task_sha256=task["task_sha256"],
+                    task_instruction_sha256=raw["task_instruction_sha256"],
+                )
+            except ValueError as exc:
+                raise RuntimeError("SOPCC public MCP contract digest is invalid") from exc
         for field in ("model_call_limit", "timeout_seconds"):
             value = raw[field]
             if isinstance(value, bool) or not isinstance(value, int):
@@ -141,14 +157,38 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             raise RuntimeError("status-only probe must have a zero model-call limit")
         if any(not isinstance(path, str) for path in (*raw["visible_path"], *raw["write_path"])):
             raise RuntimeError("visible_path and write_path entries must be strings")
-        if raw.get("candidate_path", _CANDIDATE_PATH) != _CANDIDATE_PATH:
-            raise RuntimeError("this bridge configuration currently pins the imputation task output")
-        if raw.get("public_output_path", _PUBLIC_OUTPUT) != _PUBLIC_OUTPUT:
-            raise RuntimeError("this bridge configuration currently pins /app/output/impute.py")
-        if (raw["public_dev_image"] != AREPublicEvaluatorRunner.default_dev_image
-                or raw["public_dev_image_id"] != AREPublicEvaluatorRunner.default_dev_image_id
-                or raw.get("public_dev_cell_count", 42) != AREPublicEvaluatorRunner.default_dev_cell_count):
-            raise RuntimeError("public DEV image or panel differs from the reviewed task pin")
+        if adapter_id == "imputation-public-v2":
+            expected = (
+                _CANDIDATE_PATH, _PUBLIC_OUTPUT,
+                AREPublicEvaluatorRunner.default_dev_image,
+                AREPublicEvaluatorRunner.default_dev_image_id,
+                AREPublicEvaluatorRunner.default_dev_cell_count,
+            )
+            if raw["task_id"] != "budgeted-imputation-mcar50":
+                raise RuntimeError("imputation adapter is bound to the wrong task ID")
+        else:
+            expected = (
+                _SOPCC_CANDIDATE_PATH, _SOPCC_PUBLIC_OUTPUT,
+                AREPublicSOPCCEvaluatorRunner.default_dev_image,
+                AREPublicSOPCCEvaluatorRunner.default_dev_image_id,
+                AREPublicSOPCCEvaluatorRunner.default_dev_cell_count,
+            )
+            if raw["task_id"] != "sopcc-online-chance-constrained-policy":
+                raise RuntimeError("SOPCC adapter is bound to the wrong task ID")
+        actual = (
+            raw.get("candidate_path", expected[0]),
+            raw.get("public_output_path", expected[1]),
+            raw["public_dev_image"], raw["public_dev_image_id"],
+            raw.get("public_dev_cell_count", expected[4]),
+        )
+        if actual != expected:
+            raise RuntimeError("public task output, image, or DEV panel differs from its adapter pin")
+        if (raw.get("candidate_path", expected[0]) != expected[0]
+                or raw["visible_path"] != [expected[0]]
+                or raw["write_path"] != [expected[0]]):
+            raise RuntimeError("Harbor bridge must expose and allow writes to only the pinned task output")
+        self._public_output_path = actual[1]
+        raw["adapter_id"] = adapter_id
         if (raw.get("max_candidate_iterations", 5) != 5
                 or raw.get("time_limit_seconds", 3600) > 3600):
             raise RuntimeError("ARE bridge may run at most five candidates and one hour")
@@ -228,8 +268,12 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             await environment.exec(f"rm -f {shlex.quote(remote_request)}", timeout_sec=5)
 
     async def _publish_candidate(self, environment: BaseEnvironment, data: bytes) -> None:
+        output = PurePosixPath(self._public_output_path)
+        if output not in {PurePosixPath(_PUBLIC_OUTPUT), PurePosixPath(_SOPCC_PUBLIC_OUTPUT)}:
+            raise RuntimeError("ARE candidate output path is outside the adapter allowlist")
         check = await environment.exec(
-            "test -d /app/output && test ! -L /app/output/impute.py",
+            f"test -d {shlex.quote(output.parent.as_posix())} && "
+            f"test ! -L {shlex.quote(output.as_posix())}",
             timeout_sec=10,
         )
         if check.return_code != 0:
@@ -237,12 +281,19 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         with tempfile.NamedTemporaryFile("wb", suffix=".py") as stream:
             stream.write(data)
             stream.flush()
-            await environment.upload_file(stream.name, _PUBLIC_OUTPUT)
+            await environment.upload_file(stream.name, output.as_posix())
 
     async def run(
         self, instruction: str, environment: BaseEnvironment, context: AgentContext,
     ) -> None:
         raw = self._load_config(instruction)
+        output = PurePosixPath(self._public_output_path)
+        check = await environment.exec(
+            f"test -d {shlex.quote(output.parent.as_posix())} && "
+            f"test ! -L {shlex.quote(output.as_posix())}", timeout_sec=10,
+        )
+        if check.return_code != 0:
+            raise RuntimeError("ARE output directory or starter file is unavailable")
         if raw.get("status_probe_only") is True:
             status = await self._call_public_tool(environment, "status", {})
             context.metadata = {
@@ -290,12 +341,32 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             task_deadline_epoch=grader.deadline_epoch,
         )
 
-        def runner_factory(protocol: Any) -> AREPublicEvaluatorRunner:
-            if protocol.execution_backend_id != AREPublicEvaluatorRunner.backend_id:
-                raise TrustedEvaluatorError("approved protocol is not pinned to the ARE public backend")
+        def runner_factory(protocol: Any) -> Any:
+            if raw["adapter_id"] == "sopcc-public-v1":
+                expected_backend = AREPublicSOPCCEvaluatorRunner.backend_id
+                runner_type = AREPublicSOPCCEvaluatorRunner
+            else:
+                expected_backend = AREPublicEvaluatorRunner.backend_id
+                runner_type = AREPublicEvaluatorRunner
+            if protocol.execution_backend_id != expected_backend:
+                raise TrustedEvaluatorError("approved protocol is not pinned to its selected ARE public backend")
             if protocol.repeatability_runs != grader.repeatability_runs:
                 raise TrustedEvaluatorError("approved protocol repeatability differs from the durable ARE ledger")
             def evaluate_dev(candidate: bytes, timeout_seconds: int) -> Mapping[str, Any]:
+                if runner_type is AREPublicSOPCCEvaluatorRunner:
+                    result = run_public_sopcc_dev(
+                        candidate, image=raw["public_dev_image"],
+                        expected_image_id=raw["public_dev_image_id"],
+                        timeout_seconds=timeout_seconds,
+                        draws=AREPublicSOPCCEvaluatorRunner.dev_draws,
+                        instances_per_draw=AREPublicSOPCCEvaluatorRunner.dev_instances_per_draw,
+                        episodes_per_instance=AREPublicSOPCCEvaluatorRunner.dev_episodes_per_instance,
+                        workers=1,
+                    )
+                    return {
+                        "status": result["status"], "dev_score": result["metric"],
+                        "dev_cells": result["episodes"],
+                    }
                 return run_public_devkit(
                     candidate,
                     image=raw["public_dev_image"],
@@ -304,7 +375,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                     expected_cell_count=raw.get("public_dev_cell_count", 42),
                 )
 
-            return AREPublicEvaluatorRunner(
+            return runner_type(
                 grader=grader,
                 publish_candidate=publish_candidate,
                 task_id=raw["task_id"],

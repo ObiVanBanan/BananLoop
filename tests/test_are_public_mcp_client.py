@@ -99,6 +99,70 @@ def test_mcp_client_allows_read_only_status_and_sanitizes_counts(
     assert "best" not in payload["result"]
 
 
+def test_mcp_client_discovers_public_contract_without_calling_a_tool(
+    tmp_path, monkeypatch, capsys,
+):
+    request_file = tmp_path / "request.json"
+    request_file.write_text(json.dumps({"tool": "discover_contract", "arguments": {}}))
+    responses = [
+        _Response(json.dumps({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"protocolVersion": "2024-11-05",
+                       "serverInfo": {"name": "are", "version": "2.14.7"}},
+        }).encode(), session_id="session-contract"),
+        _Response(b"", session_id="session-contract"),
+        _Response(json.dumps({
+            "jsonrpc": "2.0", "id": 2,
+            "result": {"tools": [
+                {"name": "submit", "description": "public submit", "inputSchema": {"type": "object"},
+                 "outputSchema": {"type": "object"}, "private": "drop"},
+                {"name": "result", "description": "public result", "inputSchema": {},
+                 "outputSchema": {}},
+            ]},
+        }).encode(), session_id="session-contract"),
+    ]
+    sent = []
+
+    def fake_urlopen(request, timeout):
+        sent.append(request)
+        return responses.pop(0)
+
+    monkeypatch.setattr(client, "urlopen", fake_urlopen)
+    monkeypatch.setattr(client.sys, "argv", ["are_public_mcp_client.py", str(request_file)])
+    assert client.main() == 0
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert payload["server_info"] == {"name": "are", "version": "2.14.7"}
+    assert payload["protocol_version"] == "2024-11-05"
+    assert [item["name"] for item in payload["result"]["tools"]] == ["submit", "result"]
+    assert "private" not in output
+    assert [json.loads(item.data)["method"] for item in sent] == [
+        "initialize", "notifications/initialized", "tools/list",
+    ]
+
+
+def test_mcp_contract_digest_rejects_changed_public_schema():
+    from benchmarks.autoresearchexam.public_mcp_contract import (
+        make_public_mcp_contract, validate_public_mcp_contract,
+    )
+
+    contract = make_public_mcp_contract(
+        task_id="task", task_version="1.1.0", task_sha256="a" * 64,
+        task_instruction_sha256="b" * 64, endpoint=client.ENDPOINT,
+        protocol_version=client.PROTOCOL_VERSION,
+        server_info={"name": "are", "version": "2.14.7"},
+        discovered_tools=[
+            {"name": "submit", "description": "submit", "inputSchema": {}, "outputSchema": {}},
+            {"name": "result", "description": "result", "inputSchema": {}, "outputSchema": {}},
+        ],
+    )
+    assert validate_public_mcp_contract(contract)["contract_sha256"] == contract["contract_sha256"]
+    contract["discovered_tools"][0]["description"] = "changed"
+    import pytest
+    with pytest.raises(ValueError, match="digest or scope"):
+        validate_public_mcp_contract(contract)
+
+
 def test_mcp_client_reports_safe_rpc_error_category(tmp_path, monkeypatch, capsys):
     request_file = tmp_path / "request.json"
     request_file.write_text(json.dumps({"tool": "result", "arguments": {"id": 1}}))

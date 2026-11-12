@@ -18,6 +18,7 @@ from pathlib import Path
 from bananloop.evaluator_fixture import EvaluatorFixtureV1
 
 from .optimization_runner import AREPublicEvaluatorRunner
+from .public_mcp_contract import validate_public_mcp_contract
 from .sopcc_runner import AREPublicSOPCCEvaluatorRunner
 
 
@@ -65,7 +66,7 @@ def build_fixture(*, repo: Path, source_task: Path, mcp_contract: Path,
 
     instruction = _read(source_task / "instruction.md", root=source_task, limit=64_000)
     contract_raw = _read(mcp_contract, root=mcp_contract.parent, limit=128_000)
-    contract = json.loads(contract_raw)
+    contract = validate_public_mcp_contract(json.loads(contract_raw))
     instruction_sha = hashlib.sha256(instruction).hexdigest()
     contract_sha = contract.get("contract_sha256")
     if (contract.get("schema_version") != 1
@@ -90,7 +91,7 @@ def build_fixture(*, repo: Path, source_task: Path, mcp_contract: Path,
         "public_devkit.py": repo / "benchmarks/autoresearchexam/public_devkit.py",
         "optimization_runner.py": repo / "benchmarks/autoresearchexam/optimization_runner.py",
         "sopcc_runner.py": repo / "benchmarks/autoresearchexam/sopcc_runner.py",
-        "sopcc_runner.py": repo / "benchmarks/autoresearchexam/sopcc_runner.py",
+        "public_mcp_contract.py": repo / "benchmarks/autoresearchexam/public_mcp_contract.py",
         "public_grader.py": repo / "benchmarks/autoresearchexam/public_grader.py",
         "are_public_mcp_client.py": repo / "benchmarks/autoresearchexam/are_public_mcp_client.py",
     }
@@ -111,6 +112,7 @@ def build_fixture(*, repo: Path, source_task: Path, mcp_contract: Path,
         "public_runner_sha256": hashlib.sha256(runtime["public_sopcc_dev.py"]).hexdigest(),
         "optimization_runner_sha256": hashlib.sha256(runtime["optimization_runner.py"]).hexdigest(),
         "sopcc_runner_sha256": hashlib.sha256(runtime["sopcc_runner.py"]).hexdigest(),
+        "public_mcp_contract_sha256": hashlib.sha256(runtime["public_mcp_contract.py"]).hexdigest(),
         "public_devkit_sha256": hashlib.sha256(runtime["public_devkit.py"]).hexdigest(),
         "public_grader_sha256": hashlib.sha256(runtime["public_grader.py"]).hexdigest(),
         "mcp_client_sha256": hashlib.sha256(runtime["are_public_mcp_client.py"]).hexdigest(),

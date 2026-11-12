@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from bananloop.evaluator_fixture import EvaluatorFixtureV1
 from benchmarks.autoresearchexam.build_sopcc_fixture import TASK_ID, TASK_VERSION, build_fixture
 from benchmarks.autoresearchexam.sopcc_runner import AREPublicSOPCCEvaluatorRunner
+from benchmarks.autoresearchexam.public_mcp_contract import make_public_mcp_contract
 
 
 ROOT = Path(__file__).parents[1]
@@ -16,14 +17,17 @@ ROOT = Path(__file__).parents[1]
 def test_sopcc_fixture_binds_public_task_and_backend_without_private_assets(tmp_path):
     selection = json.loads((ROOT / "benchmarks/autoresearchexam/task-selection.json").read_text())
     task = next(item for item in selection["tasks"] if item["task_id"] == TASK_ID)
-    contract = {
-        "schema_version": 1, "task_id": TASK_ID, "task_version": TASK_VERSION,
-        "task_sha256": task["task_sha256"],
-        "task_instruction_sha256": task["instruction_sha256"],
-        "contract_sha256": "f" * 64,
-        "public_endpoint": "http://grader:8000/mcp",
-        "discovered_tools": [{"name": "submit"}, {"name": "result"}],
-    }
+    contract = make_public_mcp_contract(
+        task_id=TASK_ID, task_version=TASK_VERSION,
+        task_sha256=task["task_sha256"],
+        task_instruction_sha256=task["instruction_sha256"],
+        endpoint="http://grader:8000/mcp", protocol_version="2024-11-05",
+        server_info={"name": "are", "version": "2.14.7"},
+        discovered_tools=[
+            {"name": "submit", "description": "submit", "inputSchema": {}, "outputSchema": {}},
+            {"name": "result", "description": "result", "inputSchema": {}, "outputSchema": {}},
+        ],
+    )
     contract_path = tmp_path / "public-mcp-contract.json"
     contract_path.write_text(json.dumps(contract))
     source_task = tmp_path / "public-source-task"
@@ -46,9 +50,9 @@ def test_sopcc_fixture_binds_public_task_and_backend_without_private_assets(tmp_
     assert [tier.tier for tier in fixture.tiers] == ["dev", "validation"]
     bundle = base64.b64decode(fixture.evaluator_bundle_base64)
     runner = AREPublicSOPCCEvaluatorRunner(
-        grader=SimpleNamespace(deadline_epoch=100_000, contract_sha256="f" * 64),
+        grader=SimpleNamespace(deadline_epoch=100_000, contract_sha256=contract["contract_sha256"]),
         publish_candidate=lambda _: None, task_id=TASK_ID,
-        task_version=TASK_VERSION, contract_sha256="f" * 64,
+        task_version=TASK_VERSION, contract_sha256=contract["contract_sha256"],
         candidate_path="benchmarks/autoresearchexam/solutions/sopcc/policy.py",
         evaluate_dev=lambda *_: {"status": "GRADED", "dev_score": 0.0, "dev_cells": 4},
     )

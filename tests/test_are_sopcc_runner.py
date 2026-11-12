@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from benchmarks.autoresearchexam.sopcc_runner import AREPublicSOPCCEvaluatorRunner
+from benchmarks.autoresearchexam.public_mcp_contract import make_public_mcp_contract
 from bananloop.contracts import ProtocolCase, ProtocolManifest
 from bananloop.evaluator_verification import EvaluatorProtocolV1, EvaluatorTierManifestV1
 from bananloop.trusted_evaluator import TrustedEvaluatorError, _case_protocol_digest
@@ -18,7 +19,16 @@ from bananloop.trusted_evaluator import TrustedEvaluatorError, _case_protocol_di
 ROOT = Path(__file__).parents[1]
 TASK_ID = "sopcc-online-chance-constrained-policy"
 TASK_VERSION = "1.1.0"
-CONTRACT_SHA = "f" * 64
+CONTRACT = make_public_mcp_contract(
+    task_id=TASK_ID, task_version=TASK_VERSION, task_sha256="a" * 64,
+    task_instruction_sha256="b" * 64, endpoint="http://grader:8000/mcp",
+    protocol_version="2024-11-05", server_info={"name": "are", "version": "2.14.7"},
+    discovered_tools=[
+        {"name": "submit", "description": "submit", "inputSchema": {}, "outputSchema": {}},
+        {"name": "result", "description": "result", "inputSchema": {}, "outputSchema": {}},
+    ],
+)
+CONTRACT_SHA = CONTRACT["contract_sha256"]
 
 
 def _bundle():
@@ -27,15 +37,12 @@ def _bundle():
         "public_devkit.py": ROOT / "benchmarks/autoresearchexam/public_devkit.py",
         "optimization_runner.py": ROOT / "benchmarks/autoresearchexam/optimization_runner.py",
         "sopcc_runner.py": ROOT / "benchmarks/autoresearchexam/sopcc_runner.py",
+        "public_mcp_contract.py": ROOT / "benchmarks/autoresearchexam/public_mcp_contract.py",
         "public_grader.py": ROOT / "benchmarks/autoresearchexam/public_grader.py",
         "are_public_mcp_client.py": ROOT / "benchmarks/autoresearchexam/are_public_mcp_client.py",
     }
     sources = {name: path.read_bytes() for name, path in source_names.items()}
-    contract = json.dumps({
-        "contract_sha256": CONTRACT_SHA, "task_id": TASK_ID,
-        "task_version": TASK_VERSION, "public_endpoint": "http://grader:8000/mcp",
-        "discovered_tools": [{"name": "submit"}, {"name": "result"}],
-    }, sort_keys=True).encode()
+    contract = json.dumps(CONTRACT, sort_keys=True).encode()
     files = {
         "task-Dockerfile": b"FROM pinned public task image\n",
         "task-requirements.txt": b"numpy==2.5.2\n",
@@ -57,6 +64,7 @@ def _bundle():
         "public_runner_sha256": hashlib.sha256(sources["public_sopcc_dev.py"]).hexdigest(),
         "optimization_runner_sha256": hashlib.sha256(sources["optimization_runner.py"]).hexdigest(),
         "sopcc_runner_sha256": hashlib.sha256(sources["sopcc_runner.py"]).hexdigest(),
+        "public_mcp_contract_sha256": hashlib.sha256(sources["public_mcp_contract.py"]).hexdigest(),
         "public_devkit_sha256": hashlib.sha256(sources["public_devkit.py"]).hexdigest(),
         "public_grader_sha256": hashlib.sha256(sources["public_grader.py"]).hexdigest(),
         "mcp_client_sha256": hashlib.sha256(sources["are_public_mcp_client.py"]).hexdigest(),
