@@ -173,7 +173,7 @@
       "private_grader_accessed": false,
       "protocol_reviewed_or_approved": true,
       "live_model_or_grader_calls_for_fixture_build": 0,
-      "optimization_child_started": false
+      "optimization_child_started": true
     },
     "latest_live_protocol_review_series": {
       "provider": "chatgpt_plan",
@@ -217,7 +217,7 @@
           "reported_tokens": 49025,
           "decision": "APPROVE",
           "protocol_approval_digest": "cf8ecbd3df20843e5adb31806ae633c459f8ecf4f118a36fe3179369a1a7f7ee",
-          "pivot_status": "PENDING_OWNER_PIVOT_DECISION",
+          "pivot_status": "OWNER_APPROVED_AND_EXECUTED",
           "pivot_id": "pivot-d6c1ea0344d4083a38a36e68",
           "pivot_digest": "d6c1ea0344d4083a38a36e68db4e45d59297663a84bb5271c210c08abe3ee267"
         }
@@ -680,6 +680,36 @@
       "change": "trusted claim_key/evidence_id pairs are now passed in a machine-readable available_research_memory field with exact-copy instructions",
       "focused_tests": "37 passed (Research Runtime + BoardGames Series Runner)",
       "rerun_scope": "only failed or not-started task IDs, in a new identity-pinned series"
+    },
+    "live_pilot_2026_11_12": {
+      "status": "COMPLETED_ITERATION_CAP",
+      "final_tasks": 10,
+      "completed_at_five_iteration_cap": 10,
+      "live_model_calls": 50,
+      "model": "gpt-6-luna",
+      "provider": "chatgpt_plan",
+      "provider_cost": "UNKNOWN",
+      "source_revisions": {
+        "bg-01": "362507a",
+        "bg-02_through_bg-10": "37a0f96"
+      },
+      "runs": [
+        "boardgames-10-10k-20261112: bg-01",
+        "boardgames-bg02-memory-prompt-20261112: bg-02",
+        "boardgames-03-10-memory-prompt-20261112: bg-03..bg-10"
+      ],
+      "archive_path": "/home/sonik/bananloop-benchmark-env/runs/boardgames-live-artifacts-2026-11-12.zip",
+      "archive_size_bytes": 2396674,
+      "summary_path": "benchmarks/BOARDGAMES-LIVE-PILOT-2026-11-12.md",
+      "official_score": null,
+      "limitations": [
+        "public operator-composed pilot, not sealed or official DiscoveryBench score",
+        "only task 01 is upstream question; tasks 02-10 are pilot questions",
+        "iteration cap reached; this does not establish convergence",
+        "associational findings only, not causal conclusions"
+      ],
+      "summary_json_path": "/home/sonik/bananloop-benchmark-env/runs/boardgames-live-artifacts-2026-11-12/summary.json",
+      "reported_tokens": 417496
     }
   },
   "completion": "PARTIAL; live pilots not complete; full objective remains active",
