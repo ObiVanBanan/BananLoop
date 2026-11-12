@@ -215,7 +215,7 @@ def make_researcher_invoke(
         if experiment_executor is not None:
             prior_summary = str(role_context.get("dev_summary", ""))
             completed_ids = set(re.findall(
-                r"^experiment\.([a-z][a-z0-9_-]{0,79}) \[",
+                r"^core_experiment\.([a-z][a-z0-9_-]{0,79}) \[",
                 prior_summary, re.MULTILINE,
             ))
             available_experiments = [
@@ -238,6 +238,8 @@ def make_researcher_invoke(
                 "A top-level experiment_id is accepted only when Core keeps your selected "
                 "hypothesis. Do not return top-level next_experiment when using a "
                 "hypothesis portfolio; Core uses the selected candidate's next_experiment. "
+                "The `core_experiment.*` claim_key namespace is reserved for trusted Core "
+                "results; never use it in research_findings. "
                 "Do not omit an ID or invent one."
             )
         # The broker controls provider/model selection; worker content cannot.
@@ -273,6 +275,12 @@ def make_researcher_invoke(
         reply = ResearcherReplyV1.model_validate(raw)
         protocol_draft = reply.protocol_draft
         bound_protocol_artifacts: dict[str, bytes] = {}
+        if (experiment_executor is not None
+                and any(str(item.get("claim_key", "")).startswith("core_experiment.")
+                        for item in reply.research_findings)):
+            raise V2RuntimeError(
+                "Core-reserved experiment claim keys cannot be authored by the Researcher"
+            )
         if protocol_binder is not None and reply.strategy_change_request is None:
             if protocol_draft is not None:
                 raise V2RuntimeError(
@@ -468,7 +476,7 @@ def make_researcher_invoke(
                 raise V2RuntimeError("researcher must select exactly one registered experiment_id")
             role_context_value = public_input.get("role_context", {})
             dev_summary = str(role_context_value.get("dev_summary", ""))
-            if re.search(rf"^{re.escape('experiment.' + chosen_id)} ", dev_summary, re.MULTILINE):
+            if re.search(rf"^{re.escape('core_experiment.' + chosen_id)} ", dev_summary, re.MULTILINE):
                 raise V2RuntimeError("a completed registered experiment cannot be repeated")
             try:
                 experiment_result = experiment_executor(chosen_id, role_context_value)
@@ -505,7 +513,7 @@ def make_researcher_invoke(
                 confidence = 0.8
             confidence = min(1.0, max(0.0, float(confidence)))
             research_findings.append({
-                "claim_key": "experiment." + chosen_id,
+                "claim_key": "core_experiment." + chosen_id,
                 "statement": experiment_result["summary"],
                 "stance": stance, "kind": "OBSERVATION", "confidence": confidence,
                 "evidence_refs": [result_ref],

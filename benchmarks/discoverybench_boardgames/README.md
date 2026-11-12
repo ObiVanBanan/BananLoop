@@ -148,3 +148,14 @@ the permitted JSON property exactly, and Core discards only that precise
 pseudo-alias before strict validation; all other unknown fields remain rejected.
 Focused tests and the complete offline suite passed with isolated pytest state.
 A new clean acceptance smoke is needed for this last compatibility change.
+
+The `3c960a2` smoke completed four Luna calls (27,416 input and 4,873 output
+tokens). Core executed `primary_association`, `outlier_sensitivity`,
+`permutation_test`, and `data_quality_audit`. The fifth registered analysis,
+`split_half_robustness`, was incorrectly excluded because Researcher-authored
+`experiment.split_half_robustness` uncertainty was mistaken for a trusted
+execution receipt. No fifth model call was dispatched. Core now reserves the
+`core_experiment.*` claim namespace for trusted executor results and uses only
+that namespace to prevent repeats; ordinary `experiment.*` Researcher claims
+cannot consume catalog entries. The full offline suite passed at 100% with two
+skips and isolated pytest state.

@@ -1007,10 +1007,15 @@ def test_registered_experiment_runs_and_becomes_memory_for_next_iteration(tmp_pa
                 "experiment_id": "primary_association",
             }
         context = public_input["role_context"]
-        assert "experiment.primary_association" in context["dev_summary"]
+        assert "core_experiment.primary_association" in context["dev_summary"]
         assert context["evidence_refs"]
         assert {item["id"] for item in public_input["registered_experiments"]} == {"permutation_test"}
-        prior_claim = context["dev_summary"].split(" [", 1)[0].splitlines()[0]
+        prior_line = next(
+            line for line in context["dev_summary"].splitlines()
+            if line.startswith("core_experiment.primary_association [")
+        )
+        prior_claim = prior_line.split(" [", 1)[0]
+        prior_refs = prior_line.split("evidence_ids=", 1)[1].split(":", 1)[0].split(",")
         return {
             "hypotheses": [{
                 "id": "memory_followup", "hypothesis": "Check robustness of the prior estimate.",
@@ -1019,7 +1024,7 @@ def test_registered_experiment_runs_and_becomes_memory_for_next_iteration(tmp_pa
                 "falsification_condition": "The permuted null remains compatible.",
                 "expected_evidence": "A two-sided permutation p value.",
                 "experiment_id": "permutation_test",
-                "evidence_refs": list(context["evidence_refs"]),
+                "evidence_refs": prior_refs,
                 "target_claim_key": prior_claim,
             }, {
                 "id": "unranked", "hypothesis": "Try an ungrounded alternative.",
@@ -1035,7 +1040,7 @@ def test_registered_experiment_runs_and_becomes_memory_for_next_iteration(tmp_pa
     def execute(experiment_id, role_context):
         executions.append(experiment_id)
         if experiment_id == "permutation_test":
-            assert "experiment.primary_association" in role_context["dev_summary"]
+            assert "core_experiment.primary_association" in role_context["dev_summary"]
         return {"status": "COMPLETED", "summary": f"Observed deterministic result for {experiment_id}.",
                 "stance": "UNCERTAIN", "confidence": 0.9,
                 "details": {"fixture": "offline", "experiment_id": experiment_id}}
@@ -1054,7 +1059,7 @@ def test_registered_experiment_runs_and_becomes_memory_for_next_iteration(tmp_pa
             (runtime.campaign_id,),
         )}
         assert claims >= {
-            "experiment.primary_association", "experiment.permutation_test",
+            "core_experiment.primary_association", "core_experiment.permutation_test",
         }
         assert result["completed"][1]["research_evidence_ids"]
     finally:
@@ -1122,13 +1127,28 @@ def test_boardgames_real_runner_executes_and_feeds_second_v2_iteration(tmp_path)
                     "claim_key": "pending_measurement",
                     "statement": "The registered experiment remains unexecuted; its result is unknown.",
                     "stance": "UNCERTAIN", "kind": "OBSERVATION", "confidence": 0.8,
+                }, {
+                    "claim_key": "experiment.split_half_robustness",
+                    "statement": "The registered split-half experiment remains unexecuted in this response.",
+                    "stance": "UNCERTAIN", "kind": "OBSERVATION", "confidence": 0.8,
                 }],
-                "artifact_text": {"research/pending.txt": "The registered experiment remains unexecuted."},
+                "artifact_text": {
+                    "research/pending.txt": "The registered experiment remains unexecuted.",
+                    "research/split-half-status.txt": "The registered split-half experiment remains unexecuted.",
+                },
                 "limitations": ["No registered experiment has been executed; result is unknown."]}
         context = public_input["role_context"]
-        assert "experiment.primary_association" in context["dev_summary"]
+        assert "core_experiment.primary_association" in context["dev_summary"]
         assert "rho=" in context["dev_summary"]
-        prior_claim = context["dev_summary"].split(" [", 1)[0].splitlines()[0]
+        available_ids = {item["id"] for item in public_input["registered_experiments"]}
+        assert "primary_association" not in available_ids
+        assert "split_half_robustness" in available_ids
+        prior_line = next(
+            line for line in context["dev_summary"].splitlines()
+            if line.startswith("core_experiment.primary_association [")
+        )
+        prior_claim = prior_line.split(" [", 1)[0]
+        prior_refs = prior_line.split("evidence_ids=", 1)[1].split(":", 1)[0].split(",")
         return {"hypotheses": [{
             "id": "memory-grounded", "hypothesis": "Test the primary association under permutation.",
             "rationale": "The stored estimate is the hypothesis being checked.",
@@ -1136,7 +1156,7 @@ def test_boardgames_real_runner_executes_and_feeds_second_v2_iteration(tmp_path)
             "falsification_condition": "The two-sided permutation p value is at least 0.05.",
             "expected_evidence": "A deterministic two-sided permutation p value.",
             "experiment_id": "permutation_test",
-            "evidence_refs": list(context["evidence_refs"]),
+            "evidence_refs": prior_refs,
             "target_claim_key": prior_claim,
         }, {
             "id": "ungrounded", "hypothesis": "Choose an unrelated test.",
@@ -1172,10 +1192,10 @@ def test_boardgames_real_runner_executes_and_feeds_second_v2_iteration(tmp_path)
             (runtime.campaign_id,),
         ).fetchall()
         by_claim = {row["claim_key"]: row["statement"] for row in rows}
-        assert "experiment.primary_association" in by_claim
-        assert "spearman_rho=" in by_claim["experiment.primary_association"]
-        assert "experiment.permutation_test" in by_claim
-        assert "two_sided_p_value=" in by_claim["experiment.permutation_test"]
+        assert "core_experiment.primary_association" in by_claim
+        assert "spearman_rho=" in by_claim["core_experiment.primary_association"]
+        assert "core_experiment.permutation_test" in by_claim
+        assert "two_sided_p_value=" in by_claim["core_experiment.permutation_test"]
         assert "pending_measurement" not in by_claim
         portfolio_paths = list(Path(runtime.state_root).rglob("hypothesis-portfolio.json"))
         assert len(portfolio_paths) == 2
