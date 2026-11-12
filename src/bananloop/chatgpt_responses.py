@@ -365,6 +365,7 @@ class ChatGPTPlanResearcher:
                  call_observer: Callable[[dict[str, Any]], None] | None = None,
                  input_fields: frozenset[str] = frozenset({
                      "protocol", "role_context", "visible_documents", "instruction",
+                     "available_research_memory",
                  })):
         if not isinstance(approved_model, str) or not approved_model:
             raise SIWCError("a pinned model slug is required")

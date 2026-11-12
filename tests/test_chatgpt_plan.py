@@ -282,7 +282,7 @@ def test_official_response_payload_is_subscription_only(tmp_path):
     public = {"protocol": "rpdi13r-researcher-one-shot-v1",
               "role_context": {"public_task": "investigate"},
               "visible_documents": {"README.md": "hello"},
-              "instruction": "test"}
+              "instruction": "test", "available_research_memory": []}
     result = researcher(
         public, provider="openai", model="gpt-6-luna", model_version="siwc-v1",
         prompt_digest="a" * 64, max_model_tokens=100,
@@ -293,6 +293,8 @@ def test_official_response_payload_is_subscription_only(tmp_path):
     method, url, body, headers = conn.sent[0]
     assert (method, url) == ("POST", "/v1/responses")
     assert body["store"] is False and body["stream"] is True
+    model_input = json.loads(body["input"][1]["content"])
+    assert model_input["available_research_memory"] == []
     assert set(body) == {"model", "input", "store", "stream"}
     assert headers["Authorization"] == "Bearer oauth-access-token"
     assert "access_token" not in json.dumps(body)
@@ -309,6 +311,7 @@ def test_registered_experiment_catalog_is_opt_in_to_researcher_transport(tmp_pat
         "role_context": {"public_task": "investigate"},
         "visible_documents": {"TASK.md": "public task"},
         "instruction": "choose one registered analysis",
+        "available_research_memory": [],
         "registered_experiments": catalog,
     }
     unconfigured = ChatGPTPlanResearcher(
@@ -324,7 +327,7 @@ def test_registered_experiment_catalog_is_opt_in_to_researcher_transport(tmp_pat
         auth, approved_model="gpt-6-luna", transport_factory=lambda *args, **kwargs: conn,
         input_fields=frozenset({
             "protocol", "role_context", "visible_documents", "instruction",
-            "registered_experiments",
+            "available_research_memory", "registered_experiments",
         }),
     )
     configured(
@@ -352,6 +355,7 @@ def test_fixture_protocol_intent_is_required_and_strictly_bounded(tmp_path):
         "role_context": {"public_task": "optimize public dev score"},
         "visible_documents": {"README.md": "public task"},
         "instruction": "include a protocol intent",
+        "available_research_memory": [],
         "requires_protocol_intent": True,
     }
     researcher = ChatGPTPlanResearcher(
@@ -400,7 +404,8 @@ def test_provider_call_observer_preserves_receipt_without_model_text(tmp_path):
     )
     public = {"protocol": "rpdi13r-researcher-one-shot-v1",
               "role_context": {"public_task": "investigate"},
-              "visible_documents": {"README.md": "hello"}, "instruction": "test"}
+              "visible_documents": {"README.md": "hello"}, "instruction": "test",
+              "available_research_memory": []}
     researcher(public, provider="openai", model="gpt-6-luna", model_version="siwc-v1",
                prompt_digest="a" * 64, max_model_tokens=100)
     assert receipts == [{"request_id": "resp_mock", "status": "COMPLETED",
@@ -420,7 +425,8 @@ def test_provider_call_observer_records_completed_response_before_schema_failure
     )
     public = {"protocol": "rpdi13r-researcher-one-shot-v1",
               "role_context": {"public_task": "investigate"},
-              "visible_documents": {"README.md": "hello"}, "instruction": "test"}
+              "visible_documents": {"README.md": "hello"}, "instruction": "test",
+              "available_research_memory": []}
     with pytest.raises(ChatGPTPlanResponseError):
         researcher(public, provider="openai", model="gpt-6-luna", model_version="siwc-v1",
                    prompt_digest="a" * 64, max_model_tokens=100)

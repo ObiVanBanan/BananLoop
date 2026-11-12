@@ -144,6 +144,7 @@ def test_cli_explore_is_a_separate_v2_route():
     assert args.protocol_review_attestation is None
     assert _researcher_input_fields(allow_registered_experiments=False) == frozenset({
         "protocol", "role_context", "visible_documents", "instruction",
+        "available_research_memory",
     })
     assert "requires_protocol_intent" in _researcher_input_fields(
         allow_registered_experiments=False, require_protocol_intent=True,

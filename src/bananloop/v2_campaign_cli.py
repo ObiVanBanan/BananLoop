@@ -99,7 +99,10 @@ def _read_paths(repo: Path, paths: list[str]) -> tuple[str, ...]:
 
 def _researcher_input_fields(*, allow_registered_experiments: bool,
                              require_protocol_intent: bool = False) -> frozenset[str]:
-    fields = {"protocol", "role_context", "visible_documents", "instruction"}
+    fields = {
+        "protocol", "role_context", "visible_documents", "instruction",
+        "available_research_memory",
+    }
     if allow_registered_experiments:
         fields.add("registered_experiments")
     if require_protocol_intent:
