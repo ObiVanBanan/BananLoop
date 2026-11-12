@@ -2,8 +2,10 @@
 
 The external DEV arrays come from independent public UCI rows and use a static
 price simulator. The fixture marks this panel as proxy-only; official scoring
-is a separate public ARE validation submission. No verifier-side files are
-read or packaged.
+is a separate public ARE validation submission. Binary data stay outside the
+review bundle and are checked against the pinned public manifest at runtime,
+so the independent protocol reviewer receives only bounded text sources. No
+verifier-side files are read or packaged.
 """
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ from .covtype_runner import (
     INSTRUCTION_SHA256, METRIC_AGGREGATION, METRIC_DIRECTION, METRIC_FIELD,
     METRIC_ID, PREPARE_DATA_SHA256, PUBLIC_OUTPUT_PATH, SELECTION_SHA256,
     TASK_ID, TASK_SHA256, TASK_VERSION, VALIDATION_CASE_ID,
-    AREPublicCovTypeEvaluatorRunner, _PROXY_FILES, _RUNTIME_FILES,
+    AREPublicCovTypeEvaluatorRunner, _RUNTIME_FILES,
     _TASK_FILES,
 )
 from .public_mcp_contract import validate_public_mcp_contract
@@ -110,7 +112,6 @@ def build_fixture(*, repo: Path, source_task: Path, proxy_root: Path,
     contents: dict[str, bytes] = {
         "task-selection.json": selection_raw,
         "public-mcp-contract.json": contract_raw,
-        "uci-covertype.zip": source_raw,
         "proxy-manifest.json": proxy_manifest_raw,
     }
     for bundle_name, relative in _TASK_FILES.items():
@@ -124,10 +125,6 @@ def build_fixture(*, repo: Path, source_task: Path, proxy_root: Path,
             raise ValueError("public CovType data preparation differs from its selected pin")
         contents[bundle_name] = raw
 
-    for bundle_name, source_name in _PROXY_FILES.items():
-        contents[bundle_name] = _read_file(proxy_root, source_name, 15_000_000)
-        if hashlib.sha256(contents[bundle_name]).hexdigest() != proxy_manifest["files_sha256"][source_name]:
-            raise ValueError("CovType proxy file differs from its content-addressed manifest")
     for bundle_name, path in _RUNTIME_FILES.items():
         if path.is_symlink() or not path.is_file():
             raise ValueError("CovType runtime fixture source is missing or unsafe")
@@ -135,8 +132,7 @@ def build_fixture(*, repo: Path, source_task: Path, proxy_root: Path,
     contents[BACKEND_MANIFEST] = _canonical(_backend_manifest(contract["contract_sha256"]))
     expected_names = {
         BACKEND_MANIFEST, "task-selection.json", "public-mcp-contract.json",
-        "uci-covertype.zip", "proxy-manifest.json", *_TASK_FILES,
-        *_PROXY_FILES, *_RUNTIME_FILES,
+        "proxy-manifest.json", *_TASK_FILES, *_RUNTIME_FILES,
     }
     if set(contents) != expected_names:
         raise ValueError("CovType fixture files differ from the backend allowlist")

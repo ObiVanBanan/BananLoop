@@ -16,6 +16,8 @@ from benchmarks.autoresearchexam.covtype_runner import (
     TASK_VERSION,
     VALIDATION_CASE_ID,
     AREPublicCovTypeEvaluatorRunner,
+    _BUNDLE_NAMES,
+    _RUNTIME_FILES,
 )
 from benchmarks.autoresearchexam.public_covtype_dev import _balanced_accuracy
 
@@ -54,3 +56,9 @@ def test_covtype_proxy_score_is_seven_class_balanced_accuracy() -> None:
 
     assert _balanced_accuracy(truth, prediction) == pytest.approx(13 / 14)
     assert dev.PROXY_MANIFEST_SHA256 == "7714bccea3285d349bd4288bded200ba06ad97385256491ec8f9e6ebc1370d48"
+
+
+def test_covtype_review_bundle_contains_only_text_source_and_pinned_manifest() -> None:
+    assert not any(name.endswith((".npy", ".zip")) for name in _BUNDLE_NAMES)
+    for path in _RUNTIME_FILES.values():
+        path.read_bytes().decode("utf-8")

@@ -39,6 +39,7 @@ SELECTION_SHA256 = "071671c5d6a0bf073fb46e277c71fcea46259d0e48ee49943c4c57a26adf
 _RUNTIME_FILES = {
     "covtype_runner.py": Path(__file__),
     "public_covtype_dev.py": Path(dev.__file__),
+    "build_covtype_proxy.py": Path(__file__).with_name("build_covtype_proxy.py"),
     "covtype-worker.py": Path(__file__).parent / "covtype_worker" / "worker.py",
     "covtype-worker.Dockerfile": Path(__file__).parent / "covtype_worker" / "Dockerfile",
     "optimization_runner.py": Path(__file__).with_name("optimization_runner.py"),
@@ -51,18 +52,9 @@ _TASK_FILES = {
     "task-instruction.md": "instruction.md",
     "public-data-prep.py": "environment/prepare_agent_data.py",
 }
-_PROXY_FILES = {
-    "proxy-train-features.npy": "train_features.npy",
-    "proxy-train-labels.npy": "train_labels.npy",
-    "proxy-evaluation-features.npy": "evaluation_features.npy",
-    "proxy-evaluation-labels.npy": "evaluation_labels.npy",
-    "proxy-feature-costs.npy": "feature_costs.npy",
-    "proxy-meta.json": "meta.json",
-}
 _BUNDLE_NAMES = {
     BACKEND_MANIFEST, "task-selection.json", "public-mcp-contract.json",
-    "uci-covertype.zip", "proxy-manifest.json", *_TASK_FILES,
-    *_PROXY_FILES, *_RUNTIME_FILES,
+    "proxy-manifest.json", *_TASK_FILES, *_RUNTIME_FILES,
 }
 
 
@@ -211,12 +203,8 @@ class AREPublicCovTypeEvaluatorRunner(AREPublicEvaluatorRunner):
                 if (_sha256(payload["proxy-manifest.json"]) != PROXY_MANIFEST_SHA256
                         or manifest.get("official_benchmark_compatible") is not False
                         or manifest.get("source_sha256") != dev.SOURCE_SHA256
-                        or _sha256(payload["uci-covertype.zip"]) != dev.SOURCE_SHA256):
+                        or manifest != self.proxy_manifest):
                     raise ValueError
-                for archive_name, source_name in _PROXY_FILES.items():
-                    expected = manifest.get("files_sha256", {}).get(source_name)
-                    if _sha256(payload[archive_name]) != expected:
-                        raise ValueError
                 backend = json.loads(payload[BACKEND_MANIFEST])
                 if backend != self._expected_backend_manifest(contract["contract_sha256"]):
                     raise ValueError
