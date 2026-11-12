@@ -142,7 +142,7 @@ class AREPublicEvaluatorRunner:
                 raise TrustedEvaluatorError("public ARE DEV evaluator is not configured")
             candidate = candidate_files.get(self.candidate_path)
             if not isinstance(candidate, bytes) or not candidate:
-                raise TrustedEvaluatorError("candidate snapshot lacks the approved imputer output file")
+                raise TrustedEvaluatorError("candidate snapshot lacks the approved task output file")
             if self.clock() >= self.deadline_epoch:
                 raise PublicGraderError("campaign deadline expired before public DEV evaluation")
             remaining = int(self.deadline_epoch - self.clock())
@@ -184,7 +184,7 @@ class AREPublicEvaluatorRunner:
             raise TrustedEvaluatorError("public ARE runner only supports DEV and VALIDATION")
         candidate = candidate_files.get(self.candidate_path)
         if not isinstance(candidate, bytes) or not candidate:
-            raise TrustedEvaluatorError("candidate snapshot lacks the approved imputer output file")
+            raise TrustedEvaluatorError("candidate snapshot lacks the approved task output file")
         validation_ref = next((item for item in protocol.tiers if item.tier == "validation"), None)
         if validation_ref is None:
             raise TrustedEvaluatorError("approved evaluator protocol lacks public VALIDATION")
@@ -397,6 +397,7 @@ class AREPublicEvaluatorRunner:
         *, protocol: EvaluatorProtocolV1, approval_digest: str,
         campaign_id: str, spec_hash: str, candidate_snapshot_id: str,
         tier_manifest: bytes, tier: str, split: str, score: float,
+        metric_unit: str = "R2",
     ) -> EvaluatorExecutionV1:
         tier_ref = next((item for item in protocol.tiers if item.tier == tier), None)
         if tier_ref is None:
@@ -412,7 +413,7 @@ class AREPublicEvaluatorRunner:
         evaluations = EvaluationResult(
             status="ok",
             metrics={protocol.metric_field: MetricValue(
-                value=float(score), unit="R2", n=len(manifest.cases),
+                value=float(score), unit=metric_unit, n=len(manifest.cases),
             )},
             diagnostics={
                 "split": split,

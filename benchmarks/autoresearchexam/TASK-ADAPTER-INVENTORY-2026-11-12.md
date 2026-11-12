@@ -15,7 +15,7 @@ All ten selected tasks declare 8 CPUs, 14,336 MB RAM, 153,600 MB storage, no GPU
 | `label-efficient-risk-estimator` | `/app/output/estimator.py`; `Estimator(pool, budget, rng)` with `next_index`, `observe`, `estimate` | Twelve public labelled pools and metadata; no DEV runner identified | Stateful label-query protocol and risk metric |
 | `shortest-valid-ci-l2-ece` | `/app/output/interval.py`; `ece2_interval(Z, Y, k, alpha, rng) -> (lo, hi)` | Public 24-setting `dev_panel.json`; no DEV runner identified | Coverage and interval-length metric |
 | `sketched-newton-cov-estimator` | `/app/output/estimator.py`; `estimate(stream, config) -> ndarray` | Public runner and two DEV instances with JSON and exact arrays | One-pass covariance estimator and resource protocol |
-| `sopcc-online-chance-constrained-policy` | `/app/solution/policy.py`; `Policy(seed)`, `prepare(instance)`, `act(obs)` | Public `dev_eval.py`, runner, problem module, baseline; pinned no-network Docker runner returns aggregate only; smoke: metric 3.3136, 4 episodes, 0 failures | Online policy API and constrained episode score; evaluator runner exists, but no BananLoop campaign/protocol adapter |
+| `sopcc-online-chance-constrained-policy` | `/app/solution/policy.py`; `Policy(seed)`, `prepare(instance)`, `act(obs)` | Public `dev_eval.py`, runner, problem module, baseline; pinned no-network Docker runner returns aggregate only; smoke: metric 3.3136, 4 episodes, 0 failures | SOPCC evaluator backend and public-only fixture builder now exist; task MCP contract still must be observed, and Harbor agent/config remains imputation-specific |
 
 ## Required next implementation
 

@@ -221,7 +221,12 @@ ID before execution, mounts only candidate `policy.py` read-only at
 `/app/solution`, bounds output, and returns aggregate reward/failure metrics.
 Its default panel is a smoke sample (draw 0, one instance, four episodes), not
 the official 6,400-episode DEV panel. It does not call the model or grader and
-is not yet wired as a BananLoop campaign backend.
+does not make a task campaign runnable by itself. `sopcc_runner.py` now binds
+that aggregate into the shared BananLoop `TrustedEvaluatorAdapter` contract,
+and `build_sopcc_fixture.py` can assemble the public-only DEV/VALIDATION
+fixture after a task-specific public MCP contract is observed. The Harbor
+agent/config still needs task-specific output path wiring; no SOPCC BananLoop
+campaign has run yet.
 
 Build the image from the pinned public task environment:
 
