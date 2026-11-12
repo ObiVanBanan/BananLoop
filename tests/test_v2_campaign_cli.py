@@ -20,6 +20,7 @@ from bananloop.graph_store import GraphRepository
 from bananloop.registry import CampaignRegistry, RegistryError
 from bananloop.v2_campaign_cli import (
     V2CampaignCLIError, _aggregate_reported_usage, _campaign_deadline,
+    _model_token_budget_status,
     _researcher_input_fields, _stage_protocol_review_attestation,
     _required_optimization_evaluator_calls,
     _safe_failure_diagnostics,
@@ -29,6 +30,34 @@ from bananloop.v2_optimization_cli import (
     V2OptimizationCLIError, _safe_paths, _saved_completed_run_report,
 )
 from bananloop.v2_optimization_cli import run_v2_optimize
+
+
+def test_model_token_budget_reports_per_call_and_campaign_overruns():
+    status = _model_token_budget_status([
+        {"dispatched": True, "usage": {"total_tokens": 9}},
+        {"dispatched": True, "usage": {"total_tokens": 12}},
+    ], per_call_limit=8, campaign_limit=20)
+
+    assert status == {
+        "model_token_usage_known": True,
+        "model_tokens_observed": 21,
+        "per_call_model_token_limit": 8,
+        "campaign_model_token_limit": 20,
+        "per_call_model_token_limit_breached": True,
+        "campaign_model_token_limit_breached": True,
+        "budget_breached": True,
+    }
+
+
+def test_model_token_budget_keeps_missing_provider_usage_unknown():
+    status = _model_token_budget_status([
+        {"dispatched": True, "usage": {"input_tokens": 10}},
+    ], per_call_limit=8, campaign_limit=20)
+
+    assert status["model_token_usage_known"] is False
+    assert status["model_tokens_observed"] is None
+    assert status["per_call_model_token_limit_breached"] is None
+    assert status["budget_breached"] is False
 
 
 def test_protocol_review_attestation_is_pinned_and_reused_from_campaign_state(tmp_path):

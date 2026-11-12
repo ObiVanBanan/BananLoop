@@ -847,6 +847,35 @@ def _aggregate_reported_usage(call_history: list[dict[str, Any]]) -> dict[str, i
     return totals
 
 
+def _model_token_budget_status(
+    call_history: list[dict[str, Any]], *, per_call_limit: int,
+    campaign_limit: int,
+) -> dict[str, Any]:
+    """Report observed provider-token overruns, which SIWC cannot prevent before dispatch."""
+    records = [item for item in call_history if item.get("dispatched")]
+    token_counts = [
+        item.get("usage", {}).get("total_tokens")
+        if isinstance(item.get("usage"), dict) else None
+        for item in records
+    ]
+    known = bool(records) and all(type(value) is int and value >= 0 for value in token_counts)
+    total = sum(token_counts) if known else None
+    per_call_overrun = (
+        any(value > per_call_limit for value in token_counts) if known else None
+    )
+    campaign_overrun = total > campaign_limit if total is not None else None
+    breached = (per_call_overrun is True or campaign_overrun is True)
+    return {
+        "model_token_usage_known": known,
+        "model_tokens_observed": total,
+        "per_call_model_token_limit": per_call_limit,
+        "campaign_model_token_limit": campaign_limit,
+        "per_call_model_token_limit_breached": per_call_overrun,
+        "campaign_model_token_limit_breached": campaign_overrun,
+        "budget_breached": breached,
+    }
+
+
 def _safe_failure_diagnostics(exc: Exception) -> list[dict[str, Any]]:
     """Return schema locations/messages without copying untrusted response values."""
     if isinstance(exc, V2RuntimeError):
@@ -1133,12 +1162,19 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
                     approval_digest=approval_digest,
                 ))
         except Exception as exc:
+            token_budget = _model_token_budget_status(
+                call_history, per_call_limit=args.max_model_tokens,
+                campaign_limit=int(spec.budget.max_model_tokens or 0),
+            )
             report = {
                 "attempt_id": attempt_id, "campaign_id": entry.campaign_id,
-                "status": "RUN_FAILED", "provider": "chatgpt_plan", "model": args.model,
+                "status": "BUDGET_BREACHED" if token_budget["budget_breached"] else "RUN_FAILED",
+                "provider": "chatgpt_plan", "model": args.model,
                 "request_history": call_history,
-                "usage": "UNKNOWN", "failure_type": type(exc).__name__,
+                "usage": _aggregate_reported_usage(call_history),
+                "failure_type": type(exc).__name__,
                 "automatic_replay": False,
+                **token_budget,
             }
             diagnostics = _safe_failure_diagnostics(exc)
             if diagnostics:
@@ -1148,6 +1184,12 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
                 **report, "state_dir": str(state_root),
                 "live_model_called": bool(report["request_history"]),
             }
+        token_budget = _model_token_budget_status(
+            call_history, per_call_limit=args.max_model_tokens,
+            campaign_limit=int(spec.budget.max_model_tokens or 0),
+        )
+        if token_budget["budget_breached"]:
+            result["status"] = "BUDGET_BREACHED"
         response = {
             **result, "mode": "EXPLORATION", "profile": "FULL",
             "spec_hash": spec.approved_hash(), "base_commit": spec.base_commit,
@@ -1161,6 +1203,7 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             "request_history": call_history,
             "attempt_id": attempt_id,
             "automatic_replay": False,
+            **token_budget,
         }
         response["report_path"] = _write_live_report(state_root, {
             **response, "status": response.get("status", "UNKNOWN"),
