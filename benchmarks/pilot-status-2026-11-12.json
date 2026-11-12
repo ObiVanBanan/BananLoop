@@ -238,6 +238,16 @@
       "public_validation_submission": "SUBMISSION_UNKNOWN; no ID; no automatic retry",
       "harbor_request_permission_fix": "passed read-only status probe after fixing agent-user request file creation",
       "artifact_archive": "/home/sonik/bananloop-benchmark-env/runs/are-iterative-ridge-child/are-iterative-ridge-live-artifacts.zip"
+    },
+    "safe_overlay_harbor_dry_run": {
+      "record_path": "/home/sonik/bananloop-benchmark-env/runs/autoresearchexam-dry-run-20261112/dry-run-results.json",
+      "task_count": 10,
+      "passed": 10,
+      "model_calls": 0,
+      "grader_calls": 0,
+      "containers_started": false,
+      "scope": "Harbor config/task metadata dry-run only; no task agent setup or execution",
+      "known_invocation_pitfall": "direct flags did not select a task; confirmed by rerunning with Harbor JSON job configs"
     }
   },
   "boardgames": {
@@ -699,7 +709,7 @@
         "boardgames-03-10-memory-prompt-20261112: bg-03..bg-10"
       ],
       "archive_path": "/home/sonik/bananloop-benchmark-env/runs/boardgames-live-artifacts-2026-11-12.zip",
-      "archive_size_bytes": 2396674,
+      "archive_size_bytes": 2403193,
       "summary_path": "benchmarks/BOARDGAMES-LIVE-PILOT-2026-11-12.md",
       "official_score": null,
       "limitations": [

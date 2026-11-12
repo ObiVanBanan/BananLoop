@@ -211,3 +211,8 @@ The combined benchmark status and public DEV smoke record are in
 [`public-devkit-smoke-2026-11-12.json`](public-devkit-smoke-2026-11-12.json).
 A Harbor `nop`, public baseline, or direct-writing agent is not a BananLoop
 benchmark result.
+
+
+## Safe overlay Harbor dry-run for all selected tasks — 2026-11-12
+
+All ten prepared safe overlays passed Harbor 0.25.0 `--dry-run` using individual JSON job configs. This validates only Harbor configuration and task metadata selection; no trial, task agent setup, container, model request, or grader call was executed. Each result has `Dry run OK — 1 trial(s); nothing was run.` The machine-readable record and exact temporary configs are at `/home/sonik/bananloop-benchmark-env/runs/autoresearchexam-dry-run-20261112/`. This does not validate task-specific candidate mappings or evaluator protocols.
