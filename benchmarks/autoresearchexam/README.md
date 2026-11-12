@@ -110,20 +110,22 @@ The current implementation gap and safety boundary are recorded in
 writing Harbor agent and report it as a BananLoop result. The task shortlist is in
 [task-selection.json](task-selection.json).
 
-The `harbor_agent.py` adapter currently handles only the imputation task and one
-pre-created Optimization child. The current DEV evaluator runs against the public
-task image in a separate local networkless Docker container; it does not include
+As of 2026-11-13, `harbor_agent.py` has task-specific dispatch for imputation,
+SOPCC, CARPS, DCTAB, and shortest-CI. CARPS, DCTAB, and shortest-CI each have
+an observed read-only public MCP contract, a content-pinned DEV/VALIDATION
+fixture, and a passing local public DEV baseline smoke. Those smokes are not
+BananLoop optimization results. The other five tasks still need task-specific
+integration; covtype currently has no identified public DEV scorer. The current
+DEV evaluators run in separate networkless Docker containers and do not include
 the grader service. `HARBOR_ADAPTER.md` tracks the remaining integration work.
-The no-model Harbor lifecycle probe reached BananLoop and stopped on a
-synthetic missing campaign, but Harbor's task cleanup still collected its
-declared `/var/lib/are` grader artifact with verification disabled. That generated
-copy was quarantined without inspection. Do not run the original task directory
-again until an overlay removes its `artifacts` declaration and `verifier.collect`
-hook. `prepare_safe_harbor_task.py` now builds and hashes safe overlays for all
-ten selected tasks; the index and no-model preflight evidence are in
-`HARBOR_ADAPTER.md`. The adapter still lacks the durable five-child campaign
-driver and independently approved evaluator protocol, so it has not produced an
-AutoResearchExam BananLoop score.
+The adapter still lacks a prepared, independently approved ten-task campaign,
+so no AutoResearchExam series score is available.
+
+The no-model Harbor lifecycle probe against the original task directory once
+collected its declared `/var/lib/are` grader artifact with verification
+disabled. That generated copy was quarantined without inspection. Safe overlays
+now remove both the task-level artifact declaration and `verifier.collect`
+hook; run probes only against those overlays.
 
 The imputation task now has a public-only `DEV` + `VALIDATION` fixture builder:
 `uv run python -m benchmarks.autoresearchexam.build_public_fixture`. Its frozen

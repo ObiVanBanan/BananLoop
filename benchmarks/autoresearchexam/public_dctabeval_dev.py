@@ -32,6 +32,7 @@ PANEL_COUNT = len(PANEL_DRAWS)
 EVAL_ROWS_PER_DRAW = 800
 MAX_CANDIDATE_BYTES = 131_072
 MAX_TIMEOUT_SECONDS = 3_600
+PER_DRAW_TIMEOUT_SECONDS = 100
 
 # These pins are derived from public repository materials and
 # task-selection.json. Update them only when the selected task or public DEV
@@ -405,6 +406,6 @@ def main():
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except BaseException:
+    except Exception:
         raise SystemExit(4)
 '''

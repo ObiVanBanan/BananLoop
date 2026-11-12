@@ -26,9 +26,6 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-import numpy as np
-
-
 TASK_ID = "carps-star-discrepancy-subset-select"
 TASK_VERSION = "1.1.0"
 TASK_TOML_SHA256 = "e149dd3b1c959c445e2d06f25ad2753124837bae6011e540ec9e516fdf5c1482"
@@ -149,6 +146,8 @@ def _read_pinned_file(path: Path, expected_sha256: str, *, max_bytes: int) -> by
 
 
 def _load_public_panel(task_root: Path) -> tuple[bytes, list[tuple[str, int, int, bytes, np.ndarray]]]:
+    import numpy as np
+
     """Read only the selected task's public metadata and eight public example clouds."""
     if task_root.is_symlink() or not task_root.is_dir():
         raise PublicCARPSEvaluatorError("public task root is missing or unsafe")
@@ -209,6 +208,8 @@ def _load_public_panel(task_root: Path) -> tuple[bytes, list[tuple[str, int, int
 
 
 def exact_star_discrepancy(points: np.ndarray, selected_indices: list[int] | tuple[int, ...]) -> float:
+    import numpy as np
+
     """Return exact 3-D L-infinity star discrepancy by enumerating cell corners.
 
     At a data coordinate, both the value immediately at the coordinate (strict

@@ -32,7 +32,11 @@ from bananloop.v2_optimization_cli import run_v2_optimize
 
 from .optimization_runner import AREPublicEvaluatorRunner
 from .sopcc_runner import AREPublicSOPCCEvaluatorRunner
+from .carps_runner import AREPublicCARPSEvaluatorRunner
+from .dctabeval_runner import AREPublicDCTABEvalEvaluatorRunner
+from .shortest_ci_runner import AREPublicShortestCIEvaluatorRunner
 from .public_sopcc_dev import run_public_sopcc_dev
+from .public_shortest_ci_dev import run_public_shortest_ci_dev
 from .public_mcp_contract import validate_public_mcp_contract
 from .public_grader import PublicAREGrader
 from .public_devkit import run_public_devkit
@@ -44,6 +48,16 @@ _PUBLIC_OUTPUT = "/app/output/impute.py"
 _CANDIDATE_PATH = "benchmarks/autoresearchexam/solutions/impute.py"
 _SOPCC_PUBLIC_OUTPUT = "/app/solution/policy.py"
 _SOPCC_CANDIDATE_PATH = "benchmarks/autoresearchexam/solutions/sopcc/policy.py"
+_CARPS_PUBLIC_OUTPUT = "/app/output/select_subset.py"
+_CARPS_CANDIDATE_PATH = "benchmarks/autoresearchexam/solutions/carps/select_subset.py"
+_DCTAB_PUBLIC_OUTPUT = "/app/output/solution.py"
+_DCTAB_CANDIDATE_PATH = "benchmarks/autoresearchexam/solutions/dctabeval/solution.py"
+_SHORTEST_CI_PUBLIC_OUTPUT = "/app/output/interval.py"
+_SHORTEST_CI_CANDIDATE_PATH = "benchmarks/autoresearchexam/solutions/shortest_valid_ci/interval.py"
+_PUBLIC_OUTPUT_ALLOWLIST = {
+    _PUBLIC_OUTPUT, _SOPCC_PUBLIC_OUTPUT, _CARPS_PUBLIC_OUTPUT,
+    _DCTAB_PUBLIC_OUTPUT, _SHORTEST_CI_PUBLIC_OUTPUT,
+}
 
 
 class AREBridgeOptions(AgentOptions):
@@ -116,8 +130,37 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             raise RuntimeError("public ARE MCP contract file is missing or unsafe")
         contract = json.loads(contract_path.read_text(encoding="utf-8"))
         adapter_id = raw.get("adapter_id", "imputation-public-v2")
-        if adapter_id not in {"imputation-public-v2", "sopcc-public-v1"}:
+        adapter_specs = {
+            "imputation-public-v2": (
+                "budgeted-imputation-mcar50", _CANDIDATE_PATH, _PUBLIC_OUTPUT,
+                AREPublicEvaluatorRunner, AREPublicEvaluatorRunner.default_dev_cell_count,
+            ),
+            "sopcc-public-v1": (
+                "sopcc-online-chance-constrained-policy", _SOPCC_CANDIDATE_PATH,
+                _SOPCC_PUBLIC_OUTPUT, AREPublicSOPCCEvaluatorRunner,
+                AREPublicSOPCCEvaluatorRunner.default_dev_cell_count,
+            ),
+            "carps-public-v1": (
+                "carps-star-discrepancy-subset-select", _CARPS_CANDIDATE_PATH,
+                _CARPS_PUBLIC_OUTPUT, AREPublicCARPSEvaluatorRunner,
+                AREPublicCARPSEvaluatorRunner.default_dev_cell_count,
+            ),
+            "dctabeval-public-v1": (
+                "dctabeval-aeac-pooled-cat-statistics", _DCTAB_CANDIDATE_PATH,
+                _DCTAB_PUBLIC_OUTPUT, AREPublicDCTABEvalEvaluatorRunner,
+                AREPublicDCTABEvalEvaluatorRunner.default_dev_cell_count,
+            ),
+            "shortest-ci-public-v1": (
+                "shortest-valid-ci-l2-ece", _SHORTEST_CI_CANDIDATE_PATH,
+                _SHORTEST_CI_PUBLIC_OUTPUT, AREPublicShortestCIEvaluatorRunner,
+                AREPublicShortestCIEvaluatorRunner.default_dev_cell_count,
+            ),
+        }
+        if adapter_id not in adapter_specs:
             raise RuntimeError("Harbor bridge adapter_id is not in the pinned allowlist")
+        expected_task, expected_candidate, expected_output, runner_type, expected_cells = adapter_specs[adapter_id]
+        if raw["task_id"] != expected_task:
+            raise RuntimeError("Harbor bridge adapter is bound to the wrong task ID")
         discovered_names = {
             item.get("name") for item in contract.get("discovered_tools", [])
             if isinstance(item, dict)
@@ -129,15 +172,14 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 or contract.get("public_endpoint") != "http://grader:8000/mcp"
                 or not {"submit", "result"} <= discovered_names):
             raise RuntimeError("public MCP contract does not match the pinned task or tool allowlist")
-        if adapter_id == "sopcc-public-v1":
-            try:
-                validate_public_mcp_contract(
-                    contract, task_id=raw["task_id"], task_version=raw["task_version"],
-                    task_sha256=task["task_sha256"],
-                    task_instruction_sha256=raw["task_instruction_sha256"],
-                )
-            except ValueError as exc:
-                raise RuntimeError("SOPCC public MCP contract digest is invalid") from exc
+        try:
+            validate_public_mcp_contract(
+                contract, task_id=raw["task_id"], task_version=raw["task_version"],
+                task_sha256=task["task_sha256"],
+                task_instruction_sha256=raw["task_instruction_sha256"],
+            )
+        except ValueError as exc:
+            raise RuntimeError("public ARE MCP contract digest or task pin is invalid") from exc
         for field in ("model_call_limit", "timeout_seconds"):
             value = raw[field]
             if isinstance(value, bool) or not isinstance(value, int):
@@ -157,37 +199,27 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             raise RuntimeError("status-only probe must have a zero model-call limit")
         if any(not isinstance(path, str) for path in (*raw["visible_path"], *raw["write_path"])):
             raise RuntimeError("visible_path and write_path entries must be strings")
-        if adapter_id == "imputation-public-v2":
-            expected = (
-                _CANDIDATE_PATH, _PUBLIC_OUTPUT,
-                AREPublicEvaluatorRunner.default_dev_image,
-                AREPublicEvaluatorRunner.default_dev_image_id,
-                AREPublicEvaluatorRunner.default_dev_cell_count,
-            )
-            if raw["task_id"] != "budgeted-imputation-mcar50":
-                raise RuntimeError("imputation adapter is bound to the wrong task ID")
-        else:
-            expected = (
-                _SOPCC_CANDIDATE_PATH, _SOPCC_PUBLIC_OUTPUT,
-                AREPublicSOPCCEvaluatorRunner.default_dev_image,
-                AREPublicSOPCCEvaluatorRunner.default_dev_image_id,
-                AREPublicSOPCCEvaluatorRunner.default_dev_cell_count,
-            )
-            if raw["task_id"] != "sopcc-online-chance-constrained-policy":
-                raise RuntimeError("SOPCC adapter is bound to the wrong task ID")
-        actual = (
-            raw.get("candidate_path", expected[0]),
-            raw.get("public_output_path", expected[1]),
-            raw["public_dev_image"], raw["public_dev_image_id"],
-            raw.get("public_dev_cell_count", expected[4]),
-        )
-        if actual != expected:
-            raise RuntimeError("public task output, image, or DEV panel differs from its adapter pin")
-        if (raw.get("candidate_path", expected[0]) != expected[0]
-                or raw["visible_path"] != [expected[0]]
-                or raw["write_path"] != [expected[0]]):
+        if (raw.get("candidate_path", expected_candidate) != expected_candidate
+                or raw.get("public_output_path", expected_output) != expected_output
+                or raw["visible_path"] != [expected_candidate]
+                or raw["write_path"] != [expected_candidate]
+                or raw.get("public_dev_cell_count", expected_cells) != expected_cells):
             raise RuntimeError("Harbor bridge must expose and allow writes to only the pinned task output")
-        self._public_output_path = actual[1]
+        expected_image = getattr(runner_type, "default_dev_image", None)
+        if expected_image is not None and raw["public_dev_image"] != expected_image:
+            raise RuntimeError("public DEV image tag differs from the task adapter pin")
+        expected_image_id = getattr(runner_type, "default_dev_image_id", None)
+        if expected_image_id and raw["public_dev_image_id"] != expected_image_id:
+            raise RuntimeError("public DEV image ID differs from the task adapter pin")
+        if adapter_id in {"carps-public-v1", "dctabeval-public-v1"}:
+            task_root = Path(raw.get("public_task_root", "")).expanduser()
+            if task_root.is_symlink() or not task_root.is_dir() or task_root.name != raw["task_id"]:
+                raise RuntimeError("public task root is missing or does not match the adapter task")
+            raw["public_task_root"] = str(task_root.resolve())
+        if adapter_id == "shortest-ci-public-v1":
+            if raw.get("validation_metric_semantics") != AREPublicShortestCIEvaluatorRunner.validation_metric_semantics:
+                raise RuntimeError("shortest-CI validation score semantics are not explicitly pinned")
+        self._public_output_path = expected_output
         raw["adapter_id"] = adapter_id
         if (raw.get("max_candidate_iterations", 5) != 5
                 or raw.get("time_limit_seconds", 3600) > 3600):
@@ -269,7 +301,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
 
     async def _publish_candidate(self, environment: BaseEnvironment, data: bytes) -> None:
         output = PurePosixPath(self._public_output_path)
-        if output not in {PurePosixPath(_PUBLIC_OUTPUT), PurePosixPath(_SOPCC_PUBLIC_OUTPUT)}:
+        if output.as_posix() not in _PUBLIC_OUTPUT_ALLOWLIST:
             raise RuntimeError("ARE candidate output path is outside the adapter allowlist")
         check = await environment.exec(
             f"test -d {shlex.quote(output.parent.as_posix())} && "
@@ -342,18 +374,23 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         )
 
         def runner_factory(protocol: Any) -> Any:
-            if raw["adapter_id"] == "sopcc-public-v1":
-                expected_backend = AREPublicSOPCCEvaluatorRunner.backend_id
-                runner_type = AREPublicSOPCCEvaluatorRunner
-            else:
-                expected_backend = AREPublicEvaluatorRunner.backend_id
-                runner_type = AREPublicEvaluatorRunner
+            adapter_id = raw["adapter_id"]
+            runner_types = {
+                "imputation-public-v2": AREPublicEvaluatorRunner,
+                "sopcc-public-v1": AREPublicSOPCCEvaluatorRunner,
+                "carps-public-v1": AREPublicCARPSEvaluatorRunner,
+                "dctabeval-public-v1": AREPublicDCTABEvalEvaluatorRunner,
+                "shortest-ci-public-v1": AREPublicShortestCIEvaluatorRunner,
+            }
+            runner_type = runner_types[adapter_id]
+            expected_backend = runner_type.backend_id
             if protocol.execution_backend_id != expected_backend:
                 raise TrustedEvaluatorError("approved protocol is not pinned to its selected ARE public backend")
             if protocol.repeatability_runs != grader.repeatability_runs:
                 raise TrustedEvaluatorError("approved protocol repeatability differs from the durable ARE ledger")
+
             def evaluate_dev(candidate: bytes, timeout_seconds: int) -> Mapping[str, Any]:
-                if runner_type is AREPublicSOPCCEvaluatorRunner:
+                if adapter_id == "sopcc-public-v1":
                     result = run_public_sopcc_dev(
                         candidate, image=raw["public_dev_image"],
                         expected_image_id=raw["public_dev_image_id"],
@@ -367,6 +404,13 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                         "status": result["status"], "dev_score": result["metric"],
                         "dev_cells": result["episodes"],
                     }
+                if adapter_id == "shortest-ci-public-v1":
+                    return run_public_shortest_ci_dev(
+                        candidate,
+                        image=raw["public_dev_image"],
+                        expected_image_id=raw["public_dev_image_id"],
+                        timeout_seconds=timeout_seconds,
+                    )
                 return run_public_devkit(
                     candidate,
                     image=raw["public_dev_image"],
@@ -375,16 +419,54 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                     expected_cell_count=raw.get("public_dev_cell_count", 42),
                 )
 
+            common = {
+                "grader": grader,
+                "publish_candidate": publish_candidate,
+                "contract_sha256": raw["mcp_contract_sha256"],
+            }
+            if adapter_id == "imputation-public-v2":
+                return runner_type(
+                    **common,
+                    task_id=raw["task_id"], task_version=raw["task_version"],
+                    candidate_path=_CANDIDATE_PATH,
+                    dev_image=raw["public_dev_image"],
+                    dev_image_id=raw["public_dev_image_id"],
+                    dev_cell_count=raw["public_dev_cell_count"],
+                    evaluate_dev=evaluate_dev,
+                )
+            if adapter_id == "sopcc-public-v1":
+                return runner_type(
+                    **common,
+                    task_id=raw["task_id"], task_version=raw["task_version"],
+                    candidate_path=_SOPCC_CANDIDATE_PATH,
+                    dev_image=raw["public_dev_image"],
+                    dev_image_id=raw["public_dev_image_id"],
+                    dev_cell_count=raw["public_dev_cell_count"],
+                    evaluate_dev=evaluate_dev,
+                )
+            if adapter_id == "carps-public-v1":
+                return runner_type(
+                    **common,
+                    public_dev_image=raw["public_dev_image"],
+                    public_dev_image_id=raw["public_dev_image_id"],
+                    active_public_task_root=Path(raw["public_task_root"]),
+                    total_dev_timeout_seconds=raw.get("public_dev_timeout_seconds", 180),
+                )
+            if adapter_id == "dctabeval-public-v1":
+                return runner_type(
+                    **common,
+                    source_task_root=Path(raw["public_task_root"]),
+                    dev_image=raw["public_dev_image"],
+                    dev_image_id=raw["public_dev_image_id"],
+                )
             return runner_type(
-                grader=grader,
-                publish_candidate=publish_candidate,
-                task_id=raw["task_id"],
-                task_version=raw["task_version"],
-                contract_sha256=raw["mcp_contract_sha256"],
-                candidate_path=raw.get("candidate_path", _CANDIDATE_PATH),
+                **common,
+                task_id=raw["task_id"], task_version=raw["task_version"],
+                candidate_path=_SHORTEST_CI_CANDIDATE_PATH,
                 dev_image=raw["public_dev_image"],
                 dev_image_id=raw["public_dev_image_id"],
-                dev_cell_count=raw.get("public_dev_cell_count", 42),
+                dev_cell_count=raw["public_dev_cell_count"],
+                validation_metric_semantics=raw["validation_metric_semantics"],
                 evaluate_dev=evaluate_dev,
             )
 
