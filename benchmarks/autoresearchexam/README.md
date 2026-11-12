@@ -176,7 +176,10 @@ python -m benchmarks.autoresearchexam.build_covtype_proxy \
 The archive is SHA-256 pinned in the builder. The generated manifest and
 arrays are in the output directory above. The CovType Harbor adapter and
 trusted evaluator runner are implemented, and the public-only fixture was
-built and its backend bundle verified. The starter policy scored balanced
+built and its text-only backend bundle verified. Public task and official
+Terminus documentation are pinned in
+`public-evaluator-attestation-covtype-v1.json` for the public-validation trust
+boundary. The starter policy scored balanced
 accuracy `0.46194230556880844` on the 10,000-row panel in 32.73 seconds, with
 2,000 acquired labels. This is an evaluator smoke, not a BananLoop campaign or
 official AutoResearchExam score. The static-price proxy still needs independent
