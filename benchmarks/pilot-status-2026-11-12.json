@@ -421,7 +421,70 @@
       "output_tokens": 44403,
       "total_tokens": 193031
     },
-    "task_count": 10
+    "task_count": 10,
+    "current_revision_smokes": [
+      {
+        "smoke": "v10",
+        "campaign_id": "c-06eb275ad3924e6d239c6ce144f58e40",
+        "source_revision": "0638914",
+        "model_calls": 3,
+        "usage": {
+          "input_tokens": 20053,
+          "output_tokens": 3484,
+          "total_tokens": 23537
+        },
+        "status": "FAILED_VALIDATION_BEFORE_ANALYSIS",
+        "diagnosis": "all three candidate hypotheses omitted required falsification_condition",
+        "replayed": false
+      },
+      {
+        "smoke": "v11",
+        "campaign_id": "c-85f967be867fa506c2ced909cf68ac5b",
+        "state_dir": "/home/sonik/bananloop-benchmark-env/runs/boardgames-one-task-smoke-v11",
+        "source_revision": "017da16c877db4e21cd72aff1538088cffffe46a",
+        "model_calls": 3,
+        "usage": {
+          "input_tokens": 11930,
+          "output_tokens": 2532,
+          "total_tokens": 14462
+        },
+        "core_executed_analyses": [
+          "primary_association",
+          "data_quality_audit",
+          "split_half_robustness"
+        ],
+        "status": "BUDGET_RESERVATION_REJECTED",
+        "diagnosis": "total model token budget 16384; after three calls only 1922 remained, below the next 2048 token reservation",
+        "strict_structured_output_accepted": true,
+        "replayed": false
+      },
+      {
+        "smoke": "v12",
+        "campaign_id": "c-9418353b2a17686eb50d265e2f0917be",
+        "state_dir": "/home/sonik/bananloop-benchmark-env/runs/boardgames-one-task-smoke-v12",
+        "source_revision": "017da16c877db4e21cd72aff1538088cffffe46a",
+        "model_calls": 5,
+        "iterations": 5,
+        "usage": {
+          "input_tokens": 21117,
+          "output_tokens": 4212,
+          "total_tokens": 25329
+        },
+        "core_executed_analyses": [
+          "primary_association",
+          "permutation_test",
+          "outlier_sensitivity",
+          "split_half_robustness",
+          "data_quality_audit"
+        ],
+        "status": "ITERATION_LIMIT",
+        "elapsed_seconds": 105,
+        "limit_seconds": 3600,
+        "scientific_conclusion": "none; all findings are unverified PUBLIC_DEV evidence",
+        "durable_report": "/home/sonik/bananloop-benchmark-env/runs/boardgames-one-task-smoke-v12/campaigns/c-9418353b2a17686eb50d265e2f0917be/reports/v2-exploration-c-9418353b2a17686eb50d265e2f0917be.json",
+        "replayed": false
+      }
+    ]
   },
   "completion": "PARTIAL; full objective remains active",
   "created_date": "2026-11-12",
@@ -448,14 +511,15 @@
     "pytest_log": "not captured to a file; terminal exit code and .pytest_cache lastfailed=0 verified",
     "skipped": 2,
     "focused_public_dev_tests": "32 passed",
-    "latest_full_suite": "source revision 2a42f8cd57b6f43b0d21bad973b4e05faee2e1cc; 1,103 collected, 1,101 passed, 2 skipped, exit code 0",
-    "full_suite_run": "source revision after SIWC registered-experiment allowlist and structured next_experiment normalization fixes, attestation staging, and sequential Board Games series runner"
+    "latest_full_suite": "source revision 017da16c877db4e21cd72aff1538088cffffe46a; 1,103 collected, 1,101 passed, 2 skipped, exit code 0; isolated basetemp /tmp/bananloop-pytest-pr141-20261112-r7",
+    "full_suite_run": "source revision after SIWC registered-experiment allowlist and structured next_experiment normalization fixes, attestation staging, and sequential Board Games series runner",
+    "latest_focused_suite": "tests/test_chatgpt_plan.py passed after strict registered-research JSON schema change"
   },
   "worktree": {
     "branch": "codex/autoresearchexam-verifier-evidence",
-    "changes_committed": false,
-    "head": "559621dfa0e9e230b3dd5257399b6baa88bfbade",
+    "changes_committed": true,
+    "head": "017da16c877db4e21cd72aff1538088cffffe46a",
     "path": "/home/sonik/Проекты/BananLoop-ARE-work-copy",
-    "test_state": "dirty worktree; suite ran against working files plus this HEAD"
+    "test_state": "latest full suite ran against source committed at 017da16; unrelated pre-existing untracked .agents/skills and openspec directories remain untouched"
   }
 }
