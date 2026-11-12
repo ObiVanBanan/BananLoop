@@ -85,10 +85,15 @@ def build_fixture(*, repo: Path, source_task: Path, out: Path) -> dict[str, obje
     runner_source = _read_public_file(
         repo / "benchmarks/autoresearchexam/public_devkit.py", root=repo, max_bytes=32_000,
     )
+    backend_source = _read_public_file(
+        repo / "benchmarks/autoresearchexam/optimization_runner.py", root=repo,
+        max_bytes=32_000,
+    )
     task_devkit = _read_public_file(
         source_task / "environment/app/devkit.py", root=source_task, max_bytes=32_000,
     )
     runner_hash = hashlib.sha256(runner_source).hexdigest()
+    backend_hash = hashlib.sha256(backend_source).hexdigest()
     task_devkit_hash = hashlib.sha256(task_devkit).hexdigest()
     manifest = {
         "schema_version": 1,
@@ -100,6 +105,7 @@ def build_fixture(*, repo: Path, source_task: Path, out: Path) -> dict[str, obje
         "candidate_path": "benchmarks/autoresearchexam/solutions/impute.py",
         "public_output_path": "/app/output/impute.py",
         "public_runner_sha256": runner_hash,
+        "optimization_runner_sha256": backend_hash,
         "task_devkit_sha256": task_devkit_hash,
         "mcp_contract_source_sha256": hashlib.sha256(contract_raw).hexdigest(),
         "public_dev_image": AREPublicEvaluatorRunner.default_dev_image,
@@ -123,6 +129,7 @@ def build_fixture(*, repo: Path, source_task: Path, out: Path) -> dict[str, obje
         archive.writestr("public_devkit.py", runner_source)
         archive.writestr("task-devkit.py", task_devkit)
         archive.writestr("public-mcp-contract.json", contract_raw)
+        archive.writestr("optimization_runner.py", backend_source)
     encode = lambda raw: base64.b64encode(raw).decode("ascii")
     dev_input = AREPublicEvaluatorRunner.aggregate_case_input(
         tier="dev", task_id=TASK_ID, task_version=TASK_VERSION,
@@ -169,6 +176,7 @@ def build_fixture(*, repo: Path, source_task: Path, out: Path) -> dict[str, obje
         "task_id": TASK_ID,
         "protocol_tiers": ["dev", "validation"],
         "public_runner_sha256": runner_hash,
+        "optimization_runner_sha256": backend_hash,
         "task_devkit_sha256": task_devkit_hash,
         "evaluator_bundle_bytes": len(buffer.getvalue()),
         "private_grader_accessed": False,

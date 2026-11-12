@@ -81,11 +81,11 @@ produced.
   protocol. This matches ARE's absence of a benchmark HOLDOUT endpoint.
 - `build_public_fixture.py` builds a content-addressed two-tier fixture for the
   imputation task. The bundle contains the exact host DEV runner, public task
-  `devkit.py`, and sanitized public MCP contract; runtime admission checks the
-  runner source and MCP contract against the frozen digests. The independent
-  protocol review can inspect both score-affecting public DEV source files and
-  public submit/result schemas. The builder never reads the task's `are-grader-ctx`,
-  private tests, or hidden evaluator.
+  `devkit.py`, sanitized public MCP contract, and host Optimization backend;
+  runtime admission checks these sources against the frozen digests. The
+  independent protocol review can inspect both score-affecting public DEV source
+  files, backend dispatch, and public submit/result schemas. The builder never
+  reads the task's `are-grader-ctx`, private tests, or hidden evaluator.
 - `public_grader.py` stores the one-hour deadline, candidate digest, submission
   identity, uncertainty state, and sanitized public score in SQLite. It refuses
   automatic re-submission after ambiguous delivery and caps candidate slots at
@@ -94,11 +94,10 @@ produced.
 
 ## Remaining work before an AutoResearchExam score
 
-1. Stage the pinned maintainer attestation and exact ARE backend contract/source
-   into the live campaign's protocol-review evidence, then obtain independent
-   approval for the task-pinned DEV/VALIDATION protocol. The verifier supports
-   digest-checked attestation content, but Harbor campaign setup does not yet
-   stage this artifact automatically.
+1. Obtain independent approval for the task-pinned DEV/VALIDATION protocol. A
+   first review rejected the generic argv interpretation; the bounded review
+   context now explains the Core-registered backend contract and includes its
+   exact digest-bound source, then receives one fresh review.
 2. Implement an outer durable campaign driver that creates the approved parent
    and up to five child Optimization campaigns, carries evidence between them,
    and resumes without duplicating evaluation.
