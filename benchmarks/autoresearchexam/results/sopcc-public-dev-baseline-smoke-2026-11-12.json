@@ -3,8 +3,18 @@
   "baseline_source": "environment/app/harness/baseline_policy.py",
   "benchmark": "AutoResearchExam-v1.1",
   "candidate_sha256": "a990a303190e34aab8e90114d6ed725e8295b82459a164b16378c1e2b7b1b512",
-  "command": "python environment/app/harness/dev_eval.py --solution <baseline-solution> --draws 0 --instances 1 --episodes 4 --workers 1",
+  "command": "run_public_sopcc_dev(baseline_policy.py, draws=(0,), instances_per_draw=1, episodes_per_instance=4, workers=1, timeout_seconds=120)",
   "date": "2026-11-12",
+  "execution": {
+    "candidate_mount": "/app/solution (read-only)",
+    "candidate_source": "public harness baseline_policy.py",
+    "container_network": "none",
+    "image": "bananloop-are-sopcc-public-dev:2026-11-12",
+    "image_id": "sha256:5fc63eccd0a3448db1dd9240c3fe7ecb4cef02511bafc77e2c91f294c3d82b8e",
+    "root_filesystem_read_only": true,
+    "runner_path": "benchmarks/autoresearchexam/public_sopcc_dev.py",
+    "runner_sha256": "901787fcec7d4a9d25982003274ccbed1aac9ca512cd9b321b2079b4ec6b254c"
+  },
   "instruction_sha256": "6eeb6a3162149487c9ef7ab1607657dceaefec2ac3154432a1e2da520c65dc07",
   "limitations": [
     "Only one public DEV instance and four episodes; highly uncertain, not an official score.",
