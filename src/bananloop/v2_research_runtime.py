@@ -344,18 +344,20 @@ def make_researcher_invoke(
                         filter(None, match.group(2).split(","))
                     )
             evidence_scores: dict[str, int] = {}
+            rejected_evidence_links: set[str] = set()
             for candidate in reply.hypotheses:
                 refs = set(candidate.evidence_refs)
-                if not refs <= allowed_evidence_refs:
-                    raise V2RuntimeError(
-                        "hypothesis cites prior evidence that is not present in its trusted role context"
-                    )
-                if candidate.target_claim_key is not None:
-                    claim_refs = claim_evidence.get(candidate.target_claim_key, set())
-                    if not refs <= claim_refs:
-                        raise V2RuntimeError(
-                            "hypothesis evidence references do not belong to its target claim"
-                        )
+                claim_refs = claim_evidence.get(candidate.target_claim_key or "", set())
+                if refs and (not refs <= allowed_evidence_refs
+                             or candidate.target_claim_key is None
+                             or not refs <= claim_refs):
+                    # A bad citation on one portfolio item must never be
+                    # trusted or poison a separate correctly grounded item.
+                    # Core records and removes this link from the durable
+                    # portfolio, then ranks the candidate as ungrounded.
+                    rejected_evidence_links.add(candidate.id)
+                    evidence_scores[candidate.id] = 0
+                elif candidate.target_claim_key is not None:
                     evidence_scores[candidate.id] = len(refs)
                 else:
                     evidence_scores[candidate.id] = 0
@@ -414,8 +416,20 @@ def make_researcher_invoke(
                                "No prior evidence was available; Core selected the only or content-digest-first candidate bound to an available registered experiment."),
                 }
             next_experiment = selected.next_experiment
+            portfolio_candidates = []
+            for item in reply.hypotheses:
+                candidate_value = item.model_dump(mode="json")
+                if item.id in rejected_evidence_links:
+                    candidate_value["evidence_refs"] = []
+                    candidate_value["target_claim_key"] = None
+                    candidate_value["core_evidence_validation"] = "REJECTED_INVALID_CLAIM_LINK"
+                elif evidence_scores[item.id] > 0:
+                    candidate_value["core_evidence_validation"] = "TRUSTED_CLAIM_LINK"
+                else:
+                    candidate_value["core_evidence_validation"] = "UNANCHORED"
+                portfolio_candidates.append(candidate_value)
             portfolio = json.dumps({
-                "candidates": [item.model_dump(mode="json") for item in reply.hypotheses],
+                "candidates": portfolio_candidates,
                 "selected_hypothesis_id": selected.id,
                 "researcher_preferred_hypothesis_id": reply.selected_hypothesis_id,
                 "core_selection": selection,

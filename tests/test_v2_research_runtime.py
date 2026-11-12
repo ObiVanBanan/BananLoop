@@ -1145,6 +1145,15 @@ def test_boardgames_real_runner_executes_and_feeds_second_v2_iteration(tmp_path)
             "expected_evidence": "A statistic.",
             "evidence_refs": list(context["evidence_refs"]),
             "target_claim_key": prior_claim,
+        }, {
+            "id": "misbound", "hypothesis": "Use evidence from a different claim.",
+            "rationale": "This intentionally misbinds a valid evidence ID.",
+            "next_experiment": "Run the registered data quality audit.",
+            "falsification_condition": "The audit finds no relevant issue.",
+            "expected_evidence": "A data quality summary.",
+            "experiment_id": "data_quality_audit",
+            "evidence_refs": list(context["evidence_refs"]),
+            "target_claim_key": "different.claim",
         }], "selected_hypothesis_id": "ungrounded",
             "next_experiment": "This redundant top-level action intentionally disagrees."}
 
@@ -1167,6 +1176,12 @@ def test_boardgames_real_runner_executes_and_feeds_second_v2_iteration(tmp_path)
         assert "experiment.permutation_test" in by_claim
         assert "two_sided_p_value=" in by_claim["experiment.permutation_test"]
         assert "pending_measurement" not in by_claim
+        portfolio_paths = list(Path(runtime.state_root).rglob("hypothesis-portfolio.json"))
+        assert len(portfolio_paths) == 2
+        latest_portfolio = json.loads(max(portfolio_paths, key=lambda p: p.stat().st_mtime).read_text())
+        rejected = next(item for item in latest_portfolio["candidates"] if item["id"] == "misbound")
+        assert rejected["core_evidence_validation"] == "REJECTED_INVALID_CLAIM_LINK"
+        assert rejected["evidence_refs"] == [] and rejected["target_claim_key"] is None
         initial = json.loads(graph.conn.execute(
             "SELECT payload_json FROM research_nodes WHERE phase='CONSOLIDATION' ORDER BY created_at LIMIT 1"
         ).fetchone()[0])

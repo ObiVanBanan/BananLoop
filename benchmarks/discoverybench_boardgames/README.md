@@ -120,6 +120,17 @@ job. The focused two-iteration real-runner regression passes. A fresh live smoke
 is required to verify this revision; prior campaigns remain immutable and are
 not replayed.
 
+On the `7157479` acceptance smoke, Luna completed three calls (19,820 input and
+3,283 output tokens). Core completed `primary_association` and
+`data_quality_audit`, then stopped the third response because one candidate
+attached a trusted evidence ID to a different claim. The failed candidate was
+not executed; no automatic replay occurred. The next Core revision now strips
+and labels a malformed link `REJECTED_INVALID_CLAIM_LINK`, assigning it no
+evidence weight; it still requires at least one correctly grounded executable
+candidate when Research Memory exists. Regression coverage confirms the
+rejected link is absent from durable evidence. The full offline suite reached
+100% with no failures and two skipped tests using an isolated `--basetemp`.
+
 A third smoke on `8c6fdbcb437b35e6df92b37cebb1c6b15e369fdc` completed one
 model call (6,267 input and 1,029 output tokens) and then raised a Core
 `V2RuntimeError`. The worker is `UNKNOWN`, the answer was not replayed, and
