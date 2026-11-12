@@ -38,11 +38,13 @@ from .shortest_ci_runner import AREPublicShortestCIEvaluatorRunner
 from .sketched_newton_runner import AREPublicSketchedNewtonEvaluatorRunner
 from .labelrisk_runner import AREPublicLabelRiskEvaluatorRunner
 from .cpudecoder_runner import AREPublicCPUDecoderEvaluatorRunner
+from .cpu_llm_runner import AREPublicCPULLMEvaluatorRunner
 from .public_sopcc_dev import run_public_sopcc_dev
 from .public_shortest_ci_dev import run_public_shortest_ci_dev
 from .public_sketched_newton_dev import run_public_newton_dev
 from .public_labelrisk_dev import run_public_labelrisk_dev
 from .public_cpudecoder_dev import run_public_cpudecoder_dev
+from .public_cpu_llm_dev import run_public_cpullm_dev
 from .public_mcp_contract import validate_public_mcp_contract
 from .public_grader import PublicAREGrader
 from .public_devkit import run_public_devkit
@@ -66,11 +68,14 @@ _LABELRISK_PUBLIC_OUTPUT = "/app/output/estimator.py"
 _LABELRISK_CANDIDATE_PATH = "benchmarks/autoresearchexam/solutions/label_risk/estimator.py"
 _CPUDECODER_PUBLIC_OUTPUT = "/app/output/executor.py"
 _CPUDECODER_CANDIDATE_PATH = "benchmarks/autoresearchexam/solutions/cpu_decoder/executor.py"
+_CPULLM_PUBLIC_OUTPUT = "/app/output/engine.py"
+_CPULLM_CANDIDATE_PATH = "benchmarks/autoresearchexam/solutions/cpu_llm/engine.py"
 _PUBLIC_OUTPUT_ALLOWLIST = {
     _PUBLIC_OUTPUT, _SOPCC_PUBLIC_OUTPUT, _CARPS_PUBLIC_OUTPUT,
     _DCTAB_PUBLIC_OUTPUT, _SHORTEST_CI_PUBLIC_OUTPUT, _NEWTON_PUBLIC_OUTPUT,
     _LABELRISK_PUBLIC_OUTPUT,
     _CPUDECODER_PUBLIC_OUTPUT,
+    _CPULLM_PUBLIC_OUTPUT,
 }
 
 
@@ -182,6 +187,11 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 _CPUDECODER_PUBLIC_OUTPUT, AREPublicCPUDecoderEvaluatorRunner,
                 AREPublicCPUDecoderEvaluatorRunner.default_dev_cell_count,
             ),
+            "cpu-llm-public-v1": (
+                "cpu-llm-decode-throughput", _CPULLM_CANDIDATE_PATH,
+                _CPULLM_PUBLIC_OUTPUT, AREPublicCPULLMEvaluatorRunner,
+                AREPublicCPULLMEvaluatorRunner.default_dev_cell_count,
+            ),
         }
         if adapter_id not in adapter_specs:
             raise RuntimeError("Harbor bridge adapter_id is not in the pinned allowlist")
@@ -250,7 +260,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         expected_image_id = getattr(runner_type, "default_dev_image_id", None)
         if expected_image_id and raw["public_dev_image_id"] != expected_image_id:
             raise RuntimeError("public DEV image ID differs from the task adapter pin")
-        if adapter_id in {"carps-public-v1", "dctabeval-public-v1", "sketched-newton-public-v1", "labelrisk-public-v1", "cpudecoder-public-v1"}:
+        if adapter_id in {"carps-public-v1", "dctabeval-public-v1", "sketched-newton-public-v1", "labelrisk-public-v1", "cpudecoder-public-v1", "cpu-llm-public-v1"}:
             task_root = Path(raw.get("public_task_root", "")).expanduser()
             if task_root.is_symlink() or not task_root.is_dir() or task_root.name != raw["task_id"]:
                 raise RuntimeError("public task root is missing or does not match the adapter task")
@@ -264,6 +274,9 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         if adapter_id == "cpudecoder-public-v1":
             if raw.get("validation_metric_semantics") != AREPublicCPUDecoderEvaluatorRunner.validation_metric_semantics:
                 raise RuntimeError("CPU-decoder validation score semantics are not explicitly pinned")
+        if adapter_id == "cpu-llm-public-v1":
+            if raw.get("validation_metric_semantics") != AREPublicCPULLMEvaluatorRunner.validation_metric_semantics:
+                raise RuntimeError("CPU LLM validation score semantics are not explicitly pinned")
         self._public_output_path = expected_output
         raw["adapter_id"] = adapter_id
         if (raw.get("max_candidate_iterations", 5) != 5
@@ -444,6 +457,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 "sketched-newton-public-v1": AREPublicSketchedNewtonEvaluatorRunner,
                 "labelrisk-public-v1": AREPublicLabelRiskEvaluatorRunner,
                 "cpudecoder-public-v1": AREPublicCPUDecoderEvaluatorRunner,
+                "cpu-llm-public-v1": AREPublicCPULLMEvaluatorRunner,
             }
             runner_type = runner_types[adapter_id]
             expected_backend = runner_type.backend_id
@@ -497,6 +511,14 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                     )
                 if adapter_id == "cpudecoder-public-v1":
                     return run_public_cpudecoder_dev(
+                        candidate,
+                        task_root=Path(raw["public_task_root"]),
+                        image=raw["public_dev_image"],
+                        expected_image_id=raw["public_dev_image_id"],
+                        timeout_seconds=min(3600, timeout_seconds),
+                    )
+                if adapter_id == "cpu-llm-public-v1":
+                    return run_public_cpullm_dev(
                         candidate,
                         task_root=Path(raw["public_task_root"]),
                         image=raw["public_dev_image"],
@@ -566,6 +588,13 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                     dev_image_id=raw["public_dev_image_id"],
                 )
             if adapter_id == "cpudecoder-public-v1":
+                return runner_type(
+                    **common,
+                    source_task_root=Path(raw["public_task_root"]),
+                    dev_image=raw["public_dev_image"],
+                    dev_image_id=raw["public_dev_image_id"],
+                )
+            if adapter_id == "cpu-llm-public-v1":
                 return runner_type(
                     **common,
                     source_task_root=Path(raw["public_task_root"]),
