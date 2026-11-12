@@ -12,7 +12,7 @@ import json
 import math
 import time
 import zipfile
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 
 from bananloop.contracts import CaseMeasurement, EvaluationResult, MetricValue
@@ -28,7 +28,7 @@ from .public_grader import PublicAREGrader, PublicGraderError
 class AREPublicEvaluatorRunner:
     """Dispatch public DEV in a networkless container and VALIDATION through MCP."""
 
-    backend_id = "autoresearchexam-public-v1"
+    backend_id = "autoresearchexam-public-v2"
     default_dev_image = "bananloop-are-public-devkit-probe:2026-11-12"
     default_dev_image_id = "sha256:5d2bac54769dc124be218efc1a1495210197a25652f6005ad327d9fa5bc8f9f4"
     default_dev_cell_count = 42
@@ -277,11 +277,42 @@ class AREPublicEvaluatorRunner:
             raise TrustedEvaluatorError("ARE public backend bundle digest differs from approved protocol")
         try:
             with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
+                if set(archive.namelist()) != {
+                    "are-public-backend.json", "public_devkit.py", "task-devkit.py",
+                    "public-mcp-contract.json",
+                } or len(archive.infolist()) != 4:
+                    raise ValueError
                 infos = [item for item in archive.infolist()
                          if item.filename == "are-public-backend.json" and not item.is_dir()]
                 if len(infos) != 1 or infos[0].file_size > 64 * 1024:
                     raise ValueError
                 manifest = json.loads(archive.read(infos[0]).decode("utf-8"))
+                runtime_source = Path(__file__).with_name("public_devkit.py").read_bytes()
+                runner_infos = [item for item in archive.infolist()
+                                if item.filename == "public_devkit.py" and not item.is_dir()]
+                task_infos = [item for item in archive.infolist()
+                              if item.filename == "task-devkit.py" and not item.is_dir()]
+                contract_infos = [item for item in archive.infolist()
+                                  if item.filename == "public-mcp-contract.json" and not item.is_dir()]
+                if (len(runner_infos) != 1 or len(task_infos) != 1 or len(contract_infos) != 1
+                        or runner_infos[0].file_size > 32 * 1024
+                        or task_infos[0].file_size > 64 * 1024
+                        or contract_infos[0].file_size > 128 * 1024
+                        or archive.read(runner_infos[0]) != runtime_source):
+                    raise ValueError
+                task_source = archive.read(task_infos[0])
+                contract_source = archive.read(contract_infos[0])
+                contract = json.loads(contract_source.decode("utf-8"))
+                if not task_source or len(task_source) > 64 * 1024:
+                    raise ValueError
+                if (not isinstance(contract, dict)
+                        or contract.get("contract_sha256") != self.contract_sha256
+                        or contract.get("task_id") != self.task_id
+                        or contract.get("task_version") != self.task_version
+                        or contract.get("public_endpoint") != "http://grader:8000/mcp"
+                        or not {item.get("name") for item in contract.get("discovered_tools", [])
+                                if isinstance(item, dict)} >= {"submit", "result"}):
+                    raise ValueError
         except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError, zipfile.BadZipFile):
             raise TrustedEvaluatorError("ARE public backend bundle manifest is missing or malformed") from None
         expected = {
@@ -293,6 +324,9 @@ class AREPublicEvaluatorRunner:
             "mcp_endpoint": "http://grader:8000/mcp",
             "candidate_path": self.candidate_path,
             "public_output_path": "/app/output/impute.py",
+            "public_runner_sha256": hashlib.sha256(runtime_source).hexdigest(),
+            "task_devkit_sha256": hashlib.sha256(task_source).hexdigest(),
+            "mcp_contract_source_sha256": hashlib.sha256(contract_source).hexdigest(),
         }
         expected.update({
             "public_dev_image": self.dev_image,

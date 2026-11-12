@@ -67,5 +67,11 @@ ten selected tasks; the index and no-model preflight evidence are in
 driver and independently approved evaluator protocol, so it has not produced an
 AutoResearchExam BananLoop score.
 
+The imputation task now has a public-only `DEV` + `VALIDATION` fixture builder:
+`uv run python -m benchmarks.autoresearchexam.build_public_fixture`. Its frozen
+bundle includes the exact host DEV runner and public task devkit source for
+independent review. It does not read the grader sidecar or private tests; see
+[`HARBOR_ADAPTER.md`](HARBOR_ADAPTER.md) for the reproducible command.
+
 The consolidated status, benchmark traces, validation counts, and remaining gaps
 are recorded in [`../pilot-status-2026-11-12.json`](../pilot-status-2026-11-12.json).

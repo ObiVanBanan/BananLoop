@@ -29,8 +29,11 @@ _INTEGRATION_CHECK_NAMES = frozenset({
     "candidate_identity", "protocol_identity", "evaluation_receipt",
     "budget_receipt", "artifact_integrity", "regression_policy",
 })
-_MAX_VERIFIER_SOURCE_CHARS = 8_000
-_MAX_VERIFIER_CONTEXT_CHARS = 12_000
+# The ARE public-only backend review includes both the host DEV runner and
+# the task's public devkit source, so its bounded source envelope is larger
+# than the small single-file fixture default.
+_MAX_VERIFIER_SOURCE_CHARS = 24_000
+_MAX_VERIFIER_CONTEXT_CHARS = 32_000
 _MAX_PUBLIC_ATTESTATION_BYTES = 2_048
 _PROTECTED_AUDIT_PATHS = {".git", "validation", "holdout", "secret", "secrets", "credentials"}
 

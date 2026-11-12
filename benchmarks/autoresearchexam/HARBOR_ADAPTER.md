@@ -79,6 +79,13 @@ produced.
   execution backend ID; the Researcher still supplies only metric intent, while
   Core binds the backend identity and exact tier manifests into the frozen
   protocol. This matches ARE's absence of a benchmark HOLDOUT endpoint.
+- `build_public_fixture.py` builds a content-addressed two-tier fixture for the
+  imputation task. The bundle contains the exact host DEV runner, public task
+  `devkit.py`, and sanitized public MCP contract; runtime admission checks the
+  runner source and MCP contract against the frozen digests. The independent
+  protocol review can inspect both score-affecting public DEV source files and
+  public submit/result schemas. The builder never reads the task's `are-grader-ctx`,
+  private tests, or hidden evaluator.
 - `public_grader.py` stores the one-hour deadline, candidate digest, submission
   identity, uncertainty state, and sanitized public score in SQLite. It refuses
   automatic re-submission after ambiguous delivery and caps candidate slots at
@@ -159,6 +166,15 @@ python benchmarks/autoresearchexam/prepare_safe_harbor_task.py \
   --source /home/sonik/bananloop-benchmark-env/sources/AutoResearchExam \
   --task-id budgeted-imputation-mcar50 \
   --out /home/sonik/bananloop-benchmark-env/safe-overlays/are-v1.1-budgeted-imputation-mcar50
+```
+
+Build the owner-pinned public-only evaluator fixture from the public source task:
+
+```bash
+uv run python -m benchmarks.autoresearchexam.build_public_fixture \
+  --repo "$PWD" \
+  --source-task /home/sonik/bananloop-benchmark-env/sources/AutoResearchExam/budgeted-imputation-mcar50 \
+  --out "$HOME/bananloop-benchmark-env/are-public-imputation-fixture-v2.json"
 ```
 
 The worktree is based on `559621dfa0e9e230b3dd5257399b6baa88bfbade` and contains

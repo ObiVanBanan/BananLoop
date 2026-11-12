@@ -4,6 +4,7 @@ import json
 import hashlib
 import io
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +19,14 @@ from benchmarks.autoresearchexam.public_grader import PublicAREGrader, PublicGra
 
 def _bundle(task_id="are-task", version="1.1.0", contract_sha="f" * 64,
             candidate_path="benchmarks/autoresearchexam/solutions/impute.py"):
+    runner_source = (Path(__file__).parents[1]
+                     / "benchmarks/autoresearchexam/public_devkit.py").read_bytes()
+    task_source = b"public task devkit source"
+    contract_source = json.dumps({
+        "contract_sha256": contract_sha, "task_id": task_id,
+        "task_version": version, "public_endpoint": "http://grader:8000/mcp",
+        "discovered_tools": [{"name": "submit"}, {"name": "result"}],
+    }, sort_keys=True).encode()
     value = {
         "schema_version": 1,
         "backend_id": AREPublicEvaluatorRunner.backend_id,
@@ -27,6 +36,9 @@ def _bundle(task_id="are-task", version="1.1.0", contract_sha="f" * 64,
         "mcp_endpoint": "http://grader:8000/mcp",
         "candidate_path": candidate_path,
         "public_output_path": "/app/output/impute.py",
+        "public_runner_sha256": hashlib.sha256(runner_source).hexdigest(),
+        "task_devkit_sha256": hashlib.sha256(task_source).hexdigest(),
+        "mcp_contract_source_sha256": hashlib.sha256(contract_source).hexdigest(),
         "public_dev_image": AREPublicEvaluatorRunner.default_dev_image,
         "public_dev_image_id": AREPublicEvaluatorRunner.default_dev_image_id,
         "public_dev_cell_count": AREPublicEvaluatorRunner.default_dev_cell_count,
@@ -43,6 +55,9 @@ def _bundle(task_id="are-task", version="1.1.0", contract_sha="f" * 64,
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("are-public-backend.json", json.dumps(value, sort_keys=True))
+        archive.writestr("public_devkit.py", runner_source)
+        archive.writestr("task-devkit.py", task_source)
+        archive.writestr("public-mcp-contract.json", contract_source)
     return buffer.getvalue()
 
 
