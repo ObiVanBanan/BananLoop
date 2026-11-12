@@ -1,6 +1,6 @@
 # AutoResearchExam task adapter inventory — 2026-11-12
 
-Scope: public task instructions, `README.md`, `task.toml`, and public task environment/devkit only. No private tests, `are-grader-ctx`, grader artifacts, live trials, model calls, or submissions were inspected or run for this inventory.
+Scope: public task instructions, `README.md`, `task.toml`, and public task environment/devkit only. No private tests, `are-grader-ctx`, or grader artifacts were inspected. A four-episode SOPCC public DEV baseline smoke was run without a model or grader call; its scope and limits are recorded in `results/sopcc-public-dev-baseline-smoke-2026-11-12.json`.
 
 All ten selected tasks declare 8 CPUs, 14,336 MB RAM, 153,600 MB storage, no GPU, and a 24-hour task timeout. The pilot's one-hour/five-iteration limit is a shortened local experiment, not the official benchmark budget.
 
@@ -15,7 +15,7 @@ All ten selected tasks declare 8 CPUs, 14,336 MB RAM, 153,600 MB storage, no GPU
 | `label-efficient-risk-estimator` | `/app/output/estimator.py`; `Estimator(pool, budget, rng)` with `next_index`, `observe`, `estimate` | Twelve public labelled pools and metadata; no DEV runner identified | Stateful label-query protocol and risk metric |
 | `shortest-valid-ci-l2-ece` | `/app/output/interval.py`; `ece2_interval(Z, Y, k, alpha, rng) -> (lo, hi)` | Public 24-setting `dev_panel.json`; no DEV runner identified | Coverage and interval-length metric |
 | `sketched-newton-cov-estimator` | `/app/output/estimator.py`; `estimate(stream, config) -> ndarray` | Public runner and two DEV instances with JSON and exact arrays | One-pass covariance estimator and resource protocol |
-| `sopcc-online-chance-constrained-policy` | `/app/solution/policy.py`; `Policy(seed)`, `prepare(instance)`, `act(obs)` | Public `dev_eval.py`, runner, problem module, baseline | Online policy API and constrained episode score |
+| `sopcc-online-chance-constrained-policy` | `/app/solution/policy.py`; `Policy(seed)`, `prepare(instance)`, `act(obs)` | Public `dev_eval.py`, runner, problem module, baseline; baseline smoke: metric 3.3136, 4 episodes, 0 failures | Online policy API and constrained episode score; no BananLoop campaign adapter |
 
 ## Required next implementation
 

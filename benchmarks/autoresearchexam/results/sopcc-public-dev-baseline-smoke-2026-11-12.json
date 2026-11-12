@@ -1,0 +1,37 @@
+{
+  "baseline_sha256": "a990a303190e34aab8e90114d6ed725e8295b82459a164b16378c1e2b7b1b512",
+  "baseline_source": "environment/app/harness/baseline_policy.py",
+  "benchmark": "AutoResearchExam-v1.1",
+  "candidate_sha256": "a990a303190e34aab8e90114d6ed725e8295b82459a164b16378c1e2b7b1b512",
+  "command": "python environment/app/harness/dev_eval.py --solution <baseline-solution> --draws 0 --instances 1 --episodes 4 --workers 1",
+  "date": "2026-11-12",
+  "instruction_sha256": "6eeb6a3162149487c9ef7ab1607657dceaefec2ac3154432a1e2da520c65dc07",
+  "limitations": [
+    "Only one public DEV instance and four episodes; highly uncertain, not an official score.",
+    "No BananLoop campaign or Optimization adapter was exercised.",
+    "No model or grader calls were made."
+  ],
+  "panel": {
+    "draws": [
+      0
+    ],
+    "episodes_per_instance": 4,
+    "instances_per_draw": 1,
+    "total_episodes": 4
+  },
+  "result": {
+    "R": 3.3136,
+    "aborted_instances": 0,
+    "failure_rate": 0.0,
+    "max_cpu_seconds": 0.1,
+    "max_wall_seconds": 0.1,
+    "metric": 3.3136,
+    "penalty": 1.0
+  },
+  "schema": "bananloop-are-public-dev-baseline-smoke-v1",
+  "selection_source_revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+  "status": "PUBLIC_DEV_SMOKE_ONLY",
+  "task_id": "sopcc-online-chance-constrained-policy",
+  "task_sha256": "b3f895a3e518fd6fb6c738fe663b7d95a2265d66373b9509431b34665861f071",
+  "task_version": "1.1.0"
+}
