@@ -18,12 +18,30 @@ from bananloop.exploration import EvidenceAdapterError
 from bananloop.graph_store import GraphRepository
 from bananloop.research_ledger import ResearchLedger
 from bananloop.v2_research_runtime import (
-    V2ResearchRuntime, V2RuntimeError,
+    ResearchHypothesisV1, ResearcherReplyV1, V2ResearchRuntime, V2RuntimeError,
     make_researcher_invoke as _make_researcher_invoke,
 )
 from bananloop.worker_queue import DurableWorkerQueue, WorkerQueueError
 
 from test_exploration_adapter import _graph, _pinned_executor, _role_registry, _source_repo
+
+
+def test_structured_next_experiment_is_canonicalized_without_losing_fields():
+    structured = {"experiment_id": "primary_association", "question": "test the association"}
+    expected = json.dumps(structured, sort_keys=True, separators=(",", ":"))
+    hypothesis = ResearchHypothesisV1.model_validate({
+        "id": "candidate_a", "hypothesis": "A bounded association exists.",
+        "rationale": "The columns measure the target attributes.",
+        "next_experiment": structured,
+        "falsification_condition": "No association appears.",
+        "expected_evidence": "A signed rank estimate.",
+    })
+    reply = ResearcherReplyV1.model_validate({"next_experiment": structured})
+    assert hypothesis.next_experiment == expected
+    assert reply.next_experiment == expected
+
+    with pytest.raises(ValidationError):
+        ResearcherReplyV1.model_validate({"next_experiment": 42})
 
 
 def make_researcher_invoke(model_reply):

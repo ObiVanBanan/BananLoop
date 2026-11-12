@@ -90,3 +90,12 @@ The code now adds that one field only when a registered experiment executor is
 configured. The affected campaign state is
 `/home/sonik/bananloop-benchmark-env/runs/boardgames-one-task-smoke` and must not
 be resumed; the next smoke uses a fresh request ID and state directory.
+
+The next smoke on `68fc291d1082a55f584f43bd32a6590f2a5f5baf` completed one
+model response but failed validation before executing an analysis: all three
+candidate `next_experiment` values were structured JSON rather than strings.
+The durable record contains the schema locations and usage (6,242 input, 925
+output, 7,167 total tokens); response text was not persisted. Core now bounds
+and canonicalizes structured plans as JSON text, and the prompt documents that
+contract. This failed campaign is also not resumed; the next acceptance run
+uses a fresh campaign state.

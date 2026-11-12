@@ -345,6 +345,7 @@ def test_research_prompt_states_exact_lowercase_candidate_id_contract():
     assert "ALWAYS return at least one" in INSTRUCTIONS
     assert "supplied dev_summary and evidence_refs" in INSTRUCTIONS
     assert "distinct follow-up" in INSTRUCTIONS
+    assert "Core preserves structured plans as canonical JSON text" in INSTRUCTIONS
 
 
 def test_provider_call_observer_preserves_receipt_without_model_text(tmp_path):

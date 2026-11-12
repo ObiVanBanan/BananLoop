@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .budget_ledger import BudgetLedger
 from .contracts import ExplorationCampaignSpecV2, utc_now
@@ -36,6 +36,22 @@ class V2RuntimeError(RuntimeError):
     """The requested work is not an authorized v2 Exploration attempt."""
 
 
+def _canonical_experiment_text(value: Any) -> Any:
+    """Preserve a structured experiment plan as bounded canonical JSON text."""
+    if isinstance(value, (dict, list)):
+        try:
+            encoded = json.dumps(
+                value, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, allow_nan=False,
+            )
+        except (TypeError, ValueError):
+            raise ValueError("structured next_experiment must be JSON-compatible") from None
+        if len(encoded) > 4000:
+            raise ValueError("structured next_experiment exceeds 4000 characters")
+        return encoded
+    return value
+
+
 class ResearchHypothesisV1(BaseModel):
     """One bounded candidate and its directly testable next action."""
 
@@ -50,6 +66,11 @@ class ResearchHypothesisV1(BaseModel):
     experiment_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]{0,79}$")
     evidence_refs: tuple[str, ...] = Field(default=(), max_length=16)
     target_claim_key: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_.:-]{0,119}$")
+
+    @field_validator("next_experiment", mode="before")
+    @classmethod
+    def canonical_structured_experiment(cls, value: Any) -> Any:
+        return _canonical_experiment_text(value)
 
 
 class ResearcherReplyV1(BaseModel):
@@ -68,6 +89,11 @@ class ResearcherReplyV1(BaseModel):
     protocol_draft: EvaluatorProtocolDraftV1 | None = None
     protocol_intent: EvaluatorProtocolIntentV1 | None = None
     strategy_change_request: StrategyChangeProposalV1 | None = None
+
+    @field_validator("next_experiment", mode="before")
+    @classmethod
+    def canonical_structured_experiment(cls, value: Any) -> Any:
+        return _canonical_experiment_text(value)
 
 
 # The adapter is a synchronous, one-model-call protocol: one durable
