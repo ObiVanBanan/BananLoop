@@ -20,7 +20,7 @@ from bananloop.graph_store import GraphRepository
 from bananloop.registry import CampaignRegistry, RegistryError
 from bananloop.v2_campaign_cli import (
     V2CampaignCLIError, _aggregate_reported_usage, _campaign_deadline,
-    _stage_protocol_review_attestation,
+    _researcher_input_fields, _stage_protocol_review_attestation,
     _required_optimization_evaluator_calls,
     _safe_failure_diagnostics,
     run_v2_explore,
@@ -128,6 +128,12 @@ def test_cli_explore_is_a_separate_v2_route():
     assert args.max_evaluator_calls == 16
     assert args.evaluator_fixture is None
     assert args.protocol_review_attestation is None
+    assert _researcher_input_fields(allow_registered_experiments=False) == frozenset({
+        "protocol", "role_context", "visible_documents", "instruction",
+    })
+    assert "registered_experiments" in _researcher_input_fields(
+        allow_registered_experiments=True,
+    )
 
 
 def test_v2_explore_stages_owner_attestation_before_no_model_preflight(tmp_path):
@@ -858,7 +864,8 @@ def test_v2_cli_live_allowance_uses_pinned_mock_transport_and_resumes(tmp_path, 
         last_usage = None
         last_request_id = None
 
-        def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer=None):
+        def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer=None,
+                     input_fields=None):
             assert approved_model == "gpt-6-luna" and timeout_seconds == 60
             self.call_observer = call_observer
             self.request_history = []
@@ -969,7 +976,8 @@ def test_v2_cli_persists_provider_receipt_when_runtime_rejects_reply(tmp_path, m
         last_usage = {"total_tokens": 17}
         last_request_id = "resp_schema_rejected"
 
-        def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer=None):
+        def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer=None,
+                     input_fields=None):
             receipt = {"request_id": "resp_schema_rejected", "status": "COMPLETED",
                        "dispatched": True, "usage": {"total_tokens": 17}}
             self.request_history = [receipt]

@@ -53,7 +53,7 @@ python benchmarks/discoverybench_boardgames/series_runner.py \
   --model gpt-6-luna \
   --max-agent-calls 8 \
   --max-model-tokens 2048 \
-  --approve-up-to-calls 5
+  --approve-up-to-calls 6
 ```
 
 It writes `series.json` plus stdout, stderr, and result JSON for each task. The
@@ -78,3 +78,15 @@ bytes). It contains the traces and per-attempt diagnostics. The current isolated
 work copy has additional code changes that were not included in that archive, so
 the archived results do not verify the current uncommitted tree. Rerun the pilot
 after freezing the current code and benchmark inputs in a local commit.
+
+## Current-revision smoke diagnosis
+
+The first acceptance attempt on source revision `1c0614283d9420315e4553e424e8726150c5448c`
+did not call a model. The Board Games runtime adds `registered_experiments` to
+the researcher input, while the SIWC transport's exact input allowlist omitted
+that Core-generated field and rejected the payload before opening a provider
+connection. The durable worker therefore became `UNKNOWN`; it was not replayed.
+The code now adds that one field only when a registered experiment executor is
+configured. The affected campaign state is
+`/home/sonik/bananloop-benchmark-env/runs/boardgames-one-task-smoke` and must not
+be resumed; the next smoke uses a fresh request ID and state directory.

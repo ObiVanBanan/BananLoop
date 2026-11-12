@@ -482,7 +482,8 @@ sys.stdout.write(json.dumps({"prediction": prediction}, separators=(",", ":")))
             last_usage = "UNKNOWN"
             last_request_id = "offline-integrated-researcher"
 
-            def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer=None):
+            def __init__(self, _auth, *, approved_model, timeout_seconds, call_observer=None,
+                         input_fields=None):
                 assert approved_model == "gpt-6-luna" and timeout_seconds == 60
                 self.call_observer = call_observer
                 self.request_history = []

@@ -299,6 +299,43 @@ def test_official_response_payload_is_subscription_only(tmp_path):
     assert conn.closed
 
 
+def test_registered_experiment_catalog_is_opt_in_to_researcher_transport(tmp_path):
+    auth, _http = _auth(tmp_path)
+    _connect(auth)
+    conn = FakeConnection(_finished())
+    catalog = [{"id": "primary_association", "description": "Estimate Spearman rho."}]
+    public = {
+        "protocol": "rpdi13r-researcher-one-shot-v1",
+        "role_context": {"public_task": "investigate"},
+        "visible_documents": {"TASK.md": "public task"},
+        "instruction": "choose one registered analysis",
+        "registered_experiments": catalog,
+    }
+    unconfigured = ChatGPTPlanResearcher(
+        auth, approved_model="gpt-6-luna", transport_factory=lambda *args, **kwargs: conn,
+    )
+    with pytest.raises(SIWCError, match="non-approved fields"):
+        unconfigured(
+            public, provider="openai", model="gpt-6-luna", model_version="siwc-v1",
+            prompt_digest="a" * 64, max_model_tokens=100,
+        )
+    assert conn.sent == []  # schema mismatch fails before opening a provider request
+    configured = ChatGPTPlanResearcher(
+        auth, approved_model="gpt-6-luna", transport_factory=lambda *args, **kwargs: conn,
+        input_fields=frozenset({
+            "protocol", "role_context", "visible_documents", "instruction",
+            "registered_experiments",
+        }),
+    )
+    configured(
+        public, provider="openai", model="gpt-6-luna", model_version="siwc-v1",
+        prompt_digest="a" * 64, max_model_tokens=100,
+    )
+    request_json = conn.sent[0][2]
+    model_input = json.loads(request_json["input"][1]["content"])
+    assert model_input["registered_experiments"] == catalog
+
+
 def test_research_prompt_states_exact_lowercase_candidate_id_contract():
     assert "^[a-z0-9][a-z0-9_-]{0,79}$" in INSTRUCTIONS
     assert "never H1_mediated_effect" in INSTRUCTIONS

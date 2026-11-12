@@ -97,6 +97,13 @@ def _read_paths(repo: Path, paths: list[str]) -> tuple[str, ...]:
     return tuple(sorted(normalized))
 
 
+def _researcher_input_fields(*, allow_registered_experiments: bool) -> frozenset[str]:
+    fields = {"protocol", "role_context", "visible_documents", "instruction"}
+    if allow_registered_experiments:
+        fields.add("registered_experiments")
+    return frozenset(fields)
+
+
 def _require_committed_pilot_inputs(repo: Path, paths: tuple[str, ...]) -> None:
     """Prevent executing mutable benchmark code/data outside the frozen Git base."""
     for relative in paths:
@@ -1018,9 +1025,14 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             call_history.append(recorded)
             _record_provider_call(database, recorded)
 
+        # Core inserts this exact registered catalog after reading the frozen
+        # Board Games task config; it is not worker-selected data.
         researcher = ChatGPTPlanResearcher(
             auth, approved_model=args.model, timeout_seconds=args.timeout_seconds,
             call_observer=lambda receipt: observe_call("researcher", receipt),
+            input_fields=_researcher_input_fields(
+                allow_registered_experiments=experiment_executor is not None,
+            ),
         )
         try:
             researcher.check_model()
