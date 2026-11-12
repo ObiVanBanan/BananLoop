@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
 from bananloop.evaluator_fixture import EvaluatorFixtureV1
+from bananloop.evaluator_verification import (
+    EvaluatorProtocolIntentV1, _build_protocol_review_material,
+)
+from bananloop.roles import RoleContextV1
 from benchmarks.autoresearchexam.build_sopcc_fixture import TASK_ID, TASK_VERSION, build_fixture
 from benchmarks.autoresearchexam.sopcc_runner import AREPublicSOPCCEvaluatorRunner
 from benchmarks.autoresearchexam.public_mcp_contract import make_public_mcp_contract
@@ -38,7 +43,11 @@ def test_sopcc_fixture_binds_public_task_and_backend_without_private_assets(tmp_
     for index, relative in enumerate(_TASK_FILES.values()):
         target = source_task / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(f"public fixture source {index}\n")
+        target.write_text(
+            ("# public evaluator source padding\n" * 1000)
+            if relative.endswith("/runner.py")
+            else f"public fixture source {index}\n"
+        )
     out = tmp_path / "fixture.json"
     result = build_fixture(
         repo=ROOT, source_task=source_task,
@@ -58,4 +67,39 @@ def test_sopcc_fixture_binds_public_task_and_backend_without_private_assets(tmp_
     )
     protocol = SimpleNamespace(evaluator_bundle_sha256=result["evaluator_bundle_sha256"])
     runner._verify_backend_bundle(protocol, bundle)
+
+    # The real SOPCC adapter's complete public source is larger than the old
+    # 88k independent-verifier limit. Prove the full bounded source still fits.
+    intent = EvaluatorProtocolIntentV1(
+        protocol_id="sopcc-public-dev-score", version=1,
+        metric_id="sopcc_score", metric_field="sopcc_score",
+        direction="MAXIMIZE", aggregation="MEAN", repeatability_runs=2,
+        timeout_seconds=120,
+    )
+    draft, artifacts = fixture.bind(intent, source_snapshot_id="a" * 40)
+    published = tmp_path / "published"
+    published.mkdir()
+    allowed = set()
+    for content in artifacts.values():
+        digest = hashlib.sha256(content).hexdigest()
+        (published / digest).write_bytes(content)
+        allowed.add(digest)
+    proposal = SimpleNamespace(
+        protocol=draft.protocol, researcher_intent=intent,
+        evidence_refs=draft.evidence_refs, proposal_digest="b" * 64,
+        source_job_id="job-sopcc", source_output_digest="c" * 64,
+    )
+    review = _build_protocol_review_material(
+        proposal, published_artifact_root=published,
+        allowed_artifact_digests=allowed,
+    )
+    reviewed_sources = review["evaluator_source_files"]
+    assert any(item["path"] == "task-runner.py" for item in reviewed_sources)
+    assert sum(len(item["content"]) for item in reviewed_sources) > 88_000
+    context = json.dumps(review, separators=(",", ":"))
+    assert len(context) <= 180_000
+    RoleContextV1(
+        role_id="independent_verifier", campaign_goal="Review public evaluator",
+        public_task=context,
+    )
 

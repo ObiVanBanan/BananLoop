@@ -4,12 +4,12 @@ Status: **one negative public DEV candidate result is recorded; end-to-end scori
 
 The isolated copy contains a Harbor `BaseAgent`, a public MCP client, a
 `TrustedEvaluatorRunner` backend seam, and a durable public-submission ledger.
-The bridge is currently specialized to `budgeted-imputation-mcar50` and a
-pre-created Optimization child. `series_runner.py` adds durable dispatch only
-for already-prepared task configs; it does not prepare or approve campaigns or
-protocols, implement the outer child-campaign loop, or map candidate outputs
-and evaluators for the other nine tasks. No completed AutoResearchExam task
-score has been produced.
+The bridge has task-pinned candidate/evaluator mappings for imputation and
+SOPCC, each still requiring its own approved protocol and Optimization run.
+`series_runner.py` dispatches only already-prepared task configs; it does not
+prepare or approve campaigns or protocols, implement the outer child-campaign
+loop, or map the other eight task outputs and evaluators. No completed
+AutoResearchExam task score has been produced.
 
 ## Verified environment
 
@@ -225,8 +225,10 @@ does not make a task campaign runnable by itself. `sopcc_runner.py` now binds
 that aggregate into the shared BananLoop `TrustedEvaluatorAdapter` contract,
 and `build_sopcc_fixture.py` can assemble the public-only DEV/VALIDATION
 fixture after a task-specific public MCP contract is observed. The Harbor
-agent/config still needs task-specific output path wiring; no SOPCC BananLoop
-campaign has run yet.
+agent now pins the SOPCC output path. A live BananLoop Researcher call was made
+in a separate one-task campaign; protocol review then hit a source/context
+bound and no Optimization or grader submission followed. See the SOPCC pilot
+section below for the trace and current limits.
 
 Build the image from the pinned public task environment:
 
@@ -245,3 +247,41 @@ The baseline smoke report, including the runner source digest, is
 ## Safe overlay Harbor dry-run for all selected tasks — 2026-11-12
 
 All ten prepared safe overlays passed Harbor 0.25.0 `--dry-run` using individual JSON job configs. This validates only Harbor configuration and task metadata selection; no trial, task agent setup, container, model request, or grader call was executed. Each result has `Dry run OK — 1 trial(s); nothing was run.` The machine-readable record and exact temporary configs are at `/home/sonik/bananloop-benchmark-env/runs/autoresearchexam-dry-run-20261112/`. This does not validate task-specific candidate mappings or evaluator protocols.
+
+## SOPCC adapter pilot, 2026-11-12
+
+The bridge now has a second task-pinned adapter for
+`sopcc-online-chance-constrained-policy`:
+
+- The baseline policy is `benchmarks/autoresearchexam/solutions/sopcc/policy.py`.
+- Candidate access is limited to that file and Harbor output
+  `/app/solution/policy.py`.
+- The baseline passed the isolated public DEV panel: reward `3.3136`, failure
+  rate `0.0`, four episodes. The image was pinned to
+  `sha256:5fc63eccd0a3448db1dd9240c3fe7ecb4cef02511bafc77e2c91f294c3d82b8e`.
+- A no-model Harbor probe captured the public MCP `tools/list` contract and
+  read-only `status`; it did not call `submit` or `result` and disabled the
+  private verifier.
+- The first BananLoop campaign was created at
+  `/home/sonik/bananloop-benchmark-env/runs/sopcc-bananloop-campaign-2026-11-12/`
+  with five candidate iterations, a one-hour deadline, and a 12-call evaluator
+  budget. One GPT-6 Luna Researcher call completed (4,997 reported tokens).
+  Cost remains `UNKNOWN` for the ChatGPT plan.
+- Protocol review initially stopped before calling the independent verifier:
+  the complete public SOPCC bundle has 142,666 source characters and produced
+  a 153,947-character review context, exceeding the old 88,000/104,000 limits.
+  No public grader submission occurred. No automatic replay occurred.
+- The verifier source/context and role-context bounds were raised to 160,000 / 180,000
+  characters. A regression test builds a larger public fixture, checks that the
+  complete source is retained, and validates the bounded verifier context. A
+  no-model recovery check now prepares the independent-verifier job successfully.
+
+This is not a completed SOPCC BananLoop optimization: the protocol has not yet
+been approved, no Optimization candidate was generated, and there is no public
+VALIDATION score. The original campaign remains durable for evidence; its token
+allowance is 8,192 per call, while SIWC does not enforce that as a provider-side
+hard limit and the full verifier context is 153,947 characters. Actual verifier
+usage is therefore unknown. The verifier job is prepared but has not been
+dispatched. Do not edit the frozen spec or execute that job under an assumed
+token cap. Start a new campaign only after selecting a budget that can fund the
+complete verifier context and child roles.

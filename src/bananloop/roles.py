@@ -425,7 +425,7 @@ class RoleContextV1(BaseModel):
     campaign_goal: str = Field(min_length=1, max_length=4000)
     node_id: str | None = Field(default=None, max_length=200)
     node_phase: str | None = Field(default=None, max_length=40)
-    public_task: str | None = Field(default=None, max_length=104000)
+    public_task: str | None = Field(default=None, max_length=180000)
     evidence_refs: tuple[str, ...] = Field(default=(), max_length=256)
     dev_summary: str | None = Field(default=None, max_length=12000)
     constraints: tuple[str, ...] = Field(default=(), max_length=128)
