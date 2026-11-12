@@ -74,6 +74,29 @@ def _protocol_and_manifest():
     return protocol, manifest, manifest_bytes, bundle, inputs
 
 
+def test_execution_backend_is_digest_bound_and_fails_closed_for_mismatch():
+    protocol, *_ = _protocol_and_manifest()
+    legacy_payload = protocol.model_dump(mode="json", exclude_none=True)
+    assert protocol.content_digest() == hashlib.sha256(json.dumps(
+        legacy_payload, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    assert _case_protocol_digest(protocol) == _case_protocol_digest(
+        protocol.model_copy(update={"execution_backend_id": None}),
+    )
+
+    pinned = protocol.model_copy(update={"execution_backend_id": "autoresearchexam-public-v1"})
+    assert pinned.content_digest() != protocol.content_digest()
+    adapter = TrustedEvaluatorAdapter(
+        graph=SimpleNamespace(bind_campaign_id=lambda _: None), queue=None,
+        campaign_id="campaign-1", state_root=".", runner=TrustedEvaluatorRunner(),
+    )
+    with pytest.raises(TrustedEvaluatorError, match="backend does not match"):
+        adapter._require_execution_backend(pinned)
+    adapter.runner = SimpleNamespace(backend_id="autoresearchexam-public-v1")
+    adapter._require_execution_backend(pinned)
+
+
 def _budget_proofs():
     return (
         EvaluatorBudgetProofV1(campaign_id="campaign-1", spec_hash="4" * 64,

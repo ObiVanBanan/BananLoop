@@ -258,7 +258,7 @@ class ChatGPTPlanResearcher:
 
     def __call__(self, public_input: dict[str, Any], *, provider: str,
                  model: str, model_version: str, prompt_digest: str,
-                 max_model_tokens: int) -> dict[str, Any]:
+                 max_model_tokens: int, timeout_seconds: int | None = None) -> dict[str, Any]:
         if provider != "openai" or model != self.approved_model:
             raise SIWCError("researcher provider/model does not match frozen SIWC selection")
         if (not isinstance(model_version, str) or not model_version
@@ -270,6 +270,10 @@ class ChatGPTPlanResearcher:
             raise SIWCError("untrusted or unversioned pinned-role input")
         if set(public_input) != self.input_fields:
             raise SIWCError("pinned-role model input contains non-approved fields")
+        request_timeout = self.timeout_seconds if timeout_seconds is None else timeout_seconds
+        if (isinstance(request_timeout, bool) or not isinstance(request_timeout, int)
+                or not 1 <= request_timeout <= self.timeout_seconds):
+            raise SIWCError("dynamic researcher timeout must be within the configured request ceiling")
 
         # Note: ChatGPT-plan Responses currently rejects max_output_tokens.
         # A pinned token allowance here is not a provider-enforced hard cap:
@@ -291,7 +295,7 @@ class ChatGPTPlanResearcher:
         self.last_status = "PREPARING"
         # Connection is never opened until local input and pinned identity validate.
         access_token = self.auth.access_token()
-        connection = self.transport_factory("api.openai.com", timeout=self.timeout_seconds)
+        connection = self.transport_factory("api.openai.com", timeout=request_timeout)
         self.last_status = "DISPATCHED"
         dispatched = True
         try:
@@ -311,7 +315,7 @@ class ChatGPTPlanResearcher:
                     f"ChatGPT Responses admission failed (HTTP {reply.status})"
                 )
             text, usage, request_id = collect_completed(
-                reply, deadline=time.monotonic() + self.timeout_seconds,
+                reply, deadline=time.monotonic() + request_timeout,
             )
             self.last_usage = usage
             self.last_request_id = request_id
@@ -409,6 +413,7 @@ class ChatGPTPlanIntegrationVerifier(ChatGPTPlanResearcher):
             public_input, provider=pin.get("provider"), model=model,
             model_version=pin.get("model_version"), prompt_digest=pin.get("prompt_digest"),
             max_model_tokens=int(pin.get("max_model_tokens") or 1),
+            timeout_seconds=pin.get("timeout_seconds"),
         )
 
 

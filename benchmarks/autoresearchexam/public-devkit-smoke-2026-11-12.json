@@ -1,0 +1,42 @@
+{
+  "schema": "bananloop-are-public-devkit-smoke-v1",
+  "benchmark": "AutoResearchExam v1.1 budgeted-imputation-mcar50 public DEV",
+  "task_source_revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+  "task_version": "1.1.0",
+  "image": {
+    "tag": "bananloop-are-public-devkit-probe:2026-11-12",
+    "image_id": "sha256:5d2bac54769dc124be218efc1a1495210197a25652f6005ad327d9fa5bc8f9f4",
+    "build_context": "budgeted-imputation-mcar50/environment",
+    "build_command": "docker buildx build --load --platform linux/amd64 --tag bananloop-are-public-devkit-probe:2026-11-12 --file Dockerfile .",
+    "contents": "public environment/app only; Dockerfile copies ./app to /app"
+  },
+  "candidate": {
+    "path": "benchmarks/autoresearchexam/solutions/impute.py",
+    "sha256": "4d5ff8734d84aa2f6c6e4fd148aad7fb54ae6f6fc13ae1bd8703c9138f5ff0ab",
+    "source": "public task starter imputer"
+  },
+  "execution": {
+    "command": "python3 /app/devkit.py --module /app/output",
+    "docker_network": "none",
+    "root_filesystem_read_only": true,
+    "candidate_mount": "read-only at /app/output",
+    "expected_cells": 42,
+    "model_calls": 0,
+    "grader_calls": 0,
+    "private_grader_or_holdout_accessed": false,
+    "wall_time_seconds": "UNKNOWN",
+    "docker_memory_limit": "1 GiB",
+    "docker_cpu_limit": 1,
+    "docker_pids_limit": 32,
+    "tmpfs_limit": "256 MiB",
+    "stdout_limit": "1 MiB",
+    "timeout_cleanup": "explicit docker kill and rm -f; also on nonzero CLI exit",
+    "image_pull": "disabled (--pull=never)"
+  },
+  "result": {
+    "status": "GRADED",
+    "dev_score_r2": -0.0017,
+    "dev_cells": 42,
+    "classification": "public DEV baseline only; not a BananLoop campaign score and not public VALIDATION"
+  }
+}

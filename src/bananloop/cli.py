@@ -1141,6 +1141,10 @@ def parser() -> argparse.ArgumentParser:
                             help="exact file eligible for a supervised Optimization child; must also be a read path")
     v2_explore.add_argument("--evaluator-fixture",
                             help="owner-controlled evaluator bundle and tier inputs; pass the same fixture on every resume")
+    v2_explore.add_argument("--boardgames-task-id",
+                            help="execute one preregistered public Board Games analysis after each selected hypothesis")
+    v2_explore.add_argument("--protocol-review-attestation",
+                            help="pin a small owner-selected official public evaluator attestation into verifier context")
     v2_explore.add_argument("--model", default="gpt-6-luna")
     v2_explore.add_argument("--max-agent-calls", type=int, default=8,
                             help="total model calls budgeted across Exploration, verification, and a child run")
@@ -1149,6 +1153,8 @@ def parser() -> argparse.ArgumentParser:
     v2_explore.add_argument("--max-model-tokens", type=int, default=2048,
                             help="per-call ledger ceiling; SIWC may not enforce this provider-side")
     v2_explore.add_argument("--max-iterations", type=int, default=2)
+    v2_explore.add_argument("--deadline-seconds", type=int, default=3600,
+                            help="absolute campaign time limit; defaults to one hour")
     v2_explore.add_argument("--approve-up-to-calls", type=int, default=0,
                             help="explicit consent to spend up to this many ChatGPT plan requests now")
     v2_explore.add_argument("--timeout-seconds", type=int, default=120)

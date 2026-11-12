@@ -45,6 +45,41 @@ def test_optimizer_proposal_normalizes_one_string_limitation_losslessly():
     assert proposal.limitations == ("Needs follow-up testing.",)
 
 
+def test_public_only_protocol_reports_no_holdout_without_dispatch(monkeypatch):
+    from types import SimpleNamespace
+    import bananloop.v2_optimization_runtime as runtime_module
+
+    protocol = SimpleNamespace(
+        tiers=(SimpleNamespace(tier="dev"), SimpleNamespace(tier="validation")),
+        content_digest=lambda: "a" * 64,
+    )
+
+    class Authority:
+        def __init__(self, _connection):
+            pass
+
+        def approved_protocol(self, _digest):
+            return SimpleNamespace(protocol=protocol), None
+
+    monkeypatch.setattr(runtime_module, "EvaluatorProtocolAuthority", Authority)
+    runtime = object.__new__(runtime_module.V2OptimizationRuntime)
+    runtime.graph = SimpleNamespace(
+        conn=object(),
+        campaign_spec=lambda: SimpleNamespace(
+            evaluation=SimpleNamespace(approval_digest="b" * 64),
+        ),
+    )
+    runtime.trusted_evaluator = SimpleNamespace(
+        enqueue_repeatability=lambda **_kwargs: pytest.fail("must not dispatch an evaluator job"),
+    )
+    result = runtime._finalize_holdout(worker_id="test")
+    assert result == {
+        "status": "NOT_CONFIGURED", "tier": "holdout",
+        "protocol_digest": "a" * 64,
+        "reason": "The independently approved evaluator protocol has no HOLDOUT tier; none was run.",
+    }
+
+
 def test_final_optimization_report_resolves_parent_from_custom_registry_root(tmp_path, monkeypatch):
     from bananloop.contracts import RuntimePaths
     from bananloop.registry import CampaignRegistry

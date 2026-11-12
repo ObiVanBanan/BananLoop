@@ -1,0 +1,137 @@
+{
+  "baseline_observation": {
+    "cells_scored": 28,
+    "cells_scored_as_zero": 0,
+    "model_calls": 0,
+    "private_verifier_enabled": false,
+    "status": "graded",
+    "submission_id": 1,
+    "validation_score": 0.0
+  },
+  "contract_sha256": "c561ab7b950f94eb6bd56f8ef9d1423e43644a1e815ea6096658ba931216731f",
+  "discovered_tools": [
+    {
+      "_meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "description": "Submit the current deliverable for grading.\n\nSnapshots the deliverable directory right now (later edits do not affect this\nsubmission) and starts grading it on the public validation split. Returns at\nonce with a submission id. One submission is graded at a time: check `result`\nand submit again once the previous submission has its score. `note` is a short\ndescription of what changed.",
+      "inputSchema": {
+        "properties": {
+          "note": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "submit",
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      }
+    },
+    {
+      "_meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "description": "The current state of a submission: queued, grading, or graded with its\nvalidation score and grader output. Returns immediately.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "result",
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      }
+    },
+    {
+      "_meta": {
+        "_fastmcp": {
+          "tags": []
+        }
+      },
+      "description": "Submission count, whether one is being graded, the best validation score,\nand the time budget and time remaining.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "status",
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      }
+    }
+  ],
+  "limitations": [
+    "Successful public result payload schema was observed for the untouched starter in one fresh task container; ungraded queued/grading result payloads were observed only through the status strings, not fully validated.",
+    "grader_output_tail is returned by the public endpoint but is not saved into the contract or forwarded to BananLoop roles.",
+    "This is one public baseline protocol probe, not a BananLoop result and not an independently approved EvaluatorProtocolV1."
+  ],
+  "mcp_protocol_version": "2024-11-05",
+  "observed_at": "2026-11-12",
+  "observed_public_status_shape": {
+    "best": "null or task-specific public validation summary",
+    "queued_or_grading": "integer",
+    "submissions": "integer",
+    "time_remaining_seconds": "number",
+    "total_budget_seconds": "number"
+  },
+  "observed_submit_response_fields": {
+    "hint": "string",
+    "id": "integer",
+    "status": "queued",
+    "time_remaining_seconds": "number",
+    "total_budget_seconds": "number"
+  },
+  "observed_terminal_result_fields": {
+    "error": "null or string",
+    "grader_output_tail": "string (not forwarded or archived)",
+    "grading_seconds": "number",
+    "id": "integer",
+    "note": "string",
+    "status": "graded",
+    "submitted_at_s": "number",
+    "time_remaining_seconds": "number",
+    "total_budget_seconds": "number",
+    "validation_score": "finite number"
+  },
+  "probe_scope": {
+    "baseline_is_not_bananloop_run": true,
+    "baseline_submissions": 1,
+    "grader_artifacts_read": false,
+    "harbor_private_verification_enabled": false,
+    "model_called": false,
+    "operations": [
+      "initialize",
+      "notifications/initialized",
+      "tools/list",
+      "tools/call(status)"
+    ],
+    "result_called": true,
+    "status_called": true,
+    "submit_called": true
+  },
+  "public_endpoint": "http://grader:8000/mcp",
+  "schema_version": 1,
+  "server": {
+    "name": "are",
+    "version": "2.14.7"
+  },
+  "task_id": "budgeted-imputation-mcar50",
+  "task_instruction_sha256": "db5f523c327513114bb130af24984f89bd384fe0f01357dd69c1b0eded0f009f",
+  "task_sha256": "a3760c5eac35277ddfde9ff039921a7119cc4dd8b43d4d2a580df52ec9fb864c",
+  "task_version": "1.1.0",
+  "transport": "MCP streamable HTTP / JSON-RPC"
+}

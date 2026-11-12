@@ -947,6 +947,193 @@ def test_trusted_core_rejects_nonexistent_artifact_ref(tmp_path):
         graph.close()
 
 
+def test_registered_experiment_runs_and_becomes_memory_for_next_iteration(tmp_path):
+    runtime, graph, queue = _runtime(tmp_path, max_agent_calls=4)
+    calls = []
+    executions = []
+    catalog = (
+        {"id": "primary_association", "description": "estimate and interval"},
+        {"id": "permutation_test", "description": "permutation check"},
+    )
+
+    def model(public_input, **_pin):
+        calls.append(public_input)
+        if len(calls) == 1:
+            return {
+                "hypotheses": [{
+                    "id": "primary", "hypothesis": "Estimate the registered association.",
+                    "rationale": "Measure the preregistered relation first.",
+                    "next_experiment": "Run the primary association analysis.",
+                    "falsification_condition": "The interval does not support the association.",
+                    "expected_evidence": "An estimate and uncertainty interval.",
+                    "experiment_id": "primary_association",
+                }, {
+                    "id": "alternative", "hypothesis": "Check a different method.",
+                    "rationale": "This is a distinct robustness check.",
+                    "next_experiment": "Run the permutation test.",
+                    "falsification_condition": "The null is not rejected.",
+                    "expected_evidence": "A permutation p value.",
+                    "experiment_id": "permutation_test",
+                }],
+                "selected_hypothesis_id": "primary",
+            }
+        context = public_input["role_context"]
+        assert "experiment.primary_association" in context["dev_summary"]
+        assert context["evidence_refs"]
+        assert {item["id"] for item in public_input["registered_experiments"]} == {"permutation_test"}
+        prior_claim = context["dev_summary"].split(" [", 1)[0].splitlines()[0]
+        return {
+            "hypotheses": [{
+                "id": "memory_followup", "hypothesis": "Check robustness of the prior estimate.",
+                "rationale": "This directly tests the stored public result.",
+                "next_experiment": "Run the registered permutation check against the prior estimate.",
+                "falsification_condition": "The permuted null remains compatible.",
+                "expected_evidence": "A two-sided permutation p value.",
+                "experiment_id": "permutation_test",
+                "evidence_refs": list(context["evidence_refs"]),
+                "target_claim_key": prior_claim,
+            }, {
+                "id": "unranked", "hypothesis": "Try an ungrounded alternative.",
+                "rationale": "No memory cited.",
+                "next_experiment": "Run a secondary analysis.",
+                "falsification_condition": "No difference.",
+                "expected_evidence": "A measurement.",
+                "experiment_id": "permutation_test",
+            }],
+            "selected_hypothesis_id": "unranked",
+        }
+
+    def execute(experiment_id, role_context):
+        executions.append(experiment_id)
+        if experiment_id == "permutation_test":
+            assert "experiment.primary_association" in role_context["dev_summary"]
+        return {"status": "COMPLETED", "summary": f"Observed deterministic result for {experiment_id}.",
+                "stance": "UNCERTAIN", "confidence": 0.9,
+                "details": {"fixture": "offline", "experiment_id": experiment_id}}
+
+    invoke = _make_researcher_invoke(
+        model, experiment_executor=execute, experiment_catalog=catalog,
+    )
+    try:
+        result = runtime.run_campaign(
+            visible_paths=["README.md"], invoke=invoke, max_iterations=2,
+        )
+        assert result["iterations_this_call"] == 2
+        assert executions == ["primary_association", "permutation_test"]
+        claims = {row[0] for row in graph.conn.execute(
+            "SELECT claim_key FROM research_evidence WHERE campaign_id=?",
+            (runtime.campaign_id,),
+        )}
+        assert claims >= {
+            "experiment.primary_association", "experiment.permutation_test",
+        }
+        assert result["completed"][1]["research_evidence_ids"]
+    finally:
+        queue.close()
+        graph.close()
+
+
+def test_expired_campaign_deadline_stops_before_researcher_call(tmp_path):
+    runtime, graph, queue = _runtime(tmp_path, max_agent_calls=2)
+    runtime.adapter.campaign_deadline_epoch = time.time() - 1
+    called = False
+
+    def model(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("expired campaign must not dispatch a model call")
+
+    try:
+        result = runtime.run_campaign(
+            visible_paths=["README.md"], invoke=_make_researcher_invoke(model),
+            max_iterations=2,
+        )
+        assert result["status"] == "DEADLINE_EXCEEDED"
+        assert result["iterations_this_call"] == 0
+        assert called is False
+    finally:
+        queue.close()
+        graph.close()
+
+
+def test_boardgames_real_runner_executes_and_feeds_second_v2_iteration(tmp_path):
+    import importlib.util
+
+    repo_root = Path(__file__).resolve().parents[1]
+    runner_path = repo_root / "benchmarks" / "discoverybench_boardgames" / "runner.py"
+    spec = importlib.util.spec_from_file_location("test_registered_boardgames_runner", runner_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    task_id = "bg-01-strategies-tournament-win"
+    executor = module.BoardGamesExperimentExecutor(repo_root, task_id)
+    runtime, graph, queue = _runtime(tmp_path, max_agent_calls=4)
+    calls = 0
+
+    def model(public_input, **_pin):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            selected = "primary_association"
+            return {"hypotheses": [{
+                "id": "primary", "hypothesis": "Estimate the registered association.",
+                "rationale": "Measure the frozen variables first.",
+                "next_experiment": "Estimate Spearman rho with paired bootstrap interval.",
+                "falsification_condition": "The 95% interval crosses zero.",
+                "expected_evidence": "Rho and paired 95% interval.",
+                "experiment_id": selected,
+            }, {
+                "id": "permutation", "hypothesis": "Test the null by permutation.",
+                "rationale": "Check significance after the primary estimate.",
+                "next_experiment": "Test the registered association under permutation.",
+                "falsification_condition": "The permutation test is inconclusive.",
+                "expected_evidence": "Two-sided permutation p value.",
+                "experiment_id": "permutation_test",
+            }], "selected_hypothesis_id": "primary"}
+        context = public_input["role_context"]
+        assert "experiment.primary_association" in context["dev_summary"]
+        assert "rho=" in context["dev_summary"]
+        prior_claim = context["dev_summary"].split(" [", 1)[0].splitlines()[0]
+        return {"hypotheses": [{
+            "id": "memory-grounded", "hypothesis": "Test the primary association under permutation.",
+            "rationale": "The stored estimate is the hypothesis being checked.",
+            "next_experiment": "Run the two-sided registered permutation test.",
+            "falsification_condition": "The two-sided permutation p value is at least 0.05.",
+            "expected_evidence": "A deterministic two-sided permutation p value.",
+            "experiment_id": "permutation_test",
+            "evidence_refs": list(context["evidence_refs"]),
+            "target_claim_key": prior_claim,
+        }, {
+            "id": "ungrounded", "hypothesis": "Choose an unrelated test.",
+            "rationale": "Alternative candidate.",
+            "next_experiment": "Run the quality audit.",
+            "falsification_condition": "No effect.",
+            "expected_evidence": "A statistic.",
+            "experiment_id": "data_quality_audit",
+        }], "selected_hypothesis_id": "ungrounded"}
+
+    invoke = _make_researcher_invoke(
+        model, experiment_executor=executor, experiment_catalog=executor.catalog,
+    )
+    try:
+        result = runtime.run_campaign(
+            visible_paths=["README.md"], invoke=invoke, max_iterations=2,
+        )
+        assert result["iterations_this_call"] == 2
+        assert calls == 2
+        rows = graph.conn.execute(
+            "SELECT claim_key,statement FROM research_evidence WHERE campaign_id=?",
+            (runtime.campaign_id,),
+        ).fetchall()
+        by_claim = {row["claim_key"]: row["statement"] for row in rows}
+        assert "experiment.primary_association" in by_claim
+        assert "spearman_rho=" in by_claim["experiment.primary_association"]
+        assert "experiment.permutation_test" in by_claim
+        assert "two_sided_p_value=" in by_claim["experiment.permutation_test"]
+    finally:
+        queue.close()
+        graph.close()
+
+
 def test_campaign_pause_and_resume_survive_runtime_restart(tmp_path):
     runtime, graph, queue = _runtime(tmp_path)
     graph.mutate({

@@ -1,0 +1,41 @@
+{
+  "schema": "bananloop-discoverybench-boardgames-pilot-v1",
+  "qualification": "operator_composed_public_diagnostic_not_official_discoverybench_score",
+  "source": {
+    "repository": "allenai/discoverybench",
+    "revision": "c31fcf011e070f021a5f5b906896d0821f6880e8",
+    "question_id": 10,
+    "data_path": "examples/exploration_diagnostic_v1/discoverybench_boardgames/data.csv",
+    "data_sha256": "f93f387becbbc44f562e56150f60bea19f92db3290a66d7d4682dcc9e20548d9",
+    "rows": 500,
+    "columns": 42,
+    "data_status": "public_synthetic_diagnostic; upstream answers are not sealed"
+  },
+  "evaluation": {
+    "primary_statistic": "Spearman rank correlation with average ranks for ties",
+    "uncertainty": "paired row bootstrap percentile 95% confidence interval, 10000 resamples, fixed seed 20261111",
+    "decision_rule": "report association evidence only if the 95% interval excludes zero; otherwise label inconclusive",
+    "required_report_fields": ["sample_size", "spearman_rho", "ci95_lower", "ci95_upper", "missing_value_policy", "assumptions", "limitations", "causal_claim"],
+    "causal_claim": "must state that observational association does not establish causality",
+    "missing_value_policy": "pairwise complete rows; report excluded row count"
+  },
+  "registered_analyses": [
+    {"id":"primary_association","description":"Spearman estimate with paired 95% bootstrap interval"},
+    {"id":"permutation_test","description":"Two-sided permutation test for zero Spearman association"},
+    {"id":"split_half_robustness","description":"Seeded split-half robustness check"},
+    {"id":"outlier_sensitivity","description":"Sensitivity after joint 1st/99th percentile tail exclusion"},
+    {"id":"data_quality_audit","description":"Pairwise completeness and observed-value audit"}
+  ],
+  "tasks": [
+    {"task_id":"bg-01-strategies-tournament-win","version":"pilot-1.0","upstream_question_id":10,"question":"Is the number of unique strategies developed associated with tournament win ratio?","x":"unique_strategies_developed","y":"tournament_win_ratio"},
+    {"task_id":"bg-02-tournament-frequency-win","version":"pilot-1.0","question":"Is tournament participation frequency associated with tournament win ratio?","x":"tournament_participation_frequency","y":"tournament_win_ratio"},
+    {"task_id":"bg-03-complexity-success","version":"pilot-1.0","question":"Is strategic complexity rating associated with strategy success rate?","x":"strategic_complexity_rating","y":"strategy_success_rate"},
+    {"task_id":"bg-04-complexity-preference-win","version":"pilot-1.0","question":"Is strategic complexity preference associated with overall win rate?","x":"strategic_complexity_preference","y":"win_rate"},
+    {"task_id":"bg-05-duration-engagement","version":"pilot-1.0","question":"Is average game duration in minutes associated with engagement score?","x":"average_game_duration_minutes","y":"engagement_score"},
+    {"task_id":"bg-06-genre-count-engagement","version":"pilot-1.0","question":"Is the number of game genres played associated with engagement score?","x":"number_of_game_genres_played","y":"engagement_score"},
+    {"task_id":"bg-07-game-diversity-engagement","version":"pilot-1.0","question":"Is game diversity associated with engagement score?","x":"game_diversity","y":"engagement_score"},
+    {"task_id":"bg-08-borrowing-strategies","version":"pilot-1.0","question":"Is games borrowed frequency associated with the number of strategies developed?","x":"games_borrowed_frequency","y":"unique_strategies_developed"},
+    {"task_id":"bg-09-forum-tournament-frequency","version":"pilot-1.0","question":"Is forum interaction frequency associated with tournament participation frequency?","x":"forum_interaction_frequency","y":"tournament_participation_frequency"},
+    {"task_id":"bg-10-age-win-rate","version":"pilot-1.0","question":"Is player age associated with overall win rate?","x":"age","y":"win_rate"}
+  ]
+}

@@ -1374,9 +1374,20 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
     queue = DurableWorkerQueue(db_path)
     published_root = tmp_path / "rpdi05" / "published"
     published_root.mkdir(parents=True)
+    attestation_bytes = json.dumps({
+        "schema": "public-evaluator-attestation-v1",
+        "summary": "The official benchmark docs state that the agent receives public validation results while the private test score and output stay outside its environment. This is a published trust-boundary claim, not a cryptographic implementation audit.",
+        "sources": [{
+            "url": "https://github.com/bespokelabsai/AutoResearchExam/blob/"
+                   "23c0d92e11af1dea821f972b5f0a739060958002/README.md",
+            "commit": "23c0d92e11af1dea821f972b5f0a739060958002",
+            "sha256": "f" * 64,
+        }],
+    }, sort_keys=True, separators=(",", ":")).encode()
+    attestation_sha = hashlib.sha256(attestation_bytes).hexdigest()
     for digest, content in (
         (bundle_sha, bundle_bytes), (manifest_sha, manifest_bytes),
-        (input_sha, input_bytes),
+        (input_sha, input_bytes), (attestation_sha, attestation_bytes),
     ):
         (published_root / digest).write_bytes(content)
 
@@ -1501,7 +1512,8 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
         job_id="researcher-job-1", worker_fence=lease["fence"],
         source_request_hash=job["request_hash"], output_digest=output_digest,
         spec_hash=spec_hash, evidence_refs=(bundle_ref,),
-        artifact_digests=(bundle_sha, manifest_sha, input_sha), limitations=output.limitations,
+        artifact_digests=(bundle_sha, manifest_sha, input_sha, attestation_sha),
+        limitations=output.limitations,
         next_experiment=output.next_experiment,
     ))
 
@@ -1516,6 +1528,7 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
     verification = EvaluatorVerificationAdapter(
         graph=graph, queue=queue, campaign_id=campaign_id,
         published_artifact_root=published_root,
+        trusted_public_evidence_digests=(attestation_sha,),
     )
     verifier_job = verification.enqueue_verifier(proposal.proposal_digest)
     assert verifier_job["state"] == "READY"
@@ -1527,6 +1540,9 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
     assert input_sha not in public_task
     assert "CASE_BYTES_SENTINEL" not in public_task
     assert input_ref not in public_task
+    assert attestation_sha in public_task
+    assert "published trust-boundary claim" in public_task
+    assert "cryptographic implementation audit" in public_task
     assert '"protocol_binding":{"researcher_intent_bound_by_core":false' in public_task
     for contract_fact in (
         "evaluator_wall_timeout_seconds",

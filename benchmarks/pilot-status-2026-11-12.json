@@ -1,0 +1,420 @@
+{
+  "autoresearchexam": {
+    "bananloop_scored_tasks": 0,
+    "benchmark": "AutoResearchExam v1.1",
+    "public_baseline_probe_is_bananloop_result": false,
+    "remaining_runtime_gaps": [
+      "stage pinned public-validation attestation and exact score-affecting ARE backend source into live review context, obtain independent protocol approval, and settle durable Core receipt",
+      "durable outer driver for up to five Optimization candidates/children",
+      "independently approved task-specific evaluator protocol and candidate/output mapping for all ten tasks",
+      "single-task BananLoop acceptance run before ten-task campaign"
+    ],
+    "public_protocol_review_evidence": {
+      "attestation_path": "benchmarks/autoresearchexam/public-evaluator-attestation-v1.json",
+      "task_source_revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+      "terminus_source_revision": "b00d9497b321eb1ebfc79279e0992c8c5fc09fc1",
+      "role": "pinned maintainer trust-boundary evidence, not cryptographic verification of grader code",
+      "review_builder_includes_digest_verified_bounded_attestation": true,
+      "harbor_campaign_stages_attestation_automatically": false,
+      "v2_explore_option": "--protocol-review-attestation",
+      "v2_explore_stages_and_rechecks_digest_on_resume": true,
+      "exact_backend_runtime_source_reviewed": false,
+      "focused_tests": "25 passed"
+    },
+    "safe_overlay_count": 10,
+    "safe_overlay_hashes": [
+      {
+        "overlay_task_sha256": "8687e8018d5236ed539892c499eabeffb0474c06a7c5c47fbeb73609a786e6ea",
+        "task_id": "budgeted-covtype-dual-market-open"
+      },
+      {
+        "overlay_task_sha256": "3f2294f4ab6605481bf363025ef5bb63283bcb3e48dd04c1c3da9d7eeea9fdc4",
+        "task_id": "budgeted-imputation-mcar50"
+      },
+      {
+        "overlay_task_sha256": "09f73b7ee7ac3c76898e06aa4f2ca826c6e62c59e05b6bd86103a246353b3184",
+        "task_id": "carps-star-discrepancy-subset-select"
+      },
+      {
+        "overlay_task_sha256": "e5c639e4a9ab83c456e61d18e8ae6dbef1502ce6948b6a607132b327ffb1003f",
+        "task_id": "cpu-decoder-graph-executor"
+      },
+      {
+        "overlay_task_sha256": "1fd95761e2393c0ad2c2c92c2d38127801d84d32ff8e5f5b73bf931df6526b87",
+        "task_id": "cpu-llm-decode-throughput"
+      },
+      {
+        "overlay_task_sha256": "27a11c54e5b42cc59c1b5727d9d23d4250c3a5f1887646558fa67a8e0eaf5a9e",
+        "task_id": "dctabeval-aeac-pooled-cat-statistics"
+      },
+      {
+        "overlay_task_sha256": "c28007bc55c9cfd840037090ca400b9061ba7cd1f51aeb8a3518026a6d15894d",
+        "task_id": "label-efficient-risk-estimator"
+      },
+      {
+        "overlay_task_sha256": "ecee43beb6c80a9e4ef6e218bb9f52db6b760818ac713fe65dfa0a6ad5ef4e50",
+        "task_id": "shortest-valid-ci-l2-ece"
+      },
+      {
+        "overlay_task_sha256": "b058a4b5320c5e3c21243d28070befbce10e261f44c76f1d840e830c4369ba9b",
+        "task_id": "sketched-newton-cov-estimator"
+      },
+      {
+        "overlay_task_sha256": "13f1b3cabeccf7674707ee61a62f352a4ba3229803ddcf885d91d4a0e83aae8a",
+        "task_id": "sopcc-online-chance-constrained-policy"
+      }
+    ],
+    "safe_overlay_index": "/home/sonik/bananloop-benchmark-env/safe-overlays/index.json",
+    "safe_overlay_preflight": {
+      "artifact_manifest": [
+        {
+          "destination": "artifacts/logs/artifacts",
+          "exclude": [],
+          "service": null,
+          "source": "/logs/artifacts",
+          "status": "ok",
+          "type": "directory"
+        }
+      ],
+      "expected_stop": "campaign registry does not contain synthetic campaign c-are-dryrun",
+      "finished_at": "2026-11-12T10:07:37.523157",
+      "harbor_job": "/tmp/harbor-are-safe-overlay-preflight-2026-11-12/2026-11-12__10-03-19",
+      "model_calls": "0",
+      "public_submissions": "0",
+      "trial_errors": 1
+    },
+    "selected_task_count": 10,
+    "selected_tasks": [
+      {
+        "task_id": "budgeted-covtype-dual-market-open",
+        "version": "1.1.0"
+      },
+      {
+        "task_id": "budgeted-imputation-mcar50",
+        "version": "1.1.0"
+      },
+      {
+        "task_id": "carps-star-discrepancy-subset-select",
+        "version": "1.1.0"
+      },
+      {
+        "task_id": "cpu-decoder-graph-executor",
+        "version": "1.1.0"
+      },
+      {
+        "task_id": "cpu-llm-decode-throughput",
+        "version": "1.1.0"
+      },
+      {
+        "task_id": "dctabeval-aeac-pooled-cat-statistics",
+        "version": "1.1.0"
+      },
+      {
+        "task_id": "label-efficient-risk-estimator",
+        "version": "1.1.0"
+      },
+      {
+        "task_id": "shortest-valid-ci-l2-ece",
+        "version": "1.1.0"
+      },
+      {
+        "task_id": "sketched-newton-cov-estimator",
+        "version": "1.1.0"
+      },
+      {
+        "task_id": "sopcc-online-chance-constrained-policy",
+        "version": "1.1.0"
+      }
+    ],
+    "source_revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+    "public_devkit_smoke": {
+      "record_path": "benchmarks/autoresearchexam/public-devkit-smoke-2026-11-12.json",
+      "status": "GRADED",
+      "dev_score_r2": -0.0017,
+      "dev_cells": 42,
+      "candidate": "public starter imputer",
+      "network": "none",
+      "model_calls": 0,
+      "grader_calls": 0,
+      "private_grader_or_holdout_accessed": false,
+      "classification": "public DEV baseline only; not a BananLoop result"
+    }
+  },
+  "boardgames": {
+    "archive_code_sha": "7a1a57639122497286479815115514adf82244a1",
+    "archive_path": "/tmp/bananloop-run-review-2026-11-12-updated.zip",
+    "archive_size_bytes": 982020,
+    "series_driver": {
+      "path": "benchmarks/discoverybench_boardgames/series_runner.py",
+      "status": "IMPLEMENTED_NOT_RUN",
+      "task_count": 10,
+      "per_task_deadline_seconds": 3600,
+      "per_task_max_iterations": 5,
+      "failure_isolation": true,
+      "stable_resume_identity": true,
+      "campaign_status_recorded_separately_from_cli_status": true,
+      "focused_tests": "7 passed",
+      "requires_pilot_inputs_committed_to_HEAD": true
+    },
+    "campaign_attempts": 13,
+    "classification": "public synthetic diagnostic, not official DiscoveryBench score",
+    "core_executed_analyses": 31,
+    "model_calls_dispatched": 39,
+    "partial_runs_by_task": [
+      {
+        "attempts": [
+          {
+            "campaign_id": "c-ab62ed5e5abb23b12465eb3708062712",
+            "core_executed_analyses": 0,
+            "failure_type": "SIWCError",
+            "iterations_reported": 0,
+            "model_calls_dispatched": 0,
+            "reported_usage": "UNKNOWN",
+            "status": "RUN_FAILED"
+          },
+          {
+            "campaign_id": "c-74fada3903ab4ba0a822459eb71b6932",
+            "core_executed_analyses": 1,
+            "failure_type": "ValidationError",
+            "iterations_reported": 0,
+            "model_calls_dispatched": 2,
+            "reported_usage": {
+              "total_tokens": 8982
+            },
+            "status": "RUN_FAILED"
+          },
+          {
+            "campaign_id": "c-cd24ebcd2ebd414a66608bfba61d30cb",
+            "core_executed_analyses": 3,
+            "failure_type": null,
+            "iterations_reported": 3,
+            "model_calls_dispatched": 3,
+            "reported_usage": {
+              "input_tokens": 10716,
+              "output_tokens": 3376,
+              "total_tokens": 14092
+            },
+            "status": "ITERATION_LIMIT"
+          }
+        ],
+        "task_id": "bg-01"
+      },
+      {
+        "attempts": [
+          {
+            "campaign_id": "c-8b3499cc4df0308543c0200f01e89795",
+            "core_executed_analyses": 1,
+            "failure_type": "ValidationError",
+            "iterations_reported": 0,
+            "model_calls_dispatched": 2,
+            "reported_usage": {
+              "input_tokens": 6872,
+              "output_tokens": 2210,
+              "total_tokens": 9082
+            },
+            "status": "RUN_FAILED"
+          },
+          {
+            "campaign_id": "c-cc6cc27836f89f022e56900902d9d316",
+            "core_executed_analyses": 0,
+            "failure_type": "V2RuntimeError",
+            "iterations_reported": 0,
+            "model_calls_dispatched": 1,
+            "reported_usage": {
+              "input_tokens": 3351,
+              "output_tokens": 974,
+              "total_tokens": 4325
+            },
+            "status": "RUN_FAILED"
+          }
+        ],
+        "task_id": "bg-02"
+      },
+      {
+        "attempts": [
+          {
+            "campaign_id": "c-7fbd6bc49144155ff62799f5ee47e834",
+            "core_executed_analyses": 2,
+            "failure_type": "V2RuntimeError",
+            "iterations_reported": 0,
+            "model_calls_dispatched": 3,
+            "reported_usage": {
+              "input_tokens": 10990,
+              "output_tokens": 2979,
+              "total_tokens": 13969
+            },
+            "status": "RUN_FAILED"
+          }
+        ],
+        "task_id": "bg-03"
+      },
+      {
+        "attempts": [
+          {
+            "campaign_id": "c-6e3c1ce550b02cf68f8cd8321fc34b13",
+            "core_executed_analyses": 1,
+            "failure_type": "V2RuntimeError",
+            "iterations_reported": 0,
+            "model_calls_dispatched": 2,
+            "reported_usage": {
+              "input_tokens": 7102,
+              "output_tokens": 2226,
+              "total_tokens": 9328
+            },
+            "status": "RUN_FAILED"
+          }
+        ],
+        "task_id": "bg-04"
+      },
+      {
+        "attempts": [
+          {
+            "campaign_id": "c-66ee09d908d97f51d1f47d7a87134fdc",
+            "core_executed_analyses": 3,
+            "failure_type": null,
+            "iterations_reported": 3,
+            "model_calls_dispatched": 3,
+            "reported_usage": {
+              "input_tokens": 11182,
+              "output_tokens": 3507,
+              "total_tokens": 14689
+            },
+            "status": "BUDGET_RESERVATION_REJECTED"
+          }
+        ],
+        "task_id": "bg-05"
+      },
+      {
+        "attempts": [
+          {
+            "campaign_id": "c-ad7edd4d6cfede5f15a48f666282f9c3",
+            "core_executed_analyses": 5,
+            "failure_type": null,
+            "iterations_reported": 5,
+            "model_calls_dispatched": 5,
+            "reported_usage": {
+              "input_tokens": 20035,
+              "output_tokens": 5597,
+              "total_tokens": 25632
+            },
+            "status": "ITERATION_LIMIT"
+          }
+        ],
+        "task_id": "bg-06"
+      },
+      {
+        "attempts": [
+          {
+            "campaign_id": "c-802d3fcd5097f8225f4ac3f113c4a0fe",
+            "core_executed_analyses": 4,
+            "failure_type": "V2RuntimeError",
+            "iterations_reported": 0,
+            "model_calls_dispatched": 5,
+            "reported_usage": {
+              "input_tokens": 20065,
+              "output_tokens": 5512,
+              "total_tokens": 25577
+            },
+            "status": "RUN_FAILED"
+          }
+        ],
+        "task_id": "bg-07"
+      },
+      {
+        "attempts": [
+          {
+            "campaign_id": "c-58e09251b31559c9eaec44b0d112e77b",
+            "core_executed_analyses": 3,
+            "failure_type": "ValidationError",
+            "iterations_reported": 0,
+            "model_calls_dispatched": 4,
+            "reported_usage": {
+              "input_tokens": 15508,
+              "output_tokens": 5357,
+              "total_tokens": 20865
+            },
+            "status": "RUN_FAILED"
+          }
+        ],
+        "task_id": "bg-08"
+      },
+      {
+        "attempts": [
+          {
+            "campaign_id": "c-597693136da7b903548e70af9424a578",
+            "core_executed_analyses": 5,
+            "failure_type": null,
+            "iterations_reported": 5,
+            "model_calls_dispatched": 5,
+            "reported_usage": {
+              "input_tokens": 20313,
+              "output_tokens": 5863,
+              "total_tokens": 26176
+            },
+            "status": "ITERATION_LIMIT"
+          }
+        ],
+        "task_id": "bg-09"
+      },
+      {
+        "attempts": [
+          {
+            "campaign_id": "c-3fc7feb18623d878d5aa2a14667384fe",
+            "core_executed_analyses": 3,
+            "failure_type": "V2RuntimeError",
+            "iterations_reported": 0,
+            "model_calls_dispatched": 4,
+            "reported_usage": {
+              "input_tokens": 15642,
+              "output_tokens": 4672,
+              "total_tokens": 20314
+            },
+            "status": "RUN_FAILED"
+          }
+        ],
+        "task_id": "bg-10"
+      }
+    ],
+    "reported_usage": {
+      "input_tokens": 148628,
+      "output_tokens": 44403,
+      "total_tokens": 193031
+    },
+    "task_count": 10
+  },
+  "completion": "PARTIAL; full objective remains active",
+  "created_date": "2026-11-12",
+  "limits": {
+    "autoresearchexam_one_hour_pilot_comparable_to_official_24h": false,
+    "per_task_iterations": 5,
+    "per_task_time_seconds": 3600
+  },
+  "safety_note": {
+    "artifact_inspected": false,
+    "artifact_location_quarantined": "/tmp/bananloop-are-private-artifact-quarantine/are-sidecar-1794459150",
+    "original_task_preflight_collected_grader_sidecar_artifact": true,
+    "quarantine_mode": "0700",
+    "safe_overlays_remove_artifacts_and_collect_hook": true
+  },
+  "schema": "bananloop-benchmark-pilot-status-v1",
+  "verification": {
+    "collected": 1101,
+    "exit_code": 0,
+    "failed": 0,
+    "focused_overlay_tests": "6 passed",
+    "git_diff_check": "passed",
+    "passed": 1099,
+    "pytest_log": "not captured to a file; terminal exit code and .pytest_cache lastfailed=0 verified",
+    "skipped": 2,
+    "focused_public_dev_tests": "32 passed",
+    "latest_full_suite": "current dirty worktree including persistent owner-staged attestation and Board Games series runner; 1,101 collected, 1,099 passed, 2 skipped, exit code 0",
+    "full_suite_run": "current dirty worktree after campaign attestation staging and sequential Board Games series runner"
+  },
+  "worktree": {
+    "branch": "codex/autoresearchexam-verifier-evidence",
+    "changes_committed": false,
+    "head": "559621dfa0e9e230b3dd5257399b6baa88bfbade",
+    "path": "/home/sonik/Проекты/BananLoop-ARE-work-copy",
+    "test_state": "dirty worktree; suite ran against working files plus this HEAD"
+  }
+}

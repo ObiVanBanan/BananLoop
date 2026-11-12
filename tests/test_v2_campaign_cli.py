@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import subprocess
 import sys
 from argparse import Namespace
@@ -18,12 +19,52 @@ from bananloop.contracts import RuntimePaths
 from bananloop.graph_store import GraphRepository
 from bananloop.registry import CampaignRegistry, RegistryError
 from bananloop.v2_campaign_cli import (
-    V2CampaignCLIError, _aggregate_reported_usage, _required_optimization_evaluator_calls,
+    V2CampaignCLIError, _aggregate_reported_usage, _campaign_deadline,
+    _stage_protocol_review_attestation,
+    _required_optimization_evaluator_calls,
     _safe_failure_diagnostics,
     run_v2_explore,
 )
-from bananloop.v2_optimization_cli import V2OptimizationCLIError, _safe_paths
+from bananloop.v2_optimization_cli import (
+    V2OptimizationCLIError, _safe_paths, _saved_completed_run_report,
+)
 from bananloop.v2_optimization_cli import run_v2_optimize
+
+
+def test_protocol_review_attestation_is_pinned_and_reused_from_campaign_state(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "attestation.json"
+    source.write_text(json.dumps({
+        "schema": "public-evaluator-attestation-v1",
+        "summary": "Official public grader boundary.",
+        "sources": [{
+            "url": "https://github.com/bespokelabsai/AutoResearchExam/blob/"
+                   "23c0d92e11af1dea821f972b5f0a739060958002/README.md",
+            "commit": "23c0d92e11af1dea821f972b5f0a739060958002",
+            "sha256": "f" * 64,
+        }],
+    }), encoding="utf-8")
+    state_root = tmp_path / "state" / "campaign"
+    spec_hash = "a" * 64
+
+    digests = _stage_protocol_review_attestation(
+        repo=repo, state_root=state_root, spec_hash=spec_hash,
+        requested_path="attestation.json",
+    )
+    assert len(digests) == 1
+    stored = state_root / "rpdi05" / "published" / digests[0]
+    assert hashlib.sha256(stored.read_bytes()).hexdigest() == digests[0]
+    assert _stage_protocol_review_attestation(
+        repo=repo, state_root=state_root, spec_hash=spec_hash, requested_path=None,
+    ) == digests
+
+    stored.chmod(0o600)
+    stored.write_text("tampered", encoding="utf-8")
+    with pytest.raises(V2CampaignCLIError, match="missing or changed"):
+        _stage_protocol_review_attestation(
+            repo=repo, state_root=state_root, spec_hash=spec_hash, requested_path=None,
+        )
 
 
 def _repo(tmp_path):
@@ -70,6 +111,7 @@ def _args(repo, state_dir, **overrides):
         "max_agent_calls": 6, "max_model_tokens": 128, "max_iterations": 2,
         "optimization_write_path": [],
         "approve_up_to_calls": 0, "timeout_seconds": 60, "model": "gpt-6-luna",
+        "protocol_review_attestation": None,
     }
     values.update(overrides)
     return Namespace(**values)
@@ -85,6 +127,41 @@ def test_cli_explore_is_a_separate_v2_route():
     assert args.max_agent_calls == 8
     assert args.max_evaluator_calls == 16
     assert args.evaluator_fixture is None
+    assert args.protocol_review_attestation is None
+
+
+def test_v2_explore_stages_owner_attestation_before_no_model_preflight(tmp_path):
+    repo = _repo(tmp_path)
+    attestation_path = repo / "public-attestation.json"
+    raw = json.dumps({
+        "schema": "public-evaluator-attestation-v1",
+        "summary": "Official public validation boundary.",
+        "sources": [{
+            "url": "https://github.com/bespokelabsai/AutoResearchExam/blob/"
+                   "23c0d92e11af1dea821f972b5f0a739060958002/README.md",
+            "commit": "23c0d92e11af1dea821f972b5f0a739060958002",
+            "sha256": "f" * 64,
+        }],
+    }, sort_keys=True).encode("utf-8")
+    attestation_path.write_bytes(raw)
+    args = _args(
+        repo, tmp_path / "campaign-state",
+        protocol_review_attestation="public-attestation.json",
+    )
+
+    first = run_v2_explore(args)
+    digest = hashlib.sha256(raw).hexdigest()
+    assert first["protocol_review_evidence_digests"] == [digest]
+    state_root = Path(first["state_dir"])
+    stored = state_root / "rpdi05" / "published" / digest
+    assert stored.read_bytes() == raw
+    assert _stage_protocol_review_attestation(
+        repo=repo, state_root=state_root, spec_hash=first["spec_hash"], requested_path=None,
+    ) == (digest,)
+
+    resumed = run_v2_explore(args)
+    assert resumed["campaign_id"] == first["campaign_id"]
+    assert resumed["protocol_review_evidence_digests"] == [digest]
 
 
 @pytest.mark.parametrize(("repeats", "expected"), [(2, 8), (3, 12), (10, 40)])
@@ -92,10 +169,91 @@ def test_one_candidate_optimization_budget_covers_all_trusted_tiers(repeats, exp
     assert _required_optimization_evaluator_calls(repeats) == expected
 
 
+@pytest.mark.parametrize(("repeats", "expected"), [(2, 6), (3, 9), (10, 30)])
+def test_public_only_optimization_budget_does_not_reserve_private_holdout(repeats, expected):
+    assert _required_optimization_evaluator_calls(repeats, has_holdout=False) == expected
+
+
 @pytest.mark.parametrize("repeats", [True, 1, 11, 3.0])
 def test_optimization_budget_rejects_invalid_protocol_repeatability(repeats):
     with pytest.raises(V2CampaignCLIError, match="repeatability count is invalid"):
         _required_optimization_evaluator_calls(repeats)
+
+
+def test_optimization_budget_rejects_non_boolean_holdout_declaration():
+    with pytest.raises(V2CampaignCLIError, match="HOLDOUT declaration is invalid"):
+        _required_optimization_evaluator_calls(2, has_holdout=1)
+
+
+@pytest.mark.parametrize("has_holdout", [False, True])
+def test_completed_report_recovery_checks_frozen_holdout_policy(tmp_path, monkeypatch, has_holdout):
+    import bananloop.v2_optimization_cli as cli_module
+
+    state_root = tmp_path / "state"
+    reports = state_root / "reports"
+    reports.mkdir(parents=True)
+    campaign_id = "c-" + "1" * 32
+    (state_root / "campaign.sqlite3").write_bytes(b"test database placeholder")
+    protocol_digest = "a" * 64
+    report = {
+        "campaign_id": campaign_id,
+        "status": "ALL_NODES_COMPLETE",
+        "baseline_candidate_delta": {"status": "VERIFIED"},
+        "verification": [{"status": "INDEPENDENT_VERIFICATION_PASS"}],
+        "integration_evidence": [],
+        "holdout": {
+            "status": "NOT_CONFIGURED", "tier": "holdout",
+            "protocol_digest": protocol_digest,
+        },
+    }
+    (reports / f"v2-optimization-{campaign_id}.json").write_text(
+        json.dumps(report), encoding="utf-8",
+    )
+
+    class FakeSpec:
+        evaluation = SimpleNamespace(
+            protocol_id="are.public", version=1, content_sha256=protocol_digest,
+            approval_digest="b" * 64,
+        )
+
+        def approved_hash(self):
+            return "c" * 64
+
+    class FakeGraph:
+        conn = object()
+
+        @staticmethod
+        def campaign_spec():
+            return FakeSpec()
+
+        @staticmethod
+        def close():
+            pass
+
+    protocol = SimpleNamespace(
+        tiers=tuple(SimpleNamespace(tier=tier) for tier in (
+            ("dev", "validation", "holdout") if has_holdout else ("dev", "validation")
+        )),
+        content_digest=lambda: protocol_digest,
+    )
+
+    class Authority:
+        def __init__(self, _connection):
+            pass
+
+        @staticmethod
+        def require_frozen_reference(*_args, **_kwargs):
+            pass
+
+        @staticmethod
+        def approved_protocol(_digest):
+            return SimpleNamespace(protocol=protocol), None
+
+    monkeypatch.setattr(cli_module, "OptimizationCampaignSpecV2", FakeSpec)
+    monkeypatch.setattr(cli_module.GraphRepository, "open", lambda *_args, **_kwargs: FakeGraph())
+    monkeypatch.setattr(cli_module, "EvaluatorProtocolAuthority", Authority)
+    result = _saved_completed_run_report(state_root, campaign_id)
+    assert (result is None) is has_holdout
 
 
 def test_evaluator_fixture_is_frozen_and_persisted_before_any_live_call(tmp_path):
@@ -325,6 +483,16 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
     monkeypatch.setattr(
         "bananloop.v2_optimization_cli.EvaluatorProtocolAuthority.require_frozen_reference",
         accept_frozen_fixture,
+    )
+    # This fixture intentionally skips durable protocol approval persistence;
+    # return the frozen protocol payload expected by the CLI's backend check.
+    from types import SimpleNamespace
+    monkeypatch.setattr(
+        "bananloop.v2_optimization_cli.EvaluatorProtocolAuthority.approved_protocol",
+        lambda _self, _digest: (
+            SimpleNamespace(protocol=SimpleNamespace(execution_backend_id=None)),
+            None,
+        ),
     )
     result = run_v2_optimize(Namespace(
         repo=str(repo), state_dir=str(state_dir), campaign_id=entry.campaign_id,
@@ -854,3 +1022,59 @@ def test_v2_cli_rejects_request_reuse_with_different_goal(tmp_path):
     assert first["status"] == "READY_FOR_OWNER_APPROVAL"
     with pytest.raises(RegistryError, match="different goal"):
         run_v2_explore(_args(repo, state_dir, goal="A different frozen campaign objective"))
+
+
+def test_boardgames_explore_preflight_requires_committed_runner_and_pins_task(tmp_path):
+    import shutil
+    import sqlite3
+
+    repo = _repo(tmp_path)
+    relative_inputs = (
+        "benchmarks/discoverybench_boardgames/runner.py",
+        "benchmarks/discoverybench_boardgames/pilot_manifest.json",
+        "examples/exploration_diagnostic_v1/discoverybench_boardgames/data.csv",
+    )
+    for relative in relative_inputs:
+        source = Path(__file__).resolve().parents[1] / relative
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    subprocess.run(["git", "-C", str(repo), "add", *relative_inputs], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "pin boardgames pilot inputs"], check=True)
+    result = run_v2_explore(_args(
+        repo, tmp_path / "state", request_id="boardgames-preflight",
+        goal="Is unique strategy count associated with tournament win ratio?",
+        boardgames_task_id="bg-01-strategies-tournament-win",
+        max_iterations=5, deadline_seconds=3600,
+    ))
+    assert result["status"] == "READY_FOR_OWNER_APPROVAL"
+    assert result["live_model_called"] is False
+    conn = sqlite3.connect(Path(result["state_dir"]) / "campaign.sqlite3")
+    try:
+        spec = json.loads(conn.execute("SELECT spec_json FROM campaigns").fetchone()[0])
+        assert spec["budget"]["deadline_seconds"] == 3600
+    finally:
+        conn.close()
+
+
+def test_active_campaign_deadline_is_persisted_once_and_tamper_evident(tmp_path):
+    state = tmp_path / "campaign-state"
+    state.mkdir()
+    first = _campaign_deadline(
+        state, campaign_id="c-deadline", spec_hash="a" * 64,
+        time_limit_seconds=3600,
+    )
+    second = _campaign_deadline(
+        state, campaign_id="c-deadline", spec_hash="a" * 64,
+        time_limit_seconds=3600,
+    )
+    assert first == second
+    record_path = state / "campaign-run-deadline.json"
+    record = json.loads(record_path.read_text())
+    record["deadline_epoch"] += 1
+    record_path.write_text(json.dumps(record))
+    with pytest.raises(V2CampaignCLIError, match="deadline record is invalid"):
+        _campaign_deadline(
+            state, campaign_id="c-deadline", spec_hash="a" * 64,
+            time_limit_seconds=3600,
+        )

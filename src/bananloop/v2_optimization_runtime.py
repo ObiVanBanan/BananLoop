@@ -1135,6 +1135,16 @@ class V2OptimizationRuntime:
         spec = self.graph.campaign_spec()
         authority = EvaluatorProtocolAuthority(self.graph.conn)
         proposal, _ = authority.approved_protocol(spec.evaluation.approval_digest)
+        if not any(item.tier == "holdout" for item in proposal.protocol.tiers):
+            # Public-only evaluators (for example a Harbor validation MCP
+            # service) must never be relabeled as HOLDOUT. Record the explicit
+            # absence in the owner report without dispatching another evaluator
+            # job or touching Harbor's private verifier.
+            return {
+                "status": "NOT_CONFIGURED", "tier": "holdout",
+                "protocol_digest": proposal.protocol.content_digest(),
+                "reason": "The independently approved evaluator protocol has no HOLDOUT tier; none was run.",
+            }
         source_snapshot_id = proposal.protocol.source_snapshot_id
         champion_service = ChampionPromotionService(self.graph.conn, authority)
         try:
@@ -1273,7 +1283,7 @@ class V2OptimizationRuntime:
         )
         result["report_markdown_path"] = str(markdown_target)
         if spec.parent is not None:
-            from .registry import CampaignRegistry
+            from .registry import CampaignRegistry, RegistryError
 
             source_repo = Path(spec.source_repo)
             # The worker queue points at the exact project registry selected by
@@ -1282,9 +1292,22 @@ class V2OptimizationRuntime:
             # same durable campaign store as this child.
             registry_root = Path(self.queue.path).resolve().parent
             registry_paths = RuntimePaths.for_repo(source_repo, registry_root)
-            parent_state, _ = CampaignRegistry(source_repo, paths=registry_paths).resolve_readonly(
-                spec.parent.parent_campaign_id,
-            )
+            parent_campaign_id = spec.parent.parent_campaign_id
+            try:
+                parent_state, _ = CampaignRegistry(
+                    source_repo, paths=registry_paths,
+                ).resolve_readonly(parent_campaign_id)
+            except RegistryError:
+                # Direct runtime integrations can place the child queue outside
+                # the project registry (for example, a prepared benchmark
+                # campaign). Preserve the CLI-selected registry as first choice,
+                # then resolve an existing parent from the repository default.
+                default_paths = RuntimePaths.for_repo(source_repo)
+                if default_paths.root == registry_paths.root:
+                    raise
+                parent_state, _ = CampaignRegistry(
+                    source_repo, paths=default_paths,
+                ).resolve_readonly(parent_campaign_id)
             parent_db = parent_state / "campaign.sqlite3"
             parent_provider_calls = []
             verifier_row = None

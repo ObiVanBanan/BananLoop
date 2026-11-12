@@ -1,0 +1,80 @@
+# Board Games 10-question diagnostic pilot
+
+This is an operator-composed set of ten distinct, reproducible questions over the public 500-row, 42-column Board Games sample. Only `bg-01` corresponds to the upstream public DiscoveryBench question (qid 10). The other nine are explicitly pilot questions derived from available columns; this is **not** ten official DiscoveryBench tasks and none of the results is an official DiscoveryBench score. The upstream repository and answers are public, so this dataset is not sealed.
+
+The immutable source revision, local CSV SHA-256, question text, variable names, pilot versions, and statistical criteria are recorded in `pilot_manifest.json`. Each task uses pairwise-complete rows, Spearman rank correlation with average ranks for ties, and a paired row-bootstrap 95% interval with 10,000 draws and seed `20261111`. An interval crossing zero is reported as inconclusive. The report must state that correlation does not establish causality.
+
+For a BananLoop campaign, pass `--boardgames-task-id`. The Researcher selects a registered `experiment_id`; Core runs the selected analysis, hashes the JSON output, and records a Core generated research finding. The next iteration receives that finding and evidence ID from the durable Research Ledger. A completed analysis ID is removed from the next iteration's offered catalog and cannot be run twice in the same campaign. Five registered analyses fit the one-hour, five-iteration pilot cap.
+
+Example one-task live smoke after the code and pilot inputs are committed:
+
+```bash
+uv run bananloop v2 explore \
+  --repo "$PWD" \
+  --state-dir "$HOME/bananloop-state/boardgames-pilot" \
+  --request-id bg-01-smoke-v1 \
+  --goal "Is the number of unique strategies developed associated with tournament win ratio?" \
+  --read-path examples/exploration_diagnostic_v1/discoverybench_boardgames/TASK.md \
+  --read-path examples/exploration_diagnostic_v1/discoverybench_boardgames/README.md \
+  --read-path benchmarks/discoverybench_boardgames/pilot_manifest.json \
+  --boardgames-task-id bg-01-strategies-tournament-win \
+  --model gpt-6-luna \
+  --max-agent-calls 8 \
+  --max-model-tokens 2048 \
+  --max-iterations 5 \
+  --deadline-seconds 3600 \
+  --timeout-seconds 300 \
+  --approve-up-to-calls 6
+```
+
+The campaign's one-hour clock starts on the first approved run and persists across resume. Each model request is shortened to the remaining time; no request is started after expiry.
+
+The standalone runner executes the registered statistic and emits a content-addressed JSON result:
+
+```bash
+python benchmarks/discoverybench_boardgames/runner.py \
+  --task-id bg-01-strategies-tournament-win \
+  --analysis-id primary_association \
+  --bootstrap-resamples 10000 \
+  --out /tmp/bg-01-result.json
+```
+
+The runner has been exercised against all ten task definitions. Offline v2 runtime coverage confirms the selected result is persisted and cited by the following research iteration.
+
+Run the ten-question series sequentially after the pilot code and inputs are
+committed:
+
+```bash
+python benchmarks/discoverybench_boardgames/series_runner.py \
+  --repo "$PWD" \
+  --series-dir "$HOME/bananloop-state/boardgames-10-pilot" \
+  --run-id boardgames-10-2026-11-12 \
+  --cli "uv run bananloop" \
+  --model gpt-6-luna \
+  --max-agent-calls 8 \
+  --max-model-tokens 2048 \
+  --approve-up-to-calls 5
+```
+
+It writes `series.json` plus stdout, stderr, and result JSON for each task. The
+series continues after a task error. A zero exit code with a pending verifier or
+exhausted call allowance is recorded as incomplete; reaching five iterations is
+recorded as a limit stop, not a scientific success. Interrupted ambiguous tasks
+are not automatically replayed. Per-task states, token usage, and model-call
+counts remain visible in the aggregate report.
+
+## Live pilot attempts
+
+An earlier code revision (`7a1a57639122497286479815115514adf82244a1`) was used for
+13 live campaign attempts across the ten questions. It dispatched 39 model calls
+and persisted 31 registered analyses. Three campaigns reached the five-iteration
+limit (`bg-01`, `bg-06`, `bg-09`); the other task groups stopped on schema,
+evidence-provenance, or budget errors. This is partial execution, not ten
+successful campaigns and not an official DiscoveryBench score. Reported provider
+usage totals were 193,031 tokens; one zero-call failed attempt had unknown usage.
+
+The review archive is `/tmp/bananloop-run-review-2026-11-12-updated.zip` (982,020
+bytes). It contains the traces and per-attempt diagnostics. The current isolated
+work copy has additional code changes that were not included in that archive, so
+the archived results do not verify the current uncommitted tree. Rerun the pilot
+after freezing the current code and benchmark inputs in a local commit.

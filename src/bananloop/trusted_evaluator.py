@@ -185,7 +185,7 @@ def _case_protocol_digest(protocol: EvaluatorProtocolV1) -> str:
     in ``content_digest``. Excluding only ``tiers`` avoids a recursive hash
     while keeping the manifest bound to the evaluator, metric and semantics.
     """
-    payload = protocol.model_dump(mode="json")
+    payload = protocol.model_dump(mode="json", exclude_none=True)
     payload.pop("tiers", None)
     return _digest(payload)
 
@@ -469,6 +469,8 @@ class TrustedEvaluatorRunner:
     hosts where Linux namespaces/bubblewrap are unavailable.
     """
 
+    backend_id = "trusted-local"
+
     def __init__(self, *, bwrap_binary: str | None = None):
         self.bwrap_binary = bwrap_binary or shutil.which("bwrap") or ""
 
@@ -740,13 +742,21 @@ class TrustedEvaluatorAdapter:
     _RESULT_SCHEMA = "trusted-evaluator-execution-v1"
 
     def __init__(self, *, graph: Any, queue: Any, campaign_id: str,
-                 state_root: str | Path, runner: TrustedEvaluatorRunner | None = None):
+                 state_root: str | Path, runner: Any | None = None):
         self.graph = graph
         self.queue = queue
         self.campaign_id = campaign_id
         self.graph.bind_campaign_id(campaign_id)
         self.state_root = Path(state_root).resolve()
         self.runner = runner or TrustedEvaluatorRunner()
+
+    def _require_execution_backend(self, protocol: EvaluatorProtocolV1) -> None:
+        """Bind runner behavior to the independently approved protocol identity."""
+        pinned_backend = protocol.execution_backend_id or "trusted-local"
+        if getattr(self.runner, "backend_id", None) != pinned_backend:
+            raise TrustedEvaluatorError(
+                "evaluator execution backend does not match the approved protocol",
+            )
 
     def enqueue_repeatability(self, *, candidate_snapshot_id: str,
                               tier: Literal["dev", "validation", "holdout"] = "dev") -> tuple[str, ...]:
@@ -771,6 +781,7 @@ class TrustedEvaluatorAdapter:
         if (protocol.content_digest() != reference.content_sha256
                 or protocol.repeatability_runs < 2):
             raise TrustedEvaluatorError("Optimization protocol approval is stale or malformed")
+        self._require_execution_backend(protocol)
         tier_ref = next((item for item in protocol.tiers if item.tier == tier), None)
         if tier_ref is None:
             raise TrustedEvaluatorError("requested evaluator tier is not frozen in the approved protocol")
@@ -837,6 +848,7 @@ class TrustedEvaluatorAdapter:
         protocol = proposal.protocol
         if protocol.content_digest() != request.get("protocol_digest"):
             raise TrustedEvaluatorError("evaluator protocol bytes changed after enqueue")
+        self._require_execution_backend(protocol)
         tier = request.get("tier")
         tier_ref = next((item for item in protocol.tiers if item.tier == tier), None)
         if tier_ref is None or tier_ref.manifest_sha256 != request.get("tier_manifest_sha256"):

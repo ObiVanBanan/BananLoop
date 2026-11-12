@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
+import math
 import os
 import re
 import sqlite3
 import subprocess
+import time
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -36,13 +39,22 @@ class V2CampaignCLIError(ValueError):
     """A v2 campaign could not be safely prepared or advanced."""
 
 
-def _required_optimization_evaluator_calls(repeatability_runs: int) -> int:
-    """Minimum evaluator jobs for one candidate to reach a final report."""
+def _required_optimization_evaluator_calls(
+    repeatability_runs: int, *, has_holdout: bool = True,
+) -> int:
+    """Minimum evaluator jobs for one candidate lifecycle.
+
+    A public-only protocol uses DEV plus baseline/candidate VALIDATION and must
+    not synthesize or invoke a HOLDOUT tier. Existing sealed protocols retain
+    their final HOLDOUT reservation by default.
+    """
     if (isinstance(repeatability_runs, bool) or not isinstance(repeatability_runs, int)
             or not 2 <= repeatability_runs <= 10):
         raise V2CampaignCLIError("approved protocol repeatability count is invalid")
-    # Candidate DEV, baseline/candidate VALIDATION, final champion HOLDOUT.
-    return 4 * repeatability_runs
+    if not isinstance(has_holdout, bool):
+        raise V2CampaignCLIError("approved protocol HOLDOUT declaration is invalid")
+    # Candidate DEV, baseline/candidate VALIDATION, optional final HOLDOUT.
+    return (3 + int(has_holdout)) * repeatability_runs
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -85,10 +97,81 @@ def _read_paths(repo: Path, paths: list[str]) -> tuple[str, ...]:
     return tuple(sorted(normalized))
 
 
+def _require_committed_pilot_inputs(repo: Path, paths: tuple[str, ...]) -> None:
+    """Prevent executing mutable benchmark code/data outside the frozen Git base."""
+    for relative in paths:
+        candidate = repo / relative
+        if (candidate.is_symlink() or not candidate.is_file()
+                or not candidate.resolve().is_relative_to(repo)):
+            raise V2CampaignCLIError(f"registered pilot input is missing or unsafe: {relative}")
+        try:
+            committed = subprocess.check_output(
+                ["git", "-C", str(repo), "show", f"HEAD:{relative}"],
+                stderr=subprocess.PIPE,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise V2CampaignCLIError(f"registered pilot input is not in the frozen Git base: {relative}") from exc
+        if candidate.read_bytes() != committed:
+            raise V2CampaignCLIError(f"registered pilot input differs from the frozen Git base: {relative}")
+
+
+def _campaign_deadline(state_root: Path, *, campaign_id: str, spec_hash: str,
+                       time_limit_seconds: int) -> float:
+    """Create once and reuse the active-run deadline across campaign resumes."""
+    target = state_root / "campaign-run-deadline.json"
+    if target.is_symlink():
+        raise V2CampaignCLIError("campaign deadline record is a symlink")
+    if target.exists():
+        try:
+            record = json.loads(target.read_text(encoding="utf-8"))
+            if (record.get("schema") != "bananloop-campaign-deadline-v1"
+                    or record.get("campaign_id") != campaign_id
+                    or record.get("spec_hash") != spec_hash
+                    or record.get("time_limit_seconds") != time_limit_seconds
+                    or isinstance(record.get("started_epoch"), bool)
+                    or not isinstance(record.get("started_epoch"), (float, int))
+                    or isinstance(record.get("deadline_epoch"), bool)
+                    or not isinstance(record.get("deadline_epoch"), (float, int))
+                    or not math.isfinite(float(record["started_epoch"]))
+                    or not math.isfinite(float(record["deadline_epoch"]))
+                    or float(record["deadline_epoch"]) != float(record["started_epoch"]) + time_limit_seconds):
+                raise ValueError
+            return float(record["deadline_epoch"])
+        except Exception as exc:
+            raise V2CampaignCLIError("persisted campaign deadline record is invalid") from exc
+    started = time.time()
+    record = {
+        "schema": "bananloop-campaign-deadline-v1", "campaign_id": campaign_id,
+        "spec_hash": spec_hash, "time_limit_seconds": time_limit_seconds,
+        "started_epoch": started, "deadline_epoch": started + time_limit_seconds,
+    }
+    raw = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    try:
+        descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return _campaign_deadline(
+            state_root, campaign_id=campaign_id, spec_hash=spec_hash,
+            time_limit_seconds=time_limit_seconds,
+        )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except Exception:
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        raise
+    return float(record["deadline_epoch"])
+
+
 def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
                 max_agent_calls: int, max_model_tokens: int, model: str,
                 max_evaluator_calls: int = 16,
                 max_iterations: int = 2,
+                deadline_seconds: int = 3600,
                 optimization_write_paths: tuple[str, ...] = (),
                 evaluator_fixture_digest: str | None = None):
     if max_agent_calls < 4:
@@ -175,6 +258,7 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
         "budget": {
             "max_agent_calls": max_agent_calls,
             "max_evaluator_calls": max_evaluator_calls,
+            "deadline_seconds": deadline_seconds,
             "max_model_tokens": max_agent_calls * max_model_tokens,
         },
         "role_registry_digest": roles.digest(), "evaluation": None,
@@ -254,6 +338,97 @@ def _persist_role_registry(state_root: Path, roles: RoleRegistryV1) -> Path:
     temporary.write_text(encoded, encoding="utf-8")
     os.replace(temporary, target)
     return target
+
+
+def _stage_protocol_review_attestation(
+    *, repo: Path, state_root: Path, spec_hash: str, requested_path: str | None,
+) -> tuple[str, ...]:
+    """Pin an owner-selected public benchmark attestation for verifier context."""
+    from urllib.parse import urlparse
+
+    evidence_root = state_root / "rpdi05"
+    published_root = evidence_root / "published"
+    record_path = evidence_root / "trusted-public-review-evidence.json"
+    evidence_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    published_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    requested_digest = None
+    if requested_path:
+        supplied = Path(requested_path).expanduser()
+        source = supplied.resolve() if supplied.is_absolute() else (repo / supplied).resolve()
+        if supplied.is_symlink() or not source.is_relative_to(repo.resolve()) or not source.is_file():
+            raise V2CampaignCLIError("protocol review attestation must be a regular file inside --repo")
+        raw = source.read_bytes()
+        if len(raw) > 4096:
+            raise V2CampaignCLIError("protocol review attestation exceeds the 4 KiB bound")
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError):
+            raise V2CampaignCLIError("protocol review attestation must be UTF-8 JSON") from None
+        if not isinstance(payload, dict) or payload.get("schema") != "public-evaluator-attestation-v1":
+            raise V2CampaignCLIError("protocol review attestation has an unsupported schema")
+        sources = payload.get("sources")
+        if not isinstance(payload.get("summary"), str) or not payload["summary"].strip() or not isinstance(sources, list) or not sources:
+            raise V2CampaignCLIError("protocol review attestation lacks summary or pinned sources")
+        for item in sources:
+            if not isinstance(item, dict):
+                raise V2CampaignCLIError("protocol review attestation source record is malformed")
+            source_url = item.get("url")
+            parsed = urlparse(source_url) if isinstance(source_url, str) else None
+            if (parsed is None or parsed.scheme != "https"
+                    or parsed.hostname not in {"github.com", "raw.githubusercontent.com"}
+                    or not parsed.path.startswith("/bespokelabsai/")
+                    or not isinstance(item.get("commit"), str)
+                    or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", item["commit"])
+                    or not isinstance(item.get("sha256"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"])):
+                raise V2CampaignCLIError("protocol review attestation must pin official immutable source bytes")
+        requested_digest = hashlib.sha256(raw).hexdigest()
+        asset_path = published_root / requested_digest
+        if asset_path.is_symlink():
+            raise V2CampaignCLIError("protocol review attestation artifact is unsafe")
+        if asset_path.exists():
+            if not asset_path.is_file() or hashlib.sha256(asset_path.read_bytes()).hexdigest() != requested_digest:
+                raise V2CampaignCLIError("persisted protocol review attestation failed integrity check")
+        else:
+            asset_path.write_bytes(raw)
+            asset_path.chmod(0o400)
+
+    existing = None
+    if record_path.exists():
+        if record_path.is_symlink() or not record_path.is_file():
+            raise V2CampaignCLIError("persisted protocol review evidence record is unsafe")
+        try:
+            existing = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            raise V2CampaignCLIError("persisted protocol review evidence record is invalid") from None
+        if (not isinstance(existing, dict)
+                or existing.get("schema") != "trusted-public-review-evidence-v1"
+                or existing.get("spec_hash") != spec_hash
+                or not isinstance(existing.get("digests"), list)
+                or any(not isinstance(item, str) or not re.fullmatch(r"[0-9a-f]{64}", item)
+                       for item in existing["digests"])):
+            raise V2CampaignCLIError("persisted protocol review evidence differs from the frozen campaign")
+    previous = tuple(existing["digests"]) if existing else ()
+    if requested_digest and previous and previous != (requested_digest,):
+        raise V2CampaignCLIError("protocol review attestation changed after the campaign was frozen")
+    digests = previous or ((requested_digest,) if requested_digest else ())
+    if digests and existing is None:
+        encoded = json.dumps({
+            "schema": "trusted-public-review-evidence-v1",
+            "spec_hash": spec_hash,
+            "digests": list(digests),
+        }, sort_keys=True, separators=(",", ":")) + "\n"
+        temporary = record_path.with_suffix(".json.tmp")
+        temporary.write_text(encoded, encoding="utf-8")
+        os.replace(temporary, record_path)
+        record_path.chmod(0o400)
+    for digest in digests:
+        asset_path = published_root / digest
+        if (asset_path.is_symlink() or not asset_path.is_file()
+                or hashlib.sha256(asset_path.read_bytes()).hexdigest() != digest):
+            raise V2CampaignCLIError("trusted public protocol-review evidence is missing or changed")
+    return digests
 
 
 def _selected_optimization_task(*, proposal: Any, graph: GraphRepository,
@@ -428,14 +603,15 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
     }
     payload["budget"]["max_agent_calls"] = child_calls
     # One supervised pivot currently represents one candidate experiment. Fund
-    # its complete trusted lifecycle: candidate DEV, baseline VALIDATION,
-    # candidate VALIDATION, and final champion HOLDOUT. Each receipt requires
-    # the repeatability count fixed by the independently approved protocol.
+    # its complete trusted lifecycle: candidate DEV and baseline/candidate
+    # VALIDATION, plus HOLDOUT only when the frozen protocol defines that tier.
+    # Each receipt requires the protocol's fixed repeatability count.
     # The scheduler records the Optimization task itself and the single
     # candidate as separate experiment work, so reserve two slots here.
     payload["budget"]["max_experiments"] = 2
+    has_holdout = any(item.tier == "holdout" for item in proposal.protocol.tiers)
     required_evaluator_calls = _required_optimization_evaluator_calls(
-        proposal.protocol.repeatability_runs,
+        proposal.protocol.repeatability_runs, has_holdout=has_holdout,
     )
     if parent_spec.budget.max_evaluator_calls < required_evaluator_calls:
         raise V2CampaignCLIError(
@@ -542,7 +718,8 @@ def _complete_pending_protocol_reviews(*, graph: GraphRepository, queue: Durable
                                        campaign_id: str, published_root: Path,
                                        auth: ChatGPTPlanAuth, model: str, timeout_seconds: int,
                                        remaining_calls: int,
-                                       call_observer: Any) -> dict[str, Any]:
+                                       call_observer: Any,
+                                       trusted_public_evidence_digests: tuple[str, ...] = ()) -> dict[str, Any]:
     """Recover proposal records and spend only the explicitly available verifier calls."""
     from .evaluator_verification import EvaluatorProtocolAuthority, EvaluatorVerificationAdapter
 
@@ -563,6 +740,7 @@ def _complete_pending_protocol_reviews(*, graph: GraphRepository, queue: Durable
     adapter = EvaluatorVerificationAdapter(
         graph=graph, queue=queue, campaign_id=campaign_id,
         published_artifact_root=published_root,
+        trusted_public_evidence_digests=trusted_public_evidence_digests,
     )
     verifier = ChatGPTPlanProtocolVerifier(
         auth, approved_model=model, timeout_seconds=timeout_seconds,
@@ -681,6 +859,8 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             or isinstance(getattr(args, "max_evaluator_calls", 16), bool)
             or not 1 <= getattr(args, "max_evaluator_calls", 16) <= 1000
             or isinstance(args.max_model_tokens, bool) or not 1 <= args.max_model_tokens <= 100_000
+            or isinstance(getattr(args, "deadline_seconds", 3600), bool)
+            or not 1 <= getattr(args, "deadline_seconds", 3600) <= 86_400
             or isinstance(args.approve_up_to_calls, bool)
             or not 0 <= args.approve_up_to_calls <= args.max_agent_calls
             or isinstance(args.max_iterations, bool) or not 1 <= args.max_iterations <= 100
@@ -693,6 +873,34 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
     if not repo.is_dir() or repo.is_symlink():
         raise V2CampaignCLIError("--repo must be a real local Git repository directory")
     paths = _read_paths(repo, args.read_path)
+    experiment_executor = None
+    experiment_catalog: tuple[dict[str, str], ...] = ()
+    boardgames_task_id = getattr(args, "boardgames_task_id", None)
+    if boardgames_task_id is not None:
+        if args.max_iterations > 5 or getattr(args, "deadline_seconds", 3600) > 3600:
+            raise V2CampaignCLIError(
+                "Board Games pilot is capped at five iterations and one hour per campaign"
+            )
+        _require_committed_pilot_inputs(repo, (
+            "benchmarks/discoverybench_boardgames/runner.py",
+            "benchmarks/discoverybench_boardgames/pilot_manifest.json",
+            "examples/exploration_diagnostic_v1/discoverybench_boardgames/data.csv",
+        ))
+        runner_path = repo / "benchmarks" / "discoverybench_boardgames" / "runner.py"
+        if runner_path.is_symlink() or not runner_path.is_file() or not runner_path.resolve().is_relative_to(repo):
+            raise V2CampaignCLIError("registered Board Games experiment runner is missing or unsafe")
+        runner_spec = importlib.util.spec_from_file_location(
+            "bananloop_boardgames_registered_runner", runner_path,
+        )
+        if runner_spec is None or runner_spec.loader is None:
+            raise V2CampaignCLIError("registered Board Games experiment runner cannot be loaded")
+        runner_module = importlib.util.module_from_spec(runner_spec)
+        runner_spec.loader.exec_module(runner_module)
+        try:
+            experiment_executor = runner_module.BoardGamesExperimentExecutor(repo, boardgames_task_id)
+        except (OSError, ValueError) as exc:
+            raise V2CampaignCLIError(f"--boardgames-task-id is invalid: {exc}") from exc
+        experiment_catalog = experiment_executor.catalog
     requested_write_paths = list(getattr(args, "optimization_write_path", ()) or ())
     write_paths = _read_paths(repo, requested_write_paths) if requested_write_paths else ()
     if not set(write_paths) <= set(paths):
@@ -709,6 +917,7 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
         max_model_tokens=args.max_model_tokens, model=args.model,
         max_evaluator_calls=getattr(args, "max_evaluator_calls", 16),
         max_iterations=args.max_iterations,
+        deadline_seconds=getattr(args, "deadline_seconds", 3600),
         optimization_write_paths=write_paths,
         evaluator_fixture_digest=fixture.content_digest() if fixture else None,
     )
@@ -719,6 +928,10 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
     entry, state_root, _created = registry.reserve(goal, args.request_id, activate=False)
     database = state_root / "campaign.sqlite3"
     _initialize_campaign(database, spec)
+    trusted_public_evidence_digests = _stage_protocol_review_attestation(
+        repo=repo, state_root=state_root, spec_hash=spec.approved_hash(),
+        requested_path=getattr(args, "protocol_review_attestation", None),
+    )
     if fixture is not None:
         fixture_bytes = fixture.canonical_bytes()
         fixture_digest = fixture.content_digest()
@@ -787,6 +1000,7 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
                 "spec_hash": spec.approved_hash(), "base_commit": spec.base_commit,
                 "read_paths": list(paths), "state_dir": str(state_root),
                 "role_registry_path": str(roles_path),
+                "protocol_review_evidence_digests": list(trusted_public_evidence_digests),
                 "live_model_called": False,
             }
 
@@ -812,11 +1026,17 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             researcher.check_model()
         except SIWCError as exc:
             raise V2CampaignCLIError(str(exc)) from exc
+        deadline_epoch = _campaign_deadline(
+            state_root, campaign_id=entry.campaign_id, spec_hash=spec.approved_hash(),
+            time_limit_seconds=spec.budget.deadline_seconds,
+        )
+        runtime.adapter.campaign_deadline_epoch = deadline_epoch
         try:
             verifier_calls = 0
             reviews_before = _complete_pending_protocol_reviews(
                 graph=graph, queue=queue, campaign_id=entry.campaign_id,
                 published_root=state_root / "rpdi05" / "published", auth=auth,
+                trusted_public_evidence_digests=trusted_public_evidence_digests,
                 model=args.model, timeout_seconds=args.timeout_seconds,
                 remaining_calls=args.approve_up_to_calls,
                 call_observer=lambda receipt: observe_call("independent_verifier", receipt),
@@ -842,6 +1062,8 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
                                 intent, source_snapshot_id=source,
                             )) if fixture else None
                         ),
+                        experiment_executor=experiment_executor,
+                        experiment_catalog=experiment_catalog,
                     ),
                     max_iterations=iterations,
                 )
@@ -863,6 +1085,7 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             reviews_after = _complete_pending_protocol_reviews(
                 graph=graph, queue=queue, campaign_id=entry.campaign_id,
                 published_root=state_root / "rpdi05" / "published", auth=auth,
+                trusted_public_evidence_digests=trusted_public_evidence_digests,
                 model=args.model, timeout_seconds=args.timeout_seconds,
                 remaining_calls=max(0, args.approve_up_to_calls - verifier_calls - researcher_calls),
                 call_observer=lambda receipt: observe_call("independent_verifier", receipt),
@@ -906,6 +1129,7 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             "spec_hash": spec.approved_hash(), "base_commit": spec.base_commit,
             "read_paths": list(paths), "optimization_write_paths": list(write_paths),
             "role_registry_path": str(roles_path), "state_dir": str(state_root),
+            "protocol_review_evidence_digests": list(trusted_public_evidence_digests),
             "provider": "chatgpt_plan", "model": args.model,
             "live_model_called": any(item.get("dispatched") for item in call_history),
             "usage": _aggregate_reported_usage(call_history),

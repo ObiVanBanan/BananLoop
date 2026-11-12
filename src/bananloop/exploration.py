@@ -144,13 +144,20 @@ class EvidenceOnlyAttemptAdapter:
 
     def __init__(self, *, graph: GraphRepository, queue: DurableWorkerQueue,
                  campaign_id: str, state_root: str | Path, role_registry: RoleRegistryV1,
-                 trusted_artifact_digests: tuple[str, ...] = ()):
+                 trusted_artifact_digests: tuple[str, ...] = (),
+                 campaign_deadline_epoch: float | None = None):
         self.graph = graph
         self.queue = queue
         self.campaign_id = campaign_id
         self.graph.bind_campaign_id(campaign_id)
         self.state_root = Path(state_root).resolve()
         self.role_registry = role_registry
+        if (campaign_deadline_epoch is not None
+                and (isinstance(campaign_deadline_epoch, bool)
+                     or not isinstance(campaign_deadline_epoch, (int, float))
+                     or not 0 < campaign_deadline_epoch < float("inf"))):
+            raise EvidenceAdapterError("campaign deadline must be a finite absolute epoch")
+        self.campaign_deadline_epoch = campaign_deadline_epoch
         if (len(trusted_artifact_digests) > 4096
                 or any(not isinstance(item, str) or not re.fullmatch(r"[0-9a-f]{64}", item)
                        for item in trusted_artifact_digests)
@@ -392,6 +399,8 @@ class EvidenceOnlyAttemptAdapter:
                    "role_context": role_context.model_dump(mode="json", exclude_unset=True),
                    "team_manifest_digest": team_manifest.manifest_digest,
                    "role_registry_digest": team_manifest.registry_digest}
+        if self.campaign_deadline_epoch is not None:
+            request["campaign_deadline_epoch"] = float(self.campaign_deadline_epoch)
         resource_bounds = {"agent_calls": 1}
         if spec.budget.max_model_tokens is not None:
             resource_bounds["model_tokens"] = max(
