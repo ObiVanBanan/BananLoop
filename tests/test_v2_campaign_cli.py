@@ -104,6 +104,20 @@ def test_failure_diagnostics_report_schema_location_without_echoing_model_input(
     assert all("private" not in json.dumps(item) for item in diagnostics)
 
 
+def test_failure_diagnostics_include_fixed_core_runtime_contract_message():
+    from bananloop.v2_research_runtime import V2RuntimeError
+
+    diagnostics = _safe_failure_diagnostics(
+        V2RuntimeError("researcher must select exactly one registered experiment_id"),
+    )
+    assert diagnostics == [{
+        "location": [],
+        "type": "v2_runtime_contract",
+        "message": "researcher must select exactly one registered experiment_id",
+    }]
+    assert "model response" not in json.dumps(diagnostics)
+
+
 def _args(repo, state_dir, **overrides):
     values = {
         "repo": str(repo), "state_dir": str(state_dir), "request_id": "owner-request-1",

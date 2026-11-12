@@ -31,7 +31,7 @@ from .migrations import create_v5_graph_schema
 from .registry import CampaignRegistry
 from .roles import RoleDefinitionV1, RoleRegistryV1, TeamManifestAuthority
 from .capabilities import CapabilityPolicyV2
-from .v2_research_runtime import V2ResearchRuntime, make_researcher_invoke
+from .v2_research_runtime import V2ResearchRuntime, V2RuntimeError, make_researcher_invoke
 from .worker_queue import DurableWorkerQueue
 
 
@@ -843,6 +843,11 @@ def _aggregate_reported_usage(call_history: list[dict[str, Any]]) -> dict[str, i
 
 def _safe_failure_diagnostics(exc: Exception) -> list[dict[str, Any]]:
     """Return schema locations/messages without copying untrusted response values."""
+    if isinstance(exc, V2RuntimeError):
+        # V2RuntimeError messages are fixed Core contract failures; they never
+        # interpolate model-authored text, source contents, or provider bodies.
+        return [{"location": [], "type": "v2_runtime_contract",
+                 "message": str(exc)[:400]}]
     errors = getattr(exc, "errors", None)
     if not callable(errors):
         return []
