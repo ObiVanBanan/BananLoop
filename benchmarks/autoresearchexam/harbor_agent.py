@@ -35,8 +35,10 @@ from .sopcc_runner import AREPublicSOPCCEvaluatorRunner
 from .carps_runner import AREPublicCARPSEvaluatorRunner
 from .dctabeval_runner import AREPublicDCTABEvalEvaluatorRunner
 from .shortest_ci_runner import AREPublicShortestCIEvaluatorRunner
+from .sketched_newton_runner import AREPublicSketchedNewtonEvaluatorRunner
 from .public_sopcc_dev import run_public_sopcc_dev
 from .public_shortest_ci_dev import run_public_shortest_ci_dev
+from .public_sketched_newton_dev import run_public_newton_dev
 from .public_mcp_contract import validate_public_mcp_contract
 from .public_grader import PublicAREGrader
 from .public_devkit import run_public_devkit
@@ -54,9 +56,11 @@ _DCTAB_PUBLIC_OUTPUT = "/app/output/solution.py"
 _DCTAB_CANDIDATE_PATH = "benchmarks/autoresearchexam/solutions/dctabeval/solution.py"
 _SHORTEST_CI_PUBLIC_OUTPUT = "/app/output/interval.py"
 _SHORTEST_CI_CANDIDATE_PATH = "benchmarks/autoresearchexam/solutions/shortest_valid_ci/interval.py"
+_NEWTON_PUBLIC_OUTPUT = "/app/output/estimator.py"
+_NEWTON_CANDIDATE_PATH = "benchmarks/autoresearchexam/solutions/sketched_newton/estimator.py"
 _PUBLIC_OUTPUT_ALLOWLIST = {
     _PUBLIC_OUTPUT, _SOPCC_PUBLIC_OUTPUT, _CARPS_PUBLIC_OUTPUT,
-    _DCTAB_PUBLIC_OUTPUT, _SHORTEST_CI_PUBLIC_OUTPUT,
+    _DCTAB_PUBLIC_OUTPUT, _SHORTEST_CI_PUBLIC_OUTPUT, _NEWTON_PUBLIC_OUTPUT,
 }
 
 
@@ -155,6 +159,11 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 _SHORTEST_CI_PUBLIC_OUTPUT, AREPublicShortestCIEvaluatorRunner,
                 AREPublicShortestCIEvaluatorRunner.default_dev_cell_count,
             ),
+            "sketched-newton-public-v1": (
+                "sketched-newton-cov-estimator", _NEWTON_CANDIDATE_PATH,
+                _NEWTON_PUBLIC_OUTPUT, AREPublicSketchedNewtonEvaluatorRunner,
+                AREPublicSketchedNewtonEvaluatorRunner.default_dev_cell_count,
+            ),
         }
         if adapter_id not in adapter_specs:
             raise RuntimeError("Harbor bridge adapter_id is not in the pinned allowlist")
@@ -211,7 +220,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         expected_image_id = getattr(runner_type, "default_dev_image_id", None)
         if expected_image_id and raw["public_dev_image_id"] != expected_image_id:
             raise RuntimeError("public DEV image ID differs from the task adapter pin")
-        if adapter_id in {"carps-public-v1", "dctabeval-public-v1"}:
+        if adapter_id in {"carps-public-v1", "dctabeval-public-v1", "sketched-newton-public-v1"}:
             task_root = Path(raw.get("public_task_root", "")).expanduser()
             if task_root.is_symlink() or not task_root.is_dir() or task_root.name != raw["task_id"]:
                 raise RuntimeError("public task root is missing or does not match the adapter task")
@@ -381,6 +390,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 "carps-public-v1": AREPublicCARPSEvaluatorRunner,
                 "dctabeval-public-v1": AREPublicDCTABEvalEvaluatorRunner,
                 "shortest-ci-public-v1": AREPublicShortestCIEvaluatorRunner,
+                "sketched-newton-public-v1": AREPublicSketchedNewtonEvaluatorRunner,
             }
             runner_type = runner_types[adapter_id]
             expected_backend = runner_type.backend_id
@@ -411,6 +421,19 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                         expected_image_id=raw["public_dev_image_id"],
                         timeout_seconds=timeout_seconds,
                     )
+                if adapter_id == "sketched-newton-public-v1":
+                    result = run_public_newton_dev(
+                        candidate,
+                        task_root=Path(raw["public_task_root"]),
+                        image=raw["public_dev_image"],
+                        expected_image_id=raw["public_dev_image_id"],
+                        timeout_seconds=min(1200, timeout_seconds),
+                    )
+                    return {
+                        "status": result["status"],
+                        "dev_score": result["metric"],
+                        "dev_cells": result["panel_count"],
+                    }
                 return run_public_devkit(
                     candidate,
                     image=raw["public_dev_image"],
@@ -453,6 +476,13 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                     total_dev_timeout_seconds=raw.get("public_dev_timeout_seconds", 180),
                 )
             if adapter_id == "dctabeval-public-v1":
+                return runner_type(
+                    **common,
+                    source_task_root=Path(raw["public_task_root"]),
+                    dev_image=raw["public_dev_image"],
+                    dev_image_id=raw["public_dev_image_id"],
+                )
+            if adapter_id == "sketched-newton-public-v1":
                 return runner_type(
                     **common,
                     source_task_root=Path(raw["public_task_root"]),
