@@ -240,7 +240,9 @@ class AREPublicEvaluatorRunner:
     @staticmethod
     def _public_score(public_result: Mapping[str, Any]) -> float:
         score = public_result.get("validation_score")
-        if (public_result.get("status") != "GRADED" or isinstance(score, bool)
+        if (public_result.get("status") != "GRADED"
+                or public_result.get("grader_error") is True
+                or isinstance(score, bool)
                 or not isinstance(score, (int, float)) or not math.isfinite(score)):
             raise TrustedEvaluatorError("public grader result lacks an approved finite score")
         return float(score)

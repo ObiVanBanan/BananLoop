@@ -157,6 +157,13 @@ def test_optimizer_model_timeout_is_bounded_by_outer_task_deadline():
         _task_request_timeout(100.9, 300, now=100.0)
 
 
+def test_public_score_rejects_validation_result_marked_with_grader_error():
+    with pytest.raises(TrustedEvaluatorError, match="approved finite score"):
+        AREPublicEvaluatorRunner._public_score({
+            "status": "GRADED", "validation_score": 0.0, "grader_error": True,
+        })
+
+
 def test_validation_uploads_only_candidate_and_returns_sanitized_public_score(tmp_path):
     calls = []
     next_id = 0

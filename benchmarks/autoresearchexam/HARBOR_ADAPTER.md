@@ -85,7 +85,8 @@ produced.
   MCP contract, host Optimization backend, public grading ledger, and task-container
   MCP client; runtime admission checks these sources against the frozen digests.
   The independent protocol review can inspect score-affecting DEV code, backend
-  dispatch, lowercase MCP status normalization, and public submit/result schemas.
+  dispatch, lowercase MCP status normalization, public submit/result schemas, and
+  fail-closed handling of grader error flags.
   The official validation server remains an externally trusted measurement service,
   not locally source-audited. The builder never
   reads the task's `are-grader-ctx`, private tests, or hidden evaluator.
