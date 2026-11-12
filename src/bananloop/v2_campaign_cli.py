@@ -876,6 +876,23 @@ def _model_token_budget_status(
     }
 
 
+def _protocol_review_terminal_status(
+    *, pending: list[str], reviews: list[dict[str, Any]],
+    approved_protocols: list[dict[str, Any]], has_write_scope: bool,
+) -> str | None:
+    """Derive the owner-facing status from durable verifier receipts."""
+    if pending:
+        return "PROTOCOL_REVIEW_PENDING"
+    if approved_protocols:
+        return (
+            "PROTOCOL_APPROVED_AWAITING_OWNER_PIVOT_DECISION"
+            if has_write_scope else "PROTOCOL_APPROVED_AWAITING_OPTIMIZATION_SCOPE"
+        )
+    if any(item.get("decision") == "REJECT" for item in reviews):
+        return "PROTOCOL_REJECTED"
+    return None
+
+
 def _safe_failure_diagnostics(exc: Exception) -> list[dict[str, Any]]:
     """Return schema locations/messages without copying untrusted response values."""
     if isinstance(exc, V2RuntimeError):
@@ -1145,8 +1162,14 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             )
             result["protocol_reviews"] = reviews_after["reviews"]
             result["pending_protocol_proposals"] = reviews_after["pending_proposal_digests"]
-            if result["pending_protocol_proposals"] and result.get("status") == "ITERATION_LIMIT":
-                result["status"] = "PROTOCOL_REVIEW_PENDING"
+            terminal_protocol_status = _protocol_review_terminal_status(
+                pending=result["pending_protocol_proposals"],
+                reviews=reviews_after["reviews"],
+                approved_protocols=reviews_after["approved_protocols"],
+                has_write_scope=bool(write_paths),
+            )
+            if terminal_protocol_status is not None:
+                result["status"] = terminal_protocol_status
             result["optimization_pivot"] = []
             approval_digests = {
                 item["approval_digest"]
@@ -1161,6 +1184,9 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
                     visible_paths=paths, write_paths=write_paths,
                     approval_digest=approval_digest,
                 ))
+            if any(item.get("status") == "PENDING_OWNER_PIVOT_DECISION"
+                   for item in result["optimization_pivot"]):
+                result["status"] = "PENDING_OWNER_PIVOT_DECISION"
         except Exception as exc:
             token_budget = _model_token_budget_status(
                 call_history, per_call_limit=args.max_model_tokens,

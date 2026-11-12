@@ -21,6 +21,7 @@ from bananloop.registry import CampaignRegistry, RegistryError
 from bananloop.v2_campaign_cli import (
     V2CampaignCLIError, _aggregate_reported_usage, _campaign_deadline,
     _model_token_budget_status,
+    _protocol_review_terminal_status,
     _researcher_input_fields, _stage_protocol_review_attestation,
     _required_optimization_evaluator_calls,
     _safe_failure_diagnostics,
@@ -58,6 +59,22 @@ def test_model_token_budget_keeps_missing_provider_usage_unknown():
     assert status["model_tokens_observed"] is None
     assert status["per_call_model_token_limit_breached"] is None
     assert status["budget_breached"] is False
+
+
+def test_protocol_review_status_matches_durable_approval_or_rejection():
+    assert _protocol_review_terminal_status(
+        pending=[], reviews=[{"decision": "APPROVE"}],
+        approved_protocols=[{"approval_digest": "a" * 64}],
+        has_write_scope=False,
+    ) == "PROTOCOL_APPROVED_AWAITING_OPTIMIZATION_SCOPE"
+    assert _protocol_review_terminal_status(
+        pending=[], reviews=[{"decision": "REJECT"}],
+        approved_protocols=[], has_write_scope=False,
+    ) == "PROTOCOL_REJECTED"
+    assert _protocol_review_terminal_status(
+        pending=["b" * 64], reviews=[], approved_protocols=[],
+        has_write_scope=False,
+    ) == "PROTOCOL_REVIEW_PENDING"
 
 
 def test_protocol_review_attestation_is_pinned_and_reused_from_campaign_state(tmp_path):
