@@ -263,6 +263,13 @@ def make_researcher_invoke(
             call_kwargs["timeout_seconds"] = min(configured_timeout, remaining_seconds)
         raw = model_reply(public_input, **call_kwargs)
         invoke.last_usage = getattr(model_reply, "last_usage", None)
+        if isinstance(raw, dict) and "top-level evidence_refs" in raw:
+            # One legacy prompt wording was occasionally copied as a literal
+            # JSON key. It is not a schema field and carries no authority;
+            # discard only this exact pseudo-alias, leaving all other unknown
+            # keys subject to the strict response contract.
+            raw = {key: value for key, value in raw.items()
+                   if key != "top-level evidence_refs"}
         reply = ResearcherReplyV1.model_validate(raw)
         protocol_draft = reply.protocol_draft
         bound_protocol_artifacts: dict[str, bytes] = {}

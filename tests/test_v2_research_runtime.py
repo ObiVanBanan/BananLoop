@@ -716,6 +716,7 @@ def test_hypothesis_portfolio_ignores_conflicting_redundant_top_level_action(tmp
                 "selected_hypothesis_id": "h2",
                 "next_experiment": "experiment 1",
                 "artifact_text": {"observation.txt": "observation"},
+                "top-level evidence_refs": ["not-a-schema-field"],
                 "research_findings": [{
                     "claim_key": "selected_hypothesis",
                     "statement": "The selected hypothesis has a testable next action.",

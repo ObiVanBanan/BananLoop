@@ -339,7 +339,7 @@ def test_registered_experiment_catalog_is_opt_in_to_researcher_transport(tmp_pat
 def test_research_prompt_states_exact_lowercase_candidate_id_contract():
     assert "^[a-z0-9][a-z0-9_-]{0,79}$" in INSTRUCTIONS
     assert "never H1_mediated_effect" in INSTRUCTIONS
-    assert "top-level evidence_refs " in INSTRUCTIONS
+    assert "optional JSON property named exactly `evidence_refs`" in INSTRUCTIONS
     assert "array of strings only" in INSTRUCTIONS
     assert "Never put claim-key/evidence-ID objects" in INSTRUCTIONS
     assert "ALWAYS return at least one" in INSTRUCTIONS

@@ -139,3 +139,12 @@ started is recorded as unknown. The report contains no specific runtime reason
 yet. Revision `10591b4` now stores only the fixed Core error message for this
 exception type, without model text, so a new clean smoke can identify the
 failing invariant.
+
+The `107555f` smoke completed two Luna calls (13,117 input and 2,801 output
+tokens) and executed `primary_association`. The second response failed strict
+schema validation because it emitted the literal extra key `top-level
+evidence_refs`; nothing from that response was executed. The prompt now names
+the permitted JSON property exactly, and Core discards only that precise
+pseudo-alias before strict validation; all other unknown fields remain rejected.
+Focused tests and the complete offline suite passed with isolated pytest state.
+A new clean acceptance smoke is needed for this last compatibility change.
