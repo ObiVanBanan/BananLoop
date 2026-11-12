@@ -203,10 +203,11 @@ def make_researcher_invoke(
                 + str(request.get("base_commit", ""))
                 + ". Copy this exact value into any requested protocol_draft; do not "
                 "guess or derive a different snapshot ID."
-                + ("\nA trusted evaluator fixture is available. When the campaign asks "
-                   "for an evaluator protocol, return protocol_intent with protocol_id, "
+                + ("\nA trusted evaluator fixture is available. In this first response, "
+                   "you MUST include protocol_intent with protocol_id, "
                    "version, metric_id, metric_field, direction, aggregation, "
-                   "repeatability_runs, and timeout_seconds. Do not return a full "
+                   "repeatability_runs, and timeout_seconds. This is mandatory, not "
+                   "optional. Do not return a full "
                    "protocol_draft, hashes, manifests, evaluator code, or tier inputs; "
                    "Core binds those from the owner-supplied fixture after your response."
                    if protocol_binder is not None else "")

@@ -147,6 +147,8 @@ def test_researcher_intent_is_bound_by_core_after_model_reply_without_asset_cont
 
     assert "private input" not in repr(exposed_inputs)
     assert "trusted evaluator fixture is available" in exposed_inputs[0]["instruction"]
+    assert "you MUST include protocol_intent" in exposed_inputs[0]["instruction"]
+    assert "This is mandatory, not optional" in exposed_inputs[0]["instruction"]
     draft = result["protocol_draft"]
     assert result["protocol_intent"]["protocol_id"] == "live-fixture-test"
     assert draft["protocol"]["protocol_id"] == "live-fixture-test"
