@@ -230,7 +230,15 @@ def make_researcher_invoke(
                 "falsifiable question in next_experiment. Core executes that registered "
                 "analysis and stores the measured result in Research Memory. Do not claim "
                 "a measurement before the result is returned. A completed experiment ID "
-                "cannot be selected again."
+                "cannot be selected again. `experiment_id` is distinct from the hypothesis `id`; "
+                "copy the registered ID exactly (for example, `experiment_id`: "
+                "`primary_association`). Include a currently available registered "
+                "experiment_id on every candidate object, including candidates that cite "
+                "Research Memory. Put the ID on the candidate, not just at the top level. "
+                "A top-level experiment_id is accepted only when Core keeps your selected "
+                "hypothesis. Do not return top-level next_experiment when using a "
+                "hypothesis portfolio; Core uses the selected candidate's next_experiment. "
+                "Do not omit an ID or invent one."
             )
         # The broker controls provider/model selection; worker content cannot.
         invoke.last_usage = None
@@ -322,8 +330,9 @@ def make_researcher_invoke(
                     or reply.selected_hypothesis_id not in ids):
                 raise V2RuntimeError("hypothesis selection must identify one unique portfolio candidate")
             selected = next(item for item in reply.hypotheses if item.id == reply.selected_hypothesis_id)
-            if reply.next_experiment is not None and reply.next_experiment != selected.next_experiment:
-                raise V2RuntimeError("next experiment must match the selected hypothesis candidate")
+            # The selected portfolio item is the canonical action. A redundant
+            # top-level next_experiment can be inconsistent in model output; it
+            # must never override or invalidate the selected candidate.
             claim_evidence: dict[str, set[str]] = {}
             for line in str(role_context.get("dev_summary", "")).splitlines():
                 match = re.match(
@@ -350,10 +359,23 @@ def make_researcher_invoke(
                     evidence_scores[candidate.id] = len(refs)
                 else:
                     evidence_scores[candidate.id] = 0
-            ranked = [item for item in reply.hypotheses if evidence_scores[item.id] > 0]
+            executable_hypotheses = list(reply.hypotheses)
+            if experiment_executor is not None:
+                available_ids = {item["id"] for item in available_experiments}
+                executable_hypotheses = [
+                    item for item in reply.hypotheses
+                    if item.experiment_id in available_ids
+                    or (item.id == reply.selected_hypothesis_id
+                        and reply.experiment_id in available_ids)
+                ]
+                if not executable_hypotheses:
+                    raise V2RuntimeError(
+                        "hypothesis portfolio has no candidate bound to an available registered experiment_id"
+                    )
+            ranked = [item for item in executable_hypotheses if evidence_scores[item.id] > 0]
             if allowed_evidence_refs and not ranked:
                 raise V2RuntimeError(
-                    "later hypothesis portfolio must cite available Research Memory on a candidate"
+                    "later hypothesis portfolio must cite available Research Memory on an executable candidate"
                 )
             if ranked:
                 # Candidate IDs and the model's preferred ID have no quality
@@ -373,11 +395,23 @@ def make_researcher_invoke(
                     "reason": "Highest count of distinct prior public evidence references attached to its exact target claim; tied candidates use a stable content digest.",
                 }
             else:
+                preferred = next(
+                    (item for item in executable_hypotheses
+                     if item.id == reply.selected_hypothesis_id),
+                    None,
+                )
+                selected = preferred or max(executable_hypotheses, key=lambda item: hashlib.sha256(
+                    json.dumps(item.model_dump(mode="json", exclude={"id"}),
+                               sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                    ).encode("utf-8")).hexdigest())
                 selection = {
-                    "method": "RESEARCHER_INITIAL_SELECTION",
+                    "method": ("RESEARCHER_INITIAL_SELECTION" if preferred is not None
+                               else "CORE_EXECUTABLE_HYPOTHESIS"),
                     "selected_hypothesis_id": selected.id,
                     "scores": evidence_scores,
-                    "reason": "No prior evidence was available to rank candidates; researcher preference is advisory for the initial step.",
+                    "reason": ("No prior evidence was available to rank candidates; researcher preference is advisory for the initial step."
+                               if preferred is not None else
+                               "No prior evidence was available; Core selected the only or content-digest-first candidate bound to an available registered experiment."),
                 }
             next_experiment = selected.next_experiment
             portfolio = json.dumps({
@@ -400,6 +434,12 @@ def make_researcher_invoke(
                 # Execute the Core-selected evidence-grounded candidate, not
                 # the Researcher's advisory preferred ID when those differ.
                 chosen_id = selected.experiment_id
+                # Some valid reply shapes put the explicit registered choice
+                # at the top level. Use it only when Core retained the researcher's
+                # selected hypothesis; otherwise it may refer to a rejected candidate.
+                if (chosen_id is None and reply.experiment_id is not None
+                        and selected.id == reply.selected_hypothesis_id):
+                    chosen_id = reply.experiment_id
             else:
                 chosen_id = reply.experiment_id
             allowed_ids = {item["id"] for item in available_experiments}
@@ -453,6 +493,53 @@ def make_researcher_invoke(
             raise V2RuntimeError(
                 "ordinary research response must include at least one evidence-linked finding"
             )
+        limitations = list(reply.limitations)
+        if experiment_executor is not None:
+            # The Researcher responds before Core runs the registered analysis,
+            # so its pre-execution uncertainty can become false within this
+            # same durable job. Keep the trusted measured finding and drop only
+            # claims that categorically say no experiment was executed.
+            def says_no_experiment_ran(value: str) -> bool:
+                lowered = value.casefold()
+                negative = any(marker in lowered for marker in (
+                    "unexecuted", "not executed", "not been executed", "not run",
+                    "has not run", "no experiment was run", "no experiment has run",
+                    "no registered experiment has been executed",
+                    "no registered experiment was executed",
+                    "no statistical experiment was executed",
+                    "no follow-up experiment has been executed",
+                    "no association result can be reported yet",
+                ))
+                generic_claim = any(marker in lowered for marker in (
+                    "no registered experiment", "no statistical experiment",
+                    "no follow-up experiment", "no experiment was", "no experiment has",
+                    "registered experiment remains unexecuted",
+                    "no association result can be reported yet",
+                ))
+                selected_aliases = {
+                    chosen_id.casefold(),
+                    chosen_id.replace("_", " ").casefold(),
+                    chosen_id.replace("_", "-").casefold(),
+                }
+                if chosen_id == "primary_association":
+                    selected_aliases.add("primary association")
+                elif chosen_id == "permutation_test":
+                    selected_aliases.add("permutation test")
+                elif chosen_id == "split_half_robustness":
+                    selected_aliases.update({"split-half", "split half"})
+                elif chosen_id == "outlier_sensitivity":
+                    selected_aliases.add("outlier sensitivity")
+                mentions_selected = any(alias in lowered for alias in selected_aliases)
+                return "experiment" in lowered and negative and (generic_claim or mentions_selected)
+
+            research_findings = [
+                item for item in research_findings
+                if not says_no_experiment_ran(str(item.get("statement", "")))
+            ]
+            limitations = [
+                item for item in limitations
+                if not says_no_experiment_ran(item)
+            ]
         if len(artifact_text) + len(reply.artifact_base64) > MAX_VISIBLE_FILES:
             raise V2RuntimeError("too many researcher artifacts")
         artifacts: list[dict[str, str]] = []
@@ -519,7 +606,7 @@ def make_researcher_invoke(
             "node_id": request["node_id"],
             "evidence_refs": reply.evidence_refs,
             "artifacts": artifacts,
-            "limitations": reply.limitations,
+            "limitations": limitations,
             "next_experiment": next_experiment,
             "research_findings": findings,
             "protocol_draft": (protocol_draft.model_dump(mode="json")

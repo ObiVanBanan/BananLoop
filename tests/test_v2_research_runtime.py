@@ -700,32 +700,41 @@ def test_experiment_intent_distinguishes_directions_and_controlled_variables():
     assert not same_experiment_intent("vary sample size", "reverse sample ordering")
 
 
-def test_hypothesis_portfolio_rejects_action_not_bound_to_selected_candidate(tmp_path):
+def test_hypothesis_portfolio_ignores_conflicting_redundant_top_level_action(tmp_path):
     runtime, graph, queue = _runtime(tmp_path)
     try:
-        with pytest.raises(V2RuntimeError, match="must match the selected"):
-            runtime.run_one(
-                node_id="explore", visible_paths=["README.md"],
-                invoke=make_researcher_invoke(lambda *_args, **_kwargs: {
-                    "hypotheses": [{
-                        "id": f"h{i}", "hypothesis": f"hypothesis {i}",
-                        "rationale": "A distinct testable explanation.",
-                        "next_experiment": f"experiment {i}",
-                        "falsification_condition": "The predicted difference is absent.",
-                        "expected_evidence": "A bounded public observation.",
-                    } for i in (1, 2)],
-                    "selected_hypothesis_id": "h2",
-                    "next_experiment": "experiment 1",
-                    "artifact_text": {"observation.txt": "observation"},
-                }),
-            )
+        result = runtime.run_one(
+            node_id="explore", visible_paths=["README.md"],
+            invoke=make_researcher_invoke(lambda *_args, **_kwargs: {
+                "hypotheses": [{
+                    "id": f"h{i}", "hypothesis": f"hypothesis {i}",
+                    "rationale": "A distinct testable explanation.",
+                    "next_experiment": f"experiment {i}",
+                    "falsification_condition": "The predicted difference is absent.",
+                    "expected_evidence": "A bounded public observation.",
+                } for i in (1, 2)],
+                "selected_hypothesis_id": "h2",
+                "next_experiment": "experiment 1",
+                "artifact_text": {"observation.txt": "observation"},
+                "research_findings": [{
+                    "claim_key": "selected_hypothesis",
+                    "statement": "The selected hypothesis has a testable next action.",
+                    "stance": "UNCERTAIN", "kind": "OBSERVATION", "confidence": 0.8,
+                }],
+            }),
+        )
+        assert result["status"] == "EXPLORATION_COMPLETED"
+        payload = json.loads(graph.conn.execute(
+            "SELECT payload_json FROM research_nodes WHERE node_id='explore'"
+        ).fetchone()[0])
+        assert payload["completion_evidence"]["next_experiment"] == "experiment 2"
         job = queue.conn.execute(
             "SELECT state FROM worker_jobs WHERE campaign_id='campaign-test'",
         ).fetchone()
-        assert job[0] != "COMPLETED"
+        assert job[0] == "COMPLETED"
         assert graph.conn.execute(
             "SELECT status FROM research_nodes WHERE node_id='explore'",
-        ).fetchone()[0] != "COMPLETED"
+        ).fetchone()[0] == "COMPLETED"
     finally:
         queue.close()
         graph.close()
@@ -977,6 +986,8 @@ def test_registered_experiment_runs_and_becomes_memory_for_next_iteration(tmp_pa
     def model(public_input, **_pin):
         calls.append(public_input)
         if len(calls) == 1:
+            assert "Include a currently available registered" in public_input["instruction"]
+        if len(calls) == 1:
             return {
                 "hypotheses": [{
                     "id": "primary", "hypothesis": "Estimate the registered association.",
@@ -984,16 +995,15 @@ def test_registered_experiment_runs_and_becomes_memory_for_next_iteration(tmp_pa
                     "next_experiment": "Run the primary association analysis.",
                     "falsification_condition": "The interval does not support the association.",
                     "expected_evidence": "An estimate and uncertainty interval.",
-                    "experiment_id": "primary_association",
                 }, {
                     "id": "alternative", "hypothesis": "Check a different method.",
                     "rationale": "This is a distinct robustness check.",
                     "next_experiment": "Run the permutation test.",
                     "falsification_condition": "The null is not rejected.",
                     "expected_evidence": "A permutation p value.",
-                    "experiment_id": "permutation_test",
                 }],
                 "selected_hypothesis_id": "primary",
+                "experiment_id": "primary_association",
             }
         context = public_input["role_context"]
         assert "experiment.primary_association" in context["dev_summary"]
@@ -1106,7 +1116,14 @@ def test_boardgames_real_runner_executes_and_feeds_second_v2_iteration(tmp_path)
                 "falsification_condition": "The permutation test is inconclusive.",
                 "expected_evidence": "Two-sided permutation p value.",
                 "experiment_id": "permutation_test",
-            }], "selected_hypothesis_id": "primary"}
+            }], "selected_hypothesis_id": "primary",
+                "research_findings": [{
+                    "claim_key": "pending_measurement",
+                    "statement": "The registered experiment remains unexecuted; its result is unknown.",
+                    "stance": "UNCERTAIN", "kind": "OBSERVATION", "confidence": 0.8,
+                }],
+                "artifact_text": {"research/pending.txt": "The registered experiment remains unexecuted."},
+                "limitations": ["No registered experiment has been executed; result is unknown."]}
         context = public_input["role_context"]
         assert "experiment.primary_association" in context["dev_summary"]
         assert "rho=" in context["dev_summary"]
@@ -1126,8 +1143,10 @@ def test_boardgames_real_runner_executes_and_feeds_second_v2_iteration(tmp_path)
             "next_experiment": "Run the quality audit.",
             "falsification_condition": "No effect.",
             "expected_evidence": "A statistic.",
-            "experiment_id": "data_quality_audit",
-        }], "selected_hypothesis_id": "ungrounded"}
+            "evidence_refs": list(context["evidence_refs"]),
+            "target_claim_key": prior_claim,
+        }], "selected_hypothesis_id": "ungrounded",
+            "next_experiment": "This redundant top-level action intentionally disagrees."}
 
     invoke = _make_researcher_invoke(
         model, experiment_executor=executor, experiment_catalog=executor.catalog,
@@ -1147,6 +1166,12 @@ def test_boardgames_real_runner_executes_and_feeds_second_v2_iteration(tmp_path)
         assert "spearman_rho=" in by_claim["experiment.primary_association"]
         assert "experiment.permutation_test" in by_claim
         assert "two_sided_p_value=" in by_claim["experiment.permutation_test"]
+        assert "pending_measurement" not in by_claim
+        initial = json.loads(graph.conn.execute(
+            "SELECT payload_json FROM research_nodes WHERE phase='CONSOLIDATION' ORDER BY created_at LIMIT 1"
+        ).fetchone()[0])
+        limitations = initial["completion_evidence"]["limitations"]
+        assert not any("No registered experiment" in item for item in limitations)
     finally:
         queue.close()
         graph.close()

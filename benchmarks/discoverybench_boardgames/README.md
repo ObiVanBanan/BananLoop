@@ -99,3 +99,32 @@ output, 7,167 total tokens); response text was not persisted. Core now bounds
 and canonicalizes structured plans as JSON text, and the prompt documents that
 contract. This failed campaign is also not resumed; the next acceptance run
 uses a fresh campaign state.
+
+A fourth smoke on `10591b4` completed one Luna response (6,266 input and 1,012
+output tokens) but the selected hypothesis omitted its registered `experiment_id`.
+No analysis ran. A fifth fresh smoke completed two responses (13,020 input and
+2,127 output tokens): Core executed and recorded `primary_association`, then the
+follow-up stopped because the evidence-ranked candidate had no executable
+registered ID. A sixth smoke completed four responses (27,176 input and 4,621
+output tokens) and three registered analyses: primary association, outlier
+sensitivity, and permutation. Each result was in Research Memory for the next
+request. The fourth response failed because a redundant top-level
+`next_experiment` disagreed with the selected candidate. Its completed analysis
+receipts remain durable; the campaign is not resumed.
+
+The current runtime change makes Core choose only evidence-grounded candidates
+with an available registered analysis, treats the selected candidate's action
+as canonical when a redundant top-level action disagrees, and removes only
+pre-execution “not run” statements made stale by a measurement within the same
+job. The focused two-iteration real-runner regression passes. A fresh live smoke
+is required to verify this revision; prior campaigns remain immutable and are
+not replayed.
+
+A third smoke on `8c6fdbcb437b35e6df92b37cebb1c6b15e369fdc` completed one
+model call (6,267 input and 1,029 output tokens) and then raised a Core
+`V2RuntimeError`. The worker is `UNKNOWN`, the answer was not replayed, and
+there is no durable analysis receipt, so whether the local analysis function
+started is recorded as unknown. The report contains no specific runtime reason
+yet. Revision `10591b4` now stores only the fixed Core error message for this
+exception type, without model text, so a new clean smoke can identify the
+failing invariant.
