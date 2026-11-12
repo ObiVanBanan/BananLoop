@@ -89,11 +89,21 @@ def build_fixture(*, repo: Path, source_task: Path, out: Path) -> dict[str, obje
         repo / "benchmarks/autoresearchexam/optimization_runner.py", root=repo,
         max_bytes=32_000,
     )
+    grader_source = _read_public_file(
+        repo / "benchmarks/autoresearchexam/public_grader.py", root=repo,
+        max_bytes=32_000,
+    )
+    mcp_client_source = _read_public_file(
+        repo / "benchmarks/autoresearchexam/are_public_mcp_client.py", root=repo,
+        max_bytes=12_000,
+    )
     task_devkit = _read_public_file(
         source_task / "environment/app/devkit.py", root=source_task, max_bytes=32_000,
     )
     runner_hash = hashlib.sha256(runner_source).hexdigest()
     backend_hash = hashlib.sha256(backend_source).hexdigest()
+    grader_hash = hashlib.sha256(grader_source).hexdigest()
+    mcp_client_hash = hashlib.sha256(mcp_client_source).hexdigest()
     task_devkit_hash = hashlib.sha256(task_devkit).hexdigest()
     manifest = {
         "schema_version": 1,
@@ -106,6 +116,8 @@ def build_fixture(*, repo: Path, source_task: Path, out: Path) -> dict[str, obje
         "public_output_path": "/app/output/impute.py",
         "public_runner_sha256": runner_hash,
         "optimization_runner_sha256": backend_hash,
+        "public_grader_sha256": grader_hash,
+        "mcp_client_sha256": mcp_client_hash,
         "task_devkit_sha256": task_devkit_hash,
         "mcp_contract_source_sha256": hashlib.sha256(contract_raw).hexdigest(),
         "public_dev_image": AREPublicEvaluatorRunner.default_dev_image,
@@ -130,6 +142,8 @@ def build_fixture(*, repo: Path, source_task: Path, out: Path) -> dict[str, obje
         archive.writestr("task-devkit.py", task_devkit)
         archive.writestr("public-mcp-contract.json", contract_raw)
         archive.writestr("optimization_runner.py", backend_source)
+        archive.writestr("public_grader.py", grader_source)
+        archive.writestr("are_public_mcp_client.py", mcp_client_source)
     encode = lambda raw: base64.b64encode(raw).decode("ascii")
     dev_input = AREPublicEvaluatorRunner.aggregate_case_input(
         tier="dev", task_id=TASK_ID, task_version=TASK_VERSION,
@@ -177,6 +191,8 @@ def build_fixture(*, repo: Path, source_task: Path, out: Path) -> dict[str, obje
         "protocol_tiers": ["dev", "validation"],
         "public_runner_sha256": runner_hash,
         "optimization_runner_sha256": backend_hash,
+        "public_grader_sha256": grader_hash,
+        "mcp_client_sha256": mcp_client_hash,
         "task_devkit_sha256": task_devkit_hash,
         "evaluator_bundle_bytes": len(buffer.getvalue()),
         "private_grader_accessed": False,

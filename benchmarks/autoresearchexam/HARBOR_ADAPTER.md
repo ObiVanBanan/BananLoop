@@ -81,10 +81,11 @@ produced.
   protocol. This matches ARE's absence of a benchmark HOLDOUT endpoint.
 - `build_public_fixture.py` builds a content-addressed two-tier fixture for the
   imputation task. The bundle contains the exact host DEV runner, public task
-  `devkit.py`, sanitized public MCP contract, and host Optimization backend;
-  runtime admission checks these sources against the frozen digests. The
-  independent protocol review can inspect both score-affecting public DEV source
-  files, backend dispatch, and public submit/result schemas. The builder never
+  `devkit.py`, sanitized public MCP contract, host Optimization backend, public
+  grading ledger, and task-container MCP client; runtime admission checks these
+  sources against the frozen digests. The independent protocol review can inspect
+  score-affecting DEV code, backend dispatch, lowercase MCP status normalization,
+  and public submit/result schemas. The builder never
   reads the task's `are-grader-ctx`, private tests, or hidden evaluator.
 - `public_grader.py` stores the one-hour deadline, candidate digest, submission
   identity, uncertainty state, and sanitized public score in SQLite. It refuses

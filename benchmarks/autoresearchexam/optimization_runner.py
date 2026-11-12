@@ -280,7 +280,8 @@ class AREPublicEvaluatorRunner:
                 if set(archive.namelist()) != {
                     "are-public-backend.json", "public_devkit.py", "task-devkit.py",
                     "public-mcp-contract.json", "optimization_runner.py",
-                } or len(archive.infolist()) != 5:
+                    "public_grader.py", "are_public_mcp_client.py",
+                } or len(archive.infolist()) != 7:
                     raise ValueError
                 infos = [item for item in archive.infolist()
                          if item.filename == "are-public-backend.json" and not item.is_dir()]
@@ -296,21 +297,37 @@ class AREPublicEvaluatorRunner:
                                   if item.filename == "public-mcp-contract.json" and not item.is_dir()]
                 backend_infos = [item for item in archive.infolist()
                                  if item.filename == "optimization_runner.py" and not item.is_dir()]
+                grader_infos = [item for item in archive.infolist()
+                                if item.filename == "public_grader.py" and not item.is_dir()]
+                mcp_client_infos = [item for item in archive.infolist()
+                                    if item.filename == "are_public_mcp_client.py" and not item.is_dir()]
                 runtime_backend_source = Path(__file__).read_bytes()
+                runtime_grader_source = Path(__file__).with_name("public_grader.py").read_bytes()
+                runtime_mcp_client_source = Path(__file__).with_name(
+                    "are_public_mcp_client.py"
+                ).read_bytes()
                 if (len(runner_infos) != 1 or len(task_infos) != 1 or len(contract_infos) != 1
-                        or len(backend_infos) != 1
+                        or len(backend_infos) != 1 or len(grader_infos) != 1
+                        or len(mcp_client_infos) != 1
                         or runner_infos[0].file_size > 32 * 1024
                         or task_infos[0].file_size > 64 * 1024
                         or contract_infos[0].file_size > 128 * 1024
                         or backend_infos[0].file_size > 32 * 1024
+                        or grader_infos[0].file_size > 32 * 1024
+                        or mcp_client_infos[0].file_size > 12 * 1024
                         or archive.read(runner_infos[0]) != runtime_source):
                     raise ValueError
                 task_source = archive.read(task_infos[0])
                 contract_source = archive.read(contract_infos[0])
                 backend_source = archive.read(backend_infos[0])
+                grader_source = archive.read(grader_infos[0])
+                mcp_client_source = archive.read(mcp_client_infos[0])
                 contract = json.loads(contract_source.decode("utf-8"))
                 if (not task_source or len(task_source) > 64 * 1024
                         or backend_source != runtime_backend_source):
+                    raise ValueError
+                if (grader_source != runtime_grader_source
+                        or mcp_client_source != runtime_mcp_client_source):
                     raise ValueError
                 if (not isinstance(contract, dict)
                         or contract.get("contract_sha256") != self.contract_sha256
@@ -333,6 +350,8 @@ class AREPublicEvaluatorRunner:
             "public_output_path": "/app/output/impute.py",
             "public_runner_sha256": hashlib.sha256(runtime_source).hexdigest(),
             "optimization_runner_sha256": hashlib.sha256(backend_source).hexdigest(),
+            "public_grader_sha256": hashlib.sha256(grader_source).hexdigest(),
+            "mcp_client_sha256": hashlib.sha256(mcp_client_source).hexdigest(),
             "task_devkit_sha256": hashlib.sha256(task_source).hexdigest(),
             "mcp_contract_source_sha256": hashlib.sha256(contract_source).hexdigest(),
         }

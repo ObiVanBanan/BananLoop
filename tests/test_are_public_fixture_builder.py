@@ -22,6 +22,12 @@ def test_are_public_fixture_builder_pins_public_runtime_and_omits_private_sideca
     (benchmark / "optimization_runner.py").write_bytes(
         (source_root / "optimization_runner.py").read_bytes()
     )
+    (benchmark / "public_grader.py").write_bytes(
+        (source_root / "public_grader.py").read_bytes()
+    )
+    (benchmark / "are_public_mcp_client.py").write_bytes(
+        (source_root / "are_public_mcp_client.py").read_bytes()
+    )
     source_task = tmp_path / "task"
     (source_task / "environment/app").mkdir(parents=True)
     instruction = b"Public benchmark instruction\n"
@@ -56,7 +62,8 @@ def test_are_public_fixture_builder_pins_public_runtime_and_omits_private_sideca
     with zipfile.ZipFile(BytesIO(bundle)) as archive:
         assert set(archive.namelist()) == {
             "are-public-backend.json", "public_devkit.py", "task-devkit.py",
-            "public-mcp-contract.json", "optimization_runner.py",
+            "public-mcp-contract.json", "optimization_runner.py", "public_grader.py",
+            "are_public_mcp_client.py",
         }
         assert archive.read("task-devkit.py") == devkit
         assert b"private sentinel" not in b"".join(archive.read(name) for name in archive.namelist())
@@ -91,14 +98,19 @@ def test_are_public_fixture_builder_pins_public_runtime_and_omits_private_sideca
     reviewed = {item["path"]: item["content"] for item in material["evaluator_source_files"]}
     assert set(reviewed) == {
         "are-public-backend.json", "public_devkit.py", "task-devkit.py",
-        "public-mcp-contract.json", "optimization_runner.py",
+        "public-mcp-contract.json", "optimization_runner.py", "public_grader.py",
+        "are_public_mcp_client.py",
     }
     assert reviewed["public_devkit.py"].encode() == (source_root / "public_devkit.py").read_bytes()
     assert reviewed["optimization_runner.py"].encode() == (
         source_root / "optimization_runner.py"
     ).read_bytes()
+    assert reviewed["public_grader.py"].encode() == (source_root / "public_grader.py").read_bytes()
+    assert reviewed["are_public_mcp_client.py"].encode() == (
+        source_root / "are_public_mcp_client.py"
+    ).read_bytes()
     assert reviewed["task-devkit.py"].encode() == devkit
     assert json.loads(reviewed["public-mcp-contract.json"])["contract_sha256"] == contract_digest
     assert material["public_attestations"]
-    assert len(json.dumps(material, separators=(",", ":"))) <= 64_000
+    assert len(json.dumps(material, separators=(",", ":"))) <= 96_000
 

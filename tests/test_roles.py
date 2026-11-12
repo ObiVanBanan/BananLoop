@@ -203,13 +203,13 @@ def test_public_task_context_supports_bounded_full_protocol_review_material():
 
     review = RoleContextV1(
         role_id="independent_verifier", campaign_goal="Review the public evaluator.",
-        public_task="x" * 54_538,
+        public_task="x" * 86_538,
     )
-    assert len(review.public_task) == 54_538
+    assert len(review.public_task) == 86_538
     with pytest.raises(ValidationError):
         RoleContextV1(
             role_id="independent_verifier", campaign_goal="Review the public evaluator.",
-            public_task="x" * 64_001,
+            public_task="x" * 96_001,
         )
 
 
