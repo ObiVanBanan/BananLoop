@@ -1,7 +1,8 @@
 """Minimal task-container MCP client used by the Harbor bridge agent.
 
-Only `submit` and `result` tools are allowed. The JSON written to stdout is
-sanitized before it leaves the task container; raw grader output is discarded.
+Only the public `submit`, `result`, and read-only `status` tools are allowed.
+The JSON written to stdout is sanitized before it leaves the task container;
+raw grader output is discarded.
 """
 from __future__ import annotations
 
@@ -14,7 +15,15 @@ from urllib.request import Request, urlopen
 
 ENDPOINT = "http://grader:8000/mcp"
 PROTOCOL_VERSION = "2024-11-05"
-ALLOWED_TOOLS = {"submit", "result"}
+ALLOWED_TOOLS = {"submit", "result", "status"}
+
+
+class _MCPFailure(RuntimeError):
+    """A safe, non-content-bearing MCP failure classification."""
+
+    def __init__(self, category: str):
+        super().__init__(category)
+        self.category = category
 
 
 def _post(payload: dict[str, Any], session_id: str | None) -> tuple[dict[str, Any] | None, str | None]:
@@ -35,11 +44,26 @@ def _post(payload: dict[str, Any], session_id: str | None) -> tuple[dict[str, An
             if not raw:
                 return None, session_id
             content_type = response.headers.get("Content-Type", "")
-    except (HTTPError, URLError, TimeoutError, OSError):
-        # Never echo server text or grader output into Harbor's agent log.
-        raise RuntimeError("public MCP transport failed") from None
+    except HTTPError as exc:
+        # Status code is safe diagnostic metadata; the response body may
+        # contain grader output and is intentionally discarded.
+        status = int(exc.code)
+        category = "http_client_error" if 400 <= status < 500 else "http_server_error"
+        raise _MCPFailure(category) from None
+    except TimeoutError:
+        raise _MCPFailure("http_timeout") from None
+    except URLError:
+        raise _MCPFailure("network_error") from None
+    except OSError:
+        raise _MCPFailure("local_io_error") from None
+    except ValueError:
+        raise _MCPFailure("oversized_response") from None
     if "text/event-stream" in content_type:
-        data_lines = [line[5:].strip() for line in raw.decode("utf-8").splitlines()
+        try:
+            decoded = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise _MCPFailure("malformed_response") from None
+        data_lines = [line[5:].strip() for line in decoded.splitlines()
                       if line.startswith("data:")]
         if not data_lines:
             return None, session_id
@@ -47,18 +71,20 @@ def _post(payload: dict[str, Any], session_id: str | None) -> tuple[dict[str, An
     try:
         parsed = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError):
-        raise RuntimeError("public MCP response was not valid JSON") from None
+        raise _MCPFailure("malformed_response") from None
     if not isinstance(parsed, dict):
-        raise RuntimeError("public MCP response was not an object")
+        raise _MCPFailure("malformed_response")
     return parsed, session_id
 
 
 def _tool_payload(response: dict[str, Any], tool: str) -> dict[str, Any]:
     if "error" in response:
-        return {"transport_error": True}
+        return {"transport_error": True, "transport_category": "jsonrpc_error"}
     result = response.get("result")
-    if not isinstance(result, dict) or result.get("isError") is True:
-        return {"transport_error": True}
+    if not isinstance(result, dict):
+        return {"transport_error": True, "transport_category": "malformed_response"}
+    if result.get("isError") is True:
+        return {"transport_error": True, "transport_category": "tool_error"}
     value = result.get("structuredContent")
     if not isinstance(value, dict):
         for item in result.get("content", []):
@@ -71,13 +97,18 @@ def _tool_payload(response: dict[str, Any], tool: str) -> dict[str, Any]:
                     value = decoded
                     break
     if not isinstance(value, dict):
-        return {"transport_error": True}
+        return {"transport_error": True, "transport_category": "missing_structured_result"}
     safe: dict[str, Any] = {}
     for key in ("id", "status", "validation_score", "grading_seconds",
                 "time_remaining_seconds", "total_budget_seconds"):
         item = value.get(key)
         if isinstance(item, (str, int, float)) and not isinstance(item, bool):
             safe[key] = item
+    if tool == "status":
+        for key in ("submissions", "queued_or_grading"):
+            item = value.get(key)
+            if isinstance(item, int) and not isinstance(item, bool) and item >= 0:
+                safe[key] = item
     if "error" in value:
         safe["error"] = bool(value["error"])
     return safe
@@ -85,17 +116,39 @@ def _tool_payload(response: dict[str, Any], tool: str) -> dict[str, Any]:
 
 def main() -> int:
     try:
-        request = json.loads(open(sys.argv[1], encoding="utf-8").read())
-        if not isinstance(request, dict) or request.get("tool") not in ALLOWED_TOOLS:
-            raise ValueError
+        with open(sys.argv[1], encoding="utf-8") as request_stream:
+            request = json.load(request_stream)
+    except FileNotFoundError:
+        category = "request_file_missing"
+    except PermissionError:
+        category = "request_file_permission"
+    except UnicodeDecodeError:
+        category = "request_file_encoding_error"
+    except json.JSONDecodeError:
+        category = "request_json_invalid"
+    except OSError:
+        category = "request_file_error"
+    else:
+        category = None
+    if category is not None:
+        sys.stdout.write(json.dumps({"transport_error": True, "transport_category": category},
+                                    sort_keys=True, separators=(",", ":")) + "\n")
+        return 0
+    try:
+        if not isinstance(request, dict):
+            raise _MCPFailure("request_shape_error")
         tool = request["tool"]
+        if not isinstance(tool, str) or tool not in ALLOWED_TOOLS:
+            raise _MCPFailure("tool_not_allowed")
         arguments = request.get("arguments", {})
         if not isinstance(arguments, dict):
-            raise ValueError
+            raise _MCPFailure("arguments_shape_error")
         session_id = request.get("session_id")
+        if session_id is not None and not isinstance(session_id, str):
+            raise _MCPFailure("session_shape_error")
         request_id = request.get("request_id", 1)
         if isinstance(request_id, bool) or not isinstance(request_id, int) or request_id < 1:
-            raise ValueError
+            raise _MCPFailure("request_id_error")
         if session_id is None:
             initialized, session_id = _post({
                 "jsonrpc": "2.0", "id": request_id,
@@ -107,7 +160,7 @@ def main() -> int:
                 },
             }, None)
             if not initialized or "error" in initialized:
-                raise RuntimeError("public MCP initialization failed")
+                raise _MCPFailure("initialize_error")
             _post({"jsonrpc": "2.0", "method": "notifications/initialized"}, session_id)
             request_id += 1
         response, session_id = _post({
@@ -116,13 +169,18 @@ def main() -> int:
             "params": {"name": tool, "arguments": arguments},
         }, session_id)
         if response is None:
-            raise RuntimeError("public MCP tool response is empty")
+            raise _MCPFailure("empty_tool_response")
         result = _tool_payload(response, tool)
         output = {"session_id": session_id, "request_id": request_id + 1, "result": result}
         sys.stdout.write(json.dumps(output, sort_keys=True, separators=(",", ":")) + "\n")
         return 0
+    except _MCPFailure as exc:
+        sys.stdout.write(json.dumps({"transport_error": True, "transport_category": exc.category},
+                                    sort_keys=True, separators=(",", ":")) + "\n")
+        return 0
     except Exception:
-        sys.stdout.write('{"transport_error":true}\n')
+        sys.stdout.write(json.dumps({"transport_error": True, "transport_category": "client_internal_error"},
+                                    sort_keys=True, separators=(",", ":")) + "\n")
         return 0
 
 

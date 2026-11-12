@@ -4,8 +4,7 @@
     "benchmark": "AutoResearchExam v1.1",
     "public_baseline_probe_is_bananloop_result": false,
     "remaining_runtime_gaps": [
-      "execute the owner-approved-or-rejected iterative_ridge pivot in campaign c-5ed94ff2d7dc592556dede3c68d4c0da; it is currently pending owner decision",
-      "complete one single-task Optimization and Integration Verifier acceptance through the safe Harbor overlay",
+      "complete one single-task Optimization and Integration Verifier acceptance through the safe Harbor overlay; the candidate DEV result was negative and public validation submission is unresolved",
       "implement a durable outer campaign driver for up to five child experiments and reliable stop/resume",
       "generalize candidate/output mappings and independently reviewed protocol setup to the other nine selected tasks",
       "run the ten-task AutoResearchExam pilot only after single-task acceptance and driver completion"
@@ -223,6 +222,22 @@
           "pivot_digest": "d6c1ea0344d4083a38a36e68db4e45d59297663a84bb5271c210c08abe3ee267"
         }
       ]
+    },
+    "iterative_ridge_live_child": {
+      "parent_campaign_id": "c-5ed94ff2d7dc592556dede3c68d4c0da",
+      "child_campaign_id": "c-dc0d93b495723084d965ee630fc402fd",
+      "pivot": "iterative_ridge",
+      "digest": "d6c1ea0344d4083a38a36e68db4e45d59297663a84bb5271c210c08abe3ee267",
+      "model_calls": 1,
+      "public_dev_calls": 2,
+      "dev_repeatability": 2,
+      "candidate_score_r2": -0.7818,
+      "starter_baseline_r2": -0.0017,
+      "delta_r2": -0.7801,
+      "result": "negative candidate; no verified task score",
+      "public_validation_submission": "SUBMISSION_UNKNOWN; no ID; no automatic retry",
+      "harbor_request_permission_fix": "passed read-only status probe after fixing agent-user request file creation",
+      "artifact_archive": "/home/sonik/bananloop-benchmark-env/runs/are-iterative-ridge-child/are-iterative-ridge-live-artifacts.zip"
     }
   },
   "boardgames": {
@@ -569,9 +584,105 @@
         "durable_report": "/home/sonik/bananloop-benchmark-env/runs/boardgames-one-task-smoke-v12/campaigns/c-9418353b2a17686eb50d265e2f0917be/reports/v2-exploration-c-9418353b2a17686eb50d265e2f0917be.json",
         "replayed": false
       }
-    ]
+    ],
+    "latest_10_task_series": {
+      "run_id": "boardgames-10-post-mcp-fix-20261112",
+      "series_dir": "/home/sonik/bananloop-benchmark-env/runs/boardgames-10-task-series-post-mcp-fix",
+      "series_status": "INCOMPLETE",
+      "incomplete_tasks": 3,
+      "interrupted_unknown_tasks": 1,
+      "not_started_tasks": 6,
+      "manifest_sha256": "2eec70cf7590d65fe3c6c86635a9de1ff49e2125345dbab247494ece882adaf3",
+      "campaign_statuses": {
+        "bg-01": "BUDGET_RESERVATION_REJECTED",
+        "bg-02": "BUDGET_RESERVATION_REJECTED",
+        "bg-03": "BUDGET_RESERVATION_REJECTED",
+        "bg-04": "RUN_FAILED"
+      },
+      "diagnosis": "per-call token reservation 2048 was below observed 7494-8103 total tokens per live call; task 4 second dispatched request failed and was not replayed",
+      "corrective_change": "series runner defaults to 10000 tokens per call and supports manifest-bound --task-id selection",
+      "tests": "8 BoardGames series-runner tests passed",
+      "campaign_processes_terminalized_incomplete": 3
+    },
+    "latest_10_task_series_corrected_budget": {
+      "run_id": "boardgames-10-10k-20261112",
+      "series_dir": "/home/sonik/bananloop-benchmark-env/runs/boardgames-10-task-series-10k-20261112",
+      "series_status": "INCOMPLETE; paused after repeated Research Memory citation failures",
+      "per_call_model_token_reservation": 10000,
+      "max_agent_calls_per_task": 8,
+      "max_iterations_per_task": 5,
+      "deadline_seconds_per_task": 3600,
+      "started_at": "2026-11-12T16:11:58Z",
+      "results": "pending",
+      "bg-01": {
+        "campaign_id": "c-3b046f6957ff39c5f314c20dd57e9191",
+        "campaign_status": "ITERATION_LIMIT",
+        "model_calls": 5,
+        "total_tokens": 41066,
+        "iterations": 5,
+        "registered_analyses_used": [
+          "primary_association",
+          "data_quality_audit",
+          "outlier_sensitivity",
+          "split_half_robustness",
+          "permutation_test"
+        ],
+        "evidence_refs_persisted_per_iteration": 2,
+        "scientific_success": false,
+        "interpretation": "five bounded research iterations completed; results remain public exploratory evidence, not an official DiscoveryBench score"
+      },
+      "bg-02": {
+        "campaign_id": "c-21174ad877a794ac4f78ec22f21913a1",
+        "campaign_status": "RUN_FAILED",
+        "model_calls": 2,
+        "total_tokens": 15392,
+        "failure_type": "V2RuntimeError",
+        "failure": "later hypothesis portfolio did not cite an available Research Memory evidence ID on an executable candidate",
+        "automatic_replay": false,
+        "diagnosis": "input validation correctly rejected an ungrounded follow-up portfolio; no result was produced for iteration 2"
+      },
+      "bg-03": {
+        "campaign_id": "c-f38f6b60107d7dba7469a0ed46428bcf",
+        "campaign_status": "RUN_FAILED",
+        "model_calls": 4,
+        "total_tokens": 32152,
+        "failure": "later hypothesis portfolio omitted valid Research Memory citation",
+        "automatic_replay": false
+      },
+      "bg-04": {
+        "campaign_id": "c-4f3fb615347fab8cfff0c5b64ba8e992",
+        "campaign_status": "RUN_FAILED",
+        "model_calls": 4,
+        "total_tokens": 31918,
+        "failure": "later hypothesis portfolio omitted valid Research Memory citation",
+        "automatic_replay": false
+      },
+      "bg-05": {
+        "campaign_id": "c-0a0379de558b8e43518949656c3d9b54",
+        "campaign_status": "RUN_FAILED",
+        "model_calls": 4,
+        "total_tokens": 31565,
+        "failure": "later hypothesis portfolio omitted valid Research Memory citation",
+        "automatic_replay": false
+      },
+      "bg-06": {
+        "campaign_id": "c-32a54457f0c67714bc8389a76ef6818f",
+        "campaign_status": "RUN_FAILED",
+        "model_calls": 4,
+        "total_tokens": 32002,
+        "failure": "later hypothesis portfolio omitted valid Research Memory citation",
+        "automatic_replay": false,
+        "input_tokens": 28444,
+        "output_tokens": 3558
+      }
+    },
+    "citation_prompt_fix": {
+      "change": "trusted claim_key/evidence_id pairs are now passed in a machine-readable available_research_memory field with exact-copy instructions",
+      "focused_tests": "37 passed (Research Runtime + BoardGames Series Runner)",
+      "rerun_scope": "only failed or not-started task IDs, in a new identity-pinned series"
+    }
   },
-  "completion": "PARTIAL; full objective remains active",
+  "completion": "PARTIAL; live pilots not complete; full objective remains active",
   "created_date": "2026-11-12",
   "limits": {
     "autoresearchexam_one_hour_pilot_comparable_to_official_24h": false,
@@ -596,15 +707,15 @@
     "pytest_log": "/tmp/bananloop-are-fullsuite-final-2026-11-12.log",
     "skipped": 2,
     "focused_public_dev_tests": "32 passed",
-    "latest_full_suite": "source revision 1b1bb821fe8e8bdf3ced6ab41fc665a171d9f6e7; 1,106 collected, 1,104 passed, 2 skipped, exit code 0",
-    "full_suite_run": "after exact ARE Optimization backend, public grader/MCP bridge, task scoring sources, and grader-error fail-closed checks were implemented",
-    "latest_focused_suite": "54 ARE public fixture, Optimization runner, public grader, MCP client, role, and evaluator verifier tests passed"
+    "latest_full_suite": "1111 collected; completed at 100% with exit code 0 and no failures (2 skipped)",
+    "full_suite_run": "after ARE bridge diagnostics, BoardGames runner token default and subset selection, runtime memory citation payload, and regression coverage",
+    "latest_focused_suite": "37 Research Runtime and BoardGames series-runner tests passed; 23 ARE public MCP and grader tests passed"
   },
   "worktree": {
     "branch": "codex/autoresearchexam-verifier-evidence",
-    "changes_committed": true,
-    "head": "dc0cebf",
+    "changes_committed": false,
+    "head": "ce1d073ced74fbd481a954872aaaf93d5986e77c",
     "path": "/home/sonik/Проекты/BananLoop-ARE-work-copy",
-    "test_state": "full offline suite passed on code revision 1b1bb82 immediately before documentation-only commit dc0cebf: 1,106 collected, 1,104 passed, 2 skipped; unrelated untracked .agents/skills and openspec remain untouched"
+    "test_state": "working-tree full suite: 1111 collected, 0 failed, 2 skipped, exit 0; targeted Research Runtime and BoardGames tests: 37 passed; ARE public MCP and grader tests: 23 passed"
   }
 }

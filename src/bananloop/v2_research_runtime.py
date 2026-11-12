@@ -96,6 +96,21 @@ class ResearcherReplyV1(BaseModel):
         return _canonical_experiment_text(value)
 
 
+def _research_memory_claim_evidence(dev_summary: str) -> dict[str, set[str]]:
+    """Extract trusted Core claim keys and evidence IDs from the role summary."""
+    result: dict[str, set[str]] = {}
+    for line in dev_summary.splitlines():
+        match = re.match(
+            r"^([a-z][a-z0-9_.:-]{0,119}) \[[A-Z_]+\] evidence_ids=([0-9a-f,]*):",
+            line,
+        )
+        if match:
+            result.setdefault(match.group(1), set()).update(
+                filter(None, match.group(2).split(","))
+            )
+    return result
+
+
 # The adapter is a synchronous, one-model-call protocol: one durable
 # agent-call reservation corresponds to one model action, not an unmetered
 # conversation of hidden tool calls.
@@ -190,6 +205,9 @@ def make_researcher_invoke(
                 "When using prior findings, provide target_claim_key and cite its exact "
                 "evidence_ids in evidence_refs; if prior findings are available, at least "
                 "one candidate must cite a matching target claim and exact evidence ID. "
+                "For a later iteration, copy an exact claim_key and one of its evidence_ids "
+                "from available_research_memory onto the same hypothesis object. Do not use "
+                "artifact:// references as evidence_ids. "
                 "Use supplied memory to select a distinct "
                 "follow-up experiment unless replication is specifically justified. "
                 "Do not claim "
@@ -214,6 +232,13 @@ def make_researcher_invoke(
                    if protocol_binder is not None else "")
             ),
         }
+        prior_memory = _research_memory_claim_evidence(
+            str(role_context.get("dev_summary", "")),
+        )
+        public_input["available_research_memory"] = [
+            {"claim_key": claim_key, "evidence_ids": sorted(evidence_ids)}
+            for claim_key, evidence_ids in sorted(prior_memory.items())
+        ]
         if protocol_binder is not None:
             public_input["requires_protocol_intent"] = True
         if experiment_executor is not None:
@@ -242,6 +267,9 @@ def make_researcher_invoke(
                 "A top-level experiment_id is accepted only when Core keeps your selected "
                 "hypothesis. Do not return top-level next_experiment when using a "
                 "hypothesis portfolio; Core uses the selected candidate's next_experiment. "
+                "For a later iteration, copy one exact claim_key and one exact evidence_id "
+                "from the same available_research_memory entry onto at least one hypothesis "
+                "as target_claim_key and evidence_refs. Do not cite artifact:// URIs here. "
                 "The `core_experiment.*` claim_key namespace is reserved for trusted Core "
                 "results; never use it in research_findings. "
                 "Do not omit an ID or invent one."
@@ -352,16 +380,9 @@ def make_researcher_invoke(
             # The selected portfolio item is the canonical action. A redundant
             # top-level next_experiment can be inconsistent in model output; it
             # must never override or invalidate the selected candidate.
-            claim_evidence: dict[str, set[str]] = {}
-            for line in str(role_context.get("dev_summary", "")).splitlines():
-                match = re.match(
-                    r"^([a-z][a-z0-9_.:-]{0,119}) \[[A-Z_]+\] evidence_ids=([0-9a-f,]*):",
-                    line,
-                )
-                if match:
-                    claim_evidence.setdefault(match.group(1), set()).update(
-                        filter(None, match.group(2).split(","))
-                    )
+            claim_evidence = _research_memory_claim_evidence(
+                str(role_context.get("dev_summary", "")),
+            )
             evidence_scores: dict[str, int] = {}
             rejected_evidence_links: set[str] = set()
             for candidate in reply.hypotheses:

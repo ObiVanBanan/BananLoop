@@ -141,6 +141,55 @@ def test_manifest_or_config_change_cannot_resume_an_existing_series(tmp_path):
         different._load_or_create()
 
 
+def test_selected_task_subset_is_bound_to_manifest_and_identity(tmp_path):
+    manifest = series_runner._load_manifest()[0]
+    selected = [manifest["tasks"][1]["task_id"], manifest["tasks"][3]["task_id"]]
+    runner = series_runner.BoardGamesSeriesRunner(
+        repo=tmp_path / "repo", series_dir=tmp_path / "selected-series",
+        run_id="selected-01", process_runner=lambda *_a, **_k: None,
+        input_preflight=lambda _repo: [], task_ids=selected,
+    )
+
+    assert [item["task_id"] for item in runner.tasks] == selected
+    assert runner.max_model_tokens == 10_000
+    report = runner._load_or_create()
+    assert [item["task_id"] for item in report["tasks"]] == selected
+    assert report["config"]["task_ids"] == selected
+
+    with pytest.raises(ValueError, match="absent from the frozen manifest"):
+        series_runner.BoardGamesSeriesRunner(
+            repo=tmp_path / "repo", series_dir=tmp_path / "bad-series",
+            run_id="selected-02", task_ids=["not-registered"],
+        )
+
+
+def test_series_identity_pins_source_commit_and_tracked_worktree_diff(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "pilot@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Pilot Test"], check=True)
+    source = repo / "runtime.py"
+    source.write_text("revision one\n")
+    subprocess.run(["git", "-C", str(repo), "add", "runtime.py"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "initial"], check=True,
+                   capture_output=True)
+
+    first = series_runner.BoardGamesSeriesRunner(
+        repo=repo, series_dir=tmp_path / "series-one", run_id="source-pin-1",
+        process_runner=lambda *_a, **_k: None, input_preflight=lambda _repo: [],
+    )
+    source.write_text("revision two\n")
+    second = series_runner.BoardGamesSeriesRunner(
+        repo=repo, series_dir=tmp_path / "series-two", run_id="source-pin-2",
+        process_runner=lambda *_a, **_k: None, input_preflight=lambda _repo: [],
+    )
+
+    assert first.source_revision == second.source_revision
+    assert first.working_tree_diff_sha256 != second.working_tree_diff_sha256
+    assert first.config["working_tree_diff_sha256"] != second.config["working_tree_diff_sha256"]
+
+
 def test_uncommitted_pilot_inputs_record_not_started_without_invoking_cli(tmp_path):
     invocations = []
 

@@ -1,14 +1,14 @@
 # AutoResearchExam Harbor adapter status
 
-Status: **Public DEV execution is now runnable in isolation; full BananLoop scoring is not yet wired end to end**.
+Status: **one negative public DEV candidate result is recorded; end-to-end scoring remains incomplete**.
 
 The isolated copy contains a Harbor `BaseAgent`, a public MCP client, a
 `TrustedEvaluatorRunner` backend seam, and a durable public-submission ledger.
 The bridge is currently specialized to `budgeted-imputation-mcar50` and a
 pre-created Optimization child. It is not a complete benchmark runner: no outer
 loop creates up to five Optimization children, and the other nine selected tasks
-have no candidate/output mapping. No BananLoop AutoResearchExam score has been
-produced.
+have no candidate/output mapping. No completed AutoResearchExam task score has
+been produced.
 
 ## Verified environment
 
@@ -40,6 +40,27 @@ produced.
   This is a public DEV baseline, not a BananLoop campaign score or public
   VALIDATION score. The sanitized run record is
   [`public-devkit-smoke-2026-11-12.json`](public-devkit-smoke-2026-11-12.json).
+- The owner-approved `iterative_ridge` pivot ran as child campaign
+  `c-dc0d93b495723084d965ee630fc402fd`, with the exact approved write path
+  `benchmarks/autoresearchexam/solutions/impute.py`. It used one Luna response
+  (1,371 reported model tokens) and two DEV evaluator calls. Candidate DEV R²
+  was `-0.7818`, compared with starter `-0.0017`; it is a negative experiment,
+  not a benchmark score. The campaign report is `STEP_LIMIT`, with the candidate
+  still pending Integration Verifier.
+- The first Harbor attempt failed before a model call because its configured
+  visible paths exceeded the child autonomy scope. Restricting visibility to the
+  approved `impute.py` path allowed the candidate to be generated and evaluated.
+- A later resume failed on the baseline public VALIDATION submit. The durable
+  ledger records `SUBMISSION_UNKNOWN` with no submission ID. Inspection of a
+  verifier-disabled status-only trial reproduced the underlying cause: Harbor
+  materialized the host `NamedTemporaryFile` with mode `0600` under a different
+  UID, so the task agent could not read it. The old task environment was deleted;
+  the unknown ledger entry is retained and has not been retried or rewritten.
+- The bridge now creates MCP request files as the task agent user with mode
+  `0600`. A separate status-only Harbor trial passed after this change and
+  reported zero submissions and zero queued/grading jobs; it made no model or
+  evaluator calls. This fresh task environment cannot reconcile the deleted
+  environment's old unknown request.
 - The maintainers' public-validation/private-test boundary is pinned in
   [`public-evaluator-attestation-v1.json`](public-evaluator-attestation-v1.json).
   It records immutable repository revisions and README byte digests, the v1.1
@@ -60,8 +81,9 @@ produced.
 - `harbor_agent.py` implements a Harbor `BaseAgent` and declares
   `AgentCapabilities(mcp_servers=True)`, required because Harbor merges the task's
   public ARE MCP server into custom agents and otherwise rejects the trial.
-- `are_public_mcp_client.py` allows only `submit` and `result`, and filters the
-  response before it leaves the task container.
+- `are_public_mcp_client.py` allows public `submit`, `result`, and read-only
+  `status`, classifies transport failures without recording server text, and
+  filters the response before it leaves the task container.
 - `optimization_runner.py` pins the public backend manifest to the task, version,
   MCP contract, candidate file, public output path, DEV image ID, and 42-cell
   panel; it rejects HOLDOUT and uses BananLoop's evaluator runner seam.
@@ -98,10 +120,10 @@ produced.
 
 ## Remaining work before an AutoResearchExam score
 
-1. The task-pinned DEV/VALIDATION protocol is approved in live campaign
-   `c-5ed94ff2d7dc592556dede3c68d4c0da`. Its next action is the pending owner
-   decision on the `iterative_ridge` Optimization pivot.
-2. Complete one single-task BananLoop acceptance through the safe Harbor overlay.
+1. Resolve the indeterminate public baseline ledger without resubmitting; the
+   current task container is gone, so the campaign remains incomplete.
+2. Complete Integration Verifier and public Validation on a fresh owner-approved
+   child run after the uncertainty policy and enrollment are explicit.
 3. Implement an outer durable campaign driver that creates the approved parent
    and up to five child Optimization campaigns, carries evidence between them,
    and resumes without duplicating evaluation.

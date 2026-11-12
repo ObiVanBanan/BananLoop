@@ -24,10 +24,27 @@ confirms Harbor recognizes the task configuration.
 
 ## BananLoop execution status
 
-No AutoResearchExam task has been run or scored by BananLoop from this copy. A
-Harbor `BaseAgent`, public-grader adapter, durable one-hour ledger, and isolated
-public DEV runner now exist, but the durable outer five-child campaign driver is
-not implemented.
+One approved Optimization child was run through the safe Harbor overlay on
+2026-11-12. It made one GPT-6 Luna call, created one candidate, and completed
+two repeatability runs against the public DEV panel. The candidate scored
+R² `-0.7818`, below the starter DEV baseline `-0.0017`; this is a negative
+single-candidate result, not an AutoResearchExam task score. The run stopped
+before public VALIDATION and Integration Verifier completed. Its durable record
+and logs are archived at
+`/home/sonik/bananloop-benchmark-env/runs/are-iterative-ridge-child/`.
+
+A separate resume reached a public MCP submit attempt but the task-container
+request file was unreadable because Harbor materialized the host temporary file
+with mode `0600` under a different UID. The public ledger conservatively
+records `SUBMISSION_UNKNOWN` with no ID; no automatic retry is allowed, and the
+old task container has been removed. The bridge now creates request files from
+inside the task as its agent user, still with mode `0600`. A read-only `status`
+probe passed after this fix with zero submissions and zero active jobs. The
+probe did not modify or reconcile the old submission ledger.
+
+A Harbor `BaseAgent`, public-grader adapter, durable one-hour ledger, and
+isolated public DEV runner exist, but the durable outer five-child campaign
+driver is not implemented.
 A verifier-disabled, no-model probe discovered the
 public MCP tools `submit`, `result`, and `status`; the observed schemas and
 fingerprint are in

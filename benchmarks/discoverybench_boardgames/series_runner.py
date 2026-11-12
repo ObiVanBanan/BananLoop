@@ -234,8 +234,9 @@ class BoardGamesSeriesRunner:
     def __init__(
         self, *, repo: Path, series_dir: Path, run_id: str,
         cli_prefix: Sequence[str] = ("bananloop",), model: str = "gpt-6-luna",
-        max_agent_calls: int = 8, max_model_tokens: int = 2048,
+        max_agent_calls: int = 8, max_model_tokens: int = 10_000,
         approve_up_to_calls: int = 6, manifest_path: Path = MANIFEST_PATH,
+        task_ids: Sequence[str] | None = None,
         task_timeout_seconds: int = DEADLINE_SECONDS,
         process_runner: Callable[..., Any] = subprocess.run,
         input_preflight: Callable[[Path], list[str]] = _committed_input_errors,
@@ -266,7 +267,28 @@ class BoardGamesSeriesRunner:
         self.process_runner = process_runner
         self.input_preflight = input_preflight
         self.manifest, self.manifest_bytes, self.manifest_sha256 = _load_manifest(manifest_path)
-        self.tasks = self.manifest["tasks"]
+        all_tasks = self.manifest["tasks"]
+        selected_ids = list(task_ids) if task_ids is not None else [item["task_id"] for item in all_tasks]
+        if (not selected_ids or len(selected_ids) != len(set(selected_ids))
+                or any(not isinstance(item, str) for item in selected_ids)):
+            raise ValueError("task-ids must be a nonempty list of unique manifest IDs")
+        by_id = {item["task_id"]: item for item in all_tasks}
+        if any(item not in by_id for item in selected_ids):
+            raise ValueError("task-ids contains an ID absent from the frozen manifest")
+        self.tasks = [by_id[item] for item in selected_ids]
+        try:
+            self.source_revision = subprocess.check_output(
+                ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+                stderr=subprocess.DEVNULL,
+            ).decode("ascii").strip()
+            tracked_diff = subprocess.check_output(
+                ["git", "-C", str(self.repo), "diff", "--binary", "HEAD"],
+                stderr=subprocess.DEVNULL,
+            )
+            self.working_tree_diff_sha256 = hashlib.sha256(tracked_diff).hexdigest()
+        except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+            self.source_revision = "UNKNOWN"
+            self.working_tree_diff_sha256 = "UNKNOWN"
         self.config = {
             "cli_prefix": list(self.cli_prefix),
             "model": model,
@@ -276,6 +298,9 @@ class BoardGamesSeriesRunner:
             "max_iterations": MAX_ITERATIONS,
             "deadline_seconds": DEADLINE_SECONDS,
             "task_timeout_seconds": task_timeout_seconds,
+            "task_ids": selected_ids,
+            "source_revision": self.source_revision,
+            "working_tree_diff_sha256": self.working_tree_diff_sha256,
         }
         self.identity_sha256 = _identity(
             run_id=run_id, repo=self.repo, manifest_sha256=self.manifest_sha256,
@@ -580,9 +605,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="executable or argv prefix (shell-style tokenization, not executed through a shell)")
     parser.add_argument("--model", default="gpt-6-luna")
     parser.add_argument("--max-agent-calls", type=int, default=8)
-    parser.add_argument("--max-model-tokens", type=int, default=2048)
+    parser.add_argument("--max-model-tokens", type=int, default=10_000,
+                        help="per-call token reservation; includes prompt and response usage")
     parser.add_argument("--approve-up-to-calls", type=int, default=6,
                         help="approve five Researcher iterations plus one protocol-review call")
+    parser.add_argument("--task-id", action="append", dest="task_ids",
+                        help="run only this registered task ID; repeat to select several")
     args = parser.parse_args(argv)
     try:
         runner = BoardGamesSeriesRunner(
@@ -591,6 +619,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_agent_calls=args.max_agent_calls,
             max_model_tokens=args.max_model_tokens,
             approve_up_to_calls=args.approve_up_to_calls,
+            task_ids=args.task_ids,
         )
         report = runner.run()
     except Exception as exc:

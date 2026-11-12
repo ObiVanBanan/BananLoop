@@ -147,6 +147,7 @@ def test_two_real_exploration_nodes_use_refutation_memory_and_preserve_pins(tmp_
         }
         assert set(public_input) == {
             "protocol", "role_context", "visible_documents", "instruction",
+            "available_research_memory",
         }
         assert public_input["visible_documents"] == {"README.md": "frozen source\n"}
         assert "source_repo" not in public_input
@@ -174,7 +175,8 @@ def test_two_real_exploration_nodes_use_refutation_memory_and_preserve_pins(tmp_
             selected = "matched-control"
             next_experiment = "run a matched control"
         else:
-            prior_evidence = public_input["role_context"]["evidence_refs"][0]
+            prior_memory = public_input["available_research_memory"][0]
+            prior_evidence = prior_memory["evidence_ids"][0]
             assert "refutes persistence" in public_input["role_context"]["dev_summary"]
             hypotheses = [
                 {
@@ -191,7 +193,7 @@ def test_two_real_exploration_nodes_use_refutation_memory_and_preserve_pins(tmp_
                     "falsification_condition": "The narrowed mechanism does not appear under the independent condition.",
                     "expected_evidence": "An independent observation distinguishing the narrowed mechanism.",
                     "evidence_refs": [prior_evidence],
-                    "target_claim_key": "mechanism:alpha",
+                    "target_claim_key": prior_memory["claim_key"],
                 },
             ]
             # Core should overrule this ungrounded preference using the cited refutation.
@@ -517,6 +519,11 @@ def test_later_portfolio_must_use_available_research_memory(tmp_path):
         assert len(observed) == 2
         assert observed[1]["role_context"]["evidence_refs"]
         assert "source:test-status" in observed[1]["role_context"]["dev_summary"]
+        memory = observed[1]["available_research_memory"]
+        assert len(memory) == 1
+        assert memory[0]["claim_key"] == "source:test-status"
+        assert len(memory[0]["evidence_ids"]) == 1
+        assert "Do not use artifact:// references as evidence_ids" in observed[1]["instruction"]
         assert graph.conn.execute("SELECT COUNT(*) FROM research_evidence").fetchone()[0] >= 1
     finally:
         queue.close()

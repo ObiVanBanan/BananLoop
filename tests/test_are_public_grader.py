@@ -54,12 +54,15 @@ def test_ambiguous_submit_is_durably_not_retried(tmp_path):
     def uncertain(name, _arguments):
         nonlocal attempts
         attempts += 1
-        raise TimeoutError("response lost after request may have been processed")
+        error = TimeoutError("response lost after request may have been processed")
+        error.safe_category = "http_timeout"
+        raise error
 
     grader = _grader(tmp_path, uncertain)
     with pytest.raises(PublicGraderError, match="will not be retried"):
         grader.submit_once(candidate_iteration=0, repetition=1, candidate=b"baseline")
     assert grader.get(0, 1)["state"] == "SUBMISSION_UNKNOWN"
+    assert grader.last_transport_failure_category == "http_timeout"
     with pytest.raises(PublicGraderError, match="SUBMISSION_UNKNOWN"):
         grader.submit_once(candidate_iteration=0, repetition=1, candidate=b"baseline")
     assert attempts == 1

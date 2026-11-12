@@ -8,6 +8,7 @@ and stopping after five candidate snapshots or the persisted one-hour deadline.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import shlex
@@ -134,6 +135,10 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             raise RuntimeError("ARE task driver must enforce exactly five candidate iterations")
         if not isinstance(raw["visible_path"], list) or not isinstance(raw["write_path"], list):
             raise RuntimeError("visible_path and write_path must be path arrays")
+        if not isinstance(raw.get("status_probe_only", False), bool):
+            raise RuntimeError("status_probe_only must be a boolean")
+        if raw.get("status_probe_only") is True and raw["model_call_limit"] != 0:
+            raise RuntimeError("status-only probe must have a zero model-call limit")
         if any(not isinstance(path, str) for path in (*raw["visible_path"], *raw["write_path"])):
             raise RuntimeError("visible_path and write_path entries must be strings")
         if raw.get("candidate_path", _CANDIDATE_PATH) != _CANDIDATE_PATH:
@@ -158,8 +163,8 @@ class AREBananLoopOptimizationAgent(BaseAgent):
     async def _call_public_tool(
         self, environment: BaseEnvironment, tool: str, arguments: Mapping[str, Any],
     ) -> dict[str, Any]:
-        if tool not in {"submit", "result"}:
-            raise RuntimeError("ARE bridge only permits public submit/result MCP tools")
+        if tool not in {"submit", "result", "status"}:
+            raise RuntimeError("ARE bridge only permits public submit/result and read-only status MCP tools")
         remote_request = f"/tmp/bananloop_are_request_{uuid4().hex}.json"
         request_body = {
             "tool": tool,
@@ -167,23 +172,50 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             "session_id": self._mcp_state["session_id"],
             "request_id": self._mcp_state["request_id"],
         }
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as stream:
-            json.dump(request_body, stream, sort_keys=True, separators=(",", ":"))
-            stream.flush()
-            await environment.upload_file(stream.name, remote_request)
+        encoded_request = base64.b64encode(
+            json.dumps(request_body, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        ).decode("ascii")
+        # Create the request file as the task's agent user. Harbor upload_file
+        # preserved NamedTemporaryFile's host mode 0600 but materialized it
+        # under another UID, making MCP requests unreadable inside the task.
+        write_script = (
+            "import base64,os,sys; "
+            "fd=os.open(sys.argv[1], os.O_WRONLY|os.O_CREAT|os.O_EXCL, 0o600); "
+            "os.write(fd, base64.b64decode(sys.argv[2], validate=True)); os.close(fd)"
+        )
+        command = (
+            f"python3 -c {shlex.quote(write_script)} {shlex.quote(remote_request)} "
+            f"{shlex.quote(encoded_request)} && "
+            f"python3 {shlex.quote(_REMOTE_MCP_CLIENT)} {shlex.quote(remote_request)}"
+        )
         try:
-            result = await environment.exec(
-                f"python3 {shlex.quote(_REMOTE_MCP_CLIENT)} {shlex.quote(remote_request)}",
-                timeout_sec=125,
-            )
+            result = await environment.exec(command, timeout_sec=125)
             if result.return_code != 0 or not result.stdout:
-                raise RuntimeError("ARE public MCP client exited without a sanitized response")
+                error = RuntimeError("ARE public MCP client exited without a sanitized response")
+                error.safe_category = "client_exit"
+                raise error
             try:
                 response = json.loads(result.stdout.strip().splitlines()[-1])
             except (json.JSONDecodeError, IndexError):
-                raise RuntimeError("ARE public MCP client response was not valid JSON") from None
+                error = RuntimeError("ARE public MCP client response was not valid JSON")
+                error.safe_category = "malformed_client_output"
+                raise error from None
             if not isinstance(response, dict) or response.get("transport_error"):
-                raise RuntimeError("ARE public MCP call failed; response details were withheld")
+                category = response.get("transport_category") if isinstance(response, dict) else None
+                if category not in {
+                    "http_client_error", "http_server_error", "http_timeout", "network_error",
+                    "local_io_error", "oversized_response", "malformed_response", "jsonrpc_error",
+                    "tool_error", "missing_structured_result", "invalid_request", "initialize_error",
+                    "empty_tool_response", "initialize_client_error", "notification_client_error",
+                    "tool_client_error", "request_file_error", "request_shape_error", "tool_not_allowed",
+                    "arguments_shape_error", "session_shape_error", "request_id_error",
+                    "client_internal_error", "request_file_missing", "request_file_permission",
+                    "request_file_encoding_error", "request_json_invalid",
+                }:
+                    category = "unknown_transport_error"
+                error = RuntimeError(f"ARE public MCP call failed ({category})")
+                error.safe_category = category
+                raise error
             self._mcp_state = {
                 "session_id": response.get("session_id"),
                 "request_id": response.get("request_id", 1),
@@ -211,6 +243,18 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         self, instruction: str, environment: BaseEnvironment, context: AgentContext,
     ) -> None:
         raw = self._load_config(instruction)
+        if raw.get("status_probe_only") is True:
+            status = await self._call_public_tool(environment, "status", {})
+            context.metadata = {
+                **(context.metadata or {}),
+                "bananloop_are_status_probe": {
+                    key: status[key] for key in (
+                        "status", "submissions", "queued_or_grading",
+                        "time_remaining_seconds", "total_budget_seconds",
+                    ) if key in status
+                },
+            }
+            return
         loop = asyncio.get_running_loop()
         state_dir = Path(raw["state_dir"])
         state_dir.mkdir(parents=True, exist_ok=True)
@@ -290,6 +334,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 "task_deadline_epoch": grader.deadline_epoch,
                 "candidate_iterations_used": grader.candidate_iterations_used,
                 "public_submissions": grader.submission_summary(),
+                "public_mcp_failure_category": getattr(grader, "last_transport_failure_category", None),
                 "report_path": report.get("report_path"),
             },
         }

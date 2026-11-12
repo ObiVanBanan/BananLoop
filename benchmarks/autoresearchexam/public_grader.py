@@ -51,6 +51,9 @@ class PublicAREGrader:
         self.repeatability_runs = repeatability_runs
         self.time_limit_seconds = time_limit_seconds
         self.clock = clock
+        # Safe transport classification only. Never retain server text or
+        # grader output; callers may include this category in owner reports.
+        self.last_transport_failure_category: str | None = None
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -257,10 +260,16 @@ class PublicAREGrader:
             connection.close()
 
         try:
+            self.last_transport_failure_category = None
             response = self.call_tool("submit", {"note": note})
             submission_id = self._valid_submission_id(response)
             state = "QUEUED"
         except Exception as exc:
+            category = getattr(exc, "safe_category", None)
+            self.last_transport_failure_category = (
+                category if isinstance(category, str) and len(category) <= 64
+                else "unknown_transport_error"
+            )
             self._set_state(candidate_iteration, repetition, "SUBMISSION_UNKNOWN")
             # Do not preserve transport or server text: it may contain grader output.
             raise PublicGraderError(

@@ -20,7 +20,7 @@ uv run bananloop v2 explore \
   --boardgames-task-id bg-01-strategies-tournament-win \
   --model gpt-6-luna \
   --max-agent-calls 8 \
-  --max-model-tokens 2048 \
+  --max-model-tokens 10000 \
   --max-iterations 5 \
   --deadline-seconds 3600 \
   --timeout-seconds 300 \
@@ -28,6 +28,11 @@ uv run bananloop v2 explore \
 ```
 
 The campaign's one-hour clock starts on the first approved run and persists across resume. Each model request is shortened to the remaining time; no request is started after expiry.
+`--max-model-tokens` is the per-call budget reservation and must cover prompt
+plus response usage. A 2,048-token reservation was too small for these prompts:
+live calls used about 7,400–8,100 total tokens, so campaigns stopped after two
+calls. The runner now defaults to 10,000 tokens per call; inspect actual usage
+and increase it if later iterations need more.
 
 The standalone runner executes the registered statistic and emits a content-addressed JSON result:
 
@@ -52,7 +57,7 @@ python benchmarks/discoverybench_boardgames/series_runner.py \
   --cli "uv run bananloop" \
   --model gpt-6-luna \
   --max-agent-calls 8 \
-  --max-model-tokens 2048 \
+  --max-model-tokens 10000 \
   --approve-up-to-calls 6
 ```
 
@@ -62,6 +67,11 @@ exhausted call allowance is recorded as incomplete; reaching five iterations is
 recorded as a limit stop, not a scientific success. Interrupted ambiguous tasks
 are not automatically replayed. Per-task states, token usage, and model-call
 counts remain visible in the aggregate report.
+
+To rerun selected registered tasks under a corrected budget, repeat `--task-id`
+for each one and use a new `--run-id` and `--series-dir`. The selection is
+bound to the frozen manifest and run identity; it cannot alter an existing
+series.
 
 ## Live pilot attempts
 
