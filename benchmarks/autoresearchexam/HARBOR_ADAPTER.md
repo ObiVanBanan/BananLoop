@@ -74,6 +74,11 @@ produced.
   image ID, and 42-cell panel; VALIDATION binds the public MCP endpoint and
   contract digest. Multi-case manifests are rejected before evaluation/submission,
   so the receipt cannot imply per-cell scores the backend does not return.
+- Evaluator fixtures now support a public-only `DEV` + `VALIDATION` pair as well
+  as the existing three-tier layout. Their owner-authored fixture can pin an
+  execution backend ID; the Researcher still supplies only metric intent, while
+  Core binds the backend identity and exact tier manifests into the frozen
+  protocol. This matches ARE's absence of a benchmark HOLDOUT endpoint.
 - `public_grader.py` stores the one-hour deadline, candidate digest, submission
   identity, uncertainty state, and sanitized public score in SQLite. It refuses
   automatic re-submission after ambiguous delivery and caps candidate slots at

@@ -73,9 +73,26 @@ def test_fixture_digest_is_canonical_and_rejects_model_created_hashes():
 
 def test_fixture_requires_canonical_three_tier_scope():
     payload = _fixture().model_dump(mode="json")
-    payload["tiers"] = payload["tiers"][:2]
+    payload["tiers"] = payload["tiers"][1:]
     with pytest.raises(ValueError):
         EvaluatorFixtureV1.model_validate(payload)
+
+
+def test_public_only_fixture_binds_dev_and_validation_without_holdout():
+    fixture = _fixture().model_copy(update={
+        "tiers": (_fixture().tiers[0], _fixture().tiers[2]),
+        "execution_backend_id": "autoresearchexam-public-v1",
+    })
+    intent = EvaluatorProtocolIntentV1(
+        protocol_id="public-only", version=1, metric_id="r2",
+        metric_field="r2", direction="MAXIMIZE", aggregation="MEAN",
+    )
+    draft, artifacts = fixture.bind(intent, source_snapshot_id="a" * 40)
+    assert tuple(tier.tier for tier in draft.protocol.tiers) == ("dev", "validation")
+    assert draft.protocol.execution_backend_id == "autoresearchexam-public-v1"
+    assert "core-assets/manifests/tier-0.json" in artifacts
+    assert "core-assets/manifests/tier-1.json" in artifacts
+    assert not any("holdout" in key for key in artifacts)
 
 
 def test_researcher_intent_is_bound_by_core_after_model_reply_without_asset_context():

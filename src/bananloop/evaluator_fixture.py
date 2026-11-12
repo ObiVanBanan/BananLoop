@@ -1,9 +1,10 @@
 """Owner-supplied evaluator assets with a Researcher-proposed metric intent.
 
-A fixture carries executable evaluator bytes and sealed case inputs, but not a
+A fixture carries evaluator bytes and public or sealed case inputs, but not a
 parent EvaluatorProtocolV1. Core binds an intent from the Researcher to the
 trusted fixture, then publishes the resulting content-addressed bundle,
-manifests, and inputs after the model call has completed.
+manifests, and inputs after the model call has completed. A benchmark without
+HOLDOUT may pin only DEV and VALIDATION; a three-tier fixture remains supported.
 """
 from __future__ import annotations
 
@@ -77,15 +78,21 @@ class EvaluatorFixtureV1(BaseModel):
 
     schema_version: Literal[1] = 1
     evaluator_bundle_base64: str = Field(min_length=4)
+    execution_backend_id: str | None = Field(
+        default=None, pattern=r"^[a-z0-9][a-z0-9._:-]{0,119}$",
+    )
     entrypoint: tuple[str, ...] = Field(min_length=1, max_length=64)
-    tiers: tuple[EvaluatorFixtureTierV1, ...] = Field(min_length=3, max_length=3)
+    tiers: tuple[EvaluatorFixtureTierV1, ...] = Field(min_length=2, max_length=3)
 
     @field_validator("tiers")
     @classmethod
     def all_tiers(cls, values: tuple[EvaluatorFixtureTierV1, ...]):
         names = tuple(item.tier for item in values)
-        if names != ("dev", "holdout", "validation"):
-            raise ValueError("fixture tiers must be ordered dev, holdout, validation")
+        if names not in {
+            ("dev", "holdout", "validation"),
+            ("dev", "validation"),
+        }:
+            raise ValueError("fixture tiers must be ordered dev, validation, with optional holdout")
         return values
 
     @model_validator(mode="after")
@@ -138,13 +145,14 @@ class EvaluatorFixtureV1(BaseModel):
             protocol_id=intent.protocol_id, version=intent.version,
             source_snapshot_id=source_snapshot_id,
             evaluator_bundle_sha256=bundle_digest,
+            execution_backend_id=self.execution_backend_id,
             entrypoint=self.entrypoint,
             metric_id=intent.metric_id, metric_field=intent.metric_field,
             direction=intent.direction, aggregation=intent.aggregation,
             tiers=tuple(EvaluatorTierManifestV1(
-                tier=name, manifest_sha256="0" * 64,
-                case_count=len(next(item for item in self.tiers if item.tier == name).cases),
-            ) for name in ("dev", "holdout", "validation")),
+                tier=tier.tier, manifest_sha256="0" * 64,
+                case_count=len(tier.cases),
+            ) for tier in self.tiers),
             repeatability_runs=intent.repeatability_runs,
             timeout_seconds=intent.timeout_seconds,
         )
