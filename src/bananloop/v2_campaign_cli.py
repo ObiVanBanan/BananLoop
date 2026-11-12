@@ -97,10 +97,13 @@ def _read_paths(repo: Path, paths: list[str]) -> tuple[str, ...]:
     return tuple(sorted(normalized))
 
 
-def _researcher_input_fields(*, allow_registered_experiments: bool) -> frozenset[str]:
+def _researcher_input_fields(*, allow_registered_experiments: bool,
+                             require_protocol_intent: bool = False) -> frozenset[str]:
     fields = {"protocol", "role_context", "visible_documents", "instruction"}
     if allow_registered_experiments:
         fields.add("registered_experiments")
+    if require_protocol_intent:
+        fields.add("requires_protocol_intent")
     return frozenset(fields)
 
 
@@ -1037,6 +1040,7 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             call_observer=lambda receipt: observe_call("researcher", receipt),
             input_fields=_researcher_input_fields(
                 allow_registered_experiments=experiment_executor is not None,
+                require_protocol_intent=fixture is not None,
             ),
         )
         try:

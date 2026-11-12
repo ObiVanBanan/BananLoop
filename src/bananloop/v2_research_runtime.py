@@ -206,13 +206,16 @@ def make_researcher_invoke(
                 + ("\nA trusted evaluator fixture is available. In this first response, "
                    "you MUST include protocol_intent with protocol_id, "
                    "version, metric_id, metric_field, direction, aggregation, "
-                   "repeatability_runs, and timeout_seconds. This is mandatory, not "
+                   "repeatability_runs (integer from 2 to 10), and timeout_seconds "
+                   "(integer from 1 to 3600). This is mandatory, not "
                    "optional. Do not return a full "
                    "protocol_draft, hashes, manifests, evaluator code, or tier inputs; "
                    "Core binds those from the owner-supplied fixture after your response."
                    if protocol_binder is not None else "")
             ),
         }
+        if protocol_binder is not None:
+            public_input["requires_protocol_intent"] = True
         if experiment_executor is not None:
             prior_summary = str(role_context.get("dev_summary", ""))
             completed_ids = set(re.findall(

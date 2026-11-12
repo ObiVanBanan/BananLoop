@@ -343,6 +343,40 @@ def test_registered_experiment_catalog_is_opt_in_to_researcher_transport(tmp_pat
     assert hypothesis["properties"]["experiment_id"]["enum"] == ["primary_association"]
 
 
+def test_fixture_protocol_intent_is_required_and_strictly_bounded(tmp_path):
+    auth, _http = _auth(tmp_path)
+    _connect(auth)
+    conn = FakeConnection(_finished())
+    public = {
+        "protocol": "rpdi13r-researcher-one-shot-v1",
+        "role_context": {"public_task": "optimize public dev score"},
+        "visible_documents": {"README.md": "public task"},
+        "instruction": "include a protocol intent",
+        "requires_protocol_intent": True,
+    }
+    researcher = ChatGPTPlanResearcher(
+        auth, approved_model="gpt-6-luna", transport_factory=lambda *args, **kwargs: conn,
+        input_fields=frozenset(public),
+    )
+    researcher(
+        public, provider="openai", model="gpt-6-luna", model_version="siwc-v1",
+        prompt_digest="a" * 64, max_model_tokens=100,
+    )
+    output_schema = conn.sent[0][2]["text"]["format"]["schema"]
+    assert output_schema["additionalProperties"] is False
+    assert output_schema["required"] == [
+        "hypotheses", "selected_hypothesis_id", "research_findings", "protocol_intent",
+    ]
+    intent = output_schema["properties"]["protocol_intent"]
+    assert intent["required"] == [
+        "protocol_id", "version", "metric_id", "metric_field", "direction",
+        "aggregation", "repeatability_runs", "timeout_seconds",
+    ]
+    assert intent["properties"]["repeatability_runs"] == {
+        "type": "integer", "minimum": 2, "maximum": 10,
+    }
+
+
 def test_research_prompt_states_exact_lowercase_candidate_id_contract():
     assert "^[a-z0-9][a-z0-9_-]{0,79}$" in INSTRUCTIONS
     assert "never H1_mediated_effect" in INSTRUCTIONS

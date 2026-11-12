@@ -180,6 +180,82 @@ def _registered_research_response_format(registered: list[dict[str, str]]) -> di
     }}
 
 
+def _fixture_research_response_format() -> dict[str, Any]:
+    candidate = {
+        "type": "object", "additionalProperties": False,
+        "required": [
+            "id", "hypothesis", "rationale", "next_experiment",
+            "falsification_condition", "expected_evidence", "experiment_id",
+            "evidence_refs", "target_claim_key",
+        ],
+        "properties": {
+            "id": {"type": "string", "pattern": r"^[a-z0-9][a-z0-9_-]{0,79}$"},
+            "hypothesis": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "rationale": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "next_experiment": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "falsification_condition": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "expected_evidence": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "experiment_id": {"anyOf": [
+                {"type": "string", "pattern": r"^[a-z][a-z0-9_-]{0,79}$"},
+                {"type": "null"},
+            ]},
+            "evidence_refs": {"type": "array", "maxItems": 16,
+                              "items": {"type": "string"}},
+            "target_claim_key": {"anyOf": [
+                {"type": "string", "pattern": r"^[a-z][a-z0-9_.:-]{0,119}$"},
+                {"type": "null"},
+            ]},
+        },
+    }
+    finding = {
+        "type": "object", "additionalProperties": False,
+        "required": ["claim_key", "statement", "stance", "kind", "confidence"],
+        "properties": {
+            "claim_key": {"type": "string", "pattern": r"^[a-z][a-z0-9_.:-]{0,119}$"},
+            "statement": {"type": "string", "minLength": 1, "maxLength": 2000},
+            "stance": {"type": "string", "enum": ["SUPPORTS", "REFUTES", "UNCERTAIN"]},
+            "kind": {"type": "string", "enum": ["OBSERVATION", "CAUSAL_INFERENCE"]},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+    }
+    intent = {
+        "type": "object", "additionalProperties": False,
+        "required": [
+            "protocol_id", "version", "metric_id", "metric_field", "direction",
+            "aggregation", "repeatability_runs", "timeout_seconds",
+        ],
+        "properties": {
+            "protocol_id": {"type": "string", "pattern": r"^[a-z0-9][a-z0-9._:-]{0,119}$"},
+            "version": {"type": "integer", "minimum": 1},
+            "metric_id": {"type": "string", "pattern": r"^[a-z][a-z0-9_.:-]{0,119}$"},
+            "metric_field": {"type": "string", "pattern": r"^[a-z][a-z0-9_.:-]{0,119}$"},
+            "direction": {"type": "string", "enum": ["MAXIMIZE", "MINIMIZE"]},
+            "aggregation": {"type": "string", "enum": ["MEAN", "MEDIAN", "MIN", "MAX"]},
+            "repeatability_runs": {"type": "integer", "minimum": 2, "maximum": 10},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+        },
+    }
+    return {"format": {
+        "type": "json_schema", "name": "bananloop_fixture_research_v1",
+        "strict": True,
+        "schema": {
+            "type": "object", "additionalProperties": False,
+            "required": [
+                "hypotheses", "selected_hypothesis_id", "research_findings",
+                "protocol_intent",
+            ],
+            "properties": {
+                "hypotheses": {"type": "array", "minItems": 2, "maxItems": 4,
+                                "items": candidate},
+                "selected_hypothesis_id": {"type": "string", "minLength": 1, "maxLength": 100},
+                "research_findings": {"type": "array", "minItems": 1, "maxItems": 64,
+                                      "items": finding},
+                "protocol_intent": intent,
+            },
+        },
+    }}
+
+
 class ChatGPTPlanResponseError(SIWCError):
     """An authorized subscription request failed or had no terminal result."""
 
@@ -326,6 +402,11 @@ class ChatGPTPlanResearcher:
             raise SIWCError("untrusted or unversioned pinned-role input")
         if set(public_input) != self.input_fields:
             raise SIWCError("pinned-role model input contains non-approved fields")
+        requires_protocol_intent = public_input.get("requires_protocol_intent", False)
+        if type(requires_protocol_intent) is not bool:
+            raise SIWCError("fixture protocol-intent flag must be boolean")
+        if requires_protocol_intent and "registered_experiments" in public_input:
+            raise SIWCError("fixture and registered-experiment output modes cannot be combined")
         request_timeout = self.timeout_seconds if timeout_seconds is None else timeout_seconds
         if (isinstance(request_timeout, bool) or not isinstance(request_timeout, int)
                 or not 1 <= request_timeout <= self.timeout_seconds):
@@ -342,7 +423,9 @@ class ChatGPTPlanResearcher:
             ],
             "store": False, "stream": True,
         }
-        if "registered_experiments" in public_input:
+        if requires_protocol_intent:
+            body["text"] = _fixture_research_response_format()
+        elif "registered_experiments" in public_input:
             registered = public_input["registered_experiments"]
             if (not isinstance(registered, list) or not registered
                     or any(not isinstance(item, dict)
