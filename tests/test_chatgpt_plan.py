@@ -334,6 +334,13 @@ def test_registered_experiment_catalog_is_opt_in_to_researcher_transport(tmp_pat
     request_json = conn.sent[0][2]
     model_input = json.loads(request_json["input"][1]["content"])
     assert model_input["registered_experiments"] == catalog
+    output_format = request_json["text"]["format"]
+    assert output_format["type"] == "json_schema"
+    assert output_format["strict"] is True
+    assert output_format["schema"]["additionalProperties"] is False
+    hypothesis = output_format["schema"]["properties"]["hypotheses"]["items"]
+    assert "falsification_condition" in hypothesis["required"]
+    assert hypothesis["properties"]["experiment_id"]["enum"] == ["primary_association"]
 
 
 def test_research_prompt_states_exact_lowercase_candidate_id_contract():

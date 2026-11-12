@@ -126,6 +126,59 @@ MAX_EVENT_BYTES = 512_000
 MAX_INPUT_BYTES = 512_000
 
 
+def _registered_research_response_format(registered: list[dict[str, str]]) -> dict[str, Any]:
+    ids = sorted(item["id"] for item in registered)
+    candidate = {
+        "type": "object", "additionalProperties": False,
+        "required": [
+            "id", "hypothesis", "rationale", "next_experiment",
+            "falsification_condition", "expected_evidence", "experiment_id",
+            "evidence_refs", "target_claim_key",
+        ],
+        "properties": {
+            "id": {"type": "string", "pattern": r"^[a-z0-9][a-z0-9_-]{0,79}$"},
+            "hypothesis": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "rationale": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "next_experiment": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "falsification_condition": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "expected_evidence": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "experiment_id": {"type": "string", "enum": ids},
+            "evidence_refs": {"type": "array", "maxItems": 16,
+                              "items": {"type": "string"}},
+            "target_claim_key": {"anyOf": [
+                {"type": "string", "pattern": r"^[a-z][a-z0-9_.:-]{0,119}$"},
+                {"type": "null"},
+            ]},
+        },
+    }
+    finding = {
+        "type": "object", "additionalProperties": False,
+        "required": ["claim_key", "statement", "stance", "kind", "confidence"],
+        "properties": {
+            "claim_key": {"type": "string", "pattern": r"^[a-z][a-z0-9_.:-]{0,119}$"},
+            "statement": {"type": "string", "minLength": 1, "maxLength": 2000},
+            "stance": {"type": "string", "enum": ["SUPPORTS", "REFUTES", "UNCERTAIN"]},
+            "kind": {"type": "string", "enum": ["OBSERVATION", "CAUSAL_INFERENCE"]},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+    }
+    return {"format": {
+        "type": "json_schema", "name": "bananloop_registered_research_v1",
+        "strict": True,
+        "schema": {
+            "type": "object", "additionalProperties": False,
+            "required": ["hypotheses", "selected_hypothesis_id", "research_findings"],
+            "properties": {
+                "hypotheses": {"type": "array", "minItems": 2, "maxItems": 4,
+                                "items": candidate},
+                "selected_hypothesis_id": {"type": "string", "minLength": 1, "maxLength": 100},
+                "research_findings": {"type": "array", "minItems": 1, "maxItems": 64,
+                                      "items": finding},
+            },
+        },
+    }}
+
+
 class ChatGPTPlanResponseError(SIWCError):
     """An authorized subscription request failed or had no terminal result."""
 
@@ -288,6 +341,18 @@ class ChatGPTPlanResearcher:
             ],
             "store": False, "stream": True,
         }
+        if "registered_experiments" in public_input:
+            registered = public_input["registered_experiments"]
+            if (not isinstance(registered, list) or not registered
+                    or any(not isinstance(item, dict)
+                           or set(item) != {"id", "description"}
+                           or not isinstance(item.get("id"), str)
+                           or not item["id"]
+                           or not isinstance(item.get("description"), str)
+                           for item in registered)
+                    or len({item["id"] for item in registered}) != len(registered)):
+                raise SIWCError("registered research catalog is malformed")
+            body["text"] = _registered_research_response_format(registered)
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
         if len(payload) > MAX_INPUT_BYTES:
             raise SIWCError("research request exceeds bounded input bytes")

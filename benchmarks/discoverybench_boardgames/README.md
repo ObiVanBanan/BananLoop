@@ -159,3 +159,13 @@ execution receipt. No fifth model call was dispatched. Core now reserves the
 that namespace to prevent repeats; ordinary `experiment.*` Researcher claims
 cannot consume catalog entries. The full offline suite passed at 100% with two
 skips and isolated pytest state.
+
+The `0638914` smoke used three Luna calls (20,053 input and 3,484 output tokens)
+and stopped before an analysis because all three candidate hypotheses omitted
+the required `falsification_condition`. No response body was persisted and the
+campaign is not replayed. The SIWC transport now requests strict Structured
+Outputs only for inputs containing Core's registered analysis catalog. Its
+schema requires every hypothesis field and restricts `experiment_id` to the
+currently available catalog IDs. Ordinary SIWC researcher requests retain the
+existing JSON transport. Focused transport tests and the complete offline suite
+pass; the next fresh live smoke is required to confirm provider compatibility.
