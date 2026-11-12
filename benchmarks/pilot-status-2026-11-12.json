@@ -4,10 +4,10 @@
     "benchmark": "AutoResearchExam v1.1",
     "public_baseline_probe_is_bananloop_result": false,
     "remaining_runtime_gaps": [
-      "stage pinned public-validation attestation and exact score-affecting ARE backend source into live review context, obtain independent protocol approval, and settle durable Core receipt",
-      "durable outer driver for up to five Optimization candidates/children",
-      "independently approved task-specific evaluator protocol and candidate/output mapping for all ten tasks",
-      "single-task BananLoop acceptance run before ten-task campaign"
+      "run independent review of the newly staged digest-bound backend bundle and public attestation; obtain an approved task-specific protocol",
+      "prepare and approve the Optimization pivot, then run one single-task BananLoop acceptance through the safe Harbor overlay",
+      "durable outer driver and task/output mappings for a reproducible ten-task AutoResearchExam pilot",
+      "single-task acceptance has not yet completed"
     ],
     "public_protocol_review_evidence": {
       "attestation_path": "benchmarks/autoresearchexam/public-evaluator-attestation-v1.json",
@@ -138,6 +138,32 @@
       "grader_calls": 0,
       "private_grader_or_holdout_accessed": false,
       "classification": "public DEV baseline only; not a BananLoop result"
+    },
+    "fixture_preparation": {
+      "status": "PREPARED_NOT_LIVE",
+      "builder": "benchmarks/autoresearchexam/build_public_fixture.py",
+      "fixture_path": "/tmp/bananloop-are-public-imputation-v3-fixture.json",
+      "fixture_sha256": "918058c8fc2f82f5c19ed41963fb0f239c449a7ccbbebf672ac8ca0845d2b25f",
+      "backend_id": "autoresearchexam-public-v2",
+      "task_id": "budgeted-imputation-mcar50",
+      "protocol_tiers": [
+        "dev",
+        "validation"
+      ],
+      "bundle_entries": [
+        "are-public-backend.json",
+        "public-mcp-contract.json",
+        "public_devkit.py",
+        "task-devkit.py"
+      ],
+      "bundle_bytes": 7304,
+      "review_context_chars": 24538,
+      "review_context_limit_chars": 32000,
+      "public_runner_sha256": "b70109db31f73b7cecf48270efa5de4a008720e13b8cf48564d61894787114cb",
+      "task_devkit_sha256": "b779f0bb77562c0b43a19ab0a12b4917f101a51e67ff72343ad50058cdcba27c",
+      "private_grader_accessed": false,
+      "protocol_reviewed_or_approved": false,
+      "live_model_or_grader_calls": 0
     }
   },
   "boardgames": {
@@ -502,24 +528,24 @@
   },
   "schema": "bananloop-benchmark-pilot-status-v1",
   "verification": {
-    "collected": 1103,
+    "collected": 1104,
     "exit_code": 0,
     "failed": 0,
     "focused_overlay_tests": "6 passed",
     "git_diff_check": "passed",
-    "passed": 1101,
+    "passed": 1102,
     "pytest_log": "not captured to a file; terminal exit code and .pytest_cache lastfailed=0 verified",
     "skipped": 2,
     "focused_public_dev_tests": "32 passed",
-    "latest_full_suite": "source revision 017da16c877db4e21cd72aff1538088cffffe46a; 1,103 collected, 1,101 passed, 2 skipped, exit code 0; isolated basetemp /tmp/bananloop-pytest-pr141-20261112-r7",
-    "full_suite_run": "source revision after SIWC registered-experiment allowlist and structured next_experiment normalization fixes, attestation staging, and sequential Board Games series runner",
-    "latest_focused_suite": "tests/test_chatgpt_plan.py passed after strict registered-research JSON schema change"
+    "latest_full_suite": "source revision 022df229d9133f8e84933de12fe51737cf593e69; 1,104 collected, 1,102 passed, 2 skipped, exit code 0; isolated basetemp /tmp/bananloop-pytest-pr141-20261112-r10",
+    "full_suite_run": "latest committed source plus fixture builder, public-only two-tier protocol support, exact source-bound ARE review bundle, and Board Games strict output schema",
+    "latest_focused_suite": "31 ARE public fixture, runner, evaluator fixture, and protocol review tests passed"
   },
   "worktree": {
     "branch": "codex/autoresearchexam-verifier-evidence",
     "changes_committed": true,
-    "head": "017da16c877db4e21cd72aff1538088cffffe46a",
+    "head": "022df229d9133f8e84933de12fe51737cf593e69",
     "path": "/home/sonik/Проекты/BananLoop-ARE-work-copy",
-    "test_state": "latest full suite ran against source committed at 017da16; unrelated pre-existing untracked .agents/skills and openspec directories remain untouched"
+    "test_state": "full offline suite passed at HEAD 022df22; unrelated pre-existing untracked .agents/skills and openspec directories remain untouched"
   }
 }

@@ -177,9 +177,10 @@ uv run python -m benchmarks.autoresearchexam.build_public_fixture \
   --out "$HOME/bananloop-benchmark-env/are-public-imputation-fixture-v2.json"
 ```
 
-The worktree is based on `559621dfa0e9e230b3dd5257399b6baa88bfbade` and contains
-uncommitted changes. The latest full suite passed: 1,092 collected, 1,090
-passed, 2 skipped, exit code 0. The targeted ARE/overlay suite passed 32 tests.
+The current source revision is `022df229d9133f8e84933de12fe51737cf593e69` on
+`codex/autoresearchexam-verifier-evidence`. The full offline suite passed on that
+revision: 1,104 collected, 1,102 passed, 2 skipped, exit code 0. The focused
+ARE fixture, runner, and protocol-review tests passed: 31 tests.
 The combined benchmark status and public DEV smoke record are in
 [`../pilot-status-2026-11-12.json`](../pilot-status-2026-11-12.json) and
 [`public-devkit-smoke-2026-11-12.json`](public-devkit-smoke-2026-11-12.json).
