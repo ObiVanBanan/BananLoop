@@ -132,7 +132,7 @@ class AREPublicCARPSEvaluatorRunner(AREPublicEvaluatorRunner):
                 "metric_field": METRIC_FIELD,
                 "metric_direction": METRIC_DIRECTION,
                 "metric_source": DEV_METRIC_SOURCE,
-                "metric_transform": "dev_metric = -mean(exact_linf_star_discrepancy)",
+                "metric_transform": "dev_score = -mean_exact_linf_star_discrepancy",
                 "public_panel_sha256": PUBLIC_PANEL_DIGEST,
                 "public_examples_manifest_sha256": EXAMPLES_MANIFEST_SHA256,
                 "public_example_count": 8,
@@ -175,7 +175,7 @@ class AREPublicCARPSEvaluatorRunner(AREPublicEvaluatorRunner):
         )
         if response.get("status") != "GRADED" or response.get("panel_count") != 8:
             raise PublicCARPSEvaluatorError("CARPS public example panel did not produce a complete score")
-        score = response.get("dev_metric")
+        score = response.get("mean_exact_linf_star_discrepancy")
         if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
             raise PublicCARPSEvaluatorError("CARPS public panel score is invalid")
         return {"status": "GRADED", "dev_score": -float(score), "dev_cells": 8}
@@ -246,7 +246,10 @@ class AREPublicCARPSEvaluatorRunner(AREPublicEvaluatorRunner):
                     "metric_field": METRIC_FIELD,
                     "metric_direction": METRIC_DIRECTION,
                     "dev_metric_source": DEV_METRIC_SOURCE,
-                    "dev_metric_transform": "negative mean exact L-infinity star discrepancy",
+                    "dev_metric_transform": (
+                        "dev_score = -mean_exact_linf_star_discrepancy; the public DEV "
+                        "runner returns the positive lower-is-better raw mean"
+                    ),
                     "validation_metric_source": VALIDATION_METRIC_SOURCE,
                     "validation_result_field": "validation_score",
                     "validation_metric_semantics": VALIDATION_METRIC_SEMANTICS,

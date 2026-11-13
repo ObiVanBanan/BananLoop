@@ -196,7 +196,10 @@ def build_fixture(
         "metric_field": METRIC_FIELD,
         "metric_direction": METRIC_DIRECTION,
         "dev_metric_source": DEV_METRIC_SOURCE,
-        "dev_metric_transform": "negative mean exact L-infinity star discrepancy",
+        "dev_metric_transform": (
+            "dev_score = -mean_exact_linf_star_discrepancy; the public DEV runner "
+            "returns the positive lower-is-better raw mean"
+        ),
         "validation_metric_source": VALIDATION_METRIC_SOURCE,
         "validation_metric_semantics": VALIDATION_METRIC_SEMANTICS,
         "validation_result_field": "validation_score",

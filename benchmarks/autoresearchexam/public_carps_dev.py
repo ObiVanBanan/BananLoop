@@ -472,5 +472,7 @@ def evaluate_carps_public_dev(
         "panel_count": len(metrics),
         "metric_name": "mean_exact_linf_star_discrepancy",
         "metric_direction": "lower_is_better",
-        "dev_metric": aggregate,
+        # Keep this raw positive value distinct from the MAXIMIZE score emitted
+        # by the protocol adapter, which negates it exactly once.
+        "mean_exact_linf_star_discrepancy": aggregate,
     }
