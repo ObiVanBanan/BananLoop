@@ -78,6 +78,17 @@ def _digest(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _task_file_hashes(task_toml_raw: bytes, task_files: dict[str, bytes]) -> dict[str, str]:
+    """Pin task.toml alongside its public Docker inputs in the backend manifest."""
+    names = ("task-Dockerfile", "task-requirements.txt")
+    if any(not isinstance(task_files.get(name), bytes) for name in names):
+        raise ValueError("public task Docker inputs are missing from the fixture")
+    return {
+        "task.toml": _digest(task_toml_raw),
+        **{name: _digest(task_files[name]) for name in names},
+    }
+
+
 def _atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("wb", dir=path.parent, delete=False) as stream:
@@ -172,10 +183,7 @@ def build_fixture(
         raise ValueError("local public DEV runner changed while building the fixture")
 
     cls = AREPublicShortestCIEvaluatorRunner
-    task_file_hashes = {
-        name: _digest(task_files[name])
-        for name in ("task-Dockerfile", "task-requirements.txt")
-    }
+    task_file_hashes = _task_file_hashes(task_toml_raw, task_files)
     runtime_manifest_names = {
         "public_runner_sha256": "public_shortest_ci_dev.py",
         "public_devkit_sha256": "public_devkit.py",

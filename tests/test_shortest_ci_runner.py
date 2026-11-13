@@ -2,6 +2,7 @@ import json
 
 from benchmarks.autoresearchexam.build_shortest_ci_fixture import (
     VALIDATION_METRIC_SEMANTICS,
+    _task_file_hashes,
 )
 from benchmarks.autoresearchexam.public_shortest_ci_dev import (
     EXPECTED_SETTINGS,
@@ -38,3 +39,18 @@ def test_shortest_ci_protocol_uses_task_raw_lower_is_better_metric():
     assert dev["public_metric_direction"] == "MINIMIZE"
     assert "coverage is below 0.88" in dev["measurement"]
     assert "higher-is-better" not in validation["measurement"]
+
+
+def test_shortest_ci_fixture_pins_task_toml_and_public_docker_inputs():
+    import hashlib
+
+    values = {
+        "task.toml": b"[task]\nversion = '1.1.0'\n",
+        "task-Dockerfile": b"FROM python:3.12\n",
+        "task-requirements.txt": b"numpy\nscipy\n",
+    }
+    actual = _task_file_hashes(
+        values["task.toml"],
+        {key: value for key, value in values.items() if key != "task.toml"},
+    )
+    assert actual == {key: hashlib.sha256(value).hexdigest() for key, value in values.items()}
