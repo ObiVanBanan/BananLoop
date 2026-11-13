@@ -57,6 +57,12 @@ def _required_optimization_evaluator_calls(
     return (3 + int(has_holdout)) * repeatability_runs
 
 
+def _minimum_fixture_optimization_evaluator_calls(fixture: EvaluatorFixtureV1) -> int:
+    """Return the cheapest complete one-candidate lifecycle allowed by a fixture."""
+    has_holdout = any(tier.tier == "holdout" for tier in fixture.tiers)
+    return _required_optimization_evaluator_calls(2, has_holdout=has_holdout)
+
+
 def _git(repo: Path, *args: str) -> str:
     try:
         return subprocess.check_output(
@@ -989,6 +995,15 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             fixture = EvaluatorFixtureV1.load(fixture_path_arg)
         except ValueError as exc:
             raise V2CampaignCLIError(f"--evaluator-fixture is invalid: {exc}") from exc
+    if fixture is not None and write_paths:
+        minimum_evaluator_calls = _minimum_fixture_optimization_evaluator_calls(fixture)
+        configured_evaluator_calls = getattr(args, "max_evaluator_calls", 16)
+        if configured_evaluator_calls < minimum_evaluator_calls:
+            raise V2CampaignCLIError(
+                "--max-evaluator-calls is too low for a complete one-candidate lifecycle "
+                f"with the selected evaluator fixture; minimum is {minimum_evaluator_calls} "
+                "at repeatability=2"
+            )
     spec, roles, _policy = _build_spec(
         repo, goal, paths, max_agent_calls=args.max_agent_calls,
         max_model_tokens=args.max_model_tokens, model=args.model,

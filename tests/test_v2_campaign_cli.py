@@ -24,6 +24,7 @@ from bananloop.v2_campaign_cli import (
     _protocol_review_terminal_status,
     _researcher_input_fields, _stage_protocol_review_attestation,
     _required_optimization_evaluator_calls,
+    _minimum_fixture_optimization_evaluator_calls,
     _safe_failure_diagnostics,
     run_v2_explore,
 )
@@ -242,6 +243,16 @@ def test_one_candidate_optimization_budget_covers_all_trusted_tiers(repeats, exp
 @pytest.mark.parametrize(("repeats", "expected"), [(2, 6), (3, 9), (10, 30)])
 def test_public_only_optimization_budget_does_not_reserve_private_holdout(repeats, expected):
     assert _required_optimization_evaluator_calls(repeats, has_holdout=False) == expected
+
+
+@pytest.mark.parametrize(("tiers", "expected"), [
+    ((SimpleNamespace(tier="dev"), SimpleNamespace(tier="validation")), 6),
+    ((SimpleNamespace(tier="dev"), SimpleNamespace(tier="validation"),
+      SimpleNamespace(tier="holdout")), 8),
+])
+def test_fixture_parent_budget_minimum_includes_optional_holdout(tiers, expected):
+    fixture = SimpleNamespace(tiers=tiers)
+    assert _minimum_fixture_optimization_evaluator_calls(fixture) == expected
 
 
 @pytest.mark.parametrize("repeats", [True, 1, 11, 3.0])
