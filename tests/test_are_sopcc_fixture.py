@@ -95,6 +95,10 @@ def test_sopcc_fixture_binds_public_task_and_backend_without_private_assets(tmp_
     )
     reviewed_sources = review["evaluator_source_files"]
     assert any(item["path"] == "task-runner.py" for item in reviewed_sources)
+    sopcc_source = next(item["content"] for item in reviewed_sources
+                        if item["path"] == "sopcc_runner.py")
+    assert "def normalize_sopcc_dev_result" in sopcc_source
+    assert '"dev_score": float(score), "dev_cells": episodes' in sopcc_source
     assert sum(len(item["content"]) for item in reviewed_sources) > 88_000
     context = json.dumps(review, separators=(",", ":"))
     assert len(context) <= 180_000
@@ -102,4 +106,16 @@ def test_sopcc_fixture_binds_public_task_and_backend_without_private_assets(tmp_
         role_id="independent_verifier", campaign_goal="Review public evaluator",
         public_task=context,
     )
+
+
+def test_sopcc_public_validation_attestation_pins_task_and_official_sources():
+    attestation_path = ROOT / "benchmarks/autoresearchexam/public-evaluator-attestation-sopcc-v1.json"
+    attestation = json.loads(attestation_path.read_text())
+    assert attestation["scope"]["task_id"] == TASK_ID
+    assert attestation["scope"]["task_version"] == TASK_VERSION
+    assert attestation["scope"]["not_claimed"] == (
+        "cryptographic_proof_of_server_implementation_or_split_enforcement"
+    )
+    assert len(attestation_path.read_bytes()) <= 4096
+    assert attestation["sources"][0]["commit"] == "23c0d92e11af1dea821f972b5f0a739060958002"
 

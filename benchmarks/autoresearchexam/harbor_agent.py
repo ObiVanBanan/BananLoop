@@ -31,7 +31,7 @@ from bananloop.trusted_evaluator import TrustedEvaluatorError
 from bananloop.v2_optimization_cli import run_v2_optimize
 
 from .optimization_runner import AREPublicEvaluatorRunner
-from .sopcc_runner import AREPublicSOPCCEvaluatorRunner
+from .sopcc_runner import AREPublicSOPCCEvaluatorRunner, normalize_sopcc_dev_result
 from .carps_runner import AREPublicCARPSEvaluatorRunner
 from .dctabeval_runner import AREPublicDCTABEvalEvaluatorRunner
 from .shortest_ci_runner import AREPublicShortestCIEvaluatorRunner
@@ -501,10 +501,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                         episodes_per_instance=AREPublicSOPCCEvaluatorRunner.dev_episodes_per_instance,
                         workers=1,
                     )
-                    return {
-                        "status": result["status"], "dev_score": result["metric"],
-                        "dev_cells": result["episodes"],
-                    }
+                    return normalize_sopcc_dev_result(result)
                 if adapter_id == "shortest-ci-public-v1":
                     return run_public_shortest_ci_dev(
                         candidate,

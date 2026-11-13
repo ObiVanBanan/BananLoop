@@ -1319,6 +1319,10 @@ def _build_protocol_review_material(
         public_attestations.append({
             "artifact_sha256": digest,
             "content": summary,
+            "sources": [
+                {key: source[key] for key in ("url", "commit", "sha256")}
+                for source in sources[:8]
+            ],
         })
         if len(public_attestations) >= 2:
             break

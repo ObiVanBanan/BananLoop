@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import zipfile
 from pathlib import Path
 from typing import Any, Mapping
@@ -16,6 +17,25 @@ from bananloop.trusted_evaluator import (
 
 from .optimization_runner import AREPublicEvaluatorRunner
 from .public_mcp_contract import validate_public_mcp_contract
+
+
+def normalize_sopcc_dev_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Map the public SOPCC runner receipt to the shared evaluator contract.
+
+    The mapping is part of the digest-bound evaluator source so the independent
+    protocol reviewer can verify that the episode aggregate returned by the
+    public task harness is the score actually recorded by BananLoop.
+    """
+    if not isinstance(result, Mapping) or result.get("status") != "GRADED":
+        raise ValueError("public SOPCC DEV result is not terminal")
+    score = result.get("metric")
+    episodes = result.get("episodes")
+    if (isinstance(score, bool) or not isinstance(score, (int, float))
+            or not math.isfinite(score)
+            or isinstance(episodes, bool) or not isinstance(episodes, int)
+            or episodes != AREPublicSOPCCEvaluatorRunner.default_dev_cell_count):
+        raise ValueError("public SOPCC DEV result has an invalid aggregate or episode count")
+    return {"status": "GRADED", "dev_score": float(score), "dev_cells": episodes}
 
 
 class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
@@ -83,7 +103,7 @@ class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
         if hashlib.sha256(bundle).hexdigest() != protocol.evaluator_bundle_sha256:
             raise TrustedEvaluatorError("SOPCC evaluator bundle digest differs from approved protocol")
         expected_names = {
-            "are-public-sopcc-backend.json", "public_sopcc_dev.py", "public_devkit.py",
+            "are-public-sopcc-backend.json", "public_sopcc_dev.py",
             "optimization_runner.py", "public_grader.py", "are_public_mcp_client.py",
             "sopcc_runner.py", "public_mcp_contract.py",
             "public-mcp-contract.json", "task-instruction.md", "task-Dockerfile",
@@ -99,7 +119,6 @@ class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
                 contract = validate_public_mcp_contract(json.loads(contract_bytes))
                 source_pairs = {
                     "public_sopcc_dev.py": Path(__file__).with_name("public_sopcc_dev.py").read_bytes(),
-                    "public_devkit.py": Path(__file__).with_name("public_devkit.py").read_bytes(),
                     "optimization_runner.py": Path(__file__).with_name("optimization_runner.py").read_bytes(),
                     "sopcc_runner.py": Path(__file__).read_bytes(),
                     "public_mcp_contract.py": Path(__file__).with_name("public_mcp_contract.py").read_bytes(),
@@ -134,7 +153,6 @@ class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
                     "optimization_runner_sha256": hashlib.sha256(source_pairs["optimization_runner.py"]).hexdigest(),
                     "sopcc_runner_sha256": hashlib.sha256(source_pairs["sopcc_runner.py"]).hexdigest(),
                     "public_mcp_contract_sha256": hashlib.sha256(source_pairs["public_mcp_contract.py"]).hexdigest(),
-                    "public_devkit_sha256": hashlib.sha256(source_pairs["public_devkit.py"]).hexdigest(),
                     "public_grader_sha256": hashlib.sha256(source_pairs["public_grader.py"]).hexdigest(),
                     "mcp_client_sha256": hashlib.sha256(source_pairs["are_public_mcp_client.py"]).hexdigest(),
                     "task_instruction_sha256": task_instruction_digest,

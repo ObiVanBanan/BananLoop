@@ -9,7 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from benchmarks.autoresearchexam.sopcc_runner import AREPublicSOPCCEvaluatorRunner
+from benchmarks.autoresearchexam.sopcc_runner import (
+    AREPublicSOPCCEvaluatorRunner, normalize_sopcc_dev_result,
+)
 from benchmarks.autoresearchexam.public_mcp_contract import make_public_mcp_contract
 from bananloop.contracts import ProtocolCase, ProtocolManifest
 from bananloop.evaluator_verification import EvaluatorProtocolV1, EvaluatorTierManifestV1
@@ -34,7 +36,6 @@ CONTRACT_SHA = CONTRACT["contract_sha256"]
 def _bundle():
     source_names = {
         "public_sopcc_dev.py": ROOT / "benchmarks/autoresearchexam/public_sopcc_dev.py",
-        "public_devkit.py": ROOT / "benchmarks/autoresearchexam/public_devkit.py",
         "optimization_runner.py": ROOT / "benchmarks/autoresearchexam/optimization_runner.py",
         "sopcc_runner.py": ROOT / "benchmarks/autoresearchexam/sopcc_runner.py",
         "public_mcp_contract.py": ROOT / "benchmarks/autoresearchexam/public_mcp_contract.py",
@@ -65,7 +66,6 @@ def _bundle():
         "optimization_runner_sha256": hashlib.sha256(sources["optimization_runner.py"]).hexdigest(),
         "sopcc_runner_sha256": hashlib.sha256(sources["sopcc_runner.py"]).hexdigest(),
         "public_mcp_contract_sha256": hashlib.sha256(sources["public_mcp_contract.py"]).hexdigest(),
-        "public_devkit_sha256": hashlib.sha256(sources["public_devkit.py"]).hexdigest(),
         "public_grader_sha256": hashlib.sha256(sources["public_grader.py"]).hexdigest(),
         "mcp_client_sha256": hashlib.sha256(sources["are_public_mcp_client.py"]).hexdigest(),
         "task_instruction_sha256": hashlib.sha256(instruction).hexdigest(),
@@ -99,6 +99,19 @@ def _bundle():
         for name, raw in files_to_zip.items():
             archive.writestr(name, raw)
     return stream.getvalue()
+
+
+def test_sopcc_dev_result_mapping_matches_shared_runner_contract():
+    assert normalize_sopcc_dev_result({
+        "status": "GRADED", "metric": 3.25, "episodes": 4,
+    }) == {"status": "GRADED", "dev_score": 3.25, "dev_cells": 4}
+    for invalid in (
+        {"status": "ERROR", "metric": 3.25, "episodes": 4},
+        {"status": "GRADED", "metric": float("nan"), "episodes": 4},
+        {"status": "GRADED", "metric": 3.25, "episodes": 3},
+    ):
+        with pytest.raises(ValueError):
+            normalize_sopcc_dev_result(invalid)
 
 
 def _runner():

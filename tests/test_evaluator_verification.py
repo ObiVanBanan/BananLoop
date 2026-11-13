@@ -1543,6 +1543,8 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
     assert attestation_sha in public_task
     assert "published trust-boundary claim" in public_task
     assert "cryptographic implementation audit" in public_task
+    assert "https://github.com/bespokelabsai/AutoResearchExam/blob/" in public_task
+    assert "23c0d92e11af1dea821f972b5f0a739060958002" in public_task
     assert '"protocol_binding":{"researcher_intent_bound_by_core":false' in public_task
     for contract_fact in (
         "evaluator_wall_timeout_seconds",
