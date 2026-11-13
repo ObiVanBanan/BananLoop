@@ -101,6 +101,8 @@ def test_sopcc_fixture_binds_public_task_and_backend_without_private_assets(tmp_
     assert any(item["path"] == "task-runner.py" for item in reviewed_sources)
     sopcc_source = next(item["content"] for item in reviewed_sources
                         if item["path"] == "sopcc_runner.py")
+    assert "def evaluate_sopcc_public_dev" in sopcc_source
+    assert "kwargs[\"evaluate_dev\"] = lambda candidate, timeout: evaluate_sopcc_public_dev(" in sopcc_source
     assert "def normalize_sopcc_dev_result" in sopcc_source
     assert '"dev_score": float(score), "dev_cells": episodes' in sopcc_source
     assert sum(len(item["content"]) for item in reviewed_sources) > 88_000

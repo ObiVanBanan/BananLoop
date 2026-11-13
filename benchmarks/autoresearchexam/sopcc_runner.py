@@ -17,6 +17,7 @@ from bananloop.trusted_evaluator import (
 
 from .optimization_runner import AREPublicEvaluatorRunner
 from .public_mcp_contract import validate_public_mcp_contract
+from .public_sopcc_dev import run_public_sopcc_dev
 
 
 def normalize_sopcc_dev_result(result: Mapping[str, Any]) -> dict[str, Any]:
@@ -36,6 +37,18 @@ def normalize_sopcc_dev_result(result: Mapping[str, Any]) -> dict[str, Any]:
             or episodes != AREPublicSOPCCEvaluatorRunner.default_dev_cell_count):
         raise ValueError("public SOPCC DEV result has an invalid aggregate or episode count")
     return {"status": "GRADED", "dev_score": float(score), "dev_cells": episodes}
+
+
+def evaluate_sopcc_public_dev(
+    candidate: bytes, *, image: str, expected_image_id: str, timeout_seconds: int,
+) -> dict[str, Any]:
+    """Run and normalize the exact public SOPCC DEV path used by the backend."""
+    raw = run_public_sopcc_dev(
+        candidate, image=image, expected_image_id=expected_image_id,
+        timeout_seconds=timeout_seconds,
+        draws=(0,), instances_per_draw=1, episodes_per_instance=4, workers=1,
+    )
+    return normalize_sopcc_dev_result(raw)
 
 
 class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
@@ -62,9 +75,15 @@ class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
     ):
         # Base constructor defaults are bound to the imputation image at class
         # definition time, so bind SOPCC's class-level pins explicitly here.
+        image = self.default_dev_image if dev_image is None else dev_image
+        image_id = self.default_dev_image_id if dev_image_id is None else dev_image_id
+        if kwargs.get("evaluate_dev") is None:
+            kwargs["evaluate_dev"] = lambda candidate, timeout: evaluate_sopcc_public_dev(
+                candidate, image=image, expected_image_id=image_id,
+                timeout_seconds=timeout,
+            )
         super().__init__(
-            dev_image=self.default_dev_image if dev_image is None else dev_image,
-            dev_image_id=self.default_dev_image_id if dev_image_id is None else dev_image_id,
+            dev_image=image, dev_image_id=image_id,
             dev_cell_count=self.default_dev_cell_count if dev_cell_count is None else dev_cell_count,
             **kwargs,
         )

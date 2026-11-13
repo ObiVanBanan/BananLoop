@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import benchmarks.autoresearchexam.sopcc_runner as sopcc_runner_module
 from benchmarks.autoresearchexam.sopcc_runner import (
     AREPublicSOPCCEvaluatorRunner, normalize_sopcc_dev_result,
 )
@@ -116,6 +117,33 @@ def test_sopcc_dev_result_mapping_matches_shared_runner_contract():
     ):
         with pytest.raises(ValueError):
             normalize_sopcc_dev_result(invalid)
+
+
+def test_sopcc_runner_default_dev_path_runs_and_normalizes_public_result(monkeypatch):
+    calls = []
+
+    def fake_public_runner(candidate, **kwargs):
+        calls.append((candidate, kwargs))
+        return {"status": "GRADED", "metric": 3.5, "episodes": 4}
+
+    monkeypatch.setattr(sopcc_runner_module, "run_public_sopcc_dev", fake_public_runner)
+    runner = AREPublicSOPCCEvaluatorRunner(
+        grader=SimpleNamespace(deadline_epoch=100_000, contract_sha256=CONTRACT_SHA),
+        publish_candidate=lambda _: None,
+        task_id=TASK_ID, task_version=TASK_VERSION,
+        contract_sha256=CONTRACT_SHA,
+        candidate_path="benchmarks/autoresearchexam/solutions/sopcc/policy.py",
+    )
+    assert runner.evaluate_dev(b"candidate", 120) == {
+        "status": "GRADED", "dev_score": 3.5, "dev_cells": 4,
+    }
+    assert calls == [(b"candidate", {
+        "image": runner.default_dev_image,
+        "expected_image_id": runner.default_dev_image_id,
+        "timeout_seconds": 120,
+        "draws": (0,), "instances_per_draw": 1,
+        "episodes_per_instance": 4, "workers": 1,
+    })]
 
 
 def _runner():

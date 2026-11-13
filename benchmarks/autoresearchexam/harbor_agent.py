@@ -31,7 +31,7 @@ from bananloop.trusted_evaluator import TrustedEvaluatorError
 from bananloop.v2_optimization_cli import run_v2_optimize
 
 from .optimization_runner import AREPublicEvaluatorRunner
-from .sopcc_runner import AREPublicSOPCCEvaluatorRunner, normalize_sopcc_dev_result
+from .sopcc_runner import AREPublicSOPCCEvaluatorRunner
 from .carps_runner import AREPublicCARPSEvaluatorRunner
 from .dctabeval_runner import AREPublicDCTABEvalEvaluatorRunner
 from .shortest_ci_runner import AREPublicShortestCIEvaluatorRunner
@@ -491,17 +491,6 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 raise TrustedEvaluatorError("approved protocol repeatability differs from the durable ARE ledger")
 
             def evaluate_dev(candidate: bytes, timeout_seconds: int) -> Mapping[str, Any]:
-                if adapter_id == "sopcc-public-v1":
-                    result = run_public_sopcc_dev(
-                        candidate, image=raw["public_dev_image"],
-                        expected_image_id=raw["public_dev_image_id"],
-                        timeout_seconds=timeout_seconds,
-                        draws=AREPublicSOPCCEvaluatorRunner.dev_draws,
-                        instances_per_draw=AREPublicSOPCCEvaluatorRunner.dev_instances_per_draw,
-                        episodes_per_instance=AREPublicSOPCCEvaluatorRunner.dev_episodes_per_instance,
-                        workers=1,
-                    )
-                    return normalize_sopcc_dev_result(result)
                 if adapter_id == "shortest-ci-public-v1":
                     return run_public_shortest_ci_dev(
                         candidate,
@@ -585,7 +574,6 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                     dev_image=raw["public_dev_image"],
                     dev_image_id=raw["public_dev_image_id"],
                     dev_cell_count=raw["public_dev_cell_count"],
-                    evaluate_dev=evaluate_dev,
                 )
             if adapter_id == "carps-public-v1":
                 return runner_type(
