@@ -47,7 +47,15 @@ def require_frozen_optimization_child(config: Mapping[str, Any]) -> Optimization
             raise ValueError("frozen BananLoop child spec is invalid") from exc
         if not isinstance(spec, OptimizationCampaignSpecV2):
             raise ValueError("Harbor requires a frozen Optimization campaign")
-        if spec.max_candidate_iterations != candidate_cap:
+        # Children created by the legacy pivot path omit an explicit cap; the
+        # scheduler executes one candidate cycle for those specs. Require the
+        # Harbor job to pin that effective cap explicitly instead of treating
+        # `None` as an unbounded series.
+        frozen_candidate_cap = (
+            1 if spec.max_candidate_iterations is None
+            else spec.max_candidate_iterations
+        )
+        if frozen_candidate_cap != candidate_cap:
             raise ValueError("frozen BananLoop child candidate cap differs from Harbor config")
         if (spec.budget.deadline_seconds is None
                 or spec.budget.deadline_seconds > time_limit):
