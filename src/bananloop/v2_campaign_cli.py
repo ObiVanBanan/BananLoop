@@ -1014,7 +1014,7 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             raise V2CampaignCLIError(
                 "--max-evaluator-calls is too low for a complete one-candidate lifecycle "
                 f"with the selected evaluator fixture; minimum is {minimum_evaluator_calls} "
-                "at repeatability=2"
+                "at repeatability=1"
             )
     spec, roles, _policy = _build_spec(
         repo, goal, paths, max_agent_calls=args.max_agent_calls,
