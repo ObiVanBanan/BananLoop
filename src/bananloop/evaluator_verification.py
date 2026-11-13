@@ -1194,6 +1194,8 @@ def _build_protocol_review_material(
     source_files: list[dict[str, str]] = []
     binary_assets: list[dict[str, int | str]] = []
     data_assets: list[dict[str, int | str]] = []
+    bundle_inventory: list[dict[str, int | str]] = []
+    embedded_manifests: list[dict[str, Any]] = []
     source_chars = 0
     with tempfile.TemporaryDirectory(prefix="bananloop-protocol-review-") as temporary:
         evaluator_root = Path(temporary) / "evaluator"
@@ -1208,6 +1210,11 @@ def _build_protocol_review_material(
             if any(part.lower() in _PROTECTED_AUDIT_PATHS for part in PurePosixPath(relative).parts):
                 raise EvaluatorVerificationError("evaluator audit bundle contains protected material paths")
             raw = path.read_bytes()
+            bundle_inventory.append({
+                "path": relative,
+                "size_bytes": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            })
             try:
                 text = raw.decode("utf-8")
             except UnicodeError:
@@ -1223,6 +1230,20 @@ def _build_protocol_review_material(
                     "sha256": hashlib.sha256(raw).hexdigest(),
                 })
                 continue
+            if (PurePosixPath(relative).name.lower() in {
+                    "manifest.json", "evaluator-manifest.json",
+                    "are-public-shortest-ci-backend.json",
+                } and len(text) <= _MAX_INLINE_REVIEW_DATA_CHARS):
+                try:
+                    manifest_value = json.loads(text)
+                except json.JSONDecodeError:
+                    manifest_value = None
+                if isinstance(manifest_value, dict):
+                    embedded_manifests.append({
+                        "path": relative,
+                        "sha256": hashlib.sha256(raw).hexdigest(),
+                        "content": manifest_value,
+                    })
             suffix = PurePosixPath(relative).suffix.lower()
             if len(text) > _MAX_INLINE_REVIEW_DATA_CHARS and suffix not in {
                 ".py", ".js", ".ts", ".mjs", ".md", ".txt", ".toml",
@@ -1393,7 +1414,11 @@ def _build_protocol_review_material(
             "researcher_protocol_intent and Core binds those semantics to trusted evaluator "
             "assets; the completed protocol is shown separately. Do not reject because the "
             "intent is not repeated as a field inside protocol. No case identifiers, input "
-            "digests, case bytes, scores, or results are included."
+            "digests, case bytes, scores, or results are included. The exact bundle archive is "
+            "verified locally against evaluator_bundle_sha256. Its complete entry inventory and "
+            "embedded JSON backend manifests are supplied below; source text is supplied separately "
+            "with per-file SHA-256 values. Treat these as verified contents of that exact archive, "
+            "rather than requiring the compressed ZIP byte stream itself to be reproduced."
         ),
         "protocol": protocol.model_dump(mode="json"),
         "researcher_protocol_intent": (
@@ -1409,6 +1434,13 @@ def _build_protocol_review_material(
         "evidence_refs": safe_evidence_refs,
         "public_attestations": public_attestations,
         "evaluator_bundle_sha256": protocol.evaluator_bundle_sha256,
+        "evaluator_bundle_review": {
+            "archive_sha256_verified": True,
+            "archive_sha256": hashlib.sha256(bundle_bytes).hexdigest(),
+            "entry_count": len(bundle_inventory),
+            "entries": bundle_inventory,
+            "embedded_json_manifests": embedded_manifests,
+        },
         "evaluator_source_files": source_files,
         "evaluator_binary_assets": binary_assets,
         "evaluator_data_assets": data_assets,

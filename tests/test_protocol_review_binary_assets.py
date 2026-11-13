@@ -104,6 +104,18 @@ def test_protocol_review_redacts_binary_public_assets_to_digest_metadata(tmp_pat
         "size_bytes": len(panel_json.encode()),
         "sha256": hashlib.sha256(panel_json.encode()).hexdigest(),
     }]
+    bundle_review = review["evaluator_bundle_review"]
+    assert bundle_review["archive_sha256_verified"] is True
+    assert bundle_review["archive_sha256"] == bundle_digest
+    assert bundle_review["entry_count"] == 4
+    assert {entry["path"] for entry in bundle_review["entries"]} == {
+        "runner.py", "manifest.json", "data/public-cloud.npy", "data/public-panel.json",
+    }
+    assert bundle_review["embedded_json_manifests"] == [{
+        "path": "manifest.json",
+        "sha256": hashlib.sha256(b'{"cloud":"data/public-cloud.npy"}\n').hexdigest(),
+        "content": {"cloud": "data/public-cloud.npy"},
+    }]
     serialized = json.dumps(review, separators=(",", ":"))
     assert "opaque-public-cloud-payload" not in serialized
     assert "public-row" not in serialized
