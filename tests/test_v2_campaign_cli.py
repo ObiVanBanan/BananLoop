@@ -21,6 +21,7 @@ from bananloop.registry import CampaignRegistry, RegistryError
 from bananloop.v2_campaign_cli import (
     V2CampaignCLIError, _aggregate_reported_usage, _campaign_deadline,
     _model_token_budget_status,
+    _optimization_hypothesis_is_executable,
     _protocol_review_terminal_status,
     _researcher_input_fields, _stage_protocol_review_attestation,
     _required_optimization_evaluator_calls,
@@ -259,6 +260,16 @@ def test_fixture_parent_budget_minimum_includes_optional_holdout(tiers, expected
 def test_optimization_budget_rejects_invalid_protocol_repeatability(repeats):
     with pytest.raises(V2CampaignCLIError, match="repeatability count is invalid"):
         _required_optimization_evaluator_calls(repeats)
+
+
+@pytest.mark.parametrize(("selected", "expected"), [
+    ({"id": "protocol_only", "experiment_id": None}, False),
+    ({"id": "protocol_only", "experiment_id": ""}, False),
+    ({"id": "registered_experiment", "experiment_id": "bench_public_seeds"}, True),
+    ({"id": "legacy_hypothesis"}, True),
+])
+def test_protocol_only_hypothesis_does_not_start_optimization_child(selected, expected):
+    assert _optimization_hypothesis_is_executable(selected) is expected
 
 
 def test_optimization_budget_rejects_non_boolean_holdout_declaration():

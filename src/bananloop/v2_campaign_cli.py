@@ -57,6 +57,14 @@ def _required_optimization_evaluator_calls(
     return (3 + int(has_holdout)) * repeatability_runs
 
 
+def _optimization_hypothesis_is_executable(selected: dict[str, Any]) -> bool:
+    """Protocol-preparation ideas without a registered experiment cannot be child goals."""
+    if "experiment_id" not in selected:
+        return True
+    experiment_id = selected.get("experiment_id")
+    return isinstance(experiment_id, str) and bool(experiment_id.strip())
+
+
 def _minimum_fixture_optimization_evaluator_calls(fixture: EvaluatorFixtureV1) -> int:
     """Return the cheapest complete one-candidate lifecycle allowed by a fixture."""
     has_holdout = any(tier.tier == "holdout" for tier in fixture.tiers)
@@ -466,8 +474,8 @@ def _stage_protocol_review_attestation(
 def _selected_optimization_task(*, proposal: Any, graph: GraphRepository,
                                 state_root: Path,
                                 queue: DurableWorkerQueue,
-                                campaign_id: str) -> OptimizationTaskV2:
-    """Load the Core-ranked Researcher hypothesis that this approved protocol came with."""
+                                campaign_id: str) -> OptimizationTaskV2 | None:
+    """Load an executable Researcher hypothesis; protocol-only ideas cannot start a child."""
     job = queue.get_job(proposal.source_job_id)
     durable = queue.get_result(proposal.source_job_id)
     if (job.get("campaign_id") != campaign_id or job.get("state") != "COMPLETED"
@@ -510,6 +518,8 @@ def _selected_optimization_task(*, proposal: Any, graph: GraphRepository,
         portfolio = json.loads(raw)
         selected_id = portfolio["core_selection"]["selected_hypothesis_id"]
         selected = next(item for item in portfolio["candidates"] if item["id"] == selected_id)
+        if not _optimization_hypothesis_is_executable(selected):
+            return None
         resolved_evidence_refs: set[str] = {artifact_ref}
         for evidence_id in selected.get("evidence_refs", ()):
             if isinstance(evidence_id, str) and evidence_id.startswith("artifact://sha256/"):
@@ -600,6 +610,8 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
         proposal=proposal, graph=graph, state_root=state_root, queue=queue,
         campaign_id=campaign_id,
     )
+    if optimization_task is None:
+        return {"status": "NO_EXECUTABLE_RESEARCH_HYPOTHESIS"}
     researcher_calls = roles.role("researcher").calls_per_instance
     optimizer_calls = roles.role("optimizer").calls_per_instance
     integration_calls = roles.role("integration_verifier").calls_per_instance
@@ -1212,6 +1224,9 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
                     visible_paths=paths, write_paths=write_paths,
                     approval_digest=approval_digest,
                 ))
+            if any(item.get("status") == "NO_EXECUTABLE_RESEARCH_HYPOTHESIS"
+                   for item in result["optimization_pivot"]):
+                result["status"] = "PROTOCOL_APPROVED_AWAITING_OPTIMIZATION_HYPOTHESIS"
             if any(item.get("status") == "PENDING_OWNER_PIVOT_DECISION"
                    for item in result["optimization_pivot"]):
                 result["status"] = "PENDING_OWNER_PIVOT_DECISION"
