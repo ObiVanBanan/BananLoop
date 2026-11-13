@@ -15,7 +15,9 @@ from bananloop.roles import RoleRegistryV1
 
 from .campaign_binding import require_frozen_optimization_child
 from .public_mcp_contract import validate_public_mcp_contract
-from .public_sketched_newton_dev import DEFAULT_IMAGE, DEFAULT_IMAGE_ID
+from .public_sketched_newton_dev import (
+    DEFAULT_IMAGE, DEFAULT_IMAGE_ID, verify_public_newton_inputs,
+)
 from .sketched_newton_runner import CANDIDATE_PATH, PUBLIC_OUTPUT_PATH, TASK_ID, TASK_VERSION
 
 
@@ -86,7 +88,7 @@ def build_configs(
         "time_limit_seconds": 3600,
         "model_call_limit": calls,
         "timeout_seconds": 120,
-        "max_steps": 3 * candidate_iterations,
+        "max_steps": 20,
         # Keep at-most-once submissions isolated per campaign/task.
         "public_submission_ledger_path": str(
             state_dir / "are-public-ledgers" / f"{campaign_id}-newton.sqlite3"
@@ -153,6 +155,8 @@ def prepare(
         raise PreparationError("Newton public task instructions differ from selection")
     if _sha((source_task / "task.toml").read_bytes()) != task["task_sha256"]:
         raise PreparationError("Newton task manifest differs from selection")
+    # Also validate the frozen public runner and dev input arrays.
+    verify_public_newton_inputs(source_task)
 
     overlay_data = _json(overlay_index)
     overlays = [o for o in overlay_data.get("tasks", []) if o.get("task_id") == TASK_ID]
@@ -177,7 +181,7 @@ def prepare(
     if contract.get("public_endpoint") != "http://grader:8000/mcp":
         raise PreparationError("public MCP endpoint differs from the task pin")
 
-    registry = RoleRegistryV1.model_validate(_json(role_registry))
+    registry = RoleRegistryV1.load(role_registry)
     # The child must already exist and freeze a verified evaluator protocol.
     child_probe = {
         "state_dir": str(state_dir), "campaign_id": campaign_id,
@@ -203,6 +207,9 @@ def prepare(
         raise PreparationError("role registry digest differs from the frozen child")
     if (jobs_dir / f"are-newton-{campaign_id.replace('c-', '')[:12]}").exists():
         raise PreparationError("Harbor job output already exists; never implicitly replay")
+    ledger = state_dir / "are-public-ledgers" / f"{campaign_id}-newton.sqlite3"
+    if ledger.exists() or ledger.is_symlink():
+        raise PreparationError("public submission ledger already exists; reconcile, do not replay")
 
     bl, harbor = build_configs(
         repo=repo, state_dir=state_dir, campaign_id=campaign_id,
