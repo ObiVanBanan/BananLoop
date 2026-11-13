@@ -530,6 +530,86 @@ def test_later_portfolio_must_use_available_research_memory(tmp_path):
         graph.close()
 
 
+def test_registered_exploration_can_continue_with_unanchored_memory_fallback(tmp_path):
+    runtime, graph, queue = _runtime(
+        tmp_path, max_agent_calls=2, role_calls_per_instance=2,
+    )
+    catalog = (
+        {"id": "primary_association", "description": "Estimate the primary association."},
+        {"id": "permutation_test", "description": "Run a permutation test."},
+        {"id": "split_half_robustness", "description": "Compare seeded half samples."},
+    )
+    executed = []
+    responses = 0
+
+    def execute(experiment_id, _context):
+        executed.append(experiment_id)
+        return {"status": "COMPLETED", "summary": f"Measured public result for {experiment_id}.",
+                "stance": "UNCERTAIN", "confidence": 0.9}
+
+    def model_reply(public_input, **_pin):
+        nonlocal responses
+        responses += 1
+        if responses == 1:
+            assert public_input["available_research_memory"] == []
+            candidates = (("initial_primary", "primary_association"),
+                          ("initial_permutation", "permutation_test"))
+            selected_id = "initial_primary"
+        else:
+            assert public_input["available_research_memory"]
+            candidates = (("followup_permutation", "permutation_test"),
+                          ("followup_split", "split_half_robustness"))
+            selected_id = "followup_permutation"
+        return {
+            "hypotheses": [{
+                "id": candidate_id,
+                "hypothesis": f"Test the registered {experiment_id} analysis.",
+                "rationale": "Use a distinct bounded public diagnostic.",
+                "next_experiment": f"Run {experiment_id} and report its measured statistic.",
+                "falsification_condition": "The registered statistic does not meet its criterion.",
+                "expected_evidence": "A public DEV result record.",
+                "experiment_id": experiment_id,
+            } for candidate_id, experiment_id in candidates],
+            "selected_hypothesis_id": selected_id,
+            "research_findings": [{
+                "claim_key": f"source:proposal-{responses}",
+                "statement": "A bounded public diagnostic is proposed.",
+                "stance": "UNCERTAIN", "kind": "OBSERVATION", "confidence": 0.2,
+            }],
+        }
+
+    try:
+        result = runtime.run_campaign(
+            visible_paths=["README.md"],
+            invoke=_make_researcher_invoke(
+                model_reply, experiment_executor=execute, experiment_catalog=catalog,
+            ),
+            max_iterations=2,
+        )
+        assert result["iterations_this_call"] == 2
+        assert executed == ["primary_association", "permutation_test"]
+        portfolios = list(Path(runtime.state_root).rglob("hypothesis-portfolio.json"))
+        assert len(portfolios) == 2
+        later = json.loads(max(portfolios, key=lambda path: path.stat().st_mtime).read_text())
+        assert later["core_selection"]["method"] == "CORE_MEMORY_AWARE_EXECUTABLE_HYPOTHESIS"
+        selected = next(item for item in later["candidates"] if item["id"] == "followup_permutation")
+        assert selected["core_evidence_validation"] == "UNANCHORED"
+        assert selected["evidence_refs"] == []
+        assert selected["target_claim_key"] is None
+        completed_nodes = [
+            json.loads(row[0]) for row in graph.conn.execute(
+                "SELECT payload_json FROM research_nodes WHERE phase='CONSOLIDATION'"
+            )
+        ]
+        assert any(
+            any("remains unanchored" in item for item in node["completion_evidence"]["limitations"])
+            for node in completed_nodes
+        )
+    finally:
+        queue.close()
+        graph.close()
+
+
 def test_hypothesis_portfolio_is_selected_and_persisted_as_evidence(tmp_path):
     runtime, graph, queue = _runtime(tmp_path)
     hypotheses = [

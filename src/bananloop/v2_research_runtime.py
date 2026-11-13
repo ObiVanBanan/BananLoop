@@ -415,7 +415,10 @@ def make_researcher_invoke(
                         "hypothesis portfolio has no candidate bound to an available registered experiment_id"
                     )
             ranked = [item for item in executable_hypotheses if evidence_scores[item.id] > 0]
-            if allowed_evidence_refs and not ranked:
+            memory_citation_missing = bool(
+                allowed_evidence_refs and not ranked and experiment_executor is not None
+            )
+            if allowed_evidence_refs and not ranked and not memory_citation_missing:
                 raise V2RuntimeError(
                     "later hypothesis portfolio must cite available Research Memory on an executable candidate"
                 )
@@ -446,14 +449,28 @@ def make_researcher_invoke(
                     json.dumps(item.model_dump(mode="json", exclude={"id"}),
                                sort_keys=True, separators=(",", ":"), ensure_ascii=False,
                     ).encode("utf-8")).hexdigest())
+                if memory_citation_missing:
+                    method = "CORE_MEMORY_AWARE_EXECUTABLE_HYPOTHESIS"
+                    reason = (
+                        "Researcher citations were absent or unverified. Core limited selection "
+                        "to registered experiments not already present in Research Memory, then "
+                        "used the Researcher preference among those executable candidates. "
+                        "The selected hypothesis remains UNANCHORED; no prior evidence is "
+                        "attributed to it."
+                    )
+                else:
+                    method = ("RESEARCHER_INITIAL_SELECTION" if preferred is not None
+                              else "CORE_EXECUTABLE_HYPOTHESIS")
+                    reason = (
+                        "No prior evidence was available to rank candidates; researcher preference is advisory for the initial step."
+                        if preferred is not None else
+                        "No prior evidence was available; Core selected the only or content-digest-first candidate bound to an available registered experiment."
+                    )
                 selection = {
-                    "method": ("RESEARCHER_INITIAL_SELECTION" if preferred is not None
-                               else "CORE_EXECUTABLE_HYPOTHESIS"),
+                    "method": method,
                     "selected_hypothesis_id": selected.id,
                     "scores": evidence_scores,
-                    "reason": ("No prior evidence was available to rank candidates; researcher preference is advisory for the initial step."
-                               if preferred is not None else
-                               "No prior evidence was available; Core selected the only or content-digest-first candidate bound to an available registered experiment."),
+                    "reason": reason,
                 }
             next_experiment = selected.next_experiment
             portfolio_candidates = []
@@ -548,6 +565,12 @@ def make_researcher_invoke(
                 "ordinary research response must include at least one evidence-linked finding"
             )
         limitations = list(reply.limitations)
+        if reply.hypotheses and memory_citation_missing:
+            limitations.append(
+                "The Researcher did not provide a verifiable link to available Research Memory. "
+                "Core selected only among registered experiments not already completed; the "
+                "selected hypothesis remains unanchored to prior evidence."
+            )
         if experiment_executor is not None:
             # The Researcher responds before Core runs the registered analysis,
             # so its pre-execution uncertainty can become false within this
