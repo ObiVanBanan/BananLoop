@@ -28,7 +28,7 @@ METRIC_ID = "cpu_decoder_geomean_speedup"
 METRIC_FIELD = "geometric_mean_speedup"
 METRIC_DIRECTION = "MAXIMIZE"
 METRIC_AGGREGATION = "MEAN"
-VALIDATION_METRIC_SEMANTICS = "public_are.validation_score=higher_is_better_task_reward.v1"
+VALIDATION_METRIC_SEMANTICS = "cpu_decoder_geomean_speedup.official_validation_population.v1"
 
 _RUNTIME_FILES = {
     "cpudecoder_runner.py": Path(__file__),
@@ -150,7 +150,8 @@ class AREPublicCPUDecoderEvaluatorRunner(AREPublicEvaluatorRunner):
                      "equivalence_required": True, "pilot_only": True}
         elif tier == "validation":
             value = {**common, "tier": tier,
-                     "measurement": "one official higher-is-better task reward from public ARE VALIDATION",
+                     "measurement": "official geometric mean of per-instance reference/submission speed ratios on the ARE VALIDATION population; same metric and unit as DEV, distinct split",
+                     "repeatability_scope": "one official submission; task harness performs its pinned per-instance timing repetitions",
                      "mcp_endpoint": "http://grader:8000/mcp",
                      "mcp_contract_sha256": contract_sha256}
         else:

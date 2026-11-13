@@ -79,6 +79,19 @@ def test_cpu_decoder_aggregate_pins_identity_and_dev_seeds():
         )
 
 
+def test_cpu_decoder_validation_uses_same_speedup_metric_on_distinct_split():
+    payload = AREPublicCPUDecoderEvaluatorRunner.aggregate_case_input(
+        tier="validation", task_id=TASK_ID, task_version=TASK_VERSION,
+        contract_sha256="1" * 64, dev_image_id=dev.DEFAULT_IMAGE_ID,
+        dev_cell_count=len(dev.PUBLIC_SEEDS),
+    )
+    value = json.loads(payload)
+    assert value["metric_id"] == "cpu_decoder_geomean_speedup"
+    assert value["metric_field"] == "geometric_mean_speedup"
+    assert "same metric and unit as DEV, distinct split" in value["measurement"]
+    assert value["repeatability_scope"].startswith("one official submission")
+
+
 def test_cpu_decoder_rejects_unpinned_public_task_root(tmp_path: Path):
     with pytest.raises(dev.PublicCPUDecoderError, match="missing or unsafe"):
         dev.verify_public_inputs(tmp_path / TASK_ID)
