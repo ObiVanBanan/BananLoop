@@ -1,68 +1,78 @@
 {
-  "schema": "bananloop-are-public-evaluator-attestation-index-v1",
-  "source_revision": "23c0d92e11af1dea821f972b5f0a739060958002",
-  "count": 10,
   "attestations": [
     {
-      "task_id": "budgeted-covtype-dual-market-open",
-      "task_version": "1.1.0",
+      "bytes": 1798,
       "path": "benchmarks/autoresearchexam/public-evaluator-attestations/budgeted-covtype-dual-market-open.json",
-      "sha256": "e9efb8fbd3ce329d69f7815858b92273c421147cdac82690cc30e26ab25bbd7b"
+      "sha256": "e7fcc1dd9a0aa0ed1c85f12a3d143dac09e3a09b9e5abf81241dd4208f2456e5",
+      "task_id": "budgeted-covtype-dual-market-open",
+      "task_version": "1.1.0"
     },
     {
-      "task_id": "budgeted-imputation-mcar50",
-      "task_version": "1.1.0",
+      "bytes": 1549,
       "path": "benchmarks/autoresearchexam/public-evaluator-attestations/budgeted-imputation-mcar50.json",
-      "sha256": "004327e8542e86b967cd514797cfa97f674ad4ebab0cb37286ca88a9c685a8cc"
+      "sha256": "cf562fd63db75c2d5502f228e5d5d3b3f65ebd8f904434b450cc363c2e89d1ef",
+      "task_id": "budgeted-imputation-mcar50",
+      "task_version": "1.1.0"
     },
     {
-      "task_id": "carps-star-discrepancy-subset-select",
-      "task_version": "1.1.0",
+      "bytes": 1569,
       "path": "benchmarks/autoresearchexam/public-evaluator-attestations/carps-star-discrepancy-subset-select.json",
-      "sha256": "00444331fbc86f330291e80ed1c24f9948ff9fd3d228372a441cf156106111af"
+      "sha256": "581e5fc513bb9be46300e5be6845ff74d33fa4a876825ed4377f61f3f63bb204",
+      "task_id": "carps-star-discrepancy-subset-select",
+      "task_version": "1.1.0"
     },
     {
-      "task_id": "cpu-decoder-graph-executor",
-      "task_version": "1.1.0",
+      "bytes": 1549,
       "path": "benchmarks/autoresearchexam/public-evaluator-attestations/cpu-decoder-graph-executor.json",
-      "sha256": "d336c944ce3cdd821fcf6e1e98759bd76cfe161571a0be3ff7881f88c410ed05"
+      "sha256": "b41fe867dbdaad7e6d6523bbee4d2a07cd70a7df7c1b6a553d60a4d94e791864",
+      "task_id": "cpu-decoder-graph-executor",
+      "task_version": "1.1.0"
     },
     {
-      "task_id": "cpu-llm-decode-throughput",
-      "task_version": "1.1.0",
+      "bytes": 1547,
       "path": "benchmarks/autoresearchexam/public-evaluator-attestations/cpu-llm-decode-throughput.json",
-      "sha256": "6748db1539fcff5ea5d2a97729e5f74798ee4e8d7deeb19a698c22acd2c49e09"
+      "sha256": "1d6df088b0d49107ce29b6b99621c481d6d01fa25caacb2ce7bebecac121f925",
+      "task_id": "cpu-llm-decode-throughput",
+      "task_version": "1.1.0"
     },
     {
-      "task_id": "dctabeval-aeac-pooled-cat-statistics",
-      "task_version": "1.1.0",
+      "bytes": 1569,
       "path": "benchmarks/autoresearchexam/public-evaluator-attestations/dctabeval-aeac-pooled-cat-statistics.json",
-      "sha256": "72a2d7f64ba5c7a4c01d5c0be54361d54af66a76505ac33b071685d2405183b5"
+      "sha256": "62a0df3cc6adbbb916e333a046ee75311fcbc818a495e9024d62b3e5c776c054",
+      "task_id": "dctabeval-aeac-pooled-cat-statistics",
+      "task_version": "1.1.0"
     },
     {
-      "task_id": "label-efficient-risk-estimator",
-      "task_version": "1.1.0",
+      "bytes": 1557,
       "path": "benchmarks/autoresearchexam/public-evaluator-attestations/label-efficient-risk-estimator.json",
-      "sha256": "7b8175b3602f0a4d62e09d1e45fbeb1392ac5eef8da9b2db48d24293f5538fd2"
+      "sha256": "15586a828fee74b469e5d528a7fe08a097f8effd77179d4ada3ec6809767af53",
+      "task_id": "label-efficient-risk-estimator",
+      "task_version": "1.1.0"
     },
     {
-      "task_id": "shortest-valid-ci-l2-ece",
-      "task_version": "1.1.0",
+      "bytes": 1545,
       "path": "benchmarks/autoresearchexam/public-evaluator-attestations/shortest-valid-ci-l2-ece.json",
-      "sha256": "a8dcb35ec309fbbbf5465b6bd5718dec665039e036693a00cbdd55cb45406890"
+      "sha256": "8ec73d441c4ce17ebe300915f9b13b1ee93628aa1182fc1090f764a934a78fa3",
+      "task_id": "shortest-valid-ci-l2-ece",
+      "task_version": "1.1.0"
     },
     {
-      "task_id": "sketched-newton-cov-estimator",
-      "task_version": "1.1.0",
+      "bytes": 1555,
       "path": "benchmarks/autoresearchexam/public-evaluator-attestations/sketched-newton-cov-estimator.json",
-      "sha256": "daaab8736094ef61292d9aa212edef26bc37cb430ee78b5778cecf519b3a69e5"
+      "sha256": "00bf1d2b819a86e271fec6b70ae43c76b8fe69d62d260f61778880101db2058f",
+      "task_id": "sketched-newton-cov-estimator",
+      "task_version": "1.1.0"
     },
     {
-      "task_id": "sopcc-online-chance-constrained-policy",
-      "task_version": "1.1.0",
+      "bytes": 1573,
       "path": "benchmarks/autoresearchexam/public-evaluator-attestations/sopcc-online-chance-constrained-policy.json",
-      "sha256": "df627767be2805cd4c95881d34241f6f8ae478593d7ff18b5ac263d611bfb93a"
+      "sha256": "21a69173f03554f33de51a27093969e36cc484346996b8bde6b91eb2062798aa",
+      "task_id": "sopcc-online-chance-constrained-policy",
+      "task_version": "1.1.0"
     }
   ],
-  "not_cryptographic_audit": true
+  "count": 10,
+  "not_cryptographic_audit": true,
+  "schema": "bananloop-are-public-evaluator-attestation-index-v1",
+  "source_revision": "23c0d92e11af1dea821f972b5f0a739060958002"
 }
