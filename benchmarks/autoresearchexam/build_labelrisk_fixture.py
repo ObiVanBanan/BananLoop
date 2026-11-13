@@ -123,7 +123,7 @@ def build_fixture(*, repo: Path, source_task: Path, contract_path: Path,
         "public_dev_image": DEFAULT_IMAGE, "public_dev_image_id": DEFAULT_IMAGE_ID,
         "candidate_path": CANDIDATE_PATH, "public_output_path": PUBLIC_OUTPUT_PATH,
         "metric_id": METRIC_ID, "metric_field": METRIC_FIELD,
-        "direction": "MINIMIZE", "aggregation": "MEAN",
+        "direction": "MINIMIZE", "aggregation": "MEDIAN",
         "pools": list(PUBLIC_POOL_IDS), "budgets": list(LABEL_BUDGETS),
         "seeds_per_cell": SEEDS_PER_CELL, "root_seed": ROOT_SEED,
     }

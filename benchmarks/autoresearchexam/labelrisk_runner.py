@@ -141,7 +141,7 @@ class AREPublicLabelRiskEvaluatorRunner(AREPublicEvaluatorRunner):
             "schema": "autoresearchexam-public-labelrisk-aggregate-v1",
             "task_id": TASK_ID, "task_version": TASK_VERSION,
             "metric_id": METRIC_ID, "metric_field": METRIC_FIELD,
-            "direction": "MINIMIZE", "aggregation": "MEAN",
+            "direction": "MINIMIZE", "aggregation": "MEDIAN",
             "score_definition": "median of 48 cell ratios; each cell ratio is candidate median squared error divided by matched random-reference median squared error",
         }
         if tier == "dev":
@@ -176,7 +176,7 @@ class AREPublicLabelRiskEvaluatorRunner(AREPublicEvaluatorRunner):
 
     def run(self, *, protocol: EvaluatorProtocolV1, **kwargs: Any) -> EvaluatorExecutionV1:
         if (protocol.metric_id != METRIC_ID or protocol.metric_field != METRIC_FIELD
-                or protocol.direction != "MINIMIZE" or protocol.aggregation != "MEAN"
+                or protocol.direction != "MINIMIZE" or protocol.aggregation != "MEDIAN"
                 or protocol.execution_backend_id != self.backend_id):
             raise TrustedEvaluatorError("label-risk protocol does not match the public median-ratio backend")
         return super().run(protocol=protocol, **kwargs)
@@ -216,7 +216,7 @@ class AREPublicLabelRiskEvaluatorRunner(AREPublicEvaluatorRunner):
                     "candidate_path": CANDIDATE_PATH,
                     "public_output_path": PUBLIC_OUTPUT_PATH,
                     "metric_id": METRIC_ID, "metric_field": METRIC_FIELD,
-                    "direction": "MINIMIZE", "aggregation": "MEAN",
+                    "direction": "MINIMIZE", "aggregation": "MEDIAN",
                     "pools": list(PUBLIC_POOL_IDS), "budgets": list(LABEL_BUDGETS),
                     "seeds_per_cell": SEEDS_PER_CELL, "root_seed": ROOT_SEED,
                 }

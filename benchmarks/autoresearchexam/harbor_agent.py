@@ -264,8 +264,8 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         if isinstance(time_limit, bool) or not isinstance(time_limit, int) or not 1 <= time_limit <= 3600:
             raise RuntimeError("task time limit must be from 1 to 3600 seconds")
         iterations = raw.get("max_candidate_iterations", 5)
-        if isinstance(iterations, bool) or not isinstance(iterations, int) or iterations != 5:
-            raise RuntimeError("ARE task driver must enforce exactly five candidate iterations")
+        if isinstance(iterations, bool) or not isinstance(iterations, int) or not 1 <= iterations <= 5:
+            raise RuntimeError("ARE task driver must enforce between one and five candidate iterations")
         max_steps = raw.get("max_steps", 20)
         if (isinstance(max_steps, bool) or not isinstance(max_steps, int)
                 or not 3 * iterations <= max_steps <= 100):
@@ -328,7 +328,9 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 raise RuntimeError("CPU LLM validation score semantics are not explicitly pinned")
         self._public_output_path = expected_output
         raw["adapter_id"] = adapter_id
-        if (raw.get("max_candidate_iterations", 5) != 5
+        iterations = raw.get("max_candidate_iterations", 5)
+        if (isinstance(iterations, bool) or not isinstance(iterations, int)
+                or not 1 <= iterations <= 5
                 or raw.get("time_limit_seconds", 3600) > 3600):
             raise RuntimeError("ARE bridge may run at most five candidates and one hour")
         servers = [item for item in self.mcp_servers if item.name == "are"]

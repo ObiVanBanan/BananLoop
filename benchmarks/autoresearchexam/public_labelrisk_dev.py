@@ -215,6 +215,13 @@ def evaluate_candidate(
                                  "random_baseline_median_squared_error": baseline_median,
                                  "relative_score": ratio})
 
+    if failures:
+        return {"status": "ERROR", "failure_count": failures,
+                "cell_count": len(cell_records),
+                "seeds_per_cell": SEEDS_PER_CELL,
+                "task_sha256": pins["task_sha256"],
+                "instruction_sha256": INSTRUCTION_SHA256,
+                "public_dev_manifest_sha256": PUBLIC_DEV_MANIFEST_SHA256}
     metric = float(np.median(cell_ratios))
     return {"status": "GRADED", "metric": metric, "cell_count": len(cell_records),
             "seeds_per_cell": SEEDS_PER_CELL, "candidate_failures": failures,
