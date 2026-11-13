@@ -1,0 +1,68 @@
+{
+  "schema": "bananloop-are-public-evaluator-attestation-index-v1",
+  "source_revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+  "count": 10,
+  "attestations": [
+    {
+      "task_id": "budgeted-covtype-dual-market-open",
+      "task_version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-evaluator-attestations/budgeted-covtype-dual-market-open.json",
+      "sha256": "e9efb8fbd3ce329d69f7815858b92273c421147cdac82690cc30e26ab25bbd7b"
+    },
+    {
+      "task_id": "budgeted-imputation-mcar50",
+      "task_version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-evaluator-attestations/budgeted-imputation-mcar50.json",
+      "sha256": "004327e8542e86b967cd514797cfa97f674ad4ebab0cb37286ca88a9c685a8cc"
+    },
+    {
+      "task_id": "carps-star-discrepancy-subset-select",
+      "task_version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-evaluator-attestations/carps-star-discrepancy-subset-select.json",
+      "sha256": "00444331fbc86f330291e80ed1c24f9948ff9fd3d228372a441cf156106111af"
+    },
+    {
+      "task_id": "cpu-decoder-graph-executor",
+      "task_version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-evaluator-attestations/cpu-decoder-graph-executor.json",
+      "sha256": "d336c944ce3cdd821fcf6e1e98759bd76cfe161571a0be3ff7881f88c410ed05"
+    },
+    {
+      "task_id": "cpu-llm-decode-throughput",
+      "task_version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-evaluator-attestations/cpu-llm-decode-throughput.json",
+      "sha256": "6748db1539fcff5ea5d2a97729e5f74798ee4e8d7deeb19a698c22acd2c49e09"
+    },
+    {
+      "task_id": "dctabeval-aeac-pooled-cat-statistics",
+      "task_version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-evaluator-attestations/dctabeval-aeac-pooled-cat-statistics.json",
+      "sha256": "72a2d7f64ba5c7a4c01d5c0be54361d54af66a76505ac33b071685d2405183b5"
+    },
+    {
+      "task_id": "label-efficient-risk-estimator",
+      "task_version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-evaluator-attestations/label-efficient-risk-estimator.json",
+      "sha256": "7b8175b3602f0a4d62e09d1e45fbeb1392ac5eef8da9b2db48d24293f5538fd2"
+    },
+    {
+      "task_id": "shortest-valid-ci-l2-ece",
+      "task_version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-evaluator-attestations/shortest-valid-ci-l2-ece.json",
+      "sha256": "a8dcb35ec309fbbbf5465b6bd5718dec665039e036693a00cbdd55cb45406890"
+    },
+    {
+      "task_id": "sketched-newton-cov-estimator",
+      "task_version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-evaluator-attestations/sketched-newton-cov-estimator.json",
+      "sha256": "daaab8736094ef61292d9aa212edef26bc37cb430ee78b5778cecf519b3a69e5"
+    },
+    {
+      "task_id": "sopcc-online-chance-constrained-policy",
+      "task_version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-evaluator-attestations/sopcc-online-chance-constrained-policy.json",
+      "sha256": "df627767be2805cd4c95881d34241f6f8ae478593d7ff18b5ac263d611bfb93a"
+    }
+  ],
+  "not_cryptographic_audit": true
+}
