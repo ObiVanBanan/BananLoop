@@ -1,0 +1,78 @@
+{
+  "schema": "bananloop-are-public-task-instructions-v1",
+  "source_revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+  "task_count": 10,
+  "tasks": [
+    {
+      "task_id": "budgeted-covtype-dual-market-open",
+      "version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-task-material/selected/budgeted-covtype-dual-market-open/instruction.md",
+      "sha256": "0cf06c38988de7b02072c8aaa3f07e2b2c1253392d6b11dd760206919a1e0fa9",
+      "bytes": 4618
+    },
+    {
+      "task_id": "budgeted-imputation-mcar50",
+      "version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-task-material/selected/budgeted-imputation-mcar50/instruction.md",
+      "sha256": "db5f523c327513114bb130af24984f89bd384fe0f01357dd69c1b0eded0f009f",
+      "bytes": 5001
+    },
+    {
+      "task_id": "carps-star-discrepancy-subset-select",
+      "version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-task-material/selected/carps-star-discrepancy-subset-select/instruction.md",
+      "sha256": "77138bdffa578f1211e19fc2c1e74a6fec18323a91dfb97bb7808e5b26427987",
+      "bytes": 3016
+    },
+    {
+      "task_id": "cpu-decoder-graph-executor",
+      "version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-task-material/selected/cpu-decoder-graph-executor/instruction.md",
+      "sha256": "826bde245fa3fa4eac4235b3cf0fc7f95d06a2d4c643d5ccab3b63c5a71840f7",
+      "bytes": 4931
+    },
+    {
+      "task_id": "cpu-llm-decode-throughput",
+      "version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-task-material/selected/cpu-llm-decode-throughput/instruction.md",
+      "sha256": "e3150dff47a1ac0e18360f59fc62bbb495ec94011806f277656799d4478ab4e1",
+      "bytes": 4971
+    },
+    {
+      "task_id": "dctabeval-aeac-pooled-cat-statistics",
+      "version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-task-material/selected/dctabeval-aeac-pooled-cat-statistics/instruction.md",
+      "sha256": "23f85e039f68534902627ccc2cdb6f9acea4b039f466f54a4f5032d6ba291e71",
+      "bytes": 4680
+    },
+    {
+      "task_id": "label-efficient-risk-estimator",
+      "version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-task-material/selected/label-efficient-risk-estimator/instruction.md",
+      "sha256": "66a209cd63aaaa9060abd535855f03521e2bed022a65507c7cd5ae67a7129d3a",
+      "bytes": 4825
+    },
+    {
+      "task_id": "shortest-valid-ci-l2-ece",
+      "version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-task-material/selected/shortest-valid-ci-l2-ece/instruction.md",
+      "sha256": "be11f61a026312478f96b11af65a2872d7108682970b6a1d686fdf7996739726",
+      "bytes": 4951
+    },
+    {
+      "task_id": "sketched-newton-cov-estimator",
+      "version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-task-material/selected/sketched-newton-cov-estimator/instruction.md",
+      "sha256": "1e843187ae1ca642747afec357b4f931b0fb8eeaf077e15b9545a157a2b4a2da",
+      "bytes": 4470
+    },
+    {
+      "task_id": "sopcc-online-chance-constrained-policy",
+      "version": "1.1.0",
+      "path": "benchmarks/autoresearchexam/public-task-material/selected/sopcc-online-chance-constrained-policy/instruction.md",
+      "sha256": "6eeb6a3162149487c9ef7ab1607657dceaefec2ac3154432a1e2da520c65dc07",
+      "bytes": 6977
+    }
+  ],
+  "private_material_accessed": false
+}
