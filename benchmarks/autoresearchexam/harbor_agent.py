@@ -277,12 +277,17 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 or raw["write_path"] != [expected_candidate]
                 or raw.get("public_dev_cell_count", expected_cells) != expected_cells):
             raise RuntimeError("Harbor bridge must expose and allow writes to only the pinned task output")
-        expected_image = getattr(runner_type, "default_dev_image", None)
-        if expected_image is not None and raw["public_dev_image"] != expected_image:
-            raise RuntimeError("public DEV image tag differs from the task adapter pin")
-        expected_image_id = getattr(runner_type, "default_dev_image_id", None)
-        if expected_image_id and raw["public_dev_image_id"] != expected_image_id:
-            raise RuntimeError("public DEV image ID differs from the task adapter pin")
+        # CARPS can use a rebuilt, public-only image whose identity is pinned
+        # inside the approved evaluator bundle. The runner verifies that bundle
+        # against the frozen protocol before executing DEV; comparing here to
+        # the adapter's historical default would reject that valid pin.
+        if adapter_id != "carps-public-v1":
+            expected_image = getattr(runner_type, "default_dev_image", None)
+            if expected_image is not None and raw["public_dev_image"] != expected_image:
+                raise RuntimeError("public DEV image tag differs from the task adapter pin")
+            expected_image_id = getattr(runner_type, "default_dev_image_id", None)
+            if expected_image_id and raw["public_dev_image_id"] != expected_image_id:
+                raise RuntimeError("public DEV image ID differs from the task adapter pin")
         if adapter_id in {"carps-public-v1", "dctabeval-public-v1", "sketched-newton-public-v1", "labelrisk-public-v1", "cpudecoder-public-v1", "cpu-llm-public-v1", "covtype-external-proxy-v1"}:
             task_root = Path(raw.get("public_task_root", "")).expanduser()
             if task_root.is_symlink() or not task_root.is_dir() or task_root.name != raw["task_id"]:
@@ -448,8 +453,29 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         loop = asyncio.get_running_loop()
         state_dir = Path(raw["state_dir"])
         state_dir.mkdir(parents=True, exist_ok=True)
+        ledger_value = raw.get("public_submission_ledger_path")
+        ledger_path = (
+            Path(ledger_value).expanduser() if isinstance(ledger_value, str) and ledger_value
+            else state_dir / "autoresearchexam-public-submissions.sqlite3"
+        )
+        if not ledger_path.is_absolute():
+            ledger_path = state_dir / ledger_path
+        ledger_root = state_dir.resolve()
+        ledger_path = ledger_path.absolute()
+        try:
+            ledger_path.resolve().relative_to(ledger_root)
+        except ValueError:
+            raise RuntimeError("public submission ledger must remain under its campaign state directory") from None
+        probe = ledger_path
+        while probe != ledger_root and probe != probe.parent:
+            if probe.is_symlink():
+                raise RuntimeError("public submission ledger path must not contain symlinks")
+            probe = probe.parent
+        if ledger_path.is_symlink():
+            raise RuntimeError("public submission ledger path must not contain symlinks")
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
         grader = PublicAREGrader(
-            state_dir / "autoresearchexam-public-submissions.sqlite3",
+            ledger_path,
             task_id=raw["task_id"],
             contract_sha256=raw["mcp_contract_sha256"],
             repeatability_runs=raw["repeatability_runs"],

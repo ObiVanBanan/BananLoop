@@ -98,6 +98,19 @@ def build_fixture(*, repo: Path, source_task: Path, mcp_contract: Path,
         "public_draws": list(PILOT_DRAWS), "requests_per_draw": PILOT_REQUEST_LIMIT,
         "model_config_sha256": dev.MODEL_CONFIG_SHA256,
         "model_weights_sha256": dev.MODEL_WEIGHTS_SHA256,
+        "public_workloads_sha256": {
+            name: hashlib.sha256(contents[name]).hexdigest()
+            for name in sorted(_PUBLIC_TASK_FILES)
+            if name.startswith("public-dev-workload-") or name == "public-warmup-workload.json"
+        },
+        "validation_metric_semantics": AREPublicCPULLMEvaluatorRunner.validation_metric_semantics,
+        "validation_bridge": {
+            "executor": "BananLoop trusted host-side AREPublicEvaluatorRunner",
+            "sandbox_network_access": False,
+            "allowed_public_mcp_tools": ["submit", "result", "status"],
+            "submitted_material": "candidate file only",
+            "private_verifier_or_holdout_access": False,
+        },
     }
     contents[BACKEND_MANIFEST] = _canonical(manifest)
     buffer = io.BytesIO()

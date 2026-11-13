@@ -588,3 +588,8 @@ def test_live_smoke_result_is_atomically_persisted_with_unknown_usage(tmp_path):
     assert target == state_root / "live-smoke-result.json"
     assert json.loads(target.read_text()) == result
     assert result["result_path"] == str(target)
+def test_fixture_protocol_intent_preserves_source_metric_aggregation():
+    from bananloop.chatgpt_responses import INSTRUCTIONS
+
+    assert "Choose metric_field and aggregation from the supplied task/evaluator definition exactly" in INSTRUCTIONS
+    assert "never substitute MEAN when the source specifies MEDIAN, MIN, or MAX" in INSTRUCTIONS

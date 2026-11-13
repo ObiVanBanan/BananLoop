@@ -27,8 +27,10 @@ VALIDATION_CASE_ID = "public-cpu-llm-validation-aggregate"
 METRIC_ID = "cpu_llm_decode_speedup"
 METRIC_FIELD = "speedup"
 METRIC_DIRECTION = "MAXIMIZE"
-METRIC_AGGREGATION = "MEAN"
-VALIDATION_METRIC_SEMANTICS = "public_are.validation_score=higher_is_better_task_reward.v1"
+METRIC_AGGREGATION = "MEDIAN"
+VALIDATION_METRIC_SEMANTICS = (
+    "public_are.validation_score=task_reward_for_median_three_round_speedup_with_0.99_token_agreement.v1"
+)
 
 _RUNTIME_FILES = {
     "cpu_llm_runner.py": Path(__file__),
@@ -103,6 +105,7 @@ class AREPublicCPULLMEvaluatorRunner(AREPublicEvaluatorRunner):
                     or result.get("official_draws") != 3
                     or result.get("official_requests_per_draw") != 128
                     or result.get("pilot_only") is not True
+                    or result.get("aggregation") != "MEDIAN"
                     or isinstance(metric, bool) or not isinstance(metric, (int, float))
                     or not math.isfinite(metric) or metric <= 0
                     or result.get("token_agreement", 0) < 0.99):
@@ -152,9 +155,19 @@ class AREPublicCPULLMEvaluatorRunner(AREPublicEvaluatorRunner):
                      "pilot_only": True}
         elif tier == "validation":
             value = {**common, "tier": tier,
-                     "measurement": "one official higher-is-better task reward from public ARE VALIDATION",
+                     "measurement": (
+                         "official task reward for median speedup across three held-out 128-request rounds; "
+                         "the public MCP validation_score is preserved as the official task reward"
+                     ),
                      "mcp_endpoint": "http://grader:8000/mcp",
-                     "mcp_contract_sha256": contract_sha256}
+                     "mcp_contract_sha256": contract_sha256,
+                     "validation_bridge": {
+                         "executor": "BananLoop trusted host-side AREPublicEvaluatorRunner",
+                         "sandbox_network_access": False,
+                         "allowed_public_mcp_tools": ["submit", "result", "status"],
+                         "submitted_material": "candidate file only",
+                         "private_verifier_or_holdout_access": False,
+                     }}
         else:
             raise ValueError("CPU LLM backend supports only DEV and VALIDATION")
         return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
@@ -192,6 +205,11 @@ class AREPublicCPULLMEvaluatorRunner(AREPublicEvaluatorRunner):
                                     if source == rel)
                     if hashlib.sha256(payload[name]).hexdigest() != expected:
                         raise ValueError
+                workload_hashes = {
+                    name: hashlib.sha256(payload[name]).hexdigest()
+                    for name in sorted(_PUBLIC_TASK_FILES)
+                    if name.startswith("public-dev-workload-") or name == "public-warmup-workload.json"
+                }
                 manifest = json.loads(payload[BACKEND_MANIFEST])
                 expected_manifest = {
                     "schema_version": 1, "backend_id": BACKEND_ID,
@@ -209,6 +227,15 @@ class AREPublicCPULLMEvaluatorRunner(AREPublicEvaluatorRunner):
                     "requests_per_draw": dev.PILOT_REQUEST_LIMIT,
                     "model_config_sha256": dev.MODEL_CONFIG_SHA256,
                     "model_weights_sha256": dev.MODEL_WEIGHTS_SHA256,
+                    "public_workloads_sha256": workload_hashes,
+                    "validation_metric_semantics": self.validation_metric_semantics,
+                    "validation_bridge": {
+                        "executor": "BananLoop trusted host-side AREPublicEvaluatorRunner",
+                        "sandbox_network_access": False,
+                        "allowed_public_mcp_tools": ["submit", "result", "status"],
+                        "submitted_material": "candidate file only",
+                        "private_verifier_or_holdout_access": False,
+                    },
                 }
                 if manifest != expected_manifest:
                     raise ValueError

@@ -34,6 +34,7 @@ class AREPublicEvaluatorRunner:
     default_dev_cell_count = 42
     dev_aggregate_case_id = "public-dev-aggregate"
     validation_aggregate_case_id = "public-validation-aggregate"
+    validation_score_bounds: tuple[float, float] | None = None
 
     @classmethod
     def aggregate_case_input(
@@ -182,6 +183,10 @@ class AREPublicEvaluatorRunner:
             )
         if tier != "validation":
             raise TrustedEvaluatorError("public ARE runner only supports DEV and VALIDATION")
+        if self.grader.repeatability_runs != protocol.repeatability_runs:
+            raise TrustedEvaluatorError(
+                "public grader repetition count differs from the approved evaluator protocol"
+            )
         candidate = candidate_files.get(self.candidate_path)
         if not isinstance(candidate, bytes) or not candidate:
             raise TrustedEvaluatorError("candidate snapshot lacks the approved task output file")
@@ -200,17 +205,19 @@ class AREPublicEvaluatorRunner:
         if self.clock() >= self.deadline_epoch:
             raise PublicGraderError("campaign deadline expired before public grader submission")
 
-        pending = self.grader.pending_snapshot(candidate_snapshot_id)
-        cached = None if pending is not None else self.grader.completed_snapshot_result(
-            candidate_snapshot_id, candidate,
-        )
-        if cached is not None:
-            pending = cached
-        else:
-            # The public scorer snapshots /app/output at submit time. Refresh
-            # only this candidate file; never transfer evaluator assets.
-            self.publish_candidate(candidate)
+        # One trusted backend invocation completes every external repeatability
+        # submission and accepts only the grader ledger's equal-score aggregate.
+        # An uncertain submission remains durable and is polled, never retried.
+        while True:
+            completed = self.grader.completed_snapshot_result(candidate_snapshot_id, candidate)
+            if completed is not None:
+                pending = completed
+                break
+            pending = self.grader.pending_snapshot(candidate_snapshot_id)
             if pending is None:
+                # The public scorer snapshots /app/output at submit time. Refresh
+                # only this candidate file; never transfer evaluator assets.
+                self.publish_candidate(candidate)
                 pending = self.grader.submit_snapshot_once(
                     candidate_snapshot_id=candidate_snapshot_id,
                     source_snapshot_id=protocol.source_snapshot_id,
@@ -228,23 +235,33 @@ class AREPublicEvaluatorRunner:
                 if pending["state"] != "GRADED":
                     self.sleep(min(self.poll_interval_seconds,
                                    max(0.0, self.deadline_epoch - self.clock())))
+        if pending.get("repetitions") != protocol.repeatability_runs:
+            raise TrustedEvaluatorError("public validation did not complete the approved repetitions")
         return self._execution_from_score(
             protocol=protocol, approval_digest=approval_digest,
             campaign_id=campaign_id, spec_hash=spec_hash,
             candidate_snapshot_id=candidate_snapshot_id,
             tier_manifest=tier_manifest, tier="validation",
             split="public_validation",
-            score=self._public_score(pending.get("public_result", pending)),
+            score=self._public_score(
+                pending.get("public_result", pending), self.validation_score_bounds,
+            ),
         )
 
     @staticmethod
-    def _public_score(public_result: Mapping[str, Any]) -> float:
+    def _public_score(
+        public_result: Mapping[str, Any],
+        score_bounds: tuple[float, float] | None = None,
+    ) -> float:
         score = public_result.get("validation_score")
         if (public_result.get("status") != "GRADED"
                 or public_result.get("grader_error") is True
                 or isinstance(score, bool)
                 or not isinstance(score, (int, float)) or not math.isfinite(score)):
             raise TrustedEvaluatorError("public grader result lacks an approved finite score")
+        if (score_bounds is not None
+                and not score_bounds[0] <= score <= score_bounds[1]):
+            raise TrustedEvaluatorError("public grader score is outside the task metric bounds")
         return float(score)
 
     def _validate_aggregate_case(
@@ -325,7 +342,7 @@ class AREPublicEvaluatorRunner:
                         or contract_infos[0].file_size > 128 * 1024
                         or backend_infos[0].file_size > 32 * 1024
                         or grader_infos[0].file_size > 32 * 1024
-                        or mcp_client_infos[0].file_size > 12 * 1024
+                        or mcp_client_infos[0].file_size > 24 * 1024
                         or instruction_infos[0].file_size > 64 * 1024
                         or cellspec_infos[0].file_size > 16 * 1024
                         or cellrunner_infos[0].file_size > 4 * 1024

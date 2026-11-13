@@ -8,6 +8,7 @@ raw grader output is discarded.
 from __future__ import annotations
 
 import json
+import math
 import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -17,6 +18,64 @@ from urllib.request import Request, urlopen
 ENDPOINT = "http://grader:8000/mcp"
 PROTOCOL_VERSION = "2024-11-05"
 ALLOWED_TOOLS = {"submit", "result", "status"}
+_SCHEMA_KEYS = {
+    "type", "properties", "required", "additionalProperties", "items", "enum", "const",
+    "anyOf", "oneOf", "allOf", "not", "minimum", "maximum", "exclusiveMinimum",
+    "exclusiveMaximum", "minLength", "maxLength", "pattern", "minItems", "maxItems",
+    "uniqueItems", "format", "minProperties", "maxProperties", "$schema", "$ref",
+}
+
+
+def _sanitize_schema(value: Any, *, depth: int = 0, budget: list[int] | None = None) -> Any:
+    """Bound and structurally allowlist JSON Schema, dropping arbitrary prose/metadata."""
+    if budget is None:
+        budget = [256]
+    budget[0] -= 1
+    if budget[0] < 0 or depth > 8:
+        raise ValueError("schema exceeds structural bounds")
+    if isinstance(value, dict):
+        if len(value) > 64:
+            raise ValueError("schema object exceeds field bound")
+        out = {}
+        for key, item in value.items():
+            if key not in _SCHEMA_KEYS:
+                continue
+            if key in {"properties", "$defs", "definitions"}:
+                if not isinstance(item, dict) or len(item) > 64:
+                    raise ValueError("schema properties exceed bounds")
+                out[key] = {str(name)[:120]: _sanitize_schema(child, depth=depth + 1, budget=budget)
+                            for name, child in sorted(item.items())}
+            elif key in {"required", "enum", "anyOf", "oneOf", "allOf"}:
+                if not isinstance(item, list) or len(item) > 64:
+                    raise ValueError("schema array exceeds bounds")
+                if key in {"anyOf", "oneOf", "allOf"}:
+                    out[key] = [_sanitize_schema(child, depth=depth + 1, budget=budget) for child in item]
+                elif key == "required" and any(not isinstance(child, str) or len(child) > 120 for child in item):
+                    raise ValueError("schema required list is malformed")
+                elif key == "enum" and any(
+                    not (child is None or isinstance(child, (str, int, bool))
+                         or (isinstance(child, float) and math.isfinite(child)))
+                    or (isinstance(child, str) and len(child) > 512) for child in item
+                ):
+                    raise ValueError("schema enum is malformed")
+                else:
+                    out[key] = item
+            elif key in {"items", "not", "additionalProperties"} and isinstance(item, (dict, bool)):
+                out[key] = _sanitize_schema(item, depth=depth + 1, budget=budget) if isinstance(item, dict) else item
+            elif isinstance(item, (str, int, float, bool)) or item is None:
+                if isinstance(item, str) and len(item) > 512:
+                    raise ValueError("schema scalar exceeds bound")
+                if isinstance(item, float) and not math.isfinite(item):
+                    raise ValueError("schema scalar is not finite")
+                out[key] = item
+        return out
+    if isinstance(value, list):
+        if len(value) > 64:
+            raise ValueError("schema array exceeds bound")
+        return [_sanitize_schema(item, depth=depth + 1, budget=budget) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    raise ValueError("schema contains unsupported value")
 
 
 class _MCPFailure(RuntimeError):
@@ -133,14 +192,16 @@ def _tool_list_payload(response: dict[str, Any]) -> dict[str, Any]:
         name, description = item.get("name"), item.get("description", "")
         input_schema, output_schema = item.get("inputSchema", {}), item.get("outputSchema", {})
         if (not isinstance(name, str) or not name or len(name) > 120 or name in names
-                or not isinstance(description, str) or len(description) > 8192
+                or not isinstance(description, str) or len(description) > 512
                 or not isinstance(input_schema, dict) or not isinstance(output_schema, dict)):
             return {"transport_error": True, "transport_category": "malformed_response"}
         names.add(name)
-        sanitized.append({
-            "name": name, "description": description,
-            "inputSchema": input_schema, "outputSchema": output_schema,
-        })
+        try:
+            sanitized.append({"name": name, "description": description,
+                              "inputSchema": _sanitize_schema(input_schema),
+                              "outputSchema": _sanitize_schema(output_schema)})
+        except (TypeError, ValueError):
+            return {"transport_error": True, "transport_category": "malformed_response"}
     encoded = json.dumps(sanitized, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if len(encoded) > 128_000:
         return {"transport_error": True, "transport_category": "oversized_response"}

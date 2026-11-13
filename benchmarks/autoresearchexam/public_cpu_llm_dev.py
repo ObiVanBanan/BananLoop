@@ -1,8 +1,8 @@
 """Public-only bounded DEV pilot for CPU LLM decode throughput.
 
-The official grader runs three held-out 128-request rounds. This pilot uses
-16 requests from each of two fixed public draws and labels the shortened score
-as diagnostic only.
+The official grader uses the median of three held-out 128-request round
+speedups. This pilot uses 16 requests from each of two fixed public draws,
+reports their median, and labels the shortened score diagnostic only.
 """
 from __future__ import annotations
 
@@ -150,8 +150,15 @@ def evaluate_candidate(candidate: bytes, *, image: str = DEFAULT_IMAGE,
                 "--tmpfs", "/tmp:rw,nosuid,nodev,size=2g,mode=1777",
                 "--mount", f"type=bind,src={output},dst=/app/output,readonly",
                 "--entrypoint", "python3", image,
-                "/app/harness/bench.py", "--draws", ",".join(map(str, PILOT_DRAWS)),
-                "--limit", str(PILOT_REQUEST_LIMIT)]
+                "-c", ("import hashlib,runpy,sys; "
+                       "pins={'/opt/model/config.json':'" + MODEL_CONFIG_SHA256 + "',"
+                       "'/opt/model/model.safetensors':'" + MODEL_WEIGHTS_SHA256 + "'}; "
+                       "[(None if hashlib.file_digest(open(p,'rb'),'sha256').hexdigest()==h else "
+                       "(_ for _ in ()).throw(SystemExit('pinned model asset mismatch'))) "
+                       "for p,h in pins.items()]; "
+                       "sys.argv=['/app/harness/bench.py','--draws','" + ",".join(map(str, PILOT_DRAWS)) +
+                       "','--limit','" + str(PILOT_REQUEST_LIMIT) + "']; "
+                       "runpy.run_path('/app/harness/bench.py',run_name='__main__')")]
         stdout = _run_bounded_container(argv, docker_binary=docker_binary,
                                         container_name=container, timeout_seconds=remaining)
         if stdout is None:
@@ -180,6 +187,7 @@ def evaluate_candidate(candidate: bytes, *, image: str = DEFAULT_IMAGE,
         except (ValueError, TypeError):
             raise PublicCPULLMError("CPU LLM public benchmark aggregate is invalid or below token-agreement threshold") from None
         return {"status": "GRADED", "metric": speedup, "token_agreement": agreement,
+                "aggregation": "MEDIAN",
                 "cell_count": len(PILOT_DRAWS), "draws": list(PILOT_DRAWS),
                 "request_limit": PILOT_REQUEST_LIMIT, "per_draw": per_draw,
                 "elapsed_seconds": round(time.monotonic() - started, 3),

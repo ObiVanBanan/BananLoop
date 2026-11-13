@@ -25,10 +25,12 @@ def _publish(root: Path, content: bytes) -> str:
 def test_protocol_review_redacts_binary_public_assets_to_digest_metadata(tmp_path):
     bundle_stream = io.BytesIO()
     binary_content = b"\x00opaque-public-cloud-payload\xff"
+    panel_json = json.dumps({"rows": ["public-row"] * 3000}, separators=(",", ":"))
     with zipfile.ZipFile(bundle_stream, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
         bundle.writestr("runner.py", "from pathlib import Path\n# loads data/public-cloud.npy\n")
         bundle.writestr("manifest.json", '{"cloud":"data/public-cloud.npy"}\n')
         bundle.writestr("data/public-cloud.npy", binary_content)
+        bundle.writestr("data/public-panel.json", panel_json)
     bundle_bytes = bundle_stream.getvalue()
     bundle_digest = hashlib.sha256(bundle_bytes).hexdigest()
 
@@ -97,6 +99,12 @@ def test_protocol_review_redacts_binary_public_assets_to_digest_metadata(tmp_pat
         "size_bytes": len(binary_content),
         "sha256": hashlib.sha256(binary_content).hexdigest(),
     }]
+    assert review["evaluator_data_assets"] == [{
+        "path": "data/public-panel.json",
+        "size_bytes": len(panel_json.encode()),
+        "sha256": hashlib.sha256(panel_json.encode()).hexdigest(),
+    }]
     serialized = json.dumps(review, separators=(",", ":"))
     assert "opaque-public-cloud-payload" not in serialized
+    assert "public-row" not in serialized
     assert "runner.py" in serialized

@@ -371,6 +371,16 @@ def _role_transport(role: Any, role_id: str) -> None:
         )
 
 
+def _initial_optimization_task_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Select only the Researcher-bound root task, excluding candidate nodes."""
+    return [
+        node for node in nodes
+        if node.get("phase") == "OPTIMIZATION"
+        and isinstance(node.get("payload"), dict)
+        and isinstance(node["payload"].get("hypothesis"), str)
+    ]
+
+
 def _ensure_researcher_selected_task(graph: GraphRepository,
                                     spec: OptimizationCampaignSpecV2) -> None:
     """Seed the child graph from the Researcher task frozen by owner approval."""
@@ -385,7 +395,11 @@ def _ensure_researcher_selected_task(graph: GraphRepository,
         )
     node_id = f"optimization-task-{task.hypothesis_id}"
     nodes = graph.scheduling_snapshot()["nodes"]
-    existing = [node for node in nodes if node["phase"] == "OPTIMIZATION"]
+    # Candidate snapshots are also OPTIMIZATION graph nodes. Only count the
+    # root task node seeded from Researcher evidence when checking this
+    # owner-approved child binding; otherwise a resumed child with a candidate
+    # is incorrectly rejected as having multiple initial tasks.
+    existing = _initial_optimization_task_nodes(nodes)
     if existing:
         if len(existing) != 1:
             raise V2OptimizationCLIError("approved child has multiple initial Optimization tasks")

@@ -3,12 +3,81 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from typing import Any, Mapping
 
 
 def _canonical(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=False, allow_nan=False).encode("utf-8")
+
+
+_SCHEMA_KEYS = {
+    "type", "properties", "required", "additionalProperties", "items", "enum", "const",
+    "anyOf", "oneOf", "allOf", "not", "minimum", "maximum", "exclusiveMinimum",
+    "exclusiveMaximum", "minLength", "maxLength", "pattern", "minItems", "maxItems",
+    "uniqueItems", "format", "minProperties", "maxProperties", "$schema", "$ref",
+}
+
+
+def _safe_schema(value: Any, *, depth: int = 0, budget: list[int] | None = None) -> Any:
+    if budget is None:
+        budget = [256]
+    budget[0] -= 1
+    if budget[0] < 0 or depth > 8:
+        raise ValueError("public MCP schema exceeds structural bounds")
+    if isinstance(value, bool):
+        return value
+    if not isinstance(value, dict) or len(value) > 64:
+        raise ValueError("public MCP schema must be a bounded object")
+    out: dict[str, Any] = {}
+    for key, item in value.items():
+        if key not in _SCHEMA_KEYS:
+            continue
+        if key == "properties":
+            if not isinstance(item, dict) or len(item) > 64:
+                raise ValueError("public MCP schema properties exceed bounds")
+            out[key] = {str(name)[:120]: _safe_schema(child, depth=depth + 1, budget=budget)
+                        for name, child in sorted(item.items())}
+        elif key in {"anyOf", "oneOf", "allOf"}:
+            if not isinstance(item, list) or len(item) > 64:
+                raise ValueError("public MCP schema alternatives exceed bounds")
+            out[key] = [_safe_schema(child, depth=depth + 1, budget=budget) for child in item]
+        elif key in {"items", "not", "additionalProperties"} and isinstance(item, (dict, bool)):
+            out[key] = _safe_schema(item, depth=depth + 1, budget=budget) if isinstance(item, dict) else item
+        elif key in {"required", "enum"}:
+            if not isinstance(item, list) or len(item) > 64:
+                raise ValueError("public MCP schema array exceeds bounds")
+            if key == "required" and any(not isinstance(child, str) or len(child) > 120 for child in item):
+                raise ValueError("public MCP required list is malformed")
+            if key == "enum" and any(
+                not (child is None or isinstance(child, (str, int, bool))
+                     or (isinstance(child, float) and math.isfinite(child)))
+                or (isinstance(child, str) and len(child) > 512) for child in item
+            ):
+                raise ValueError("public MCP enum is malformed")
+            out[key] = item
+        elif isinstance(item, (str, int, float, bool)) or item is None:
+            if isinstance(item, str) and len(item) > 512:
+                raise ValueError("public MCP schema scalar exceeds bound")
+            if isinstance(item, float) and not math.isfinite(item):
+                raise ValueError("public MCP schema scalar is not finite")
+            out[key] = item
+    return out
+
+
+def _safe_tool(item: Mapping[str, Any]) -> dict[str, Any]:
+    if set(item) - {"name", "description", "inputSchema", "outputSchema"}:
+        raise ValueError("public MCP tool descriptor has unexpected fields")
+    name, description = item.get("name"), item.get("description", "")
+    input_schema, output_schema = item.get("inputSchema", {}), item.get("outputSchema", {})
+    if (not isinstance(name, str) or not name or len(name) > 120
+            or not isinstance(description, str) or len(description) > 512
+            or not isinstance(input_schema, dict) or not isinstance(output_schema, dict)):
+        raise ValueError("public MCP tool descriptor is malformed")
+    return {"name": name, "description": description,
+            "inputSchema": _safe_schema(input_schema),
+            "outputSchema": _safe_schema(output_schema)}
 
 
 def make_public_mcp_contract(
@@ -33,7 +102,7 @@ def make_public_mcp_contract(
         if not isinstance(name, str) or not name or name in names:
             raise ValueError("public MCP tool names must be unique nonempty strings")
         names.add(name)
-        tools.append(dict(item))
+        tools.append(_safe_tool(item))
     if not {"submit", "result"} <= names:
         raise ValueError("public MCP contract lacks the submit/result tools")
     server = dict(server_info)

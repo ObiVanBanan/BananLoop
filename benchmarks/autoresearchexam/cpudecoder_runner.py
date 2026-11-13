@@ -95,6 +95,7 @@ class AREPublicCPUDecoderEvaluatorRunner(AREPublicEvaluatorRunner):
             if (result.get("status") != "GRADED"
                     or result.get("task_sha256") != dev.TASK_SHA256
                     or result.get("instruction_sha256") != dev.INSTRUCTION_SHA256
+                    or result.get("cell_count") != len(dev.PUBLIC_SEEDS)
                     or result.get("seeds") != list(dev.PUBLIC_SEEDS)
                     or result.get("equivalent_instances") != len(dev.PUBLIC_SEEDS)
                     or result.get("official_seed_count") != 16
@@ -143,6 +144,7 @@ class AREPublicCPUDecoderEvaluatorRunner(AREPublicEvaluatorRunner):
                      "public_harness_sha256": dev.PUBLIC_HARNESS_SHA256,
                      "public_seeds": list(dev.PUBLIC_SEEDS),
                      "official_public_seed_count": 16,
+                     "repeatability_scope": "single invocation; fresh OS-entropy public inputs",
                      "public_dev_image": dev.DEFAULT_IMAGE,
                      "public_dev_image_id": dev_image_id,
                      "equivalence_required": True, "pilot_only": True}

@@ -37,7 +37,7 @@ from .shortest_ci_runner import AREPublicShortestCIEvaluatorRunner
 
 
 VALIDATION_METRIC_SEMANTICS = (
-    "public_are.validation_score=higher_is_better_task_reward.v1"
+    "public_are.validation_score=relative_interval_length.lower_is_better.v1"
 )
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _TASK_FILES = {
@@ -200,7 +200,7 @@ def build_fixture(
         "public_output_path": cls.public_output_path,
         "metric_id": cls.metric_id,
         "metric_field": cls.metric_field,
-        "direction": "MAXIMIZE",
+        "direction": "MINIMIZE",
         "aggregation": "MEAN",
         "validation_metric_semantics": validation_metric_semantics,
         "public_dev_image": dev_image,
@@ -218,11 +218,11 @@ def build_fixture(
             "candidate_call_timeout_seconds": 2.0,
             "mounted_candidate_path": cls.public_output_path,
         },
-        "public_dev_score_transform": {
-            "source_metric": "relative_interval_length",
-            "source_direction": "MINIMIZE",
-            "task_score": "1 - relative_interval_length",
-            "task_score_direction": "MAXIMIZE",
+        "public_dev_metric_semantics": {
+            "metric": "relative_interval_length",
+            "direction": "MINIMIZE",
+            "coverage_floor": 0.88,
+            "below_coverage_score": 1.0,
         },
         "aggregate_case_ids": {
             "dev": cls.dev_aggregate_case_id,
@@ -290,7 +290,7 @@ def build_fixture(
         "task_version": TASK_VERSION,
         "metric_id": cls.metric_id,
         "metric_field": cls.metric_field,
-        "direction": "MAXIMIZE",
+        "direction": "MINIMIZE",
         "protocol_tiers": ["dev", "validation"],
         "public_dev_panel_count": EXPECTED_SETTINGS,
         "replications_per_setting": DEFAULT_REPLICATIONS_PER_SETTING,

@@ -1,8 +1,10 @@
-"""Bounded public-DEV evaluator for AutoResearchExam dctabeval v1.1.0.
+"""Bounded public-DEV pilot evaluator for AutoResearchExam dctabeval v1.1.0.
 
 This module evaluates only the task's public ``dev.csv`` through the pinned
 ``local_panel.py``. It never opens the task's grader context or contacts the
-ARE grader. Six fixed draws are scored by mean ROC-AUC. Candidate code runs in
+ARE grader. Six fixed draws are scored by mean ROC-AUC. This bounded pilot is
+not comparable to the official twelve-split, 24-hour task run and must not be
+reported as an official benchmark result. Candidate code runs in
 a Docker container with no network, a read-only root, and a per-draw timeout.
 
 The task root must be the public checkout of
@@ -29,6 +31,7 @@ TASK_ID = "dctabeval-aeac-pooled-cat-statistics"
 TASK_VERSION = "1.1.0"
 PANEL_DRAWS = (0, 1, 2, 3, 4, 5)
 PANEL_COUNT = len(PANEL_DRAWS)
+PILOT_SCOPE = "bounded six-of-twelve split pilot; not comparable to official 24-hour result"
 EVAL_ROWS_PER_DRAW = 800
 MAX_CANDIDATE_BYTES = 131_072
 MAX_TIMEOUT_SECONDS = 3_600
@@ -134,6 +137,7 @@ def public_dctabeval_pins(task_root: Path) -> dict[str, Any]:
         "dev_csv_sha256": digests["dev_csv"],
         "panel_draws": list(PANEL_DRAWS),
         "metric": "mean_roc_auc",
+        "pilot_scope": PILOT_SCOPE,
     }
 
 

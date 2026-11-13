@@ -36,7 +36,8 @@ class AREPublicShortestCIEvaluatorRunner(AREPublicEvaluatorRunner):
 
     ``evaluate_dev`` follows the existing runner seam and must map the public
     runner result to ``{"status": "GRADED", "dev_score": metric,
-    "dev_cells": 24}``. Public VALIDATION continues through
+    "dev_cells": 24}``. Both tiers use the task's raw lower-is-better
+    relative interval length. Public VALIDATION continues through
     ``PublicAREGrader`` and its durable at-most-once submission ledger.
     """
 
@@ -48,10 +49,10 @@ class AREPublicShortestCIEvaluatorRunner(AREPublicEvaluatorRunner):
         "benchmarks/autoresearchexam/solutions/shortest_valid_ci/interval.py"
     )
     public_output_path = "/app/output/interval.py"
-    metric_id = "shortest_ci_task_score"
-    metric_field = "task_score"
+    metric_id = "relative_interval_length"
+    metric_field = "metric"
     validation_metric_semantics = (
-        "public_are.validation_score=higher_is_better_task_reward.v1"
+        "public_are.validation_score=relative_interval_length.lower_is_better.v1"
     )
     dev_aggregate_case_id = "public-shortest-ci-dev-aggregate"
     validation_aggregate_case_id = "public-shortest-ci-validation-aggregate"
@@ -95,7 +96,7 @@ class AREPublicShortestCIEvaluatorRunner(AREPublicEvaluatorRunner):
             if (isinstance(metric, bool) or not isinstance(metric, (int, float))
                     or not 0.0 <= metric <= 1.0):
                 raise TrustedEvaluatorError("shortest-CI public DEV metric is invalid")
-            return {"status": "GRADED", "dev_score": 1.0 - float(metric),
+            return {"status": "GRADED", "dev_score": float(metric),
                     "dev_cells": EXPECTED_SETTINGS}
 
         super().__init__(
@@ -121,7 +122,7 @@ class AREPublicShortestCIEvaluatorRunner(AREPublicEvaluatorRunner):
             "task_version": TASK_VERSION,
             "metric_id": cls.metric_id,
             "metric_field": cls.metric_field,
-            "direction": "MAXIMIZE",
+            "direction": "MINIMIZE",
             "validation_metric_semantics": cls.validation_metric_semantics,
         }
         if tier == "dev":
@@ -130,7 +131,7 @@ class AREPublicShortestCIEvaluatorRunner(AREPublicEvaluatorRunner):
                 "tier": tier,
                 "public_metric_field": "relative_interval_length",
                 "public_metric_direction": "MINIMIZE",
-                "measurement": "task_score = 1 - public metric; public metric is the mean setting score, where a setting scores mean relative interval length if sampled coverage is at least 0.88, otherwise 1.0",
+                "measurement": "unweighted mean setting relative_interval_length; each setting returns 1.0 when sampled coverage is below 0.88",
                 "public_dev_image_id": dev_image_id,
                 "panel_source_sha256": PANEL_SOURCE_SHA256,
                 "dev_panel_sha256": DEV_PANEL_SHA256,
@@ -142,7 +143,7 @@ class AREPublicShortestCIEvaluatorRunner(AREPublicEvaluatorRunner):
             value = {
                 **common,
                 "tier": tier,
-                "measurement": "one official higher-is-better task reward returned in validation_score by the public ARE validation endpoint",
+                "measurement": "one official task metric returned in validation_score by the public ARE validation endpoint; the public task instruction defines the metric as lower-is-better relative interval length",
                 "public_endpoint": "http://grader:8000/mcp",
                 "mcp_contract_sha256": contract_sha256,
                 "candidate_path": cls.default_candidate_path,
@@ -155,9 +156,9 @@ class AREPublicShortestCIEvaluatorRunner(AREPublicEvaluatorRunner):
     def run(self, *, protocol: EvaluatorProtocolV1, **kwargs: Any) -> EvaluatorExecutionV1:
         if (protocol.metric_id != self.metric_id
                 or protocol.metric_field != self.metric_field
-                or protocol.direction != "MAXIMIZE"
+                or protocol.direction != "MINIMIZE"
                 or protocol.aggregation != "MEAN"):
-            raise TrustedEvaluatorError("shortest-CI protocol must maximize mean normalized task_score")
+            raise TrustedEvaluatorError("shortest-CI protocol must minimize mean relative interval length")
         if protocol.execution_backend_id != self.backend_id:
             raise TrustedEvaluatorError("shortest-CI protocol is not pinned to this public backend")
         return super().run(protocol=protocol, **kwargs)
@@ -252,7 +253,7 @@ class AREPublicShortestCIEvaluatorRunner(AREPublicEvaluatorRunner):
                     "public_output_path": self.public_output_path,
                     "metric_id": self.metric_id,
                     "metric_field": self.metric_field,
-                    "direction": "MAXIMIZE",
+                    "direction": "MINIMIZE",
                     "aggregation": "MEAN",
                     "validation_metric_semantics": self.validation_metric_semantics,
                     "public_dev_image": self.dev_image,
@@ -272,11 +273,11 @@ class AREPublicShortestCIEvaluatorRunner(AREPublicEvaluatorRunner):
                         "candidate_call_timeout_seconds": 2.0,
                         "mounted_candidate_path": self.public_output_path,
                     },
-                    "public_dev_score_transform": {
-                        "source_metric": "relative_interval_length",
-                        "source_direction": "MINIMIZE",
-                        "task_score": "1 - relative_interval_length",
-                        "task_score_direction": "MAXIMIZE",
+                    "public_dev_metric_semantics": {
+                        "metric": "relative_interval_length",
+                        "direction": "MINIMIZE",
+                        "coverage_floor": 0.88,
+                        "below_coverage_score": 1.0,
                     },
                     "aggregate_case_ids": {
                         "dev": self.dev_aggregate_case_id,
@@ -328,5 +329,5 @@ class AREPublicShortestCIEvaluatorRunner(AREPublicEvaluatorRunner):
             tier=tier,
             split=split,
             score=score,
-            metric_unit="normalized_task_score",
+            metric_unit="relative_interval_length",
         )

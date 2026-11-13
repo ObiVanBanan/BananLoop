@@ -55,6 +55,7 @@ class AREPublicDCTABEvalEvaluatorRunner(AREPublicEvaluatorRunner):
     default_dev_cell_count = PANEL_COUNT
     dev_aggregate_case_id = DEV_CASE_ID
     validation_aggregate_case_id = VALIDATION_CASE_ID
+    validation_score_bounds = (0.0, 1.0)
 
     def __init__(self, *, source_task_root: Path, dev_image: str,
                  dev_image_id: str, **kwargs: Any):
@@ -125,7 +126,9 @@ class AREPublicDCTABEvalEvaluatorRunner(AREPublicEvaluatorRunner):
             if dev_cell_count != PANEL_COUNT:
                 raise ValueError("dctabeval DEV scope must use its full six-draw panel")
             base.update({
-                "measurement": "unweighted mean ROC-AUC over pinned local_panel draws",
+                "measurement": "unweighted mean ROC-AUC over pinned six-of-twelve local pilot draws",
+                "pilot_only": True,
+                "official_result_comparable": False,
                 "draws": list(PANEL_DRAWS),
                 "panel_count": PANEL_COUNT,
                 "eval_rows_per_draw": 800,
@@ -140,9 +143,21 @@ class AREPublicDCTABEvalEvaluatorRunner(AREPublicEvaluatorRunner):
             })
         elif tier == "validation":
             base.update({
-                "measurement": "aggregate ROC-AUC score from the public ARE VALIDATION endpoint",
+                "measurement": (
+                    "public ARE validation reward, retained separately from this bounded six-of-twelve, "
+                    "one-hour pilot and not claimed comparable to the official 24-hour benchmark"
+                ),
+                "pilot_only": True,
+                "official_result_comparable": False,
                 "mcp_endpoint": "http://grader:8000/mcp",
                 "mcp_contract_sha256": contract_sha256,
+                "validation_bridge": {
+                    "executor": "BananLoop trusted host-side AREPublicEvaluatorRunner",
+                    "sandbox_network_access": False,
+                    "allowed_public_mcp_tools": ["submit", "result", "status"],
+                    "submitted_material": "candidate file only",
+                    "private_verifier_or_holdout_access": False,
+                },
             })
         else:
             raise ValueError("dctabeval public backend supports only DEV and VALIDATION")
@@ -161,6 +176,7 @@ class AREPublicDCTABEvalEvaluatorRunner(AREPublicEvaluatorRunner):
             "are_public_mcp_client.py",
             "public_mcp_contract.py",
             "public-mcp-contract.json",
+            "task-selection.json",
             "task.toml",
             "task-instruction.md",
             "local_panel.py",

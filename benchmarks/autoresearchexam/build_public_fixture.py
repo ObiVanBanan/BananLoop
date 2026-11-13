@@ -95,7 +95,7 @@ def build_fixture(*, repo: Path, source_task: Path, out: Path) -> dict[str, obje
     )
     mcp_client_source = _read_public_file(
         repo / "benchmarks/autoresearchexam/are_public_mcp_client.py", root=repo,
-        max_bytes=12_000,
+        max_bytes=24_000,
     )
     task_devkit = _read_public_file(
         source_task / "environment/app/devkit.py", root=source_task, max_bytes=32_000,

@@ -163,6 +163,33 @@ def test_mcp_contract_digest_rejects_changed_public_schema():
         validate_public_mcp_contract(contract)
 
 
+def test_mcp_discovery_recursively_drops_unbounded_schema_metadata():
+    payload = client._tool_list_payload({"result": {"tools": [{
+        "name": "submit", "description": "safe", "documentation": "x" * 9000,
+        "inputSchema": {"type": "object", "description": "untrusted prose",
+                        "properties": {"id": {"type": "integer", "default": 3,
+                                                  "description": "drop me"}}},
+        "outputSchema": {},
+    }]}})
+    assert payload["tools"][0]["inputSchema"] == {
+        "type": "object", "properties": {"id": {"type": "integer"}},
+    }
+    encoded = json.dumps(payload)
+    assert "untrusted prose" not in encoded and "drop me" not in encoded
+
+
+def test_mcp_discovery_rejects_overdeep_schema():
+    schema = {}
+    current = schema
+    for _ in range(11):
+        current["items"] = {}
+        current = current["items"]
+    result = client._tool_list_payload({"result": {"tools": [{
+        "name": "submit", "description": "", "inputSchema": schema, "outputSchema": {},
+    }]}})
+    assert result == {"transport_error": True, "transport_category": "malformed_response"}
+
+
 def test_mcp_client_reports_safe_rpc_error_category(tmp_path, monkeypatch, capsys):
     request_file = tmp_path / "request.json"
     request_file.write_text(json.dumps({"tool": "result", "arguments": {"id": 1}}))

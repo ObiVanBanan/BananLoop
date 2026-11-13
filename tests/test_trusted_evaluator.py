@@ -97,6 +97,29 @@ def test_execution_backend_is_digest_bound_and_fails_closed_for_mismatch():
     adapter._require_execution_backend(pinned)
 
 
+def test_custom_runner_bundle_preflight_uses_the_frozen_published_bytes(tmp_path):
+    protocol, _manifest, _manifest_bytes, bundle, _inputs = _protocol_and_manifest()
+    protocol = protocol.model_copy(update={"execution_backend_id": "public-test"})
+    published = tmp_path / "rpdi05" / "published"
+    published.mkdir(parents=True)
+    (published / protocol.evaluator_bundle_sha256).write_bytes(bundle)
+    seen = []
+    runner = SimpleNamespace(
+        backend_id="public-test",
+        _verify_backend_bundle=lambda actual_protocol, actual_bundle: seen.append(
+            (actual_protocol.content_digest(), actual_bundle)
+        ),
+    )
+    adapter = TrustedEvaluatorAdapter(
+        graph=SimpleNamespace(bind_campaign_id=lambda _: None), queue=None,
+        campaign_id="campaign-1", state_root=tmp_path, runner=runner,
+    )
+
+    adapter._preflight_runner_bundle(protocol)
+
+    assert seen == [(protocol.content_digest(), bundle)]
+
+
 def _budget_proofs():
     return (
         EvaluatorBudgetProofV1(campaign_id="campaign-1", spec_hash="4" * 64,

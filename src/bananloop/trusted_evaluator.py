@@ -758,6 +758,20 @@ class TrustedEvaluatorAdapter:
                 "evaluator execution backend does not match the approved protocol",
             )
 
+    def _preflight_runner_bundle(self, protocol: EvaluatorProtocolV1) -> None:
+        """Validate custom runner bundles before reserving evaluator work.
+
+        Public benchmark runners expose their strict bundle validator as
+        ``_verify_backend_bundle``. Run it while the job is still unqueued so
+        a deterministic packaging/configuration error cannot leave a charged
+        evaluator dispatch in UNKNOWN state.
+        """
+        validator = getattr(self.runner, "_verify_backend_bundle", None)
+        if not callable(validator):
+            return
+        bundle = self._published_path(protocol.evaluator_bundle_sha256).read_bytes()
+        validator(protocol, bundle)
+
     def enqueue_repeatability(self, *, candidate_snapshot_id: str,
                               tier: Literal["dev", "validation", "holdout"] = "dev") -> tuple[str, ...]:
         """Enqueue one immutable fenced job per required repeatability run."""
@@ -782,6 +796,7 @@ class TrustedEvaluatorAdapter:
                 or protocol.repeatability_runs < 2):
             raise TrustedEvaluatorError("Optimization protocol approval is stale or malformed")
         self._require_execution_backend(protocol)
+        self._preflight_runner_bundle(protocol)
         tier_ref = next((item for item in protocol.tiers if item.tier == tier), None)
         if tier_ref is None:
             raise TrustedEvaluatorError("requested evaluator tier is not frozen in the approved protocol")

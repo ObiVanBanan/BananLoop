@@ -403,14 +403,18 @@ def test_public_submission_resumes_by_pinned_id_without_duplicate_submit(tmp_pat
     protocol, manifest, bundle = _protocol_for_path("solution.py")
     now = [100.0]
     calls = []
+    next_submission_id = [11]
 
     def tool(name, arguments):
         calls.append((name, arguments))
         if name == "submit":
-            return {"id": 12, "status": "queued"}
-        if len([call for call in calls if call[0] == "result"]) == 1:
-            return {"id": 12, "status": "grading"}
-        return {"id": 12, "status": "graded", "validation_score": 0.2,
+            next_submission_id[0] += 1
+            return {"id": next_submission_id[0], "status": "queued"}
+        result_calls = len([call for call in calls if call[0] == "result"])
+        submission_id = arguments["id"]
+        if result_calls == 1:
+            return {"id": submission_id, "status": "grading"}
+        return {"id": submission_id, "status": "graded", "validation_score": 0.2,
                 "grading_seconds": 2.0, "grader_output_tail": "not retained"}
 
     grader = PublicAREGrader(
@@ -437,5 +441,7 @@ def test_public_submission_resumes_by_pinned_id_without_duplicate_submit(tmp_pat
     resumed = AREPublicEvaluatorRunner(**common, sleep=lambda _: None)
     result = resumed.run(**args)
     assert result.tier == "validation"
-    assert [name for name, _ in calls].count("submit") == 1
-    assert [name for name, _ in calls].count("result") == 2
+    assert [name for name, _ in calls].count("submit") == 2
+    assert [name for name, _ in calls].count("result") == 3
+    assert [arguments["id"] for name, arguments in calls if name == "result"] == [12, 12, 13]
+    assert grader.completed_snapshot_result("1" * 40, b"baseline")["repetitions"] == 2
