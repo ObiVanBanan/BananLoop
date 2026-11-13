@@ -29,6 +29,11 @@ def _patch_docker(monkeypatch, stdout: str) -> None:
 
 def test_public_sopcc_runner_returns_only_frozen_aggregate(monkeypatch):
     _patch_docker(monkeypatch, _stdout())
+    timeouts = []
+    monkeypatch.setattr(
+        public_sopcc_dev, "_run_bounded_container",
+        lambda *args, **kwargs: (timeouts.append(kwargs["timeout_seconds"]) or _stdout()),
+    )
     result = public_sopcc_dev.run_public_sopcc_dev(
         b"class Policy: pass\n", image=IMAGE, expected_image_id=IMAGE_ID,
         timeout_seconds=60,
@@ -38,6 +43,19 @@ def test_public_sopcc_runner_returns_only_frozen_aggregate(monkeypatch):
         "failure_rate": 0.0, "delivered_reward_sd": 2.346, "draws": [0],
         "instances_per_draw": 1, "episodes_per_instance": 4, "episodes": 4,
     }
+    assert len(timeouts) == 1 and 0 < timeouts[0] <= 35
+
+
+def test_public_sopcc_runner_reserves_cleanup_inside_callback_timeout(monkeypatch):
+    monkeypatch.setattr(
+        public_sopcc_dev.subprocess, "run",
+        lambda *args, **kwargs: pytest.fail("Docker image inspection must not start"),
+    )
+    with pytest.raises(public_sopcc_dev.PublicSOPCCError, match="cannot fund bounded cleanup"):
+        public_sopcc_dev.run_public_sopcc_dev(
+            b"candidate", image=IMAGE, expected_image_id=IMAGE_ID,
+            timeout_seconds=25,
+        )
 
 
 def test_public_sopcc_runner_rejects_panel_mismatch(monkeypatch):

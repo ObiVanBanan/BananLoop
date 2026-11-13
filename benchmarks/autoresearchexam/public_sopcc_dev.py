@@ -2,7 +2,9 @@
 
 Only the candidate policy is mounted into the task image. The task's own public
 dev_eval.py enforces per-instance CPU/wall/address-space limits. The adapter
-returns aggregate metrics only and never reads the private grader context.
+uses one callback deadline for image inspection and container execution, then
+reserves 25 seconds for bounded process/container cleanup. It returns aggregate
+metrics only and never reads the private grader context.
 """
 from __future__ import annotations
 
@@ -31,6 +33,7 @@ _SUMMARY = re.compile(
     r"= (?P<total>[0-9]+) episodes$"
 )
 _MAX_CANDIDATE_BYTES = 2 * 1024 * 1024
+_CLEANUP_RESERVE_SECONDS = 25
 
 
 class PublicSOPCCError(RuntimeError):
@@ -74,17 +77,22 @@ def run_public_sopcc_dev(
         raise PublicSOPCCError("public SOPCC DEV panel exceeds the public evaluation panel")
 
     started = time.monotonic()
+    callback_deadline = started + timeout_seconds
+    execution_deadline = callback_deadline - _CLEANUP_RESERVE_SECONDS
+    inspection_budget = execution_deadline - time.monotonic()
+    if inspection_budget < 1:
+        raise PublicSOPCCError("public SOPCC DEV timeout cannot fund bounded cleanup")
     try:
         inspected = subprocess.run(
             [docker_binary, "image", "inspect", "--format", "{{.Id}}", image],
-            capture_output=True, text=True, timeout=min(20, timeout_seconds), check=False,
+            capture_output=True, text=True, timeout=min(20, inspection_budget), check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         raise PublicSOPCCError("could not inspect pinned public SOPCC DEV image") from None
     if inspected.returncode != 0 or inspected.stdout.strip() != expected_image_id:
         raise PublicSOPCCError("public SOPCC DEV image ID differs from the protocol pin")
 
-    left = int(timeout_seconds - (time.monotonic() - started))
+    left = execution_deadline - time.monotonic()
     if left < 1:
         raise PublicSOPCCError("public SOPCC DEV budget expired during image verification")
     try:
@@ -109,8 +117,10 @@ def run_public_sopcc_dev(
             ]
             stdout = _run_bounded_container(
                 argv, docker_binary=docker_binary, container_name=name,
-                timeout_seconds=left,
+                timeout_seconds=max(1, int(left)),
             )
+            if time.monotonic() > execution_deadline:
+                raise PublicSOPCCError("public SOPCC DEV execution exceeded its bounded work deadline")
             if stdout is None:
                 raise PublicSOPCCError("public SOPCC DEV container returned an error")
             metric_matches = list(_METRIC.finditer(stdout))

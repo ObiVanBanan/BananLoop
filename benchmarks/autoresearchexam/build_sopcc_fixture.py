@@ -133,6 +133,8 @@ def build_fixture(*, repo: Path, source_task: Path, mcp_contract: Path,
         "dev_execution": {
             "container_network": "none", "root_filesystem_read_only": True,
             "mounted_candidate_path": "/app/solution/policy.py",
+            "callback_timeout_includes_image_inspection_and_container": True,
+            "cleanup_reserve_seconds": 25,
         },
         "aggregate_case_ids": {
             "dev": cls.dev_aggregate_case_id,

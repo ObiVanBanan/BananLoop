@@ -88,6 +88,8 @@ def _bundle():
         "dev_execution": {
             "container_network": "none", "root_filesystem_read_only": True,
             "mounted_candidate_path": "/app/solution/policy.py",
+            "callback_timeout_includes_image_inspection_and_container": True,
+            "cleanup_reserve_seconds": 25,
         },
         "aggregate_case_ids": {
             "dev": cls.dev_aggregate_case_id,
@@ -290,5 +292,6 @@ def test_sopcc_dev_runs_through_trusted_evaluator_runner_contract(tmp_path):
     result = json.loads(execution.private_result_bytes)
     assert execution.tier == "dev"
     assert result["metrics"]["sopcc_score"] == {"value": 3.3136, "unit": "reward", "n": 1}
+    assert result["cases"][0]["metrics"] == {"sopcc_score": 3.3136}
     assert result["diagnostics"] == {"split": "public_dev"}
 

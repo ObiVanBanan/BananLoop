@@ -6,6 +6,7 @@ import io
 import json
 import math
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -204,6 +205,8 @@ class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
                     "dev_execution": {
                         "container_network": "none", "root_filesystem_read_only": True,
                         "mounted_candidate_path": "/app/solution/policy.py",
+                        "callback_timeout_includes_image_inspection_and_container": True,
+                        "cleanup_reserve_seconds": 25,
                     },
                     "aggregate_case_ids": {
                         "dev": self.dev_aggregate_case_id,
@@ -244,10 +247,25 @@ class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
         tier_manifest: bytes, tier: str, split: str, score: float,
     ) -> EvaluatorExecutionV1:
         # SOPCC scores are expected reward, not imputation R².
-        return AREPublicEvaluatorRunner._execution_from_score(
+        execution = AREPublicEvaluatorRunner._execution_from_score(
             protocol=protocol, approval_digest=approval_digest,
             campaign_id=campaign_id, spec_hash=spec_hash,
             candidate_snapshot_id=candidate_snapshot_id,
             tier_manifest=tier_manifest, tier=tier, split=split,
             score=score, metric_unit="reward",
+        )
+        # The single case is a composite observation for the frozen episode
+        # panel, so its metric is the aggregate itself (not a fabricated
+        # per-episode value). MEAN over this one case reproduces that score.
+        result = json.loads(execution.private_result_bytes)
+        if len(result.get("cases", ())) != 1:
+            raise TrustedEvaluatorError("SOPCC aggregate tier must contain exactly one case")
+        result["cases"][0]["metrics"] = {protocol.metric_field: float(score)}
+        private_result_bytes = json.dumps(
+            result, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False, allow_nan=False,
+        ).encode("utf-8")
+        return replace(
+            execution, private_result_bytes=private_result_bytes,
+            result_digest=hashlib.sha256(private_result_bytes).hexdigest(),
         )
