@@ -1,0 +1,28 @@
+{
+  "benchmark": "AutoResearchExam-v1.1",
+  "candidate": "untouched task starter / column-mean imputer",
+  "cells_scored": 28,
+  "cells_scored_as_zero": 0,
+  "direction": "MAXIMIZE",
+  "grader_output_tail_saved": false,
+  "harbor_agent": "are-mcp-single-baseline-contract-probe",
+  "harbor_trial_id": "b46d4e8e-88e8-40d8-84d2-6160c0373b98",
+  "limitations": [
+    "This public baseline is not part of the BananLoop 10-task series.",
+    "A zero score is the public validation score for the untouched starter only; it does not evaluate BananLoop."
+  ],
+  "model_calls": 0,
+  "model_tokens": "UNKNOWN_NOT_APPLICABLE",
+  "observed_at": "2026-11-12",
+  "private_verifier_enabled": false,
+  "reported_grading_seconds": 6.4,
+  "result_poll_count": 3,
+  "schema_version": 1,
+  "submission_id": 1,
+  "submission_status": "graded",
+  "submit_dispatch_count": 1,
+  "task_id": "budgeted-imputation-mcar50",
+  "task_type": "public protocol baseline only; not a BananLoop run",
+  "task_version": "1.1.0",
+  "validation_score": 0.0
+}

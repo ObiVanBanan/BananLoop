@@ -1,0 +1,252 @@
+{
+  "agent_time_limit_seconds": 3600,
+  "benchmark": "AutoResearchExam-v1.1",
+  "concurrency": 1,
+  "iterations_limit": 5,
+  "limitations": [
+    "This list selects CPU-only tasks compatible with the host class, but each task still declares 150 GiB storage and images may consume substantial disk.",
+    "Harbor run can enforce agent-time multiplier, but maximum 5 iterations requires an agent implementation that counts/persists iterations.",
+    "BananLoop currently has no approved Optimization-to-Harbor grader bridge; this manifest is a task shortlist, not a runnable BananLoop benchmark adapter.",
+    "One-hour tasks are not comparable to the benchmark's official 24-hour research budget."
+  ],
+  "schema_version": 2,
+  "source_revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+  "task_resources_declared": {
+    "cpus": 8,
+    "gpus": 0,
+    "memory_mb": 14336,
+    "storage_mb": 153600
+  },
+  "tasks": [
+    {
+      "instruction_sha256": "0cf06c38988de7b02072c8aaa3f07e2b2c1253392d6b11dd760206919a1e0fa9",
+      "resources": {
+        "build_timeout_sec": 3600.0,
+        "cpus": 8,
+        "env": {},
+        "gpus": 0,
+        "mcp_servers": [
+          {
+            "name": "are",
+            "transport": "streamable-http",
+            "url": "http://grader:8000/mcp"
+          }
+        ],
+        "memory_mb": 14336,
+        "network_mode": "public",
+        "os": "linux",
+        "storage_mb": 153600
+      },
+      "task_id": "budgeted-covtype-dual-market-open",
+      "task_sha256": "445e36e14db8c39ee02d137a26b878d880648d14b90f8fe164c275de03d0a1e9",
+      "version": "1.1.0"
+    },
+    {
+      "instruction_sha256": "db5f523c327513114bb130af24984f89bd384fe0f01357dd69c1b0eded0f009f",
+      "resources": {
+        "build_timeout_sec": 3600.0,
+        "cpus": 8,
+        "env": {},
+        "gpus": 0,
+        "mcp_servers": [
+          {
+            "name": "are",
+            "transport": "streamable-http",
+            "url": "http://grader:8000/mcp"
+          }
+        ],
+        "memory_mb": 14336,
+        "network_mode": "public",
+        "os": "linux",
+        "storage_mb": 153600
+      },
+      "task_id": "budgeted-imputation-mcar50",
+      "task_sha256": "a3760c5eac35277ddfde9ff039921a7119cc4dd8b43d4d2a580df52ec9fb864c",
+      "version": "1.1.0"
+    },
+    {
+      "instruction_sha256": "77138bdffa578f1211e19fc2c1e74a6fec18323a91dfb97bb7808e5b26427987",
+      "resources": {
+        "build_timeout_sec": 3600.0,
+        "cpus": 8,
+        "env": {},
+        "gpus": 0,
+        "mcp_servers": [
+          {
+            "name": "are",
+            "transport": "streamable-http",
+            "url": "http://grader:8000/mcp"
+          }
+        ],
+        "memory_mb": 14336,
+        "network_mode": "public",
+        "os": "linux",
+        "storage_mb": 153600
+      },
+      "task_id": "carps-star-discrepancy-subset-select",
+      "task_sha256": "e149dd3b1c959c445e2d06f25ad2753124837bae6011e540ec9e516fdf5c1482",
+      "version": "1.1.0"
+    },
+    {
+      "instruction_sha256": "826bde245fa3fa4eac4235b3cf0fc7f95d06a2d4c643d5ccab3b63c5a71840f7",
+      "resources": {
+        "build_timeout_sec": 3600.0,
+        "cpus": 8,
+        "env": {},
+        "gpus": 0,
+        "mcp_servers": [
+          {
+            "name": "are",
+            "transport": "streamable-http",
+            "url": "http://grader:8000/mcp"
+          }
+        ],
+        "memory_mb": 14336,
+        "network_mode": "public",
+        "os": "linux",
+        "storage_mb": 153600
+      },
+      "task_id": "cpu-decoder-graph-executor",
+      "task_sha256": "ce70b7172769b2e569c3bbcd93644a185f5480bb15299bae9de7c374761ec4e4",
+      "version": "1.1.0"
+    },
+    {
+      "instruction_sha256": "e3150dff47a1ac0e18360f59fc62bbb495ec94011806f277656799d4478ab4e1",
+      "resources": {
+        "build_timeout_sec": 3600.0,
+        "cpus": 8,
+        "env": {},
+        "gpus": 0,
+        "mcp_servers": [
+          {
+            "name": "are",
+            "transport": "streamable-http",
+            "url": "http://grader:8000/mcp"
+          }
+        ],
+        "memory_mb": 14336,
+        "network_mode": "public",
+        "os": "linux",
+        "storage_mb": 153600
+      },
+      "task_id": "cpu-llm-decode-throughput",
+      "task_sha256": "fdc497deb6874fb72c2549a272c6cf866d3e6f29789be2b5c74a0df475b8042e",
+      "version": "1.1.0"
+    },
+    {
+      "instruction_sha256": "23f85e039f68534902627ccc2cdb6f9acea4b039f466f54a4f5032d6ba291e71",
+      "resources": {
+        "build_timeout_sec": 3600.0,
+        "cpus": 8,
+        "env": {},
+        "gpus": 0,
+        "mcp_servers": [
+          {
+            "name": "are",
+            "transport": "streamable-http",
+            "url": "http://grader:8000/mcp"
+          }
+        ],
+        "memory_mb": 14336,
+        "network_mode": "public",
+        "os": "linux",
+        "storage_mb": 153600
+      },
+      "task_id": "dctabeval-aeac-pooled-cat-statistics",
+      "task_sha256": "321de9811c9ffd08e0eb8de105eb6536ad9aad4bf43e54b19900496917117bae",
+      "version": "1.1.0"
+    },
+    {
+      "instruction_sha256": "66a209cd63aaaa9060abd535855f03521e2bed022a65507c7cd5ae67a7129d3a",
+      "resources": {
+        "build_timeout_sec": 3600.0,
+        "cpus": 8,
+        "env": {},
+        "gpus": 0,
+        "mcp_servers": [
+          {
+            "name": "are",
+            "transport": "streamable-http",
+            "url": "http://grader:8000/mcp"
+          }
+        ],
+        "memory_mb": 14336,
+        "network_mode": "public",
+        "os": "linux",
+        "storage_mb": 153600
+      },
+      "task_id": "label-efficient-risk-estimator",
+      "task_sha256": "7fe491cec532818d52e699a6db6d87325bf421f280aa94a10f497a4afb06e12c",
+      "version": "1.1.0"
+    },
+    {
+      "instruction_sha256": "be11f61a026312478f96b11af65a2872d7108682970b6a1d686fdf7996739726",
+      "resources": {
+        "build_timeout_sec": 3600.0,
+        "cpus": 8,
+        "env": {},
+        "gpus": 0,
+        "mcp_servers": [
+          {
+            "name": "are",
+            "transport": "streamable-http",
+            "url": "http://grader:8000/mcp"
+          }
+        ],
+        "memory_mb": 14336,
+        "network_mode": "public",
+        "os": "linux",
+        "storage_mb": 153600
+      },
+      "task_id": "shortest-valid-ci-l2-ece",
+      "task_sha256": "5c6344e36db8db95f7a89aca961ba14de65874b27ca61de299ac4e2f54530ba3",
+      "version": "1.1.0"
+    },
+    {
+      "instruction_sha256": "1e843187ae1ca642747afec357b4f931b0fb8eeaf077e15b9545a157a2b4a2da",
+      "resources": {
+        "build_timeout_sec": 3600.0,
+        "cpus": 8,
+        "env": {},
+        "gpus": 0,
+        "mcp_servers": [
+          {
+            "name": "are",
+            "transport": "streamable-http",
+            "url": "http://grader:8000/mcp"
+          }
+        ],
+        "memory_mb": 14336,
+        "network_mode": "public",
+        "os": "linux",
+        "storage_mb": 153600
+      },
+      "task_id": "sketched-newton-cov-estimator",
+      "task_sha256": "df9b2bacf143f20d139d8cad8112ce8ee5a3902a679cf6c99b28dd77fffae9f8",
+      "version": "1.1.0"
+    },
+    {
+      "instruction_sha256": "6eeb6a3162149487c9ef7ab1607657dceaefec2ac3154432a1e2da520c65dc07",
+      "resources": {
+        "build_timeout_sec": 3600.0,
+        "cpus": 8,
+        "env": {},
+        "gpus": 0,
+        "mcp_servers": [
+          {
+            "name": "are",
+            "transport": "streamable-http",
+            "url": "http://grader:8000/mcp"
+          }
+        ],
+        "memory_mb": 14336,
+        "network_mode": "public",
+        "os": "linux",
+        "storage_mb": 153600
+      },
+      "task_id": "sopcc-online-chance-constrained-policy",
+      "task_sha256": "b3f895a3e518fd6fb6c738fe663b7d95a2265d66373b9509431b34665861f071",
+      "version": "1.1.0"
+    }
+  ]
+}

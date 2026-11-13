@@ -355,6 +355,35 @@ def test_actual_provider_overrun_is_recorded_and_blocks_future_claims(tmp_path):
     queue.close()
 
 
+def test_secondary_usage_over_reservation_is_reported_even_below_campaign_cap(tmp_path):
+    path = tmp_path / "campaign-registry.sqlite3"
+    ledger = BudgetLedger(path)
+    ledger.create_root("root", {"agent_calls": 5, "model_tokens": 100})
+    ledger.close()
+    queue = DurableWorkerQueue(path)
+    queue.enqueue(
+        job_id="job-token-bound", enqueue_key="enqueue:job-token-bound",
+        campaign_id="root", action_id="action:job-token-bound",
+        resource="agent_calls", upper_bound=1,
+        resource_bounds={"agent_calls": 1, "model_tokens": 8},
+        request={"operation": "agent", "job": "job-token-bound"},
+    )
+    claim = queue.claim("job-token-bound", "worker-a", lease_seconds=30, now=100)
+    queue.mark_dispatched("job-token-bound", "worker-a", claim["fence"], now=101)
+    result = queue.complete(
+        "job-token-bound", "worker-a", claim["fence"],
+        output_digest="3" * 64, actual_amount=1,
+        actual_usage={"agent_calls": 1, "model_tokens": 9},
+        receipt_digest="4" * 64, now=102,
+    )
+
+    assert result["budget_breached"] is True
+    assert result["budget_breached_by_resource"] == {
+        "agent_calls": False, "model_tokens": True,
+    }
+    queue.close()
+
+
 def test_nested_child_overrun_propagates_to_root_before_next_allocation(tmp_path):
     path, queue = _queue(tmp_path, cap=10)
     ledger = BudgetLedger(path)

@@ -621,7 +621,7 @@ def test_trusted_evaluator_accepts_adopted_child_protocol_and_rejects_missing_ha
     )
     adapter = TrustedEvaluatorAdapter(
         graph=graph, queue=queue, campaign_id=result["child_campaign_id"],
-        state_root=tmp_path, runner=object(),
+        state_root=tmp_path, runner=SimpleNamespace(backend_id="trusted-local"),
     )
     adapter._resolve_frozen_assets = lambda *_args: None
     adapter._snapshot_files = lambda *_args: None

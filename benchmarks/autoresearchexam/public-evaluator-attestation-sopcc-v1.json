@@ -1,0 +1,29 @@
+{
+  "schema": "public-evaluator-attestation-v1",
+  "summary": "The pinned AutoResearchExam v1.1 task source documents that the public grader endpoint returns the public validation score, while the separate private test grader is not accessible to the agent and does not return its score. The published SOPCC instruction identifies the public development panel and its reward/failure semantics. This supports treating the MCP result as externally trusted public validation; it does not cryptographically audit the server implementation or prove live split enforcement.",
+  "scope": {
+    "task_source_revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+    "task_id": "sopcc-online-chance-constrained-policy",
+    "task_version": "1.1.0",
+    "validation_endpoint": "http://grader:8000/mcp",
+    "private_test_access": "outside_agent_environment",
+    "trust_boundary": "official_public_validation_endpoint",
+    "not_claimed": "cryptographic_proof_of_server_implementation_or_split_enforcement"
+  },
+  "sources": [
+    {
+      "url": "https://github.com/bespokelabsai/AutoResearchExam/blob/23c0d92e11af1dea821f972b5f0a739060958002/README.md",
+      "commit": "23c0d92e11af1dea821f972b5f0a739060958002",
+      "sha256": "feb6def86250a62ed7037065da88802fc0b4b009ed0b6ee0756e7c1538a056d9"
+    },
+    {
+      "url": "https://github.com/bespokelabsai/AutoResearchExam/blob/23c0d92e11af1dea821f972b5f0a739060958002/sopcc-online-chance-constrained-policy/instruction.md",
+      "commit": "23c0d92e11af1dea821f972b5f0a739060958002",
+      "sha256": "6eeb6a3162149487c9ef7ab1607657dceaefec2ac3154432a1e2da520c65dc07"
+    }
+  ],
+  "local_evidence": {
+    "mcp_contract": "sopcc-public-mcp-contract.json",
+    "task_selection": "task-selection.json"
+  }
+}

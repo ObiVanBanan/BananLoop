@@ -950,12 +950,15 @@ class _CampaignSpecV2Base(BaseModel):
     evaluator_fixture_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     feature_flags: FeatureFlagsV2 = Field(default_factory=FeatureFlagsV2)
     parent: ParentCampaignRefV2 | None = None
+    max_candidate_iterations: int | None = Field(default=None, ge=1, le=5)
 
     @model_serializer(mode="wrap")
     def serialize_v2_compatibly(self, handler):
         data = handler(self)
         if data.get("evaluator_fixture_digest") is None:
             data.pop("evaluator_fixture_digest", None)
+        if data.get("max_candidate_iterations") is None:
+            data.pop("max_candidate_iterations", None)
         return data
 
     def approved_hash(self) -> str:

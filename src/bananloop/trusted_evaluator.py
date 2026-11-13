@@ -95,8 +95,8 @@ class EvaluatorRunReceiptV1(BaseModel):
     tier_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     case_count: int = Field(ge=1, le=10000)
     result_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    repeatability_runs: int = Field(ge=2, le=10)
-    budget_proofs: tuple[EvaluatorBudgetProofV1, ...] = Field(min_length=2, max_length=10)
+    repeatability_runs: int = Field(ge=1, le=10)
+    budget_proofs: tuple[EvaluatorBudgetProofV1, ...] = Field(min_length=1, max_length=10)
     output_artifact_digests: tuple[str, ...] = ()
 
     @model_validator(mode="after")
@@ -185,7 +185,7 @@ def _case_protocol_digest(protocol: EvaluatorProtocolV1) -> str:
     in ``content_digest``. Excluding only ``tiers`` avoids a recursive hash
     while keeping the manifest bound to the evaluator, metric and semantics.
     """
-    payload = protocol.model_dump(mode="json")
+    payload = protocol.model_dump(mode="json", exclude_none=True)
     payload.pop("tiers", None)
     return _digest(payload)
 
@@ -469,6 +469,8 @@ class TrustedEvaluatorRunner:
     hosts where Linux namespaces/bubblewrap are unavailable.
     """
 
+    backend_id = "trusted-local"
+
     def __init__(self, *, bwrap_binary: str | None = None):
         self.bwrap_binary = bwrap_binary or shutil.which("bwrap") or ""
 
@@ -740,13 +742,35 @@ class TrustedEvaluatorAdapter:
     _RESULT_SCHEMA = "trusted-evaluator-execution-v1"
 
     def __init__(self, *, graph: Any, queue: Any, campaign_id: str,
-                 state_root: str | Path, runner: TrustedEvaluatorRunner | None = None):
+                 state_root: str | Path, runner: Any | None = None):
         self.graph = graph
         self.queue = queue
         self.campaign_id = campaign_id
         self.graph.bind_campaign_id(campaign_id)
         self.state_root = Path(state_root).resolve()
         self.runner = runner or TrustedEvaluatorRunner()
+
+    def _require_execution_backend(self, protocol: EvaluatorProtocolV1) -> None:
+        """Bind runner behavior to the independently approved protocol identity."""
+        pinned_backend = protocol.execution_backend_id or "trusted-local"
+        if getattr(self.runner, "backend_id", None) != pinned_backend:
+            raise TrustedEvaluatorError(
+                "evaluator execution backend does not match the approved protocol",
+            )
+
+    def _preflight_runner_bundle(self, protocol: EvaluatorProtocolV1) -> None:
+        """Validate custom runner bundles before reserving evaluator work.
+
+        Public benchmark runners expose their strict bundle validator as
+        ``_verify_backend_bundle``. Run it while the job is still unqueued so
+        a deterministic packaging/configuration error cannot leave a charged
+        evaluator dispatch in UNKNOWN state.
+        """
+        validator = getattr(self.runner, "_verify_backend_bundle", None)
+        if not callable(validator):
+            return
+        bundle = self._published_path(protocol.evaluator_bundle_sha256).read_bytes()
+        validator(protocol, bundle)
 
     def enqueue_repeatability(self, *, candidate_snapshot_id: str,
                               tier: Literal["dev", "validation", "holdout"] = "dev") -> tuple[str, ...]:
@@ -769,8 +793,10 @@ class TrustedEvaluatorAdapter:
         proposal, verifier_receipt = authority.approved_protocol(reference.approval_digest)
         protocol = proposal.protocol
         if (protocol.content_digest() != reference.content_sha256
-                or protocol.repeatability_runs < 2):
+                or protocol.repeatability_runs < 1):
             raise TrustedEvaluatorError("Optimization protocol approval is stale or malformed")
+        self._require_execution_backend(protocol)
+        self._preflight_runner_bundle(protocol)
         tier_ref = next((item for item in protocol.tiers if item.tier == tier), None)
         if tier_ref is None:
             raise TrustedEvaluatorError("requested evaluator tier is not frozen in the approved protocol")
@@ -837,6 +863,7 @@ class TrustedEvaluatorAdapter:
         protocol = proposal.protocol
         if protocol.content_digest() != request.get("protocol_digest"):
             raise TrustedEvaluatorError("evaluator protocol bytes changed after enqueue")
+        self._require_execution_backend(protocol)
         tier = request.get("tier")
         tier_ref = next((item for item in protocol.tiers if item.tier == tier), None)
         if tier_ref is None or tier_ref.manifest_sha256 != request.get("tier_manifest_sha256"):
@@ -1006,6 +1033,50 @@ class TrustedEvaluatorAdapter:
             "n": metric.n,
         }
 
+    def public_dev_metric_summary(self, receipt: EvaluatorRunReceiptV1) -> dict[str, Any]:
+        """Return only the aggregate from a durable public DEV receipt.
+
+        This is suitable for a later Optimizer context. Case values, diagnostics,
+        and evaluator artifacts stay in Core and are never projected here.
+        """
+        from .contracts import OptimizationCampaignSpecV2
+        from .evaluator_verification import EvaluatorProtocolAuthority
+
+        if not isinstance(receipt, EvaluatorRunReceiptV1) or receipt.tier != "dev":
+            raise TrustedEvaluatorError("public DEV summary requires a DEV receipt")
+        spec = self.graph.campaign_spec()
+        if not isinstance(spec, OptimizationCampaignSpecV2):
+            raise TrustedEvaluatorError("public DEV summary requires an Optimization campaign")
+        reference = spec.evaluation
+        authority = EvaluatorProtocolAuthority(self.graph.conn)
+        authority.require_frozen_reference(
+            reference.protocol_id, reference.version, reference.content_sha256,
+            reference.approval_digest, campaign_id=self.campaign_id,
+        )
+        proposal, _ = authority.approved_protocol(reference.approval_digest)
+        protocol = proposal.protocol
+        durable_receipt = authority.require_run_receipt(
+            receipt.receipt_digest, campaign_id=self.campaign_id,
+            spec_hash=spec.approved_hash(), approval_digest=reference.approval_digest,
+            protocol_digest=protocol.content_digest(),
+            candidate_snapshot_id=receipt.candidate_snapshot_id,
+        )
+        if (durable_receipt != receipt or durable_receipt.tier != "dev"
+                or durable_receipt.result_digest != receipt.result_digest):
+            raise TrustedEvaluatorError("public DEV summary receipt is stale or untrusted")
+        result = self._load_evaluation_result(receipt.result_digest)
+        metric = result.metrics.get(protocol.metric_field)
+        if result.status != "ok" or metric is None or not math.isfinite(metric.value):
+            raise TrustedEvaluatorError("trusted public DEV aggregate metric is invalid")
+        return {
+            "metric_id": protocol.metric_id,
+            "metric_field": protocol.metric_field,
+            "direction": protocol.direction,
+            "value": metric.value,
+            "unit": metric.unit,
+            "n": metric.n,
+        }
+
     def owner_validation_metric_summary(self, receipt: EvaluatorRunReceiptV1) -> dict[str, Any]:
         """Return a protected VALIDATION aggregate for the final owner report.
 
@@ -1127,7 +1198,7 @@ class TrustedEvaluatorAdapter:
             and baseline.tier_manifest_sha256 == candidate.tier_manifest_sha256
         )
         evaluation_receipt_ok = (
-            baseline.repeatability_runs >= 2 and candidate.repeatability_runs >= 2
+            baseline.repeatability_runs >= 1 and candidate.repeatability_runs >= 1
             and len(baseline.budget_proofs) == baseline.repeatability_runs
             and len(candidate.budget_proofs) == candidate.repeatability_runs
             and baseline.case_count == candidate.case_count == len(expected_cases)

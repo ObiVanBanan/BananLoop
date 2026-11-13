@@ -606,9 +606,13 @@ class DurableWorkerQueue:
             except BudgetLedgerError as exc:
                 raise WorkerBudgetError(str(exc)) from exc
             snapshot = self.ledger.snapshot(job["campaign_id"])
+            reservation_bounds = self._resource_bounds(job_id)
             budget_breached_by_resource = {
-                name: snapshot[name]["spent"] + snapshot[name]["reserved"] + snapshot[name]["unknown"]
-                > snapshot[name]["cap"] for name in usage
+                name: (
+                    (amount is not None and amount > reservation_bounds[name])
+                    or snapshot[name]["spent"] + snapshot[name]["reserved"] + snapshot[name]["unknown"]
+                    > snapshot[name]["cap"]
+                ) for name, amount in usage.items()
             }
             budget_breached = any(budget_breached_by_resource.values())
             response = {"job_id": job_id, "fence": fence, "output_digest": output_digest,
@@ -741,8 +745,11 @@ class DurableWorkerQueue:
                 raise WorkerBudgetError(str(exc)) from exc
             snapshot = self.ledger.snapshot(job["campaign_id"])
             budget_breached_by_resource = {
-                name: snapshot[name]["spent"] + snapshot[name]["reserved"] + snapshot[name]["unknown"]
-                > snapshot[name]["cap"] for name in charged_usage
+                name: (
+                    (amount is not None and amount > bounds[name])
+                    or snapshot[name]["spent"] + snapshot[name]["reserved"] + snapshot[name]["unknown"]
+                    > snapshot[name]["cap"]
+                ) for name, amount in charged_usage.items()
             }
             response = {
                 "job_id": job_id, "fence": int(job["fence"]), "output_digest": output_digest,

@@ -7,6 +7,7 @@ import stat
 import sqlite3
 import subprocess
 import zipfile
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -72,6 +73,52 @@ def _protocol_and_manifest():
         ),
     })
     return protocol, manifest, manifest_bytes, bundle, inputs
+
+
+def test_execution_backend_is_digest_bound_and_fails_closed_for_mismatch():
+    protocol, *_ = _protocol_and_manifest()
+    legacy_payload = protocol.model_dump(mode="json", exclude_none=True)
+    assert protocol.content_digest() == hashlib.sha256(json.dumps(
+        legacy_payload, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    assert _case_protocol_digest(protocol) == _case_protocol_digest(
+        protocol.model_copy(update={"execution_backend_id": None}),
+    )
+
+    pinned = protocol.model_copy(update={"execution_backend_id": "autoresearchexam-public-v1"})
+    assert pinned.content_digest() != protocol.content_digest()
+    adapter = TrustedEvaluatorAdapter(
+        graph=SimpleNamespace(bind_campaign_id=lambda _: None), queue=None,
+        campaign_id="campaign-1", state_root=".", runner=TrustedEvaluatorRunner(),
+    )
+    with pytest.raises(TrustedEvaluatorError, match="backend does not match"):
+        adapter._require_execution_backend(pinned)
+    adapter.runner = SimpleNamespace(backend_id="autoresearchexam-public-v1")
+    adapter._require_execution_backend(pinned)
+
+
+def test_custom_runner_bundle_preflight_uses_the_frozen_published_bytes(tmp_path):
+    protocol, _manifest, _manifest_bytes, bundle, _inputs = _protocol_and_manifest()
+    protocol = protocol.model_copy(update={"execution_backend_id": "public-test"})
+    published = tmp_path / "rpdi05" / "published"
+    published.mkdir(parents=True)
+    (published / protocol.evaluator_bundle_sha256).write_bytes(bundle)
+    seen = []
+    runner = SimpleNamespace(
+        backend_id="public-test",
+        _verify_backend_bundle=lambda actual_protocol, actual_bundle: seen.append(
+            (actual_protocol.content_digest(), actual_bundle)
+        ),
+    )
+    adapter = TrustedEvaluatorAdapter(
+        graph=SimpleNamespace(bind_campaign_id=lambda _: None), queue=None,
+        campaign_id="campaign-1", state_root=tmp_path, runner=runner,
+    )
+
+    adapter._preflight_runner_bundle(protocol)
+
+    assert seen == [(protocol.content_digest(), bundle)]
 
 
 def _budget_proofs():
@@ -150,6 +197,21 @@ def test_runner_returns_private_execution_then_final_public_receipt():
     assert "private_case_hint" not in public
     assert len(execution.artifacts) == 0
     assert set(inputs)  # test fixture carries actual protected inputs
+
+
+def test_final_receipt_accepts_one_approved_aggregate_run():
+    execution, *_ = _run()
+    execution = replace(execution, repeatability_runs=1)
+    proof = EvaluatorBudgetProofV1(
+        campaign_id="campaign-1", spec_hash="4" * 64,
+        job_id="eval-job-single", fence=1, receipt_digest="3" * 64,
+        actual_amount=1, actual_usage={"evaluator_calls": 1},
+    )
+
+    receipt = EvaluatorRunReceiptV1.from_completed_runs((execution,), (proof,))
+
+    assert receipt.repeatability_runs == 1
+    assert receipt.budget_proofs == (proof,)
 
 
 def test_verified_artifact_bytes_return_only_to_core_with_public_digest():

@@ -31,7 +31,8 @@ INSTRUCTIONS = (
     "Make the next proposed experiment "
     "a distinct follow-up unless the prior evidence explicitly justifies replication. "
     "Each candidate must have id, hypothesis, rationale, next_experiment, "
-    "falsification_condition, and expected_evidence; optional candidate "
+    "falsification_condition, and expected_evidence. next_experiment may be concise text or a bounded JSON object/array; Core preserves structured plans as canonical JSON text. "
+    "Optional candidate "
     "target_claim_key is one string and optional candidate evidence_refs is an array "
     "of evidence ID strings. Never put claim-key/evidence-ID objects inside "
     "evidence_refs. Return ONE strict JSON object, "
@@ -41,11 +42,16 @@ INSTRUCTIONS = (
     "and optional next_experiment only if it exactly matches the selected candidate, "
     "artifact_text (mapping of relative file names to UTF-8 text, optional), "
     "artifact_base64 (mapping of relative file names to canonical base64 strings, optional), "
-    "and protocol_draft or protocol_intent (optional). When a trusted evaluator "
-    "fixture is available and the campaign requests a protocol proposal, return "
-    "protocol_intent with protocol_id, version, metric_id, metric_field, direction "
+    "and protocol_draft or protocol_intent. Omit both only when no trusted evaluator "
+    "fixture or public protocol proposal is requested. When a trusted evaluator "
+    "fixture is available, the first response MUST include protocol_intent with "
+    "protocol_id, version, metric_id, metric_field, direction "
     "(MAXIMIZE or MINIMIZE), aggregation (MEAN, MEDIAN, MIN, or MAX), "
-    "repeatability_runs, and timeout_seconds. Do not return hidden tier inputs, "
+    "repeatability_runs, and timeout_seconds. Choose metric_field and aggregation "
+    "from the supplied task/evaluator definition exactly; never substitute MEAN "
+    "when the source specifies MEDIAN, MIN, or MAX. If DEV and official VALIDATION "
+    "use different reported values, state that scope distinction in limitations "
+    "and bind the protocol to the official task metric. Do not return hidden tier inputs, "
     "hashes, manifests, or evaluator bytes; trusted Core binds those after your response. "
     "Without a trusted fixture, include protocol_draft only when every included "
     "artifact and case is explicitly public and available in your supplied context. "
@@ -57,10 +63,11 @@ INSTRUCTIONS = (
     "labels, evaluator secrets, or private evaluator code. If a valid proposal requires "
     "assets outside the supplied public context, omit protocol_draft and explain the "
     "limitation in limitations; Core must arrange trusted private-tier binding. "
-    "research_findings (array with at least one object on every ordinary reply), top-level evidence_refs "
-    "(array of strings only, optional), limitations (array, optional). For prior "
-    "evidence, attach target_claim_key plus its exact evidence ID strings to the "
-    "candidate's fields; do not create object entries in top-level evidence_refs. "
+    "research_findings (array with at least one object on every ordinary reply), "
+    "optional JSON property named exactly `evidence_refs` (array of strings only), "
+    "and optional limitations (array). For prior evidence, attach target_claim_key "
+    "plus its exact evidence ID strings to the candidate's fields; `evidence_refs` "
+    "must contain strings only, never objects. "
     "If a fundamental strategy change "
     "is needed, return only strategy_change_request with current_strategy, "
     "proposed_strategy, rationale, expected_effect, and changed_scope. This is "
@@ -122,6 +129,135 @@ MAX_REPLY_BYTES = 256_000
 MAX_ERROR_BYTES = 4_096
 MAX_EVENT_BYTES = 512_000
 MAX_INPUT_BYTES = 512_000
+
+
+def _registered_research_response_format(registered: list[dict[str, str]]) -> dict[str, Any]:
+    ids = sorted(item["id"] for item in registered)
+    candidate = {
+        "type": "object", "additionalProperties": False,
+        "required": [
+            "id", "hypothesis", "rationale", "next_experiment",
+            "falsification_condition", "expected_evidence", "experiment_id",
+            "evidence_refs", "target_claim_key",
+        ],
+        "properties": {
+            "id": {"type": "string", "pattern": r"^[a-z0-9][a-z0-9_-]{0,79}$"},
+            "hypothesis": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "rationale": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "next_experiment": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "falsification_condition": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "expected_evidence": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "experiment_id": {"type": "string", "enum": ids},
+            "evidence_refs": {"type": "array", "maxItems": 16,
+                              "items": {"type": "string"}},
+            "target_claim_key": {"anyOf": [
+                {"type": "string", "pattern": r"^[a-z][a-z0-9_.:-]{0,119}$"},
+                {"type": "null"},
+            ]},
+        },
+    }
+    finding = {
+        "type": "object", "additionalProperties": False,
+        "required": ["claim_key", "statement", "stance", "kind", "confidence"],
+        "properties": {
+            "claim_key": {"type": "string", "pattern": r"^[a-z][a-z0-9_.:-]{0,119}$"},
+            "statement": {"type": "string", "minLength": 1, "maxLength": 2000},
+            "stance": {"type": "string", "enum": ["SUPPORTS", "REFUTES", "UNCERTAIN"]},
+            "kind": {"type": "string", "enum": ["OBSERVATION", "CAUSAL_INFERENCE"]},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+    }
+    return {"format": {
+        "type": "json_schema", "name": "bananloop_registered_research_v1",
+        "strict": True,
+        "schema": {
+            "type": "object", "additionalProperties": False,
+            "required": ["hypotheses", "selected_hypothesis_id", "research_findings"],
+            "properties": {
+                "hypotheses": {"type": "array", "minItems": 2, "maxItems": 4,
+                                "items": candidate},
+                "selected_hypothesis_id": {"type": "string", "minLength": 1, "maxLength": 100},
+                "research_findings": {"type": "array", "minItems": 1, "maxItems": 64,
+                                      "items": finding},
+            },
+        },
+    }}
+
+
+def _fixture_research_response_format() -> dict[str, Any]:
+    candidate = {
+        "type": "object", "additionalProperties": False,
+        "required": [
+            "id", "hypothesis", "rationale", "next_experiment",
+            "falsification_condition", "expected_evidence", "experiment_id",
+            "evidence_refs", "target_claim_key",
+        ],
+        "properties": {
+            "id": {"type": "string", "pattern": r"^[a-z0-9][a-z0-9_-]{0,79}$"},
+            "hypothesis": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "rationale": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "next_experiment": {"type": "string", "minLength": 1, "maxLength": 4000},
+            "falsification_condition": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "expected_evidence": {"type": "string", "minLength": 1, "maxLength": 1000},
+            "experiment_id": {"anyOf": [
+                {"type": "string", "pattern": r"^[a-z][a-z0-9_-]{0,79}$"},
+                {"type": "null"},
+            ]},
+            "evidence_refs": {"type": "array", "maxItems": 16,
+                              "items": {"type": "string"}},
+            "target_claim_key": {"anyOf": [
+                {"type": "string", "pattern": r"^[a-z][a-z0-9_.:-]{0,119}$"},
+                {"type": "null"},
+            ]},
+        },
+    }
+    finding = {
+        "type": "object", "additionalProperties": False,
+        "required": ["claim_key", "statement", "stance", "kind", "confidence"],
+        "properties": {
+            "claim_key": {"type": "string", "pattern": r"^[a-z][a-z0-9_.:-]{0,119}$"},
+            "statement": {"type": "string", "minLength": 1, "maxLength": 2000},
+            "stance": {"type": "string", "enum": ["SUPPORTS", "REFUTES", "UNCERTAIN"]},
+            "kind": {"type": "string", "enum": ["OBSERVATION", "CAUSAL_INFERENCE"]},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        },
+    }
+    intent = {
+        "type": "object", "additionalProperties": False,
+        "required": [
+            "protocol_id", "version", "metric_id", "metric_field", "direction",
+            "aggregation", "repeatability_runs", "timeout_seconds",
+        ],
+        "properties": {
+            "protocol_id": {"type": "string", "pattern": r"^[a-z0-9][a-z0-9._:-]{0,119}$"},
+            "version": {"type": "integer", "minimum": 1},
+            "metric_id": {"type": "string", "pattern": r"^[a-z][a-z0-9_.:-]{0,119}$"},
+            "metric_field": {"type": "string", "pattern": r"^[a-z][a-z0-9_.:-]{0,119}$"},
+            "direction": {"type": "string", "enum": ["MAXIMIZE", "MINIMIZE"]},
+            "aggregation": {"type": "string", "enum": ["MEAN", "MEDIAN", "MIN", "MAX"]},
+            "repeatability_runs": {"type": "integer", "minimum": 1, "maximum": 10},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+        },
+    }
+    return {"format": {
+        "type": "json_schema", "name": "bananloop_fixture_research_v1",
+        "strict": True,
+        "schema": {
+            "type": "object", "additionalProperties": False,
+            "required": [
+                "hypotheses", "selected_hypothesis_id", "research_findings",
+                "protocol_intent",
+            ],
+            "properties": {
+                "hypotheses": {"type": "array", "minItems": 2, "maxItems": 4,
+                                "items": candidate},
+                "selected_hypothesis_id": {"type": "string", "minLength": 1, "maxLength": 100},
+                "research_findings": {"type": "array", "minItems": 1, "maxItems": 64,
+                                      "items": finding},
+                "protocol_intent": intent,
+            },
+        },
+    }}
 
 
 class ChatGPTPlanResponseError(SIWCError):
@@ -233,6 +369,7 @@ class ChatGPTPlanResearcher:
                  call_observer: Callable[[dict[str, Any]], None] | None = None,
                  input_fields: frozenset[str] = frozenset({
                      "protocol", "role_context", "visible_documents", "instruction",
+                     "available_research_memory",
                  })):
         if not isinstance(approved_model, str) or not approved_model:
             raise SIWCError("a pinned model slug is required")
@@ -258,7 +395,7 @@ class ChatGPTPlanResearcher:
 
     def __call__(self, public_input: dict[str, Any], *, provider: str,
                  model: str, model_version: str, prompt_digest: str,
-                 max_model_tokens: int) -> dict[str, Any]:
+                 max_model_tokens: int, timeout_seconds: int | None = None) -> dict[str, Any]:
         if provider != "openai" or model != self.approved_model:
             raise SIWCError("researcher provider/model does not match frozen SIWC selection")
         if (not isinstance(model_version, str) or not model_version
@@ -270,6 +407,15 @@ class ChatGPTPlanResearcher:
             raise SIWCError("untrusted or unversioned pinned-role input")
         if set(public_input) != self.input_fields:
             raise SIWCError("pinned-role model input contains non-approved fields")
+        requires_protocol_intent = public_input.get("requires_protocol_intent", False)
+        if type(requires_protocol_intent) is not bool:
+            raise SIWCError("fixture protocol-intent flag must be boolean")
+        if requires_protocol_intent and "registered_experiments" in public_input:
+            raise SIWCError("fixture and registered-experiment output modes cannot be combined")
+        request_timeout = self.timeout_seconds if timeout_seconds is None else timeout_seconds
+        if (isinstance(request_timeout, bool) or not isinstance(request_timeout, int)
+                or not 1 <= request_timeout <= self.timeout_seconds):
+            raise SIWCError("dynamic researcher timeout must be within the configured request ceiling")
 
         # Note: ChatGPT-plan Responses currently rejects max_output_tokens.
         # A pinned token allowance here is not a provider-enforced hard cap:
@@ -282,6 +428,20 @@ class ChatGPTPlanResearcher:
             ],
             "store": False, "stream": True,
         }
+        if requires_protocol_intent:
+            body["text"] = _fixture_research_response_format()
+        elif "registered_experiments" in public_input:
+            registered = public_input["registered_experiments"]
+            if (not isinstance(registered, list) or not registered
+                    or any(not isinstance(item, dict)
+                           or set(item) != {"id", "description"}
+                           or not isinstance(item.get("id"), str)
+                           or not item["id"]
+                           or not isinstance(item.get("description"), str)
+                           for item in registered)
+                    or len({item["id"] for item in registered}) != len(registered)):
+                raise SIWCError("registered research catalog is malformed")
+            body["text"] = _registered_research_response_format(registered)
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
         if len(payload) > MAX_INPUT_BYTES:
             raise SIWCError("research request exceeds bounded input bytes")
@@ -291,7 +451,7 @@ class ChatGPTPlanResearcher:
         self.last_status = "PREPARING"
         # Connection is never opened until local input and pinned identity validate.
         access_token = self.auth.access_token()
-        connection = self.transport_factory("api.openai.com", timeout=self.timeout_seconds)
+        connection = self.transport_factory("api.openai.com", timeout=request_timeout)
         self.last_status = "DISPATCHED"
         dispatched = True
         try:
@@ -311,7 +471,7 @@ class ChatGPTPlanResearcher:
                     f"ChatGPT Responses admission failed (HTTP {reply.status})"
                 )
             text, usage, request_id = collect_completed(
-                reply, deadline=time.monotonic() + self.timeout_seconds,
+                reply, deadline=time.monotonic() + request_timeout,
             )
             self.last_usage = usage
             self.last_request_id = request_id
@@ -409,6 +569,7 @@ class ChatGPTPlanIntegrationVerifier(ChatGPTPlanResearcher):
             public_input, provider=pin.get("provider"), model=model,
             model_version=pin.get("model_version"), prompt_digest=pin.get("prompt_digest"),
             max_model_tokens=int(pin.get("max_model_tokens") or 1),
+            timeout_seconds=pin.get("timeout_seconds"),
         )
 
 

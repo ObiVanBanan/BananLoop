@@ -1,1 +1,6 @@
 /benchmarks/titanic_survival/openml-40945.arff -text
+/examples/exploration_diagnostic_v1/discoverybench_boardgames/data.csv -text
+/benchmarks/discoverybench_boardgames/pilot_manifest.json -text
+/benchmarks/discoverybench_boardgames/runner.py text eol=lf
+/benchmarks/autoresearchexam/task-selection.json -text
+/benchmarks/autoresearchexam/public-task-material/*.md -text

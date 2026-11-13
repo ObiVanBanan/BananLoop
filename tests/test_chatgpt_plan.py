@@ -282,7 +282,7 @@ def test_official_response_payload_is_subscription_only(tmp_path):
     public = {"protocol": "rpdi13r-researcher-one-shot-v1",
               "role_context": {"public_task": "investigate"},
               "visible_documents": {"README.md": "hello"},
-              "instruction": "test"}
+              "instruction": "test", "available_research_memory": []}
     result = researcher(
         public, provider="openai", model="gpt-6-luna", model_version="siwc-v1",
         prompt_digest="a" * 64, max_model_tokens=100,
@@ -293,21 +293,104 @@ def test_official_response_payload_is_subscription_only(tmp_path):
     method, url, body, headers = conn.sent[0]
     assert (method, url) == ("POST", "/v1/responses")
     assert body["store"] is False and body["stream"] is True
+    model_input = json.loads(body["input"][1]["content"])
+    assert model_input["available_research_memory"] == []
     assert set(body) == {"model", "input", "store", "stream"}
     assert headers["Authorization"] == "Bearer oauth-access-token"
     assert "access_token" not in json.dumps(body)
     assert conn.closed
 
 
+def test_registered_experiment_catalog_is_opt_in_to_researcher_transport(tmp_path):
+    auth, _http = _auth(tmp_path)
+    _connect(auth)
+    conn = FakeConnection(_finished())
+    catalog = [{"id": "primary_association", "description": "Estimate Spearman rho."}]
+    public = {
+        "protocol": "rpdi13r-researcher-one-shot-v1",
+        "role_context": {"public_task": "investigate"},
+        "visible_documents": {"TASK.md": "public task"},
+        "instruction": "choose one registered analysis",
+        "available_research_memory": [],
+        "registered_experiments": catalog,
+    }
+    unconfigured = ChatGPTPlanResearcher(
+        auth, approved_model="gpt-6-luna", transport_factory=lambda *args, **kwargs: conn,
+    )
+    with pytest.raises(SIWCError, match="non-approved fields"):
+        unconfigured(
+            public, provider="openai", model="gpt-6-luna", model_version="siwc-v1",
+            prompt_digest="a" * 64, max_model_tokens=100,
+        )
+    assert conn.sent == []  # schema mismatch fails before opening a provider request
+    configured = ChatGPTPlanResearcher(
+        auth, approved_model="gpt-6-luna", transport_factory=lambda *args, **kwargs: conn,
+        input_fields=frozenset({
+            "protocol", "role_context", "visible_documents", "instruction",
+            "available_research_memory", "registered_experiments",
+        }),
+    )
+    configured(
+        public, provider="openai", model="gpt-6-luna", model_version="siwc-v1",
+        prompt_digest="a" * 64, max_model_tokens=100,
+    )
+    request_json = conn.sent[0][2]
+    model_input = json.loads(request_json["input"][1]["content"])
+    assert model_input["registered_experiments"] == catalog
+    output_format = request_json["text"]["format"]
+    assert output_format["type"] == "json_schema"
+    assert output_format["strict"] is True
+    assert output_format["schema"]["additionalProperties"] is False
+    hypothesis = output_format["schema"]["properties"]["hypotheses"]["items"]
+    assert "falsification_condition" in hypothesis["required"]
+    assert hypothesis["properties"]["experiment_id"]["enum"] == ["primary_association"]
+
+
+def test_fixture_protocol_intent_is_required_and_strictly_bounded(tmp_path):
+    auth, _http = _auth(tmp_path)
+    _connect(auth)
+    conn = FakeConnection(_finished())
+    public = {
+        "protocol": "rpdi13r-researcher-one-shot-v1",
+        "role_context": {"public_task": "optimize public dev score"},
+        "visible_documents": {"README.md": "public task"},
+        "instruction": "include a protocol intent",
+        "available_research_memory": [],
+        "requires_protocol_intent": True,
+    }
+    researcher = ChatGPTPlanResearcher(
+        auth, approved_model="gpt-6-luna", transport_factory=lambda *args, **kwargs: conn,
+        input_fields=frozenset(public),
+    )
+    researcher(
+        public, provider="openai", model="gpt-6-luna", model_version="siwc-v1",
+        prompt_digest="a" * 64, max_model_tokens=100,
+    )
+    output_schema = conn.sent[0][2]["text"]["format"]["schema"]
+    assert output_schema["additionalProperties"] is False
+    assert output_schema["required"] == [
+        "hypotheses", "selected_hypothesis_id", "research_findings", "protocol_intent",
+    ]
+    intent = output_schema["properties"]["protocol_intent"]
+    assert intent["required"] == [
+        "protocol_id", "version", "metric_id", "metric_field", "direction",
+        "aggregation", "repeatability_runs", "timeout_seconds",
+    ]
+    assert intent["properties"]["repeatability_runs"] == {
+        "type": "integer", "minimum": 1, "maximum": 10,
+    }
+
+
 def test_research_prompt_states_exact_lowercase_candidate_id_contract():
     assert "^[a-z0-9][a-z0-9_-]{0,79}$" in INSTRUCTIONS
     assert "never H1_mediated_effect" in INSTRUCTIONS
-    assert "top-level evidence_refs " in INSTRUCTIONS
+    assert "optional JSON property named exactly `evidence_refs`" in INSTRUCTIONS
     assert "array of strings only" in INSTRUCTIONS
     assert "Never put claim-key/evidence-ID objects" in INSTRUCTIONS
     assert "ALWAYS return at least one" in INSTRUCTIONS
     assert "supplied dev_summary and evidence_refs" in INSTRUCTIONS
     assert "distinct follow-up" in INSTRUCTIONS
+    assert "Core preserves structured plans as canonical JSON text" in INSTRUCTIONS
 
 
 def test_provider_call_observer_preserves_receipt_without_model_text(tmp_path):
@@ -321,7 +404,8 @@ def test_provider_call_observer_preserves_receipt_without_model_text(tmp_path):
     )
     public = {"protocol": "rpdi13r-researcher-one-shot-v1",
               "role_context": {"public_task": "investigate"},
-              "visible_documents": {"README.md": "hello"}, "instruction": "test"}
+              "visible_documents": {"README.md": "hello"}, "instruction": "test",
+              "available_research_memory": []}
     researcher(public, provider="openai", model="gpt-6-luna", model_version="siwc-v1",
                prompt_digest="a" * 64, max_model_tokens=100)
     assert receipts == [{"request_id": "resp_mock", "status": "COMPLETED",
@@ -341,7 +425,8 @@ def test_provider_call_observer_records_completed_response_before_schema_failure
     )
     public = {"protocol": "rpdi13r-researcher-one-shot-v1",
               "role_context": {"public_task": "investigate"},
-              "visible_documents": {"README.md": "hello"}, "instruction": "test"}
+              "visible_documents": {"README.md": "hello"}, "instruction": "test",
+              "available_research_memory": []}
     with pytest.raises(ChatGPTPlanResponseError):
         researcher(public, provider="openai", model="gpt-6-luna", model_version="siwc-v1",
                    prompt_digest="a" * 64, max_model_tokens=100)
@@ -503,3 +588,8 @@ def test_live_smoke_result_is_atomically_persisted_with_unknown_usage(tmp_path):
     assert target == state_root / "live-smoke-result.json"
     assert json.loads(target.read_text()) == result
     assert result["result_path"] == str(target)
+def test_fixture_protocol_intent_preserves_source_metric_aggregation():
+    from bananloop.chatgpt_responses import INSTRUCTIONS
+
+    assert "Choose metric_field and aggregation from the supplied task/evaluator definition exactly" in INSTRUCTIONS
+    assert "never substitute MEAN when the source specifies MEDIAN, MIN, or MAX" in INSTRUCTIONS

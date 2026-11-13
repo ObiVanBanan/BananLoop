@@ -1,0 +1,30 @@
+{
+  "schema": "public-evaluator-attestation-v1",
+  "summary": "The benchmark maintainers document that v1.1 uses the same tasks, data, and graders as v1.0. In v1.1 the public MCP submit/result flow reports the public validation split. The separate private test grader is unreachable from the agent, and its score is not returned. The official Terminus documentation also states that private test results and output stay outside the agent environment. This supports a public-validation-only protocol at the published trust boundary; it is not a cryptographic audit of grader implementation.",
+  "scope": {
+    "task_source_revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+    "task_id": "budgeted-imputation-mcar50",
+    "task_version": "1.1.0",
+    "validation_endpoint": "http://grader:8000/mcp",
+    "private_test_access": "outside_agent_environment",
+    "trust_boundary": "official_public_validation_endpoint",
+    "not_claimed": "cryptographic_proof_of_server_implementation"
+  },
+  "sources": [
+    {
+      "url": "https://github.com/bespokelabsai/AutoResearchExam/blob/23c0d92e11af1dea821f972b5f0a739060958002/README.md",
+      "commit": "23c0d92e11af1dea821f972b5f0a739060958002",
+      "sha256": "feb6def86250a62ed7037065da88802fc0b4b009ed0b6ee0756e7c1538a056d9"
+    },
+    {
+      "url": "https://github.com/bespokelabsai/AutoResearchExam-Terminus/blob/b00d9497b321eb1ebfc79279e0992c8c5fc09fc1/README.md",
+      "commit": "b00d9497b321eb1ebfc79279e0992c8c5fc09fc1",
+      "sha256": "b3e5c454abef0bed15ad63d979b49f6acf3159a1040e054b644f01bef49fe678"
+    }
+  ],
+  "local_evidence": {
+    "mcp_contract": "public-mcp-contract-budgeted-imputation-mcar50.json",
+    "task_selection": "task-selection.json",
+    "dev_smoke": "public-devkit-smoke-2026-11-12.json"
+  }
+}

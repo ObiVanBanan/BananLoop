@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import tempfile
+import time
 from argparse import Namespace
 from pathlib import Path
 from typing import Any, Callable
@@ -37,6 +39,18 @@ class V2OptimizationCLIError(ValueError):
 
 class _CallAllowanceReached(V2OptimizationCLIError):
     pass
+
+
+def _task_request_timeout(deadline_epoch: float | None, ceiling: int,
+                          *, now: float | None = None) -> int:
+    """Bound each model request by the durable outer task deadline."""
+    if deadline_epoch is None:
+        return ceiling
+    current = time.time() if now is None else now
+    remaining = int(float(deadline_epoch) - current)
+    if remaining < 1:
+        raise V2OptimizationCLIError("AutoResearchExam task deadline expired before model dispatch")
+    return min(ceiling, remaining)
 
 
 def _record_provider_call(database: Path, receipt: dict[str, Any]) -> None:
@@ -283,6 +297,37 @@ def _mark_parent_campaign_complete(result: dict[str, Any], *,
     return result
 
 
+def _approved_protocol_has_no_holdout(
+    state_root: Path, campaign_id: str, expected_protocol_digest: str,
+) -> bool:
+    database = state_root / "campaign.sqlite3"
+    if not database.is_file() or database.is_symlink():
+        return False
+    graph = None
+    try:
+        graph = GraphRepository.open(str(database), campaign_id=campaign_id)
+        spec = graph.campaign_spec()
+        if not isinstance(spec, OptimizationCampaignSpecV2):
+            return False
+        reference = spec.evaluation
+        authority = EvaluatorProtocolAuthority(graph.conn)
+        authority.require_frozen_reference(
+            reference.protocol_id, reference.version, reference.content_sha256,
+            reference.approval_digest, campaign_id=campaign_id,
+            spec_hash=spec.approved_hash(),
+        )
+        proposal, _ = authority.approved_protocol(reference.approval_digest)
+        return (
+            proposal.protocol.content_digest() == expected_protocol_digest
+            and not any(item.tier == "holdout" for item in proposal.protocol.tiers)
+        )
+    except Exception:
+        return False
+    finally:
+        if graph is not None:
+            graph.close()
+
+
 def _saved_completed_run_report(state_root: Path, campaign_id: str) -> dict[str, Any] | None:
     path = state_root / "reports" / f"v2-optimization-{campaign_id}.json"
     try:
@@ -297,13 +342,23 @@ def _saved_completed_run_report(state_root: Path, campaign_id: str) -> dict[str,
         item.get("decision") == "PASS"
         for item in report.get("integration_evidence", []) if isinstance(item, dict)
     ))
+    holdout = report.get("holdout") if isinstance(report, dict) else None
+    holdout_verified = isinstance(holdout, dict) and holdout.get("status") == "VERIFIED"
+    holdout_not_configured = (
+        isinstance(holdout, dict)
+        and holdout.get("status") == "NOT_CONFIGURED"
+        and holdout.get("tier") == "holdout"
+        and isinstance(holdout.get("protocol_digest"), str)
+        and _approved_protocol_has_no_holdout(
+            state_root, campaign_id, holdout["protocol_digest"],
+        )
+    )
     if (not isinstance(report, dict) or report.get("campaign_id") != campaign_id
             or report.get("status") != "ALL_NODES_COMPLETE"
             or not isinstance(report.get("baseline_candidate_delta"), dict)
             or report["baseline_candidate_delta"].get("status") != "VERIFIED"
             or not (verification_pass or integration_pass)
-            or not isinstance(report.get("holdout"), dict)
-            or report["holdout"].get("status") != "VERIFIED"):
+            or not (holdout_verified or holdout_not_configured)):
         return None
     return report
 
@@ -314,6 +369,17 @@ def _role_transport(role: Any, role_id: str) -> None:
         raise V2OptimizationCLIError(
             f"pinned {role_id} must use the official OpenAI Codex transport",
         )
+
+
+def _initial_optimization_task_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Select only the Researcher-bound root task, excluding candidate nodes."""
+    return [
+        node for node in nodes
+        if node.get("phase") == "OPTIMIZATION"
+        and isinstance(node.get("payload"), dict)
+        and isinstance(node["payload"].get("hypothesis"), str)
+        and node["payload"].get("owner_approved_task") is not False
+    ]
 
 
 def _ensure_researcher_selected_task(graph: GraphRepository,
@@ -330,7 +396,11 @@ def _ensure_researcher_selected_task(graph: GraphRepository,
         )
     node_id = f"optimization-task-{task.hypothesis_id}"
     nodes = graph.scheduling_snapshot()["nodes"]
-    existing = [node for node in nodes if node["phase"] == "OPTIMIZATION"]
+    # Candidate snapshots are also OPTIMIZATION graph nodes. Only count the
+    # root task node seeded from Researcher evidence when checking this
+    # owner-approved child binding; otherwise a resumed child with a candidate
+    # is incorrectly rejected as having multiple initial tasks.
+    existing = _initial_optimization_task_nodes(nodes)
     if existing:
         if len(existing) != 1:
             raise V2OptimizationCLIError("approved child has multiple initial Optimization tasks")
@@ -354,6 +424,8 @@ def _ensure_researcher_selected_task(graph: GraphRepository,
                 "hypothesis_id": task.hypothesis_id,
                 "hypothesis": task.hypothesis,
                 "evidence_refs": list(task.evidence_refs),
+                "owner_approved_task": True,
+                "candidate_iteration": 1,
                 "research_source": {
                     "campaign_id": task.source_campaign_id,
                     "node_id": task.source_node_id,
@@ -378,7 +450,8 @@ def _safe_paths(visible_paths: list[str], write_paths: list[str]) -> tuple[list[
 
 def run_v2_optimize(args: Namespace, *,
                     optimizer_factory: Callable[..., Any] | None = None,
-                    verifier_factory: Callable[..., Any] | None = None) -> dict[str, Any]:
+                    verifier_factory: Callable[..., Any] | None = None,
+                    evaluator_runner_factory: Callable[[Any], Any] | None = None) -> dict[str, Any]:
     """Run one bounded Optimization child using its frozen spec and role registry.
 
     Provider request allowance is shared by optimizer and integration verifier.
@@ -389,6 +462,18 @@ def run_v2_optimize(args: Namespace, *,
             or isinstance(args.max_steps, bool) or not 1 <= args.max_steps <= 100
             or isinstance(args.timeout_seconds, bool) or not 1 <= args.timeout_seconds <= 300):
         raise V2OptimizationCLIError("call, step, or timeout bounds are invalid")
+    task_deadline_epoch = getattr(args, "task_deadline_epoch", None)
+    if task_deadline_epoch is not None and (
+        isinstance(task_deadline_epoch, bool)
+        or not isinstance(task_deadline_epoch, (int, float))
+        or not math.isfinite(task_deadline_epoch)
+        or task_deadline_epoch <= 0
+    ):
+        raise V2OptimizationCLIError("task_deadline_epoch must be a positive finite epoch")
+    initial_model_timeout = _task_request_timeout(
+        float(task_deadline_epoch) if task_deadline_epoch is not None else None,
+        args.timeout_seconds,
+    )
     if not isinstance(args.campaign_id, str) or not args.campaign_id.strip():
         raise V2OptimizationCLIError("--campaign-id is required")
     visible_paths, write_paths = _safe_paths(args.visible_path, args.write_path)
@@ -420,10 +505,14 @@ def run_v2_optimize(args: Namespace, *,
             raise V2OptimizationCLIError("campaign source repository does not match --repo")
         try:
             reference = spec.evaluation
-            EvaluatorProtocolAuthority(graph.conn).require_frozen_reference(
+            protocol_authority = EvaluatorProtocolAuthority(graph.conn)
+            protocol_authority.require_frozen_reference(
                 reference.protocol_id, reference.version, reference.content_sha256,
                 reference.approval_digest, campaign_id=args.campaign_id,
                 spec_hash=spec.approved_hash(),
+            )
+            protocol_proposal, _ = protocol_authority.approved_protocol(
+                reference.approval_digest,
             )
         except EvaluatorVerificationError as exc:
             raise V2OptimizationCLIError(
@@ -440,9 +529,21 @@ def run_v2_optimize(args: Namespace, *,
         _role_transport(optimizer_role, "optimizer")
         _role_transport(verifier_role, "integration_verifier")
 
-        trusted = TrustedEvaluatorAdapter(
-            graph=graph, queue=queue, campaign_id=args.campaign_id, state_root=state_root,
+        evaluator_runner = (
+            evaluator_runner_factory(protocol_proposal.protocol)
+            if evaluator_runner_factory is not None else None
         )
+        trusted_kwargs = {
+            "graph": graph, "queue": queue, "campaign_id": args.campaign_id,
+            "state_root": state_root,
+        }
+        if evaluator_runner_factory is not None:
+            trusted_kwargs["runner"] = evaluator_runner
+        trusted = TrustedEvaluatorAdapter(**trusted_kwargs)
+        try:
+            trusted._require_execution_backend(protocol_proposal.protocol)
+        except TrustedEvaluatorError as exc:
+            raise V2OptimizationCLIError(str(exc)) from exc
         integration = IntegrationVerificationAdapter(
             graph=graph, queue=queue, campaign_id=args.campaign_id,
             trusted_evaluator=trusted,
@@ -525,12 +626,12 @@ def run_v2_optimize(args: Namespace, *,
         verifier_ctor = verifier_factory or ChatGPTPlanIntegrationVerifier
         optimizer = optimizer_ctor(
             auth, approved_model=optimizer_role.model,
-            timeout_seconds=args.timeout_seconds,
+            timeout_seconds=initial_model_timeout,
             call_observer=observe("optimizer"),
         )
         verifier = verifier_ctor(
             auth, approved_model=verifier_role.model,
-            timeout_seconds=args.timeout_seconds,
+            timeout_seconds=initial_model_timeout,
             call_observer=observe("integration_verifier"),
         )
         try:
@@ -576,16 +677,26 @@ def run_v2_optimize(args: Namespace, *,
             spent += 1
 
         def bounded_optimizer(public_input: dict[str, Any], **pin: Any) -> dict[str, Any]:
+            timeout = _task_request_timeout(
+                float(task_deadline_epoch) if task_deadline_epoch is not None else None,
+                args.timeout_seconds,
+            )
             consume_approval()
-            result = optimizer(public_input, **pin)
+            result = optimizer(public_input, **{**pin, "timeout_seconds": timeout})
             bounded_optimizer.last_usage = getattr(optimizer, "last_usage", None)
             return result
 
         bounded_optimizer.last_usage = None
 
         def bounded_verifier(request: dict[str, Any], gateway: Any, **pin: Any) -> dict[str, Any]:
+            timeout = _task_request_timeout(
+                float(task_deadline_epoch) if task_deadline_epoch is not None else None,
+                args.timeout_seconds,
+            )
             consume_approval()
-            result = verifier._dispatch_verifier(request, gateway, **pin)
+            result = verifier._dispatch_verifier(
+                request, gateway, **{**pin, "timeout_seconds": timeout},
+            )
             bounded_verifier.last_usage = getattr(verifier, "last_usage", None)
             return result
 

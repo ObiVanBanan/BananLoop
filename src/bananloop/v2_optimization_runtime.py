@@ -488,7 +488,7 @@ class V2OptimizationCandidateAdapter:
                               ))[:64],
                               "classification": "PUBLIC_NODE", "source_ref": f"graph://nodes/{node_id}"},
             "dev_summary": {"value": str(payload.get("dev_summary", ""))[:12000],
-                            "classification": "PUBLIC_NODE", "source_ref": f"graph://nodes/{node_id}"},
+                            "classification": "DEV_AGGREGATE", "source_ref": f"research://optimization/{node_id}"},
         }
         role_context = build_role_context(
             member,
@@ -772,7 +772,14 @@ class V2OptimizationCandidateAdapter:
                 ["diff", "--cached", "--name-only", "--"], build,
             ).splitlines())))
             if staged != tuple(sorted(paths)):
-                raise V2OptimizationError("staged candidate paths differ from the authorized change set")
+                if not staged:
+                    raise V2OptimizationError(
+                        "optimizer produced no effective file changes; the candidate matches its source snapshot"
+                    )
+                raise V2OptimizationError(
+                    "staged candidate paths differ from the authorized change set "
+                    f"(staged={list(staged)!r}, authorized={list(sorted(paths))!r})"
+                )
             _run_git(["-c", "user.name=BananLoop v2 Core",
                       "-c", "user.email=bananloop-v2@example.invalid",
                       "commit", "--quiet", "-m", f"v2 candidate {request['hypothesis_id'][:60]}"], build)
@@ -841,6 +848,11 @@ class V2OptimizationCandidateAdapter:
             "candidate_rationale": result["rationale"],
             "parent_node_id": node_id,
             "candidate_limitations": result["limitations"],
+            "candidate_iteration": 1 + sum(
+                isinstance(item.get("payload"), dict)
+                and isinstance(item["payload"].get("candidate_snapshot_id"), str)
+                for item in snapshot["nodes"]
+            ),
             "scheduler": {"priority": int(parent["payload"].get("scheduler", {}).get("priority", 0)),
                           "upper_bound": 1},
         }
@@ -950,6 +962,22 @@ class V2OptimizationRuntime:
             snapshot = budget.snapshot(self.campaign_id)
         finally:
             budget.close()
+        graph_snapshot = self.graph.scheduling_snapshot()
+        candidate_count = sum(
+            isinstance(item.get("payload"), dict)
+            and isinstance(item["payload"].get("candidate_snapshot_id"), str)
+            for item in graph_snapshot["nodes"]
+        )
+        if (spec.max_candidate_iterations is not None
+                and candidate_count >= spec.max_candidate_iterations and any(
+            item.get("phase") == "OPTIMIZATION"
+            and item.get("status") in {"PENDING", "READY"}
+            and isinstance(item.get("payload"), dict)
+            and isinstance(item["payload"].get("candidate_snapshot_id"), str)
+            and item["payload"].get("last_phase_transition", {}).get("guard") == "REGRESSION_FAILED"
+            for item in graph_snapshot["nodes"]
+        )):
+            return SchedulerPlan((), "CANDIDATE_ITERATION_LIMIT", self.graph.graph_revision())
         return HybridScheduler(self.graph).plan(budget=snapshot)
 
     def pause(self, *, reason: str = "owner requested pause") -> dict[str, Any]:
@@ -1029,6 +1057,7 @@ class V2OptimizationRuntime:
             executor=integration_verifier_executor, worker_id=worker_id,
         )
         promotion = None
+        followup = None
         if receipt.decision == "PASS":
             spec = self.graph.campaign_spec()
             from .champion_promotion import ChampionPromotionService
@@ -1043,10 +1072,122 @@ class V2OptimizationRuntime:
                 expected_champion_snapshot_id=current["snapshot_id"],
                 expected_champion_revision=current["revision"],
             )
+            followup = self._schedule_followup_candidate(
+                candidate_node_id=selected.node_id, receipt=receipt,
+                promotion=promotion,
+            )
         return {"status": "INDEPENDENT_VERIFICATION_" + receipt.decision,
                 "campaign_id": self.campaign_id, "node_id": selected.node_id,
                 "integration_receipt_digest": receipt.receipt_digest,
-                "champion": promotion}
+                "champion": promotion, "next_candidate": followup}
+
+    def _schedule_followup_candidate(self, *, candidate_node_id: str,
+                                     receipt: Any, promotion: dict[str, Any]) -> dict[str, Any] | None:
+        """Create the next bounded optimizer task from the promoted snapshot and public DEV evidence."""
+        spec = self.graph.campaign_spec()
+        if not isinstance(spec, OptimizationCampaignSpecV2):
+            raise V2OptimizationError("follow-up iteration requires a frozen Optimization campaign")
+        snapshot = self.graph.scheduling_snapshot()
+        candidate = next((item for item in snapshot["nodes"]
+                          if item["node_id"] == candidate_node_id), None)
+        if candidate is None or not isinstance(candidate.get("payload"), dict):
+            raise V2OptimizationError("promoted candidate node disappeared before follow-up scheduling")
+        candidate_payload = candidate["payload"]
+        iteration = candidate_payload.get("candidate_iteration")
+        if isinstance(iteration, bool) or not isinstance(iteration, int) or iteration < 1:
+            raise V2OptimizationError("candidate iteration index is invalid")
+        if (spec.max_candidate_iterations is None
+                or iteration >= spec.max_candidate_iterations):
+            return None
+
+        ledger = BudgetLedger(self.queue.path)
+        try:
+            remaining = ledger.snapshot(self.campaign_id)
+        finally:
+            ledger.close()
+        spec_protocol, _ = EvaluatorProtocolAuthority(
+            self.graph.conn,
+        ).approved_protocol(spec.evaluation.approval_digest)
+        evaluator_jobs = 3 * spec_protocol.protocol.repeatability_runs
+        required = {"agent_calls": 2, "evaluator_calls": evaluator_jobs, "experiments": 2}
+        for resource, amount in required.items():
+            account = remaining.get(resource)
+            if (account is None or account["cap"] - account["spent"]
+                    - account["reserved"] - account["unknown"] < amount):
+                return {"status": "BUDGET_EXHAUSTED", "resource": resource,
+                        "required": amount}
+
+        nodes_by_id = {item["node_id"]: item for item in snapshot["nodes"]}
+        parent_id = candidate_payload.get("parent_node_id")
+        task_payload = None
+        visited: set[str] = set()
+        while isinstance(parent_id, str) and parent_id not in visited:
+            visited.add(parent_id)
+            task_node = nodes_by_id.get(parent_id)
+            if task_node is None or not isinstance(task_node.get("payload"), dict):
+                break
+            parent_payload = task_node["payload"]
+            if (isinstance(parent_payload.get("hypothesis_id"), str)
+                    and isinstance(parent_payload.get("hypothesis"), str)):
+                task_payload = parent_payload
+                break
+            parent_id = parent_payload.get("parent_node_id")
+        if task_payload is None:
+            raise V2OptimizationError("approved Optimization task root is missing")
+        champion_id = promotion.get("snapshot_id") or promotion.get("candidate_snapshot_id")
+        if not isinstance(champion_id, str) or len(champion_id) not in {40, 64}:
+            service = __import__("bananloop.champion_promotion", fromlist=["ChampionPromotionService"]).ChampionPromotionService(
+                self.graph.conn, self.graph.evaluator_protocols,
+            )
+            champion_id = service.current()["snapshot_id"]
+
+        dev_rows = self.graph.conn.execute(
+            "SELECT receipt_json FROM evaluator_run_receipts "
+            "WHERE campaign_id=? AND candidate_snapshot_id=? ORDER BY rowid DESC",
+            (self.campaign_id, candidate_payload.get("candidate_snapshot_id")),
+        ).fetchall()
+        dev_receipt = next((json.loads(row[0]) for row in dev_rows
+                            if json.loads(row[0]).get("tier") == "dev"), None)
+        if not isinstance(dev_receipt, dict):
+            raise V2OptimizationError("promoted candidate has no durable public DEV receipt")
+        from .trusted_evaluator import EvaluatorRunReceiptV1
+        public_dev = self.trusted_evaluator.public_dev_metric_summary(
+            EvaluatorRunReceiptV1.model_validate(dev_receipt),
+        )
+        evidence_ref = f"evaluator://receipt/{dev_receipt['receipt_digest']}"
+        dev_summary = json.dumps({
+            "previous_candidate_iteration": iteration,
+            "public_dev_metric": public_dev,
+            "previous_candidate_rationale": candidate_payload.get("candidate_rationale", ""),
+            "limitations": candidate_payload.get("candidate_limitations", []),
+            "only_public_dev_evidence": True,
+        }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        next_iteration = iteration + 1
+        next_node_id = f"optimization-task-{task_payload['hypothesis_id']}-iteration-{next_iteration}"
+        command_id = f"schedule-optimization-iteration:{candidate_node_id}:{receipt.receipt_digest}"
+        replay = self.graph.command_response(command_id)
+        if replay is not None:
+            return {"status": "SCHEDULED", "node_id": next_node_id, "replayed": True}
+        self.graph.mutate(MutateGraph(
+            command_id=command_id, idempotency_key=command_id,
+            expected_graph_revision=self.graph.graph_revision(),
+            changes=(
+                AddNode(type="AddNode", node_id=next_node_id, phase="OPTIMIZATION",
+                        payload={
+                            "source_snapshot_id": champion_id,
+                            "hypothesis_id": task_payload["hypothesis_id"],
+                            "hypothesis": task_payload["hypothesis"],
+                            "evidence_refs": [evidence_ref],
+                            "dev_summary": dev_summary,
+                            "owner_approved_task": False,
+                            "candidate_iteration": next_iteration,
+                        }),
+                AddEdge(type="AddEdge", source_id=next_node_id,
+                        target_id=candidate_node_id, edge_type="DERIVED_FROM"),
+            ),
+        ))
+        return {"status": "SCHEDULED", "node_id": next_node_id,
+                "candidate_iteration": next_iteration, "replayed": False}
 
     def run_campaign(
         self, *, visible_paths: list[str] | tuple[str, ...],
@@ -1068,7 +1209,7 @@ class V2OptimizationRuntime:
         for _ in range(max_steps):
             plan = self.plan()
             if not plan.candidates:
-                if plan.reason == "ALL_NODES_COMPLETE":
+                if plan.reason in {"ALL_NODES_COMPLETE", "CANDIDATE_ITERATION_LIMIT"}:
                     result = {
                         "status": plan.reason, "campaign_id": self.campaign_id,
                         "steps_this_call": len(steps), "steps": steps,
@@ -1105,6 +1246,12 @@ class V2OptimizationRuntime:
                     })
                 raise V2OptimizationError("durable Optimization worker failed") from exc
             steps.append(result)
+            if result.get("status") == "BUDGET_EXHAUSTED":
+                return self._finish_campaign_run({
+                    "status": result["status"], "campaign_id": self.campaign_id,
+                    "steps_this_call": len(steps), "steps": steps,
+                    "graph_revision": self.graph.graph_revision(),
+                })
         current = self.plan()
         if current.reason == "ALL_NODES_COMPLETE":
             result = {
@@ -1135,6 +1282,16 @@ class V2OptimizationRuntime:
         spec = self.graph.campaign_spec()
         authority = EvaluatorProtocolAuthority(self.graph.conn)
         proposal, _ = authority.approved_protocol(spec.evaluation.approval_digest)
+        if not any(item.tier == "holdout" for item in proposal.protocol.tiers):
+            # Public-only evaluators (for example a Harbor validation MCP
+            # service) must never be relabeled as HOLDOUT. Record the explicit
+            # absence in the owner report without dispatching another evaluator
+            # job or touching Harbor's private verifier.
+            return {
+                "status": "NOT_CONFIGURED", "tier": "holdout",
+                "protocol_digest": proposal.protocol.content_digest(),
+                "reason": "The independently approved evaluator protocol has no HOLDOUT tier; none was run.",
+            }
         source_snapshot_id = proposal.protocol.source_snapshot_id
         champion_service = ChampionPromotionService(self.graph.conn, authority)
         try:
@@ -1273,7 +1430,7 @@ class V2OptimizationRuntime:
         )
         result["report_markdown_path"] = str(markdown_target)
         if spec.parent is not None:
-            from .registry import CampaignRegistry
+            from .registry import CampaignRegistry, RegistryError
 
             source_repo = Path(spec.source_repo)
             # The worker queue points at the exact project registry selected by
@@ -1282,9 +1439,22 @@ class V2OptimizationRuntime:
             # same durable campaign store as this child.
             registry_root = Path(self.queue.path).resolve().parent
             registry_paths = RuntimePaths.for_repo(source_repo, registry_root)
-            parent_state, _ = CampaignRegistry(source_repo, paths=registry_paths).resolve_readonly(
-                spec.parent.parent_campaign_id,
-            )
+            parent_campaign_id = spec.parent.parent_campaign_id
+            try:
+                parent_state, _ = CampaignRegistry(
+                    source_repo, paths=registry_paths,
+                ).resolve_readonly(parent_campaign_id)
+            except RegistryError:
+                # Direct runtime integrations can place the child queue outside
+                # the project registry (for example, a prepared benchmark
+                # campaign). Preserve the CLI-selected registry as first choice,
+                # then resolve an existing parent from the repository default.
+                default_paths = RuntimePaths.for_repo(source_repo)
+                if default_paths.root == registry_paths.root:
+                    raise
+                parent_state, _ = CampaignRegistry(
+                    source_repo, paths=default_paths,
+                ).resolve_readonly(parent_campaign_id)
             parent_db = parent_state / "campaign.sqlite3"
             parent_provider_calls = []
             verifier_row = None

@@ -13,10 +13,11 @@ import json
 import os
 import re
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .budget_ledger import BudgetLedger
 from .contracts import ExplorationCampaignSpecV2, utc_now
@@ -35,6 +36,22 @@ class V2RuntimeError(RuntimeError):
     """The requested work is not an authorized v2 Exploration attempt."""
 
 
+def _canonical_experiment_text(value: Any) -> Any:
+    """Preserve a structured experiment plan as bounded canonical JSON text."""
+    if isinstance(value, (dict, list)):
+        try:
+            encoded = json.dumps(
+                value, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, allow_nan=False,
+            )
+        except (TypeError, ValueError):
+            raise ValueError("structured next_experiment must be JSON-compatible") from None
+        if len(encoded) > 4000:
+            raise ValueError("structured next_experiment exceeds 4000 characters")
+        return encoded
+    return value
+
+
 class ResearchHypothesisV1(BaseModel):
     """One bounded candidate and its directly testable next action."""
 
@@ -46,8 +63,14 @@ class ResearchHypothesisV1(BaseModel):
     next_experiment: str = Field(min_length=1, max_length=4000)
     falsification_condition: str = Field(min_length=1, max_length=1000)
     expected_evidence: str = Field(min_length=1, max_length=1000)
+    experiment_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]{0,79}$")
     evidence_refs: tuple[str, ...] = Field(default=(), max_length=16)
     target_claim_key: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_.:-]{0,119}$")
+
+    @field_validator("next_experiment", mode="before")
+    @classmethod
+    def canonical_structured_experiment(cls, value: Any) -> Any:
+        return _canonical_experiment_text(value)
 
 
 class ResearcherReplyV1(BaseModel):
@@ -57,6 +80,7 @@ class ResearcherReplyV1(BaseModel):
     next_experiment: str | None = Field(default=None, min_length=1, max_length=4000)
     hypotheses: tuple[ResearchHypothesisV1, ...] = Field(default=(), max_length=4)
     selected_hypothesis_id: str | None = Field(default=None, min_length=1, max_length=100)
+    experiment_id: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_-]{0,79}$")
     evidence_refs: tuple[str, ...] = ()
     limitations: tuple[str, ...] = ()
     research_findings: tuple[dict[str, Any], ...] = ()
@@ -65,6 +89,26 @@ class ResearcherReplyV1(BaseModel):
     protocol_draft: EvaluatorProtocolDraftV1 | None = None
     protocol_intent: EvaluatorProtocolIntentV1 | None = None
     strategy_change_request: StrategyChangeProposalV1 | None = None
+
+    @field_validator("next_experiment", mode="before")
+    @classmethod
+    def canonical_structured_experiment(cls, value: Any) -> Any:
+        return _canonical_experiment_text(value)
+
+
+def _research_memory_claim_evidence(dev_summary: str) -> dict[str, set[str]]:
+    """Extract trusted Core claim keys and evidence IDs from the role summary."""
+    result: dict[str, set[str]] = {}
+    for line in dev_summary.splitlines():
+        match = re.match(
+            r"^([a-z][a-z0-9_.:-]{0,119}) \[[A-Z_]+\] evidence_ids=([0-9a-f,]*):",
+            line,
+        )
+        if match:
+            result.setdefault(match.group(1), set()).update(
+                filter(None, match.group(2).split(","))
+            )
+    return result
 
 
 # The adapter is a synchronous, one-model-call protocol: one durable
@@ -82,6 +126,8 @@ def make_researcher_invoke(
     protocol_binder: Callable[[EvaluatorProtocolIntentV1, str], tuple[
         EvaluatorProtocolDraftV1, dict[str, bytes],
     ]] | None = None,
+    experiment_executor: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+    experiment_catalog: tuple[dict[str, str], ...] = (),
 ) -> Callable[..., dict[str, Any]]:
     """Adapt a one-shot *trusted isolated model transport* to a pinned role.
 
@@ -92,6 +138,21 @@ def make_researcher_invoke(
     """
     if not callable(model_reply):
         raise TypeError("a trusted one-shot model transport is required")
+    if experiment_executor is not None:
+        if (not callable(experiment_executor) or not experiment_catalog
+                or any(not isinstance(item, dict)
+                       or set(item) != {"id", "description"}
+                       or not isinstance(item.get("id"), str)
+                       or not re.fullmatch(r"[a-z][a-z0-9_-]{0,79}", item["id"])
+                       or not isinstance(item.get("description"), str)
+                       or not item["description"].strip()
+                       for item in experiment_catalog)):
+            raise ValueError("a bounded unique experiment catalog is required for execution")
+        ids = [item["id"] for item in experiment_catalog]
+        if len(ids) != len(set(ids)):
+            raise ValueError("experiment IDs must be unique")
+    elif experiment_catalog:
+        raise ValueError("experiment catalog requires a trusted experiment executor")
     protocol_intent_bound = False
 
     def invoke(request: dict[str, Any], gateway: Any, *, adapter: str, provider: str,
@@ -144,6 +205,9 @@ def make_researcher_invoke(
                 "When using prior findings, provide target_claim_key and cite its exact "
                 "evidence_ids in evidence_refs; if prior findings are available, at least "
                 "one candidate must cite a matching target claim and exact evidence ID. "
+                "For a later iteration, copy an exact claim_key and one of its evidence_ids "
+                "from available_research_memory onto the same hypothesis object. Do not use "
+                "artifact:// references as evidence_ids. "
                 "Use supplied memory to select a distinct "
                 "follow-up experiment unless replication is specifically justified. "
                 "Do not claim "
@@ -157,26 +221,98 @@ def make_researcher_invoke(
                 + str(request.get("base_commit", ""))
                 + ". Copy this exact value into any requested protocol_draft; do not "
                 "guess or derive a different snapshot ID."
-                + ("\nA trusted evaluator fixture is available. When the campaign asks "
-                   "for an evaluator protocol, return protocol_intent with protocol_id, "
+                + ("\nA trusted evaluator fixture is available. In this first response, "
+                   "you MUST include protocol_intent with protocol_id, "
                    "version, metric_id, metric_field, direction, aggregation, "
-                   "repeatability_runs, and timeout_seconds. Do not return a full "
+                   "repeatability_runs (integer from 1 to 10), and timeout_seconds "
+                   "(integer from 1 to 3600). This is mandatory, not "
+                   "optional. Do not return a full "
                    "protocol_draft, hashes, manifests, evaluator code, or tier inputs; "
                    "Core binds those from the owner-supplied fixture after your response."
                    if protocol_binder is not None else "")
             ),
         }
+        prior_memory = _research_memory_claim_evidence(
+            str(role_context.get("dev_summary", "")),
+        )
+        public_input["available_research_memory"] = [
+            {"claim_key": claim_key, "evidence_ids": sorted(evidence_ids)}
+            for claim_key, evidence_ids in sorted(prior_memory.items())
+        ]
+        if protocol_binder is not None:
+            public_input["requires_protocol_intent"] = True
+        if experiment_executor is not None:
+            prior_summary = str(role_context.get("dev_summary", ""))
+            completed_ids = set(re.findall(
+                r"^core_experiment\.([a-z][a-z0-9_-]{0,79}) \[",
+                prior_summary, re.MULTILINE,
+            ))
+            available_experiments = [
+                dict(item) for item in experiment_catalog if item["id"] not in completed_ids
+            ]
+            if not available_experiments:
+                raise V2RuntimeError("registered experiment catalog is exhausted")
+            public_input["registered_experiments"] = available_experiments
+            public_input["instruction"] += (
+                "\nChoose exactly one registered analysis for this iteration. In the selected "
+                "hypothesis, set experiment_id to one of the listed IDs and describe its "
+                "falsifiable question in next_experiment. Core executes that registered "
+                "analysis and stores the measured result in Research Memory. Do not claim "
+                "a measurement before the result is returned. A completed experiment ID "
+                "cannot be selected again. `experiment_id` is distinct from the hypothesis `id`; "
+                "copy the registered ID exactly (for example, `experiment_id`: "
+                "`primary_association`). Include a currently available registered "
+                "experiment_id on every candidate object, including candidates that cite "
+                "Research Memory. Put the ID on the candidate, not just at the top level. "
+                "A top-level experiment_id is accepted only when Core keeps your selected "
+                "hypothesis. Do not return top-level next_experiment when using a "
+                "hypothesis portfolio; Core uses the selected candidate's next_experiment. "
+                "For a later iteration, copy one exact claim_key and one exact evidence_id "
+                "from the same available_research_memory entry onto at least one hypothesis "
+                "as target_claim_key and evidence_refs. Do not cite artifact:// URIs here. "
+                "The `core_experiment.*` claim_key namespace is reserved for trusted Core "
+                "results; never use it in research_findings. "
+                "Do not omit an ID or invent one."
+            )
         # The broker controls provider/model selection; worker content cannot.
         invoke.last_usage = None
-        raw = model_reply(
-            public_input, provider=provider, model=model,
-            model_version=model_version, prompt_digest=prompt_digest,
-            max_model_tokens=max_model_tokens,
-        )
+        call_kwargs = {
+            "provider": provider, "model": model,
+            "model_version": model_version, "prompt_digest": prompt_digest,
+            "max_model_tokens": max_model_tokens,
+        }
+        deadline_epoch = request.get("campaign_deadline_epoch")
+        if deadline_epoch is not None:
+            if (isinstance(deadline_epoch, bool)
+                    or not isinstance(deadline_epoch, (int, float))):
+                raise V2RuntimeError("persisted campaign deadline is invalid")
+            remaining_seconds = int(deadline_epoch - time.time())
+            if remaining_seconds < 1:
+                raise V2RuntimeError("campaign deadline expired before model dispatch")
+            configured_timeout = getattr(model_reply, "timeout_seconds", 300)
+            if (isinstance(configured_timeout, bool)
+                    or not isinstance(configured_timeout, int)
+                    or not 1 <= configured_timeout <= 300):
+                raise V2RuntimeError("configured model timeout is invalid")
+            call_kwargs["timeout_seconds"] = min(configured_timeout, remaining_seconds)
+        raw = model_reply(public_input, **call_kwargs)
         invoke.last_usage = getattr(model_reply, "last_usage", None)
+        if isinstance(raw, dict) and "top-level evidence_refs" in raw:
+            # One legacy prompt wording was occasionally copied as a literal
+            # JSON key. It is not a schema field and carries no authority;
+            # discard only this exact pseudo-alias, leaving all other unknown
+            # keys subject to the strict response contract.
+            raw = {key: value for key, value in raw.items()
+                   if key != "top-level evidence_refs"}
         reply = ResearcherReplyV1.model_validate(raw)
         protocol_draft = reply.protocol_draft
         bound_protocol_artifacts: dict[str, bytes] = {}
+        if (experiment_executor is not None
+                and any(str(item.get("claim_key", "")).startswith("core_experiment.")
+                        for item in reply.research_findings)):
+            raise V2RuntimeError(
+                "Core-reserved experiment claim keys cannot be authored by the Researcher"
+            )
         if protocol_binder is not None and reply.strategy_change_request is None:
             if protocol_draft is not None:
                 raise V2RuntimeError(
@@ -204,6 +340,7 @@ def make_researcher_invoke(
         if reply.strategy_change_request is not None:
             if (reply.next_experiment is not None or reply.hypotheses
                     or reply.selected_hypothesis_id is not None or reply.evidence_refs
+                    or reply.experiment_id is not None
                     or reply.limitations or reply.research_findings or reply.artifact_text
                     or reply.artifact_base64 or reply.protocol_draft or reply.protocol_intent):
                 raise V2RuntimeError(
@@ -229,10 +366,8 @@ def make_researcher_invoke(
                 "human_decision_request": request.model_dump(mode="json"),
             })
             return output.model_dump(mode="json")
-        if not reply.research_findings:
-            raise V2RuntimeError(
-                "ordinary research response must include at least one evidence-linked finding"
-            )
+        artifact_text = dict(reply.artifact_text)
+        research_findings = [dict(item) for item in reply.research_findings]
         allowed_evidence_refs = set(role_context.get("evidence_refs", ()))
         if reply.hypotheses:
             if not 2 <= len(reply.hypotheses) <= 4:
@@ -242,38 +377,50 @@ def make_researcher_invoke(
                     or reply.selected_hypothesis_id not in ids):
                 raise V2RuntimeError("hypothesis selection must identify one unique portfolio candidate")
             selected = next(item for item in reply.hypotheses if item.id == reply.selected_hypothesis_id)
-            if reply.next_experiment is not None and reply.next_experiment != selected.next_experiment:
-                raise V2RuntimeError("next experiment must match the selected hypothesis candidate")
-            claim_evidence: dict[str, set[str]] = {}
-            for line in str(role_context.get("dev_summary", "")).splitlines():
-                match = re.match(
-                    r"^([a-z][a-z0-9_.:-]{0,119}) \[[A-Z_]+\] evidence_ids=([0-9a-f,]*):",
-                    line,
-                )
-                if match:
-                    claim_evidence.setdefault(match.group(1), set()).update(
-                        filter(None, match.group(2).split(","))
-                    )
+            # The selected portfolio item is the canonical action. A redundant
+            # top-level next_experiment can be inconsistent in model output; it
+            # must never override or invalidate the selected candidate.
+            claim_evidence = _research_memory_claim_evidence(
+                str(role_context.get("dev_summary", "")),
+            )
             evidence_scores: dict[str, int] = {}
+            rejected_evidence_links: set[str] = set()
             for candidate in reply.hypotheses:
                 refs = set(candidate.evidence_refs)
-                if not refs <= allowed_evidence_refs:
-                    raise V2RuntimeError(
-                        "hypothesis cites prior evidence that is not present in its trusted role context"
-                    )
-                if candidate.target_claim_key is not None:
-                    claim_refs = claim_evidence.get(candidate.target_claim_key, set())
-                    if not refs <= claim_refs:
-                        raise V2RuntimeError(
-                            "hypothesis evidence references do not belong to its target claim"
-                        )
+                claim_refs = claim_evidence.get(candidate.target_claim_key or "", set())
+                if refs and (not refs <= allowed_evidence_refs
+                             or candidate.target_claim_key is None
+                             or not refs <= claim_refs):
+                    # A bad citation on one portfolio item must never be
+                    # trusted or poison a separate correctly grounded item.
+                    # Core records and removes this link from the durable
+                    # portfolio, then ranks the candidate as ungrounded.
+                    rejected_evidence_links.add(candidate.id)
+                    evidence_scores[candidate.id] = 0
+                elif candidate.target_claim_key is not None:
                     evidence_scores[candidate.id] = len(refs)
                 else:
                     evidence_scores[candidate.id] = 0
-            ranked = [item for item in reply.hypotheses if evidence_scores[item.id] > 0]
-            if allowed_evidence_refs and not ranked:
+            executable_hypotheses = list(reply.hypotheses)
+            if experiment_executor is not None:
+                available_ids = {item["id"] for item in available_experiments}
+                executable_hypotheses = [
+                    item for item in reply.hypotheses
+                    if item.experiment_id in available_ids
+                    or (item.id == reply.selected_hypothesis_id
+                        and reply.experiment_id in available_ids)
+                ]
+                if not executable_hypotheses:
+                    raise V2RuntimeError(
+                        "hypothesis portfolio has no candidate bound to an available registered experiment_id"
+                    )
+            ranked = [item for item in executable_hypotheses if evidence_scores[item.id] > 0]
+            memory_citation_missing = bool(
+                allowed_evidence_refs and not ranked and experiment_executor is not None
+            )
+            if allowed_evidence_refs and not ranked and not memory_citation_missing:
                 raise V2RuntimeError(
-                    "later hypothesis portfolio must cite available Research Memory on a candidate"
+                    "later hypothesis portfolio must cite available Research Memory on an executable candidate"
                 )
             if ranked:
                 # Candidate IDs and the model's preferred ID have no quality
@@ -293,15 +440,53 @@ def make_researcher_invoke(
                     "reason": "Highest count of distinct prior public evidence references attached to its exact target claim; tied candidates use a stable content digest.",
                 }
             else:
+                preferred = next(
+                    (item for item in executable_hypotheses
+                     if item.id == reply.selected_hypothesis_id),
+                    None,
+                )
+                selected = preferred or max(executable_hypotheses, key=lambda item: hashlib.sha256(
+                    json.dumps(item.model_dump(mode="json", exclude={"id"}),
+                               sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                    ).encode("utf-8")).hexdigest())
+                if memory_citation_missing:
+                    method = "CORE_MEMORY_AWARE_EXECUTABLE_HYPOTHESIS"
+                    reason = (
+                        "Researcher citations were absent or unverified. Core limited selection "
+                        "to registered experiments not already present in Research Memory, then "
+                        "used the Researcher preference among those executable candidates. "
+                        "The selected hypothesis remains UNANCHORED; no prior evidence is "
+                        "attributed to it."
+                    )
+                else:
+                    method = ("RESEARCHER_INITIAL_SELECTION" if preferred is not None
+                              else "CORE_EXECUTABLE_HYPOTHESIS")
+                    reason = (
+                        "No prior evidence was available to rank candidates; researcher preference is advisory for the initial step."
+                        if preferred is not None else
+                        "No prior evidence was available; Core selected the only or content-digest-first candidate bound to an available registered experiment."
+                    )
                 selection = {
-                    "method": "RESEARCHER_INITIAL_SELECTION",
+                    "method": method,
                     "selected_hypothesis_id": selected.id,
                     "scores": evidence_scores,
-                    "reason": "No prior evidence was available to rank candidates; researcher preference is advisory for the initial step.",
+                    "reason": reason,
                 }
             next_experiment = selected.next_experiment
+            portfolio_candidates = []
+            for item in reply.hypotheses:
+                candidate_value = item.model_dump(mode="json")
+                if item.id in rejected_evidence_links:
+                    candidate_value["evidence_refs"] = []
+                    candidate_value["target_claim_key"] = None
+                    candidate_value["core_evidence_validation"] = "REJECTED_INVALID_CLAIM_LINK"
+                elif evidence_scores[item.id] > 0:
+                    candidate_value["core_evidence_validation"] = "TRUSTED_CLAIM_LINK"
+                else:
+                    candidate_value["core_evidence_validation"] = "UNANCHORED"
+                portfolio_candidates.append(candidate_value)
             portfolio = json.dumps({
-                "candidates": [item.model_dump(mode="json") for item in reply.hypotheses],
+                "candidates": portfolio_candidates,
                 "selected_hypothesis_id": selected.id,
                 "researcher_preferred_hypothesis_id": reply.selected_hypothesis_id,
                 "core_selection": selection,
@@ -315,13 +500,130 @@ def make_researcher_invoke(
                 raise V2RuntimeError("researcher must return a hypothesis portfolio or next experiment")
             next_experiment = reply.next_experiment
             portfolio = None
-        if len(reply.artifact_text) + len(reply.artifact_base64) > MAX_VISIBLE_FILES:
+        if experiment_executor is not None:
+            if reply.hypotheses:
+                # Execute the Core-selected evidence-grounded candidate, not
+                # the Researcher's advisory preferred ID when those differ.
+                chosen_id = selected.experiment_id
+                # Some valid reply shapes put the explicit registered choice
+                # at the top level. Use it only when Core retained the researcher's
+                # selected hypothesis; otherwise it may refer to a rejected candidate.
+                if (chosen_id is None and reply.experiment_id is not None
+                        and selected.id == reply.selected_hypothesis_id):
+                    chosen_id = reply.experiment_id
+            else:
+                chosen_id = reply.experiment_id
+            allowed_ids = {item["id"] for item in available_experiments}
+            if chosen_id not in allowed_ids:
+                raise V2RuntimeError("researcher must select exactly one registered experiment_id")
+            role_context_value = public_input.get("role_context", {})
+            dev_summary = str(role_context_value.get("dev_summary", ""))
+            if re.search(rf"^{re.escape('core_experiment.' + chosen_id)} ", dev_summary, re.MULTILINE):
+                raise V2RuntimeError("a completed registered experiment cannot be repeated")
+            try:
+                experiment_result = experiment_executor(chosen_id, role_context_value)
+                if (not isinstance(experiment_result, dict)
+                        or experiment_result.get("status") != "COMPLETED"
+                        or not isinstance(experiment_result.get("summary"), str)
+                        or not experiment_result["summary"].strip()
+                        or len(experiment_result["summary"]) > 1800):
+                    raise ValueError("invalid experiment result contract")
+                raw_experiment = json.dumps(
+                    {"schema": "bananloop-executed-experiment-v1",
+                     "experiment_id": chosen_id, **experiment_result},
+                    sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                    allow_nan=False,
+                ).encode("utf-8")
+            except V2RuntimeError:
+                raise
+            except Exception as exc:
+                raise V2RuntimeError(
+                    "registered experiment execution failed before evidence publication"
+                ) from exc
+            if len(raw_experiment) > MAX_ARTIFACT_BYTES:
+                raise V2RuntimeError("registered experiment result exceeds the public artifact budget")
+            artifact_path = "research/executed-experiment.json"
+            if artifact_path in artifact_text or artifact_path in reply.artifact_base64:
+                raise V2RuntimeError("researcher artifact collides with the trusted experiment result")
+            artifact_text[artifact_path] = raw_experiment.decode("utf-8")
+            result_ref = "artifact://sha256/" + hashlib.sha256(raw_experiment).hexdigest()
+            stance = experiment_result.get("stance", "UNCERTAIN")
+            if stance not in {"SUPPORTS", "REFUTES", "UNCERTAIN"}:
+                stance = "UNCERTAIN"
+            confidence = experiment_result.get("confidence", 0.8)
+            if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+                confidence = 0.8
+            confidence = min(1.0, max(0.0, float(confidence)))
+            research_findings.append({
+                "claim_key": "core_experiment." + chosen_id,
+                "statement": experiment_result["summary"],
+                "stance": stance, "kind": "OBSERVATION", "confidence": confidence,
+                "evidence_refs": [result_ref],
+            })
+        if not research_findings:
+            raise V2RuntimeError(
+                "ordinary research response must include at least one evidence-linked finding"
+            )
+        limitations = list(reply.limitations)
+        if reply.hypotheses and memory_citation_missing:
+            limitations.append(
+                "The Researcher did not provide a verifiable link to available Research Memory. "
+                "Core selected only among registered experiments not already completed; the "
+                "selected hypothesis remains unanchored to prior evidence."
+            )
+        if experiment_executor is not None:
+            # The Researcher responds before Core runs the registered analysis,
+            # so its pre-execution uncertainty can become false within this
+            # same durable job. Keep the trusted measured finding and drop only
+            # claims that categorically say no experiment was executed.
+            def says_no_experiment_ran(value: str) -> bool:
+                lowered = value.casefold()
+                negative = any(marker in lowered for marker in (
+                    "unexecuted", "not executed", "not been executed", "not run",
+                    "has not run", "no experiment was run", "no experiment has run",
+                    "no registered experiment has been executed",
+                    "no registered experiment was executed",
+                    "no statistical experiment was executed",
+                    "no follow-up experiment has been executed",
+                    "no association result can be reported yet",
+                ))
+                generic_claim = any(marker in lowered for marker in (
+                    "no registered experiment", "no statistical experiment",
+                    "no follow-up experiment", "no experiment was", "no experiment has",
+                    "registered experiment remains unexecuted",
+                    "no association result can be reported yet",
+                ))
+                selected_aliases = {
+                    chosen_id.casefold(),
+                    chosen_id.replace("_", " ").casefold(),
+                    chosen_id.replace("_", "-").casefold(),
+                }
+                if chosen_id == "primary_association":
+                    selected_aliases.add("primary association")
+                elif chosen_id == "permutation_test":
+                    selected_aliases.add("permutation test")
+                elif chosen_id == "split_half_robustness":
+                    selected_aliases.update({"split-half", "split half"})
+                elif chosen_id == "outlier_sensitivity":
+                    selected_aliases.add("outlier sensitivity")
+                mentions_selected = any(alias in lowered for alias in selected_aliases)
+                return "experiment" in lowered and negative and (generic_claim or mentions_selected)
+
+            research_findings = [
+                item for item in research_findings
+                if not says_no_experiment_ran(str(item.get("statement", "")))
+            ]
+            limitations = [
+                item for item in limitations
+                if not says_no_experiment_ran(item)
+            ]
+        if len(artifact_text) + len(reply.artifact_base64) > MAX_VISIBLE_FILES:
             raise V2RuntimeError("too many researcher artifacts")
         artifacts: list[dict[str, str]] = []
         bytes_total = 0
         researcher_bytes_total = 0
         artifact_bytes: dict[str, bytes] = {}
-        for name, text in reply.artifact_text.items():
+        for name, text in artifact_text.items():
             if not isinstance(name, str) or not isinstance(text, str):
                 raise V2RuntimeError("artifact text must use UTF-8 names and strings")
             artifact_bytes[name] = text.encode("utf-8")
@@ -366,7 +668,7 @@ def make_researcher_invoke(
             for item in artifacts if item["path"] in researcher_artifact_names
         }
         findings: list[dict[str, Any]] = []
-        for raw_finding in reply.research_findings:
+        for raw_finding in research_findings:
             finding = dict(raw_finding)
             supplied = finding.get("evidence_refs")
             if supplied is None or supplied == [] or supplied == ():
@@ -381,7 +683,7 @@ def make_researcher_invoke(
             "node_id": request["node_id"],
             "evidence_refs": reply.evidence_refs,
             "artifacts": artifacts,
-            "limitations": reply.limitations,
+            "limitations": limitations,
             "next_experiment": next_experiment,
             "research_findings": findings,
             "protocol_draft": (protocol_draft.model_dump(mode="json")
@@ -402,7 +704,8 @@ class V2ResearchRuntime:
 
     def __init__(self, *, graph: GraphRepository, queue: DurableWorkerQueue,
                  campaign_id: str, state_root: str | Path, role_registry: RoleRegistryV1,
-                 trusted_artifact_digests: tuple[str, ...] = ()):
+                 trusted_artifact_digests: tuple[str, ...] = (),
+                 campaign_deadline_epoch: float | None = None):
         self.graph = graph
         self.queue = queue
         self.campaign_id = campaign_id
@@ -413,6 +716,7 @@ class V2ResearchRuntime:
             graph=graph, queue=queue, campaign_id=campaign_id,
             state_root=state_root, role_registry=role_registry,
             trusted_artifact_digests=trusted_artifact_digests,
+            campaign_deadline_epoch=campaign_deadline_epoch,
         )
 
     def plan(self):
@@ -459,6 +763,9 @@ class V2ResearchRuntime:
             )
         if not callable(invoke):
             raise V2RuntimeError("a pinned, tested model-invoke boundary is required")
+        deadline = self.adapter.campaign_deadline_epoch
+        if deadline is not None and time.time() >= deadline:
+            raise V2RuntimeError("campaign deadline expired before researcher dispatch")
         job = self.adapter.enqueue(node_id=node_id, visible_paths=visible_paths)
         manifest_authority = TeamManifestAuthority(self.queue.path)
         try:
@@ -533,6 +840,9 @@ class V2ResearchRuntime:
                 convergence_reason=self._convergence_reason,
             )
         while len(completed) < max_iterations:
+            deadline = self.adapter.campaign_deadline_epoch
+            if deadline is not None and time.time() >= deadline:
+                return self._finish_campaign_run("DEADLINE_EXCEEDED", completed)
             plan = self.plan()
             selected = next((item for item in plan.candidates
                              if item.phase == "EXPLORATION" and item.lane == "EVIDENCE_WORKER"), None)
@@ -624,6 +934,16 @@ class V2ResearchRuntime:
             "goal": spec.goal,
             "status": status,
             "stop_reason": convergence_reason or status,
+            "campaign_deadline_epoch": self.adapter.campaign_deadline_epoch,
+            "campaign_time_limit_seconds": (
+                spec.budget.deadline_seconds if self.adapter.campaign_deadline_epoch is not None else None
+            ),
+            "campaign_elapsed_seconds": (
+                min(spec.budget.deadline_seconds,
+                    max(0, int(time.time() - (self.adapter.campaign_deadline_epoch
+                                               - spec.budget.deadline_seconds))))
+                if self.adapter.campaign_deadline_epoch is not None else None
+            ),
             "scientific_conclusion": (
                 "No verified scientific conclusion is asserted; Exploration findings are unverified PUBLIC_DEV evidence."
             ),

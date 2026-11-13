@@ -1,0 +1,94 @@
+# AutoResearchExam task adapter inventory — 2026-11-12
+
+Scope: public task instructions, `README.md`, `task.toml`, and public task environment/devkit only. No private tests, `are-grader-ctx`, or grader artifacts were inspected. SOPCC public DEV baseline smoke was run without a model or grader call; scope and limits are recorded in `results/sopcc-public-dev-baseline-smoke-2026-11-12.json`.
+
+All ten selected tasks declare 8 CPUs, 14,336 MB RAM, 153,600 MB storage, no GPU, and a 24-hour task timeout. The pilot's one-hour/five-iteration limit is a shortened local experiment, not the official benchmark budget.
+
+| Selected task | Required output and API | Public DEV material | Adapter gap from current imputation bridge |
+|---|---|---|---|
+| `budgeted-covtype-dual-market-open` | `/app/output/policy.py`; `Policy(data_dir)` with `select_queries(...)`, `select_next(...)`, `predict(...)` | Public unlabeled pool and metadata; no public DEV script identified | Active label acquisition and classification policy; different protocol and metric |
+| `budgeted-imputation-mcar50` | `/app/output/impute.py`; `impute(X_train, X_eval, seed) -> ndarray` | Six-dataset NPZ panel, manifest, `cellspec.py`, `cellrunner.py`, `devkit.py` | Current supported task |
+| `carps-star-discrepancy-subset-select` | `/app/output/select_subset.py`; `select(points, k, seed, time_budget_s) -> indices` | Public example point arrays and manifest; no public evaluation harness identified | Subset selection and star discrepancy metric |
+| `cpu-decoder-graph-executor` | `/app/output/executor.py`; `build_executor(graph_spec, weights, n_workers) -> callable` | Public reference executor, graph spec, harness, benchmark, worker | Task-specific equivalence and performance evaluator |
+| `cpu-llm-decode-throughput` | `/app/output/engine.py`; `Engine(model_dir)` and `generate(requests)` | Public workloads, reference engine, harness, benchmark runner | Model-directory and generation-throughput protocol |
+| `dctabeval-aeac-pooled-cat-statistics` | `/app/output/solution.py`; `fit_predict(train_X, train_y, pool_X, eval_X, seed) -> ndarray` | Public `local_panel.py` and `dev.csv`; no explicit public DEV runner identified | Pooled-learning protocol and ROC-AUC metric |
+| `label-efficient-risk-estimator` | `/app/output/estimator.py`; `Estimator(pool, budget, rng)` with `next_index`, `observe`, `estimate` | Twelve public labelled pools and metadata; bounded 16-seed-per-cell pilot evaluator now implemented | Stateful label-query protocol and risk metric; task-specific adapter now exists (see below) |
+| `shortest-valid-ci-l2-ece` | `/app/output/interval.py`; `ece2_interval(Z, Y, k, alpha, rng) -> (lo, hi)` | Public 24-setting `dev_panel.json`; no DEV runner identified | Coverage and interval-length metric |
+| `sketched-newton-cov-estimator` | `/app/output/estimator.py`; `estimate(stream, config) -> ndarray` | Public runner and two DEV instances with JSON and exact arrays | One-pass covariance estimator and resource protocol |
+| `sopcc-online-chance-constrained-policy` | `/app/solution/policy.py`; `Policy(seed)`, `prepare(instance)`, `act(obs)` | Public `dev_eval.py`, runner, problem module, baseline; pinned no-network Docker runner returns aggregate only; smoke: metric 3.3136, 4 episodes, 0 failures | SOPCC evaluator, fixture, observed public MCP contract, and Harbor adapter now exist; no approved protocol or Optimization result yet |
+
+## Required next implementation
+
+Each task needs an explicit owner-pinned adapter descriptor: repository candidate path, Harbor output path(s), allowed visible/write scope, public DEV entrypoint and data, metric schema/direction, repeatability policy, and task-specific resource/call limits. Core must bind the descriptor and its source digests into an independently reviewed evaluator protocol. The current imputation and SOPCC adapters cannot safely infer these fields for other tasks from an output filename.
+
+At the time of this initial inventory, the Harbor bridge had task-pinned adapters for imputation and SOPCC. Subsequent sections record adapters added afterward. The ten-task dispatcher is deliberately limited to already-prepared and approved per-task Harbor configs; no complete ten-config directory exists. It does not generate or approve protocols, choose Supervised pivots, or make the AutoResearchExam ten-task live series runnable by itself.
+
+## Public DEV feasibility audit (2026-11-13)
+
+This follow-up inspected only public instructions, task manifests, public task environments, and public DEV assets. It did not inspect `are-grader-ctx`, private grader inputs, tests, or hidden arrays. The shortlist was verified against the pinned source checkout at `23c0d92e11af1dea821f972b5f0a739060958002`; all ten task, instruction, and version pins match.
+
+| Task | Public-only DEV path | Fidelity and implementation notes | Current adapter |
+|---|---|---|---|
+| `budgeted-covtype-dual-market-open` | Public pool is unlabeled. A separate external UCI CoverType panel now supplies a labelled diagnostic DEV evaluator; it uses a static-price proxy, not the undisclosed official dynamic market. | Report only as a nonofficial external proxy; keep official public VALIDATION separate. | Proxy evaluator, Harbor adapter, and fixture implemented; independent protocol review and campaign remain outstanding. |
+| `budgeted-imputation-mcar50` | Public six-dataset NPZ panel and task `devkit.py`/cellspec/cellrunner. | Existing public DEV/VALIDATION bridge. | Implemented; first pilot had a protocol-context failure before verifier dispatch. |
+| `carps-star-discrepancy-subset-select` | Eight public example clouds and exact metric in the public instruction. | A deterministic exact L-infinity star-discrepancy evaluator over the visible clouds is feasible; it is a DEV diagnostic, not the sealed score. Runtime must be bounded. | Public evaluator, Harbor backend, fixture, and candidate mapping implemented; baseline smoke passed |
+| `cpu-decoder-graph-executor` | Public reference executor, graph spec, harness, benchmark, worker, 16 seeds. | Faithful numeric and speed comparison is public; a small fixed seed subset can serve DEV, with the full panel too expensive for every iteration. | Public pilot DEV evaluator and Harbor adapter integrated; fixture and status probe passed (see below). |
+| `cpu-llm-decode-throughput` | Public workloads, reference engine, harness, benchmark runner. | Public token-agreement and throughput metrics are evaluated in a bounded two-draw pilot; pinned CPU GPT-2 image built. | Public evaluator, fixture, Harbor backend, and candidate mapping integrated; status probe passed (see below). |
+| `dctabeval-aeac-pooled-cat-statistics` | Public `dev.csv` and `local_panel.py`. | Public ROC-AUC panel supports a bounded diagnostic evaluator; document that a shortened panel estimates, rather than reproduces, the full task score. | Public evaluator, Harbor backend, fixture, and candidate mapping implemented; baseline smoke passed |
+| `label-efficient-risk-estimator` | Twelve public labelled development pools and metadata. | A local evaluator can replay seeded adaptive queries and compute risk; bound the seed panel for the one-hour pilot and label it diagnostic. | Public evaluator, Harbor backend, fixture, and candidate mapping implemented; baseline smoke passed (see below). |
+| `shortest-valid-ci-l2-ece` | Public 24-setting `dev_panel.json` and `panel.py` with known per-replication target values. | A bounded seeded public panel can measure coverage and relative interval length; report its uncertainty and reduced replication count. | Public evaluator, Harbor backend, fixture, and candidate mapping implemented; baseline smoke passed |
+| `sketched-newton-cov-estimator` | Public runner and two DEV instances with exact target arrays. | Strong public protocol; each stream has 300,000 steps, so repetition count needs an explicit wall-time cap. | Public evaluator, Harbor backend, fixture, and candidate mapping implemented; baseline smoke passed (see below). |
+| `sopcc-online-chance-constrained-policy` | Public `dev_eval.py`, runner, problem module, baseline. | Existing pinned public DEV/VALIDATION adapter and smoke baseline. | Implemented; independent protocol review still needs a bounded live pass. |
+
+### CovType external public diagnostic data (2026-11-13)
+
+The pinned UCI CoverType archive used by the task's public data-preparation
+script was downloaded and verified against SHA-256
+`89a975c2457cd48e824238ae43c5a3cb762e42c4b4078d9b44a4514055105f6d`. A
+reproducible builder now excludes the exact first 250,000 source rows selected
+by that public script, then creates an independent labelled pool of 30,000
+rows and an evaluation panel of 10,000 rows from the remainder. It applies the
+public feature and class anonymization transforms. The generated data and
+manifest are in `/home/sonik/bananloop-benchmark-env/runs/covtype-external-public-proxy-2026-11-13/`.
+
+This closes the data-availability question for a clearly labelled external
+diagnostic, but it does not make CovType benchmark-compatible: the official
+dynamic market transition is not specified in public task material. The
+builder therefore pins a static-price proxy only. A networkless worker, trusted
+DEV runner, Harbor candidate adapter, and public-only DEV/VALIDATION fixture
+are now implemented. The starter policy scored balanced accuracy
+`0.46194230556880844` in 32.73 seconds on the 10,000-row external panel; this
+is evaluator smoke evidence, not a BananLoop result. A read-only public MCP
+contract probe and status-only Harbor bridge probe completed with zero public
+submissions and zero model calls. Independent protocol review and a campaign
+remain outstanding.
+
+The task-specific public DEV evaluators are implemented as separate modules. Their public-only MCP contracts were observed using `initialize`, `tools/list`, and read-only `status`; status showed zero submissions and zero active grading jobs. Task-specific Harbor backend runners and DEV/VALIDATION fixtures were built, and starter baselines passed their pinned local DEV panels. CARPS baseline mean exact discrepancy was `0.374694`; DCTAB mean ROC-AUC was `0.624757` over six fixed draws; shortest-CI task score was `1.0` over 24 settings x 32 replications. These are evaluator smokes, not BananLoop optimization results or official leaderboard scores. Evidence is in `/home/sonik/bananloop-benchmark-env/runs/are-public-contract-probes-2026-11-13/` and `/home/sonik/bananloop-benchmark-env/runs/are-public-evaluator-fixtures-2026-11-13/`.
+
+`harbor_agent.py` now dispatches the task-specific adapters implemented to date. At the time this audit was written, five tasks still needed integration; subsequent Newton and label-risk sections document those two additions. Keep validation submissions separate from DEV, and do not use private grader materials to fill public-evaluator gaps.
+
+## Public Newton adapter integration (2026-11-13)
+
+`sketched-newton-cov-estimator` now has a task-specific public DEV evaluator, a DEV/VALIDATION fixture, a Trusted Evaluator runner, and an allowlisted Harbor bridge adapter (`sketched-newton-public-v1`). The evaluator runs one frozen 300,000-step public DEV stream in the pinned networkless, read-only image. The starter zero-matrix baseline returned task score `-1.0` (relative variance error `1.0`) in 21.92 seconds. This is a public evaluator smoke only; it is not a BananLoop optimization result.
+
+A Harbor bridge status-only probe completed for this task: `0` public submissions, `0` queued/grading, `0` model calls, no task verifier collection, and no remaining Docker containers. Its job metadata is in `/home/sonik/bananloop-benchmark-env/runs/are-bridge-status-probes-2026-11-13/sketched-newton-cov-estimator/`. Fixture digest: `57a5ceb7e80cd8f9c258358b771437a8b513e96ea7d6e6d92dfbcd921f97a9a0`. Baseline evidence is in `/home/sonik/bananloop-benchmark-env/runs/are-public-evaluator-fixtures-2026-11-13/sketched-newton-baseline-smoke.json`.
+
+The supported adapters then covered six of the selected ten tasks: imputation, SOPCC, CARPS, DCTAB, shortest-CI, and sketched-Newton. Four tasks remained without integration.
+
+## Public label-risk adapter integration (2026-11-13)
+
+`label-efficient-risk-estimator` now has a task-specific public DEV evaluator, a DEV/VALIDATION fixture, a Trusted Evaluator runner, and an allowlisted Harbor bridge adapter (`labelrisk-public-v1`). The public pilot uses all 12 public pools, four label budgets, and 16 deterministic seeds per pool-budget cell (48 cells total), compared against a matched random-sampling baseline. It is explicitly a pilot panel; the task's official score uses 4,000 seeds per cell. The starter baseline achieved median relative squared-error ratio `0.8069504406436159`, with zero candidate failures. Its public MCP status-only Harbor probe completed with zero submissions and zero model calls. Neither result is a BananLoop Optimization campaign.
+
+At that point, seven selected tasks had adapters. The CPU decoder section below records the next addition. No Optimization campaign has been run for Newton or label-risk, and their protocols still need independent approval before live candidate runs. Keep validation submissions separate from DEV, and do not use private grader materials to fill public-evaluator gaps.
+
+## CPU decoder public evaluator and Harbor integration (2026-11-13)
+
+The official public task image was built as `bananloop-are-cpudecoder-public-dev:1.1.0` from the pinned public environment; its `.dockerignore` excludes `are-grader-ctx`. A bounded, networkless diagnostic evaluator runs the public benchmark on fixed seeds 0, 7, and 15 and verifies numerical equivalence on every instance. The reference executor starter baseline scored 0.9856 geometric-mean speedup over the reference (three public seeds; no candidate failures). The task-specific Trusted Evaluator runner, DEV/VALIDATION fixture, and Harbor bridge adapter are now integrated. The adapter's status-only Harbor probe completed without exception: zero submissions, zero queued/grading jobs, zero model calls, and verifier collection disabled. This remains evaluator/bridge preflight evidence, not an Optimization campaign result; protocol approval and the task campaign are still outstanding. Evidence is in `/home/sonik/bananloop-benchmark-env/runs/are-public-evaluator-fixtures-2026-11-13/cpudecoder-baseline-smoke.json`, contract `/home/sonik/bananloop-benchmark-env/runs/are-public-contract-probes-2026-11-13/cpu-decoder-graph-executor.public-mcp-contract.json`, and fixture `/home/sonik/bananloop-benchmark-env/runs/are-public-evaluator-fixtures-2026-11-13/cpudecoder-fixture.json`.
+
+At this point, eight of the selected tasks had task-specific Harbor adapters. The CPU LLM section below records the next addition.
+
+## CPU LLM public evaluator and Harbor integration (2026-11-13)
+
+The public task image `bananloop-are-cpullm-public-dev:1.1.0` was built with the task's pinned GPT-2 snapshot; the Docker context excludes `are-grader-ctx`. The public evaluator runs the official harness over 16 requests from each of two fixed public draws, with an exact token-agreement minimum of 0.99. The unchanged public reference engine achieved agreement 1.0 and a pilot speedup of 0.989x over those draws in 82.96 seconds. This is a public evaluator smoke, not an optimization result or official score. Its DEV/VALIDATION fixture and Trusted Evaluator/Harbor adapter are integrated. The status-only Harbor probe completed without exception: zero submissions, zero queued/grading jobs, zero model calls, and verifier collection disabled. Evidence is in `/home/sonik/bananloop-benchmark-env/runs/are-public-evaluator-fixtures-2026-11-13/cpullm-pilot-baseline.json`, contract `/home/sonik/bananloop-benchmark-env/runs/are-public-contract-probes-2026-11-13/cpu-llm-decode-throughput.public-mcp-contract.json`, and fixture `/home/sonik/bananloop-benchmark-env/runs/are-public-evaluator-fixtures-2026-11-13/cpu-llm-fixture.json`.
+
+Nine of ten selected tasks now have task-specific Harbor adapters. Only `budgeted-covtype-dual-market-open` remains without a public DEV scorer; do not invent a benchmark-compatible score for its unlabeled public pool. Independent protocol approval and per-task Optimization campaigns remain outstanding for newly prepared adapters.

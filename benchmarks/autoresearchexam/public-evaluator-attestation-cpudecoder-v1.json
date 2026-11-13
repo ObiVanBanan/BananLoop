@@ -1,0 +1,29 @@
+{
+  "schema": "public-evaluator-attestation-v1",
+  "summary": "The pinned AutoResearchExam v1.1 repository states that v1.1 uses the same tasks, data, and graders as v1.0. The CPU Decoder task instruction defines the score as the geometric mean of per-instance reference/submission speedups on the sealed instances. Its public MCP submit tool states that submissions are graded on the public validation split and result returns the validation score. This supports using the endpoint as externally trusted public validation for this metric family; it does not audit the server implementation or prove live split enforcement.",
+  "scope": {
+    "task_source_revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+    "task_id": "cpu-decoder-graph-executor",
+    "task_version": "1.1.0",
+    "validation_endpoint": "http://grader:8000/mcp",
+    "private_test_access": "outside_agent_environment",
+    "trust_boundary": "official_public_validation_endpoint",
+    "not_claimed": "cryptographic_proof_of_server_implementation_or_split_enforcement"
+  },
+  "sources": [
+    {
+      "url": "https://github.com/bespokelabsai/AutoResearchExam/blob/23c0d92e11af1dea821f972b5f0a739060958002/README.md",
+      "commit": "23c0d92e11af1dea821f972b5f0a739060958002",
+      "sha256": "feb6def86250a62ed7037065da88802fc0b4b009ed0b6ee0756e7c1538a056d9"
+    },
+    {
+      "url": "https://github.com/bespokelabsai/AutoResearchExam/blob/23c0d92e11af1dea821f972b5f0a739060958002/cpu-decoder-graph-executor/instruction.md",
+      "commit": "23c0d92e11af1dea821f972b5f0a739060958002",
+      "sha256": "826bde245fa3fa4eac4235b3cf0fc7f95d06a2d4c643d5ccab3b63c5a71840f7"
+    }
+  ],
+  "local_evidence": {
+    "mcp_contract_sha256": "670d56af2a07657602b8d3c81b8297a793f1e6d76110af0fe60aa44272124523",
+    "task_selection_sha256": "071671c5d6a0bf073fb46e277c71fcea46259d0e48ee49943c4c57a26adf0316"
+  }
+}
