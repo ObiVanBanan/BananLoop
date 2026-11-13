@@ -1033,6 +1033,50 @@ class TrustedEvaluatorAdapter:
             "n": metric.n,
         }
 
+    def public_dev_metric_summary(self, receipt: EvaluatorRunReceiptV1) -> dict[str, Any]:
+        """Return only the aggregate from a durable public DEV receipt.
+
+        This is suitable for a later Optimizer context. Case values, diagnostics,
+        and evaluator artifacts stay in Core and are never projected here.
+        """
+        from .contracts import OptimizationCampaignSpecV2
+        from .evaluator_verification import EvaluatorProtocolAuthority
+
+        if not isinstance(receipt, EvaluatorRunReceiptV1) or receipt.tier != "dev":
+            raise TrustedEvaluatorError("public DEV summary requires a DEV receipt")
+        spec = self.graph.campaign_spec()
+        if not isinstance(spec, OptimizationCampaignSpecV2):
+            raise TrustedEvaluatorError("public DEV summary requires an Optimization campaign")
+        reference = spec.evaluation
+        authority = EvaluatorProtocolAuthority(self.graph.conn)
+        authority.require_frozen_reference(
+            reference.protocol_id, reference.version, reference.content_sha256,
+            reference.approval_digest, campaign_id=self.campaign_id,
+        )
+        proposal, _ = authority.approved_protocol(reference.approval_digest)
+        protocol = proposal.protocol
+        durable_receipt = authority.require_run_receipt(
+            receipt.receipt_digest, campaign_id=self.campaign_id,
+            spec_hash=spec.approved_hash(), approval_digest=reference.approval_digest,
+            protocol_digest=protocol.content_digest(),
+            candidate_snapshot_id=receipt.candidate_snapshot_id,
+        )
+        if (durable_receipt != receipt or durable_receipt.tier != "dev"
+                or durable_receipt.result_digest != receipt.result_digest):
+            raise TrustedEvaluatorError("public DEV summary receipt is stale or untrusted")
+        result = self._load_evaluation_result(receipt.result_digest)
+        metric = result.metrics.get(protocol.metric_field)
+        if result.status != "ok" or metric is None or not math.isfinite(metric.value):
+            raise TrustedEvaluatorError("trusted public DEV aggregate metric is invalid")
+        return {
+            "metric_id": protocol.metric_id,
+            "metric_field": protocol.metric_field,
+            "direction": protocol.direction,
+            "value": metric.value,
+            "unit": metric.unit,
+            "n": metric.n,
+        }
+
     def owner_validation_metric_summary(self, receipt: EvaluatorRunReceiptV1) -> dict[str, Any]:
         """Return a protected VALIDATION aggregate for the final owner report.
 

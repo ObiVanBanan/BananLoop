@@ -1153,6 +1153,8 @@ def parser() -> argparse.ArgumentParser:
     v2_explore.add_argument("--max-model-tokens", type=int, default=2048,
                             help="per-call ledger ceiling; SIWC may not enforce this provider-side")
     v2_explore.add_argument("--max-iterations", type=int, default=2)
+    v2_explore.add_argument("--max-candidate-iterations", type=int,
+                            help="maximum candidate Optimization iterations (1-5); omitted uses the legacy budget-limited behavior")
     v2_explore.add_argument("--deadline-seconds", type=int, default=3600,
                             help="absolute campaign time limit; defaults to one hour")
     v2_explore.add_argument("--approve-up-to-calls", type=int, default=0,

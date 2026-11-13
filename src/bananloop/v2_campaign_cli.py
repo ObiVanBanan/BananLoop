@@ -41,6 +41,7 @@ class V2CampaignCLIError(ValueError):
 
 def _required_optimization_evaluator_calls(
     repeatability_runs: int, *, has_holdout: bool = True,
+    candidate_iterations: int | None = 1,
 ) -> int:
     """Minimum evaluator jobs for one candidate lifecycle.
 
@@ -53,8 +54,13 @@ def _required_optimization_evaluator_calls(
         raise V2CampaignCLIError("approved protocol repeatability count is invalid")
     if not isinstance(has_holdout, bool):
         raise V2CampaignCLIError("approved protocol HOLDOUT declaration is invalid")
+    if candidate_iterations is None:
+        candidate_iterations = 1
+    if (isinstance(candidate_iterations, bool) or not isinstance(candidate_iterations, int)
+            or not 1 <= candidate_iterations <= 5):
+        raise V2CampaignCLIError("candidate iteration cap must be from 1 to 5")
     # Candidate DEV, baseline/candidate VALIDATION, optional final HOLDOUT.
-    return (3 + int(has_holdout)) * repeatability_runs
+    return (3 + int(has_holdout)) * repeatability_runs * candidate_iterations
 
 
 def _optimization_hypothesis_is_executable(selected: dict[str, Any]) -> bool:
@@ -65,10 +71,14 @@ def _optimization_hypothesis_is_executable(selected: dict[str, Any]) -> bool:
     return isinstance(experiment_id, str) and bool(experiment_id.strip())
 
 
-def _minimum_fixture_optimization_evaluator_calls(fixture: EvaluatorFixtureV1) -> int:
+def _minimum_fixture_optimization_evaluator_calls(
+    fixture: EvaluatorFixtureV1, *, candidate_iterations: int | None = 1,
+) -> int:
     """Return the cheapest complete one-candidate lifecycle allowed by a fixture."""
     has_holdout = any(tier.tier == "holdout" for tier in fixture.tiers)
-    return _required_optimization_evaluator_calls(1, has_holdout=has_holdout)
+    return _required_optimization_evaluator_calls(
+        1, has_holdout=has_holdout, candidate_iterations=candidate_iterations,
+    )
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -198,11 +208,17 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
                 max_agent_calls: int, max_model_tokens: int, model: str,
                 max_evaluator_calls: int = 16,
                 max_iterations: int = 2,
+                max_candidate_iterations: int | None = None,
                 deadline_seconds: int = 3600,
                 optimization_write_paths: tuple[str, ...] = (),
                 evaluator_fixture_digest: str | None = None):
+    if (max_candidate_iterations is not None and (isinstance(max_candidate_iterations, bool)
+            or not isinstance(max_candidate_iterations, int)
+            or not 1 <= max_candidate_iterations <= 5)):
+        raise V2CampaignCLIError("candidate iteration cap must be from 1 to 5")
     optimization_enabled = bool(optimization_write_paths)
-    minimum_calls = 4 if optimization_enabled else 2
+    effective_candidate_iterations = max_candidate_iterations or 1
+    minimum_calls = (2 + 2 * effective_candidate_iterations) if optimization_enabled else 2
     if max_agent_calls < minimum_calls:
         raise V2CampaignCLIError(
             "--max-agent-calls must fund Researcher and protocol review, plus the "
@@ -222,13 +238,21 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
     # protocol needs one independent review call. Reserve the Optimization
     # pair only when the campaign has an explicitly approved write scope;
     # otherwise unused Optimizer slots must not starve Researcher iterations.
-    reserved_calls = 1 + (2 if optimization_enabled else 0)
+    reserved_calls = 1 + (2 * effective_candidate_iterations if optimization_enabled else 0)
     researcher_calls = min(max_iterations, max_agent_calls - reserved_calls)
     optimization_pair_budget = (
         max_agent_calls - researcher_calls - 1 if optimization_enabled else 0
     )
-    optimizer_calls = max(1, optimization_pair_budget // 2) if optimization_enabled else 0
+    # Extra paired calls remain available for the existing bounded retry path;
+    # max_candidate_iterations separately caps how many candidate snapshots
+    # can enter the evaluator lifecycle.
+    optimizer_calls = optimization_pair_budget // 2 if optimization_enabled else 0
     integration_calls = optimizer_calls
+    if (optimization_enabled and max_candidate_iterations is not None
+            and optimizer_calls < max_candidate_iterations):
+        raise V2CampaignCLIError(
+            "--max-agent-calls does not fund the requested candidate iteration cap"
+        )
     verifier_policy = CapabilityPolicyV2(
         tools=(), read_paths=(), write_paths=(), backend="ISOLATED", network_access=False,
     )
@@ -296,6 +320,9 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
             "capability_policy": policy,
         },
         "budget": {
+            "max_experiments": (2 * effective_candidate_iterations
+                                if optimization_enabled and max_candidate_iterations is not None
+                                else 5),
             "max_agent_calls": max_agent_calls,
             "max_evaluator_calls": max_evaluator_calls,
             "deadline_seconds": deadline_seconds,
@@ -303,6 +330,7 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
         },
         "role_registry_digest": roles.digest(), "evaluation": None,
         "evaluator_fixture_digest": evaluator_fixture_digest,
+        "max_candidate_iterations": max_candidate_iterations,
     })
     return spec, roles, policy
 
@@ -652,10 +680,16 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
     # Each receipt requires the protocol's fixed repeatability count.
     # The scheduler records the Optimization task itself and the single
     # candidate as separate experiment work, so reserve two slots here.
-    payload["budget"]["max_experiments"] = 2
+    candidate_iterations = parent_spec.max_candidate_iterations
+    if candidate_iterations is not None:
+        payload["max_candidate_iterations"] = candidate_iterations
+        payload["budget"]["max_experiments"] = 2 * candidate_iterations
+    else:
+        payload.pop("max_candidate_iterations", None)
     has_holdout = any(item.tier == "holdout" for item in proposal.protocol.tiers)
     required_evaluator_calls = _required_optimization_evaluator_calls(
         proposal.protocol.repeatability_runs, has_holdout=has_holdout,
+        candidate_iterations=candidate_iterations or 1,
     )
     if parent_spec.budget.max_evaluator_calls < required_evaluator_calls:
         raise V2CampaignCLIError(
@@ -1008,19 +1042,23 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
         except ValueError as exc:
             raise V2CampaignCLIError(f"--evaluator-fixture is invalid: {exc}") from exc
     if fixture is not None and write_paths:
-        minimum_evaluator_calls = _minimum_fixture_optimization_evaluator_calls(fixture)
+        candidate_iterations = getattr(args, "max_candidate_iterations", 1)
+        minimum_evaluator_calls = _minimum_fixture_optimization_evaluator_calls(
+            fixture, candidate_iterations=candidate_iterations,
+        )
         configured_evaluator_calls = getattr(args, "max_evaluator_calls", 16)
         if configured_evaluator_calls < minimum_evaluator_calls:
             raise V2CampaignCLIError(
                 "--max-evaluator-calls is too low for a complete one-candidate lifecycle "
                 f"with the selected evaluator fixture; minimum is {minimum_evaluator_calls} "
-                "at repeatability=1"
+                f"at repeatability=1 and candidate_iterations={candidate_iterations}"
             )
     spec, roles, _policy = _build_spec(
         repo, goal, paths, max_agent_calls=args.max_agent_calls,
         max_model_tokens=args.max_model_tokens, model=args.model,
         max_evaluator_calls=getattr(args, "max_evaluator_calls", 16),
         max_iterations=args.max_iterations,
+        max_candidate_iterations=getattr(args, "max_candidate_iterations", 1),
         deadline_seconds=getattr(args, "deadline_seconds", 3600),
         optimization_write_paths=write_paths,
         evaluator_fixture_digest=fixture.content_digest() if fixture else None,

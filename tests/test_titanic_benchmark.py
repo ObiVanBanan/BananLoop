@@ -528,6 +528,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                 "max_evaluator_calls": 30, "deadline_seconds": 3600,
                 "plateau_experiments": 3,
             },
+            "max_candidate_iterations": live_epochs if live_mode else 3,
             "role_registry_digest": roles.digest(),
             "evaluation": {
                 "protocol_id": protocol.protocol_id, "version": protocol.version,
@@ -602,14 +603,13 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
             offline_dispatch_count += 1
             assert_optimizer_input_is_candidate_only(public_input)
             assert public_input["visible_documents"]["data/train.csv"]
-            if offline_dispatch_count <= 2:
-                intercept = 100.0 if offline_dispatch_count == 1 else -100.0
+            if offline_dispatch_count == 1:
                 return {
                     "hypothesis_id": "titanic-child-interaction",
                     "rationale": "Deliberately poor candidate to verify rejection and research-memory handoff.",
                     "changes": {
                         "src/model.json": json.dumps({
-                            "schema": "titanic-linear-v1", "intercept": intercept,
+                            "schema": "titanic-linear-v1", "intercept": 100.0,
                             "coefficients": {"sex_female": 0.0},
                         }, sort_keys=True, separators=(",", ":")),
                     },
@@ -617,17 +617,24 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                         "This candidate intentionally predicts one class for every passenger."
                     ],
                 }
-            assert "previous candidate did not pass independent verification" in json.dumps(
-                public_input["role_context"], ensure_ascii=False,
-            ).lower()
+            if offline_dispatch_count == 2:
+                assert "previous candidate did not pass independent verification" in json.dumps(
+                    public_input["role_context"], ensure_ascii=False,
+                ).lower()
+            else:
+                dev_summary = public_input["role_context"].get("dev_summary", "")
+                assert "public_dev_metric" in str(dev_summary)
+                assert '"only_public_dev_evidence":true' in str(dev_summary)
             return {
                 "hypothesis_id": "titanic-child-interaction",
                 "rationale": "The DEV diagnostic supports a bounded male first-class child interaction; the independent verifier will decide whether it generalizes.",
                 "changes": {
                     "src/model.json": json.dumps({
-                        "schema": "titanic-linear-v1", "intercept": -0.5,
+                        "schema": "titanic-linear-v1",
+                        "intercept": -0.5 if offline_dispatch_count == 2 else -0.4,
                         "coefficients": {
-                            "sex_female": 1.0, "male_pclass1_child": 1.5,
+                            "sex_female": 1.0,
+                            "male_pclass1_child": 1.5 if offline_dispatch_count == 2 else 1.6,
                         },
                     }, sort_keys=True, separators=(",", ":")),
                 },
@@ -738,6 +745,8 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
             assert offline_dispatch_count == 3
             assert sum(item.get("status") == "CANDIDATE_CREATED"
                        for item in result["steps"]) == 3
+            assert sum(item.get("status") == "INDEPENDENT_VERIFICATION_PASS"
+                       for item in result["steps"]) == 2
         assert result["holdout"]["status"] == "VERIFIED"
         assert result["holdout"]["tier"] == "holdout"
         assert 0.0 <= result["holdout"]["metric"]["value"] <= 1.0

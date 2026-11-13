@@ -378,6 +378,7 @@ def _initial_optimization_task_nodes(nodes: list[dict[str, Any]]) -> list[dict[s
         if node.get("phase") == "OPTIMIZATION"
         and isinstance(node.get("payload"), dict)
         and isinstance(node["payload"].get("hypothesis"), str)
+        and node["payload"].get("owner_approved_task") is not False
     ]
 
 
@@ -423,6 +424,8 @@ def _ensure_researcher_selected_task(graph: GraphRepository,
                 "hypothesis_id": task.hypothesis_id,
                 "hypothesis": task.hypothesis,
                 "evidence_refs": list(task.evidence_refs),
+                "owner_approved_task": True,
+                "candidate_iteration": 1,
                 "research_source": {
                     "campaign_id": task.source_campaign_id,
                     "node_id": task.source_node_id,

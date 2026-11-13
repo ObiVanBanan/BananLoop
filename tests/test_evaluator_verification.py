@@ -53,6 +53,7 @@ from bananloop.trusted_evaluator import (
     EvaluatorExecutionV1,
     EvaluatorRunReceiptV1,
     TrustedEvaluatorRunner,
+    TrustedEvaluatorError,
     _case_protocol_digest,
     TrustedEvaluatorAdapter,
 )
@@ -1050,6 +1051,11 @@ print(json.dumps({
         )
         assert dev_receipt.tier == "dev"
         assert dev_receipt.candidate_snapshot_id == candidate_snapshot_id
+        public_dev_summary = trusted.public_dev_metric_summary(dev_receipt)
+        assert public_dev_summary == {
+            "metric_id": "quality", "metric_field": "quality",
+            "direction": "MAXIMIZE", "value": 0.8, "unit": None, "n": None,
+        }
 
         baseline_jobs = trusted.enqueue_repeatability(
             candidate_snapshot_id=source_snapshot_id, tier="validation",
@@ -1059,6 +1065,8 @@ print(json.dumps({
         baseline = trusted.finalize_repeatability(baseline_jobs)
         assert baseline.tier == "validation"
         assert baseline.candidate_snapshot_id == source_snapshot_id
+        with pytest.raises(TrustedEvaluatorError, match="requires a DEV receipt"):
+            trusted.public_dev_metric_summary(baseline)
 
         node = next(
             node for node in graph.scheduling_snapshot()["nodes"]

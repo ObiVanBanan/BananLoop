@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from bananloop.v2_optimization_runtime import (
     OptimizationCandidateProposalV1,
+    V2OptimizationCandidateAdapter,
     V2OptimizationError,
     _safe_path,
     make_optimizer_invoke,
@@ -43,6 +45,34 @@ def test_optimizer_proposal_normalizes_one_string_limitation_losslessly():
         "limitations": "Needs follow-up testing.",
     })
     assert proposal.limitations == ("Needs follow-up testing.",)
+
+
+def test_candidate_commit_reports_noop_output_clearly(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    subprocess.run(["git", "-C", str(source), "config", "user.name", "test"], check=True)
+    subprocess.run(["git", "-C", str(source), "config", "user.email", "test@example.invalid"], check=True)
+    source_file = source / "model.py"
+    source_file.write_text("baseline\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "add", "model.py"], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-qm", "source"], check=True)
+    source_sha = subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "model.py").write_text("baseline\n", encoding="utf-8")
+    adapter = object.__new__(V2OptimizationCandidateAdapter)
+    adapter.state_root = tmp_path / "state"
+    adapter.campaign_id = "campaign-noop"
+
+    with pytest.raises(V2OptimizationError, match="no effective file changes"):
+        adapter._commit_candidate(
+            {"source_repo": str(source), "source_snapshot_id": source_sha,
+             "hypothesis_id": "noop"},
+            workspace, ("model.py",), build_id="noop-build",
+        )
 
 
 def test_public_only_protocol_reports_no_holdout_without_dispatch(monkeypatch):

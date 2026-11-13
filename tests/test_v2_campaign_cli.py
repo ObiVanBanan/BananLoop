@@ -433,6 +433,24 @@ def test_v2_default_call_budget_preserves_exploration_and_funds_two_paired_epoch
     assert sum(role.calls_per_instance for role in roles.roles) == 7
 
 
+def test_v2_explicit_candidate_iteration_cap_is_frozen_and_funded(tmp_path):
+    from bananloop.v2_campaign_cli import _build_spec
+
+    repo = _repo(tmp_path)
+    spec, roles, _policy = _build_spec(
+        repo, "Explore then optimize for two candidates", ("README.md",),
+        max_agent_calls=7, max_model_tokens=128, model="gpt-6-luna",
+        max_candidate_iterations=2,
+        optimization_write_paths=("README.md",),
+    )
+    assert spec.max_candidate_iterations == 2
+    assert spec.budget.max_experiments == 4
+    assert roles.role("optimizer").calls_per_instance == 2
+    assert roles.role("integration_verifier").calls_per_instance == 2
+    restored = type(spec).model_validate_json(spec.model_dump_json())
+    assert restored.approved_hash() == spec.approved_hash()
+
+
 def test_v2_nine_call_budget_funds_three_paired_optimization_epochs(tmp_path):
     from bananloop.v2_campaign_cli import _build_spec
 
