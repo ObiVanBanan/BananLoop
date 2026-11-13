@@ -15,9 +15,9 @@
       "task_version": "1.1.0"
     },
     {
-      "bytes": 1569,
+      "bytes": 1904,
       "path": "benchmarks/autoresearchexam/public-evaluator-attestations/carps-star-discrepancy-subset-select.json",
-      "sha256": "581e5fc513bb9be46300e5be6845ff74d33fa4a876825ed4377f61f3f63bb204",
+      "sha256": "071b9077a1c7d92b6aead08444807594a98752ab614bb4c8d6e9f18c86c38561",
       "task_id": "carps-star-discrepancy-subset-select",
       "task_version": "1.1.0"
     },
