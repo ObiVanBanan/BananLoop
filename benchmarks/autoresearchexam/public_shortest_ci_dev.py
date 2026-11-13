@@ -45,6 +45,25 @@ class PublicShortestCIError(RuntimeError):
     """The public shortest-CI DEV evaluator could not return a valid score."""
 
 
+def _candidate_interval(result: subprocess.CompletedProcess[bytes], k: int) -> tuple[float, float] | None:
+    """Decode a candidate response; invalid/failed candidate calls are non-covering."""
+    if result.returncode != 0 or len(result.stdout) > 4096:
+        return None
+    try:
+        response = json.loads(result.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(response, dict) or set(response) != {"lo", "hi"}:
+        return None
+    lo, hi = response["lo"], response["hi"]
+    if (isinstance(lo, bool) or isinstance(hi, bool)
+            or not isinstance(lo, (int, float)) or not isinstance(hi, (int, float))
+            or not math.isfinite(lo) or not math.isfinite(hi)
+            or lo < 0.0 or hi < lo or hi > k):
+        return None
+    return float(lo), float(hi)
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -203,22 +222,19 @@ def evaluate_public_panel(
                         stdin=subprocess.DEVNULL, capture_output=True, timeout=PER_CALL_TIMEOUT_SECONDS,
                         check=False,
                     )
-                except (OSError, subprocess.TimeoutExpired):
-                    raise PublicShortestCIError("public shortest-CI candidate call failed or timed out") from None
-                if result.returncode != 0 or len(result.stdout) > 4096:
-                    raise PublicShortestCIError("public shortest-CI candidate returned an invalid interval")
-                try:
-                    response = json.loads(result.stdout.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    raise PublicShortestCIError("public shortest-CI candidate returned malformed output") from None
-                if not isinstance(response, dict) or set(response) != {"lo", "hi"}:
-                    raise PublicShortestCIError("public shortest-CI candidate returned malformed output")
-                lo, hi = response["lo"], response["hi"]
-                if (isinstance(lo, bool) or isinstance(hi, bool)
-                        or not isinstance(lo, (int, float)) or not isinstance(hi, (int, float))
-                        or not math.isfinite(lo) or not math.isfinite(hi)
-                        or lo < 0.0 or hi < lo or hi > k):
-                    raise PublicShortestCIError("public shortest-CI candidate returned an invalid interval")
+                except subprocess.TimeoutExpired:
+                    result = None
+                except OSError:
+                    raise PublicShortestCIError("could not start isolated public shortest-CI candidate worker") from None
+                interval = None if result is None else _candidate_interval(result, k)
+                if interval is None:
+                    # Task contract: a raised, invalid, or timed-out candidate call
+                    # is a non-covering interval of length k. This contributes
+                    # width 1.0 and no coverage, but does not abort the panel.
+                    relative_lengths.append(1.0)
+                    total_replications += 1
+                    continue
+                lo, hi = interval
                 covered += int(lo <= theta <= hi)
                 relative_lengths.append((hi - lo) / k)
                 total_replications += 1

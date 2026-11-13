@@ -8,6 +8,7 @@ from benchmarks.autoresearchexam.public_shortest_ci_dev import (
     EXPECTED_SETTINGS,
     TASK_ID,
     TASK_VERSION,
+    _candidate_interval,
 )
 from benchmarks.autoresearchexam.shortest_ci_runner import (
     AREPublicShortestCIEvaluatorRunner,
@@ -54,3 +55,12 @@ def test_shortest_ci_fixture_pins_task_toml_and_public_docker_inputs():
         {key: value for key, value in values.items() if key != "task.toml"},
     )
     assert actual == {key: hashlib.sha256(value).hexdigest() for key, value in values.items()}
+
+
+def test_shortest_ci_invalid_candidate_response_is_a_noncovering_failure():
+    from subprocess import CompletedProcess
+
+    assert _candidate_interval(CompletedProcess([], 0, b'{"lo":0.1,"hi":0.2}', b""), 1) == (0.1, 0.2)
+    assert _candidate_interval(CompletedProcess([], 2, b"", b"candidate raised"), 1) is None
+    assert _candidate_interval(CompletedProcess([], 0, b'{"lo":0.8,"hi":0.2}', b""), 1) is None
+    assert _candidate_interval(CompletedProcess([], 0, b"not-json", b""), 1) is None
