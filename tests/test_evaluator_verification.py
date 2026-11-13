@@ -80,6 +80,11 @@ def test_researcher_protocol_draft_instructions_preserve_private_tier_boundary()
     assert "omit protocol_draft" in INSTRUCTIONS
 
 
+def test_protocol_supports_single_trial_for_noisy_public_pilots():
+    protocol = _protocol().model_copy(update={"repeatability_runs": 1})
+    assert protocol.repeatability_runs == 1
+
+
 def _proposal() -> MetricDiscoveryProposalV1:
     protocol = _protocol()
     payload = {

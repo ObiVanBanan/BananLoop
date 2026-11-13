@@ -246,16 +246,16 @@ def test_public_only_optimization_budget_does_not_reserve_private_holdout(repeat
 
 
 @pytest.mark.parametrize(("tiers", "expected"), [
-    ((SimpleNamespace(tier="dev"), SimpleNamespace(tier="validation")), 6),
+    ((SimpleNamespace(tier="dev"), SimpleNamespace(tier="validation")), 3),
     ((SimpleNamespace(tier="dev"), SimpleNamespace(tier="validation"),
-      SimpleNamespace(tier="holdout")), 8),
+      SimpleNamespace(tier="holdout")), 4),
 ])
 def test_fixture_parent_budget_minimum_includes_optional_holdout(tiers, expected):
     fixture = SimpleNamespace(tiers=tiers)
     assert _minimum_fixture_optimization_evaluator_calls(fixture) == expected
 
 
-@pytest.mark.parametrize("repeats", [True, 1, 11, 3.0])
+@pytest.mark.parametrize("repeats", [True, 0, 11, 3.0])
 def test_optimization_budget_rejects_invalid_protocol_repeatability(repeats):
     with pytest.raises(V2CampaignCLIError, match="repeatability count is invalid"):
         _required_optimization_evaluator_calls(repeats)

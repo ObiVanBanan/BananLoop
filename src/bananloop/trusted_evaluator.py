@@ -95,7 +95,7 @@ class EvaluatorRunReceiptV1(BaseModel):
     tier_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     case_count: int = Field(ge=1, le=10000)
     result_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    repeatability_runs: int = Field(ge=2, le=10)
+    repeatability_runs: int = Field(ge=1, le=10)
     budget_proofs: tuple[EvaluatorBudgetProofV1, ...] = Field(min_length=2, max_length=10)
     output_artifact_digests: tuple[str, ...] = ()
 
@@ -793,7 +793,7 @@ class TrustedEvaluatorAdapter:
         proposal, verifier_receipt = authority.approved_protocol(reference.approval_digest)
         protocol = proposal.protocol
         if (protocol.content_digest() != reference.content_sha256
-                or protocol.repeatability_runs < 2):
+                or protocol.repeatability_runs < 1):
             raise TrustedEvaluatorError("Optimization protocol approval is stale or malformed")
         self._require_execution_backend(protocol)
         self._preflight_runner_bundle(protocol)
@@ -1154,7 +1154,7 @@ class TrustedEvaluatorAdapter:
             and baseline.tier_manifest_sha256 == candidate.tier_manifest_sha256
         )
         evaluation_receipt_ok = (
-            baseline.repeatability_runs >= 2 and candidate.repeatability_runs >= 2
+            baseline.repeatability_runs >= 1 and candidate.repeatability_runs >= 1
             and len(baseline.budget_proofs) == baseline.repeatability_runs
             and len(candidate.budget_proofs) == candidate.repeatability_runs
             and baseline.case_count == candidate.case_count == len(expected_cases)

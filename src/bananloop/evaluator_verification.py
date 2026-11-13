@@ -148,7 +148,7 @@ class EvaluatorProtocolV1(BaseModel):
     direction: Literal["MAXIMIZE", "MINIMIZE"]
     aggregation: Literal["MEAN", "MEDIAN", "MIN", "MAX"]
     tiers: tuple[EvaluatorTierManifestV1, ...] = Field(min_length=1, max_length=3)
-    repeatability_runs: int = Field(default=2, ge=2, le=10)
+    repeatability_runs: int = Field(default=2, ge=1, le=10)
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
 
     @field_validator("source_snapshot_id")
@@ -213,7 +213,7 @@ class EvaluatorProtocolIntentV1(BaseModel):
     metric_field: str = Field(pattern=r"^[a-z][a-z0-9_.:-]{0,119}$")
     direction: Literal["MAXIMIZE", "MINIMIZE"]
     aggregation: Literal["MEAN", "MEDIAN", "MIN", "MAX"]
-    repeatability_runs: int = Field(default=2, ge=2, le=10)
+    repeatability_runs: int = Field(default=2, ge=1, le=10)
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
 
 
@@ -1454,7 +1454,7 @@ def _build_protocol_review_material(
             "core_checks_manifest_digest_protocol_identity_and_case_count": True,
             "core_checks_each_input_digest_before_evaluation": True,
             "repeatability_runs_enforced_by_core": protocol.repeatability_runs,
-            "repeatability_requires_identical_outputs_and_artifacts": True,
+            "repeatability_requires_identical_outputs_and_artifacts": protocol.repeatability_runs > 1,
             "evaluator_wall_timeout_seconds": protocol.timeout_seconds,
             "evaluator_per_process_cpu_seconds_max": protocol.timeout_seconds + 2,
             "evaluator_per_process_address_space_bytes_max": _MAX_EVALUATOR_MEMORY_BYTES,

@@ -235,7 +235,7 @@ def _fixture_research_response_format() -> dict[str, Any]:
             "metric_field": {"type": "string", "pattern": r"^[a-z][a-z0-9_.:-]{0,119}$"},
             "direction": {"type": "string", "enum": ["MAXIMIZE", "MINIMIZE"]},
             "aggregation": {"type": "string", "enum": ["MEAN", "MEDIAN", "MIN", "MAX"]},
-            "repeatability_runs": {"type": "integer", "minimum": 2, "maximum": 10},
+            "repeatability_runs": {"type": "integer", "minimum": 1, "maximum": 10},
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
         },
     }

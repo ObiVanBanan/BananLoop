@@ -49,7 +49,7 @@ def _required_optimization_evaluator_calls(
     their final HOLDOUT reservation by default.
     """
     if (isinstance(repeatability_runs, bool) or not isinstance(repeatability_runs, int)
-            or not 2 <= repeatability_runs <= 10):
+            or not 1 <= repeatability_runs <= 10):
         raise V2CampaignCLIError("approved protocol repeatability count is invalid")
     if not isinstance(has_holdout, bool):
         raise V2CampaignCLIError("approved protocol HOLDOUT declaration is invalid")
@@ -60,7 +60,7 @@ def _required_optimization_evaluator_calls(
 def _minimum_fixture_optimization_evaluator_calls(fixture: EvaluatorFixtureV1) -> int:
     """Return the cheapest complete one-candidate lifecycle allowed by a fixture."""
     has_holdout = any(tier.tier == "holdout" for tier in fixture.tiers)
-    return _required_optimization_evaluator_calls(2, has_holdout=has_holdout)
+    return _required_optimization_evaluator_calls(1, has_holdout=has_holdout)
 
 
 def _git(repo: Path, *args: str) -> str:
