@@ -187,8 +187,13 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
                 deadline_seconds: int = 3600,
                 optimization_write_paths: tuple[str, ...] = (),
                 evaluator_fixture_digest: str | None = None):
-    if max_agent_calls < 4:
-        raise V2CampaignCLIError("--max-agent-calls must be at least 4 to fund the four pinned v2 roles")
+    optimization_enabled = bool(optimization_write_paths)
+    minimum_calls = 4 if optimization_enabled else 2
+    if max_agent_calls < minimum_calls:
+        raise V2CampaignCLIError(
+            "--max-agent-calls must fund Researcher and protocol review, plus the "
+            "Optimizer/Integration Verifier pair when Optimization is enabled"
+        )
     if not set(optimization_write_paths) <= set(paths):
         raise V2CampaignCLIError("optimization write paths must be included in the read-path allowlist")
     policy = {
@@ -199,43 +204,48 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
         "backend": "LOCAL",
         "network_access": False,
     }
-    # A bounded Optimization epoch needs one optimizer call and one independent
-    # integration-verifier call. Allocate these as matched pairs, while keeping
-    # room for the requested Exploration iterations and one protocol verifier.
-    researcher_calls = min(max_iterations, max_agent_calls - 3)
-    optimization_pair_budget = max_agent_calls - researcher_calls - 1
-    optimizer_calls = max(1, optimization_pair_budget // 2)
-    integration_calls = optimizer_calls
-    optimizer_policy = CapabilityPolicyV2(
-        tools=("read_file", "write_file", "commit_candidate"),
-        read_paths=paths, write_paths=optimization_write_paths,
-        backend="LOCAL", network_access=False,
+    # Every Exploration iteration needs one Researcher call and the frozen
+    # protocol needs one independent review call. Reserve the Optimization
+    # pair only when the campaign has an explicitly approved write scope;
+    # otherwise unused Optimizer slots must not starve Researcher iterations.
+    reserved_calls = 1 + (2 if optimization_enabled else 0)
+    researcher_calls = min(max_iterations, max_agent_calls - reserved_calls)
+    optimization_pair_budget = (
+        max_agent_calls - researcher_calls - 1 if optimization_enabled else 0
     )
+    optimizer_calls = max(1, optimization_pair_budget // 2) if optimization_enabled else 0
+    integration_calls = optimizer_calls
     verifier_policy = CapabilityPolicyV2(
         tools=(), read_paths=(), write_paths=(), backend="ISOLATED", network_access=False,
     )
-    roles = RoleRegistryV1(
-        registry_id="bananloop-v2-owner-researcher", version=1,
-        roles=(
-            RoleDefinitionV1(
-                role_id="researcher", adapter="codex", provider="openai", model=model,
-                model_version="siwc-responses-v1",
-                prompt_digest=hashlib.sha256(INSTRUCTIONS.encode("utf-8")).hexdigest(),
-                capability_policy=policy,
-                context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
-                                "evidence_refs", "dev_summary", "budget_remaining"),
-                min_instances=0, max_instances=1, calls_per_instance=researcher_calls,
-                tokens_per_instance=researcher_calls * max_model_tokens,
-            ),
-            RoleDefinitionV1(
-                role_id="independent_verifier", adapter="codex", provider="openai", model=model,
-                model_version="siwc-responses-v1",
-                prompt_digest=hashlib.sha256(PROTOCOL_VERIFIER_INSTRUCTIONS.encode("utf-8")).hexdigest(),
-                capability_policy=verifier_policy,
-                context_fields=("campaign_goal", "public_task"),
-                min_instances=0, max_instances=1, calls_per_instance=1,
-                tokens_per_instance=max_model_tokens,
-            ),
+    role_definitions = [
+        RoleDefinitionV1(
+            role_id="researcher", adapter="codex", provider="openai", model=model,
+            model_version="siwc-responses-v1",
+            prompt_digest=hashlib.sha256(INSTRUCTIONS.encode("utf-8")).hexdigest(),
+            capability_policy=policy,
+            context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
+                            "evidence_refs", "dev_summary", "budget_remaining"),
+            min_instances=0, max_instances=1, calls_per_instance=researcher_calls,
+            tokens_per_instance=researcher_calls * max_model_tokens,
+        ),
+        RoleDefinitionV1(
+            role_id="independent_verifier", adapter="codex", provider="openai", model=model,
+            model_version="siwc-responses-v1",
+            prompt_digest=hashlib.sha256(PROTOCOL_VERIFIER_INSTRUCTIONS.encode("utf-8")).hexdigest(),
+            capability_policy=verifier_policy,
+            context_fields=("campaign_goal", "public_task"),
+            min_instances=0, max_instances=1, calls_per_instance=1,
+            tokens_per_instance=max_model_tokens,
+        ),
+    ]
+    if optimization_enabled:
+        optimizer_policy = CapabilityPolicyV2(
+            tools=("read_file", "write_file", "commit_candidate"),
+            read_paths=paths, write_paths=optimization_write_paths,
+            backend="LOCAL", network_access=False,
+        )
+        role_definitions.extend((
             RoleDefinitionV1(
                 role_id="optimizer", adapter="codex", provider="openai", model=model,
                 model_version="siwc-responses-v1",
@@ -255,7 +265,10 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
                 min_instances=0, max_instances=1, calls_per_instance=integration_calls,
                 tokens_per_instance=integration_calls * max_model_tokens,
             ),
-        ),
+        ))
+    roles = RoleRegistryV1(
+        registry_id="bananloop-v2-owner-researcher", version=1,
+        roles=tuple(role_definitions),
     )
     scope_digest = hashlib.sha256(json.dumps({
         "repo": str(repo), "goal": goal, "read_paths": paths,

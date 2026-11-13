@@ -373,6 +373,7 @@ def test_v2_exploration_budget_reserves_one_tool_free_protocol_review_call(tmp_p
     spec, roles, _policy = _build_spec(
         repo, "Inspect a controlled task", ("README.md",),
         max_agent_calls=6, max_model_tokens=128, model="gpt-6-luna",
+        optimization_write_paths=("README.md",),
     )
     researcher = roles.role("researcher")
     verifier = roles.role("independent_verifier")
@@ -399,6 +400,7 @@ def test_v2_default_call_budget_preserves_exploration_and_funds_two_paired_epoch
     spec, roles, _policy = _build_spec(
         repo, "Explore then optimize", ("README.md",),
         max_agent_calls=8, max_model_tokens=128, model="gpt-6-luna",
+        optimization_write_paths=("README.md",),
     )
     assert spec.budget.max_agent_calls == 8
     assert spec.budget.max_evaluator_calls == 16
@@ -416,6 +418,7 @@ def test_v2_nine_call_budget_funds_three_paired_optimization_epochs(tmp_path):
     spec, roles, _policy = _build_spec(
         repo, "Explore then optimize", ("README.md",),
         max_agent_calls=9, max_model_tokens=128, model="gpt-6-luna",
+        optimization_write_paths=("README.md",),
     )
     assert spec.budget.max_agent_calls == 9
     assert roles.role("researcher").calls_per_instance == 2
@@ -423,6 +426,25 @@ def test_v2_nine_call_budget_funds_three_paired_optimization_epochs(tmp_path):
     assert roles.role("optimizer").calls_per_instance == 3
     assert roles.role("integration_verifier").calls_per_instance == 3
     assert sum(role.calls_per_instance for role in roles.roles) == 9
+
+
+def test_v2_exploration_only_budget_funds_requested_five_iterations(tmp_path):
+    from bananloop.v2_campaign_cli import _build_spec
+
+    repo = _repo(tmp_path)
+    spec, roles, _policy = _build_spec(
+        repo, "Run five registered analyses", ("README.md",),
+        max_agent_calls=6, max_model_tokens=60_000, model="gpt-6-luna",
+        max_iterations=5,
+    )
+
+    assert {role.role_id for role in roles.roles} == {
+        "researcher", "independent_verifier",
+    }
+    assert roles.role("researcher").calls_per_instance == 5
+    assert roles.role("independent_verifier").calls_per_instance == 1
+    assert sum(role.calls_per_instance for role in roles.roles) == spec.budget.max_agent_calls
+    assert sum(role.tokens_per_instance for role in roles.roles) == spec.budget.max_model_tokens
 
 
 def test_cli_optimize_is_a_separate_owner_approved_v2_route():
