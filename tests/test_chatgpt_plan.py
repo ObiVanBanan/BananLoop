@@ -377,7 +377,7 @@ def test_fixture_protocol_intent_is_required_and_strictly_bounded(tmp_path):
         "aggregation", "repeatability_runs", "timeout_seconds",
     ]
     assert intent["properties"]["repeatability_runs"] == {
-        "type": "integer", "minimum": 2, "maximum": 10,
+        "type": "integer", "minimum": 1, "maximum": 10,
     }
 
 
