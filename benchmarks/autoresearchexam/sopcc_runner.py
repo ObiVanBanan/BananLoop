@@ -102,6 +102,11 @@ class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
     def _verify_backend_bundle(self, protocol: EvaluatorProtocolV1, bundle: bytes) -> None:
         if hashlib.sha256(bundle).hexdigest() != protocol.evaluator_bundle_sha256:
             raise TrustedEvaluatorError("SOPCC evaluator bundle digest differs from approved protocol")
+        if (protocol.metric_id != "sopcc_score"
+                or protocol.metric_field != "sopcc_score"
+                or protocol.direction != "MAXIMIZE"
+                or protocol.aggregation != "MEAN"):
+            raise TrustedEvaluatorError("SOPCC protocol metric does not match the pinned public reward contract")
         expected_names = {
             "are-public-sopcc-backend.json", "public_sopcc_dev.py",
             "optimization_runner.py", "public_grader.py", "are_public_mcp_client.py",
@@ -164,6 +169,10 @@ class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
                         "draws": list(self.dev_draws),
                         "instances_per_draw": self.dev_instances_per_draw,
                         "episodes_per_instance": self.dev_episodes_per_instance,
+                    },
+                    "metric_contract": {
+                        "metric_id": "sopcc_score", "metric_field": "sopcc_score",
+                        "unit": "reward", "direction": "MAXIMIZE", "aggregation": "MEAN",
                     },
                     "dev_execution": {
                         "container_network": "none", "root_filesystem_read_only": True,

@@ -1316,9 +1316,21 @@ def _build_protocol_review_material(
                 break
         if not valid_sources:
             continue
+        raw_scope = attestation.get("scope")
+        public_scope: dict[str, str] = {}
+        if isinstance(raw_scope, dict):
+            for key in (
+                "task_source_revision", "task_id", "task_version",
+                "validation_endpoint", "private_test_access", "trust_boundary",
+                "not_claimed",
+            ):
+                value = raw_scope.get(key)
+                if isinstance(value, str) and value and len(value) <= 300:
+                    public_scope[key] = value
         public_attestations.append({
             "artifact_sha256": digest,
             "content": summary,
+            "scope": public_scope,
             "sources": [
                 {key: source[key] for key in ("url", "commit", "sha256")}
                 for source in sources[:8]

@@ -124,6 +124,10 @@ def build_fixture(*, repo: Path, source_task: Path, mcp_contract: Path,
             "instances_per_draw": cls.dev_instances_per_draw,
             "episodes_per_instance": cls.dev_episodes_per_instance,
         },
+        "metric_contract": {
+            "metric_id": "sopcc_score", "metric_field": "sopcc_score",
+            "unit": "reward", "direction": "MAXIMIZE", "aggregation": "MEAN",
+        },
         "dev_execution": {
             "container_network": "none", "root_filesystem_read_only": True,
             "mounted_candidate_path": "/app/solution/policy.py",

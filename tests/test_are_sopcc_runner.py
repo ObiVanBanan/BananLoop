@@ -78,6 +78,10 @@ def _bundle():
             "instances_per_draw": cls.dev_instances_per_draw,
             "episodes_per_instance": cls.dev_episodes_per_instance,
         },
+        "metric_contract": {
+            "metric_id": "sopcc_score", "metric_field": "sopcc_score",
+            "unit": "reward", "direction": "MAXIMIZE", "aggregation": "MEAN",
+        },
         "dev_execution": {
             "container_network": "none", "root_filesystem_read_only": True,
             "mounted_candidate_path": "/app/solution/policy.py",
@@ -130,8 +134,18 @@ def _runner():
 def test_sopcc_backend_bundle_is_bound_to_public_sources_and_image():
     runner = _runner()
     bundle = _bundle()
-    protocol = SimpleNamespace(evaluator_bundle_sha256=hashlib.sha256(bundle).hexdigest())
+    protocol = SimpleNamespace(
+        evaluator_bundle_sha256=hashlib.sha256(bundle).hexdigest(),
+        metric_id="sopcc_score", metric_field="sopcc_score",
+        direction="MAXIMIZE", aggregation="MEAN",
+    )
     runner._verify_backend_bundle(protocol, bundle)
+
+    mismatched_protocol = SimpleNamespace(**{
+        **vars(protocol), "metric_field": "score",
+    })
+    with pytest.raises(TrustedEvaluatorError, match="metric"):
+        runner._verify_backend_bundle(mismatched_protocol, bundle)
 
 
 def test_sopcc_backend_refuses_mutated_bundle():
@@ -145,7 +159,11 @@ def test_sopcc_backend_refuses_mutated_bundle():
         for name, raw in files.items():
             archive.writestr(name, raw)
     bundle = stream.getvalue()
-    protocol = SimpleNamespace(evaluator_bundle_sha256=hashlib.sha256(bundle).hexdigest())
+    protocol = SimpleNamespace(
+        evaluator_bundle_sha256=hashlib.sha256(bundle).hexdigest(),
+        metric_id="sopcc_score", metric_field="sopcc_score",
+        direction="MAXIMIZE", aggregation="MEAN",
+    )
     with pytest.raises(TrustedEvaluatorError, match="bundle"):
         runner._verify_backend_bundle(protocol, bundle)
 

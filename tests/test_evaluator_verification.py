@@ -1377,6 +1377,12 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
     attestation_bytes = json.dumps({
         "schema": "public-evaluator-attestation-v1",
         "summary": "The official benchmark docs state that the agent receives public validation results while the private test score and output stay outside its environment. This is a published trust-boundary claim, not a cryptographic implementation audit.",
+        "scope": {
+            "task_id": "sopcc-online-chance-constrained-policy",
+            "task_version": "1.1.0",
+            "validation_endpoint": "http://grader:8000/mcp",
+            "trust_boundary": "official_public_validation_endpoint",
+        },
         "sources": [{
             "url": "https://github.com/bespokelabsai/AutoResearchExam/blob/"
                    "23c0d92e11af1dea821f972b5f0a739060958002/README.md",
@@ -1545,6 +1551,7 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
     assert "cryptographic implementation audit" in public_task
     assert "https://github.com/bespokelabsai/AutoResearchExam/blob/" in public_task
     assert "23c0d92e11af1dea821f972b5f0a739060958002" in public_task
+    assert '"task_id":"sopcc-online-chance-constrained-policy"' in public_task
     assert '"protocol_binding":{"researcher_intent_bound_by_core":false' in public_task
     for contract_fact in (
         "evaluator_wall_timeout_seconds",

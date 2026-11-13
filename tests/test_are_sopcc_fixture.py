@@ -65,7 +65,11 @@ def test_sopcc_fixture_binds_public_task_and_backend_without_private_assets(tmp_
         candidate_path="benchmarks/autoresearchexam/solutions/sopcc/policy.py",
         evaluate_dev=lambda *_: {"status": "GRADED", "dev_score": 0.0, "dev_cells": 4},
     )
-    protocol = SimpleNamespace(evaluator_bundle_sha256=result["evaluator_bundle_sha256"])
+    protocol = SimpleNamespace(
+        evaluator_bundle_sha256=result["evaluator_bundle_sha256"],
+        metric_id="sopcc_score", metric_field="sopcc_score",
+        direction="MAXIMIZE", aggregation="MEAN",
+    )
     runner._verify_backend_bundle(protocol, bundle)
 
     # The real SOPCC adapter's complete public source is larger than the old
