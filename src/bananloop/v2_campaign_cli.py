@@ -79,11 +79,31 @@ def _required_optimization_agent_calls(
 
 
 def _optimization_hypothesis_is_executable(selected: dict[str, Any]) -> bool:
-    """Protocol-preparation ideas without a registered experiment cannot be child goals."""
+    """Require either a registered experiment or a concrete child-run plan.
+
+    Benchmark Optimization children are themselves the experiment runner: they
+    edit the pinned candidate and Core evaluates it through the approved
+    protocol. Those hypotheses have no registered ``experiment_id`` because
+    no separate Researcher-side experiment executor exists. Protocol-only
+    ideas still cannot start a child unless they contain a falsifiable,
+    evidence-producing candidate plan.
+    """
     if "experiment_id" not in selected:
         return True
     experiment_id = selected.get("experiment_id")
-    return isinstance(experiment_id, str) and bool(experiment_id.strip())
+    if isinstance(experiment_id, str) and experiment_id.strip():
+        return True
+    if experiment_id not in (None, ""):
+        return False
+    required_plan_fields = (
+        "hypothesis", "next_experiment", "expected_evidence", "falsification_condition",
+    )
+    return all(
+        isinstance(selected.get(key), str)
+        and bool(selected[key].strip())
+        and len(selected[key]) <= 4000
+        for key in required_plan_fields
+    )
 
 
 def _minimum_fixture_optimization_evaluator_calls(

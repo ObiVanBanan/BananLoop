@@ -267,6 +267,14 @@ def test_optimization_budget_rejects_invalid_protocol_repeatability(repeats):
     ({"id": "protocol_only", "experiment_id": ""}, False),
     ({"id": "registered_experiment", "experiment_id": "bench_public_seeds"}, True),
     ({"id": "legacy_hypothesis"}, True),
+    ({"id": "public_candidate_plan", "experiment_id": None,
+      "hypothesis": "Fusing elementwise ops reduces temporary allocation.",
+      "next_experiment": "Implement one fusion and run the frozen public DEV panel.",
+      "expected_evidence": "Aggregate speedup and equivalence status.",
+      "falsification_condition": "Equivalence fails or speedup does not improve."}, True),
+    ({"id": "incomplete_candidate_plan", "experiment_id": None,
+      "hypothesis": "Fusing elementwise ops may help.",
+      "next_experiment": "Try a fusion."}, False),
 ])
 def test_protocol_only_hypothesis_does_not_start_optimization_child(selected, expected):
     assert _optimization_hypothesis_is_executable(selected) is expected
