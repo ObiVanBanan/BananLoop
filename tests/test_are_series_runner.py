@@ -14,7 +14,10 @@ from benchmarks.autoresearchexam.series_runner import (
     MAX_ITERATIONS,
     MAX_SECONDS,
     build_command,
+    load_selection,
+    validate_prepared_job,
 )
+from benchmarks.autoresearchexam.campaign_binding import require_frozen_optimization_child
 
 
 TASK_IDS = [
@@ -76,6 +79,8 @@ def _prepared_jobs(tmp_path: Path):
             "task_instruction_sha256": instruction_hash,
             "max_candidate_iterations": MAX_ITERATIONS,
             "time_limit_seconds": MAX_SECONDS,
+            "model_call_limit": 10,
+            "max_steps": 20,
         }
         bl_path = jobs_dir / f"{task_id}-bananloop.json"
         bl_hash = _write_json(bl_path, bl_config)
@@ -110,6 +115,57 @@ def _prepared_jobs(tmp_path: Path):
         "source_revision": "a" * 40, "task_count": 10, "tasks": overlay_tasks,
     })
     return selection_path, overlay_index_path, jobs_dir
+
+
+def test_prepared_job_requires_ten_model_calls_and_fifteen_harbor_steps(tmp_path):
+    selection, overlay_index, jobs = _prepared_jobs(tmp_path)
+    descriptor_path = jobs / f"{TASK_IDS[0]}.json"
+    descriptor = json.loads(descriptor_path.read_text())
+    config_path = jobs / f"{TASK_IDS[0]}-bananloop.json"
+    config = json.loads(config_path.read_text())
+    config["model_call_limit"] = 9
+    config_path.write_text(json.dumps(config))
+    descriptor["bananloop_config_sha256"] = _digest(config_path.read_bytes())
+    descriptor_path.write_text(json.dumps(descriptor))
+    with pytest.raises(ValueError, match="cannot fund five candidate lifecycles"):
+        validate_prepared_job(
+            descriptor_path,
+            selection=load_selection(selection)[0],
+            overlay_index=json.loads(overlay_index.read_text()),
+        )
+
+
+def test_frozen_child_binding_checks_mode_cap_and_budget(tmp_path):
+    campaign_id = "c-" + "a" * 32
+    state_dir = tmp_path / "state"
+    campaign_dir = state_dir / "campaigns" / campaign_id
+    campaign_dir.mkdir(parents=True)
+    spec = {
+        "schema_version": 2, "mode": "OPTIMIZATION",
+        "goal": "bounded test", "source_repo": "https://example.invalid/repo",
+        "base_commit": "0123456789abcdef",
+        "autonomy": {"mode": "SUPERVISED", "scope_digest": "a" * 64, "scope_version": 1},
+        "budget": {"max_experiments": 10, "max_attempts": 10, "max_agent_calls": 10,
+                   "max_evaluator_calls": 20, "deadline_seconds": 3600,
+                   "plateau_experiments": 3},
+        "role_registry_digest": "a" * 64,
+        "evaluation": {"protocol_id": "public-dev", "version": 1,
+                       "content_sha256": "b" * 64, "approval_digest": "c" * 64},
+        "parent": None, "max_candidate_iterations": 5,
+    }
+    db = campaign_dir / "campaign.sqlite3"
+    import sqlite3
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE campaigns (id INTEGER PRIMARY KEY, spec_json TEXT NOT NULL)")
+        conn.execute("INSERT INTO campaigns VALUES (1, ?)", (json.dumps(spec),))
+    config = {"campaign_id": campaign_id, "state_dir": str(state_dir),
+              "max_candidate_iterations": 5, "time_limit_seconds": 3600}
+    assert require_frozen_optimization_child(config).max_candidate_iterations == 5
+    spec["budget"]["max_experiments"] = 4
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE campaigns SET spec_json=?", (json.dumps(spec),))
+    with pytest.raises(ValueError, match="budget cannot fund"):
+        require_frozen_optimization_child(config)
 
 
 def _runner(tmp_path, process_runner, task_ids=None):

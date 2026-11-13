@@ -82,10 +82,12 @@ inside the task as its agent user, still with mode `0600`. A read-only `status`
 probe passed after this fix with zero submissions and zero active jobs. The
 probe did not modify or reconcile the old submission ledger.
 
-A Harbor `BaseAgent`, public-grader adapter, durable one-hour ledger, and
-isolated public DEV runner exist. `series_runner.py` dispatches only prepared
-Harbor jobs; the outer five-child campaign driver, task-specific adapters, and
-protocol preparation are still missing.
+A Harbor `BaseAgent`, ten task-pinned public-grader/evaluator adapters, a
+durable one-hour ledger, and isolated public DEV runners exist. The frozen
+Optimization runtime can execute up to five candidate iterations inside one
+child campaign. `series_runner.py` still dispatches only prepared Harbor jobs;
+automated campaign/config preparation and per-task protocol approval remain
+unfinished.
 A verifier-disabled, no-model probe discovered the
 public MCP tools `submit`, `result`, and `status`; the observed schemas and
 fingerprint are in
@@ -147,9 +149,11 @@ The child report remains `STEP_LIMIT` with Integration Verifier pending. Its
 logs and SQLite records are archived at
 `/home/sonik/bananloop-benchmark-env/runs/are-iterative-ridge-child/`.
 
-No ten-task AutoResearchExam campaign configs or series score exist yet. The
-current `series_runner.py` dispatches only prepared jobs; it does not create and
-advance five candidate children per task.
+No ten-task AutoResearchExam job configs or series score exist yet. The current
+`series_runner.py` dispatches only prepared jobs; it does not create campaigns
+or configs. Each prepared task must point to a frozen Optimization child whose
+campaign budget, five-candidate cap, and independent evaluator approval match
+the Harbor limits; the bridge now checks this binding before any live work.
 
 The consolidated status, benchmark traces, validation counts, and remaining gaps
 are recorded in [`../pilot-status-2026-11-12.json`](../pilot-status-2026-11-12.json).

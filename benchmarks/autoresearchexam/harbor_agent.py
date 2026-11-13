@@ -2,8 +2,8 @@
 
 This is an execution adapter, not a direct-writing benchmark agent. The child
 campaign, role registry, and independently approved protocol must already be
-prepared. A separate task driver is responsible for creating the next child
-and stopping after five candidate snapshots or the persisted one-hour deadline.
+prepared. Its frozen Optimization runtime iterates candidates inside that
+child, stopping at the five-candidate cap or persisted one-hour deadline.
 """
 from __future__ import annotations
 
@@ -52,6 +52,7 @@ from .public_covtype_dev import (
 from .public_mcp_contract import validate_public_mcp_contract
 from .public_grader import PublicAREGrader
 from .public_devkit import run_public_devkit
+from .campaign_binding import require_frozen_optimization_child
 
 
 _MCP_CLIENT = Path(__file__).with_name("are_public_mcp_client.py")
@@ -262,8 +263,16 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         time_limit = raw.get("time_limit_seconds", 3600)
         if isinstance(time_limit, bool) or not isinstance(time_limit, int) or not 1 <= time_limit <= 3600:
             raise RuntimeError("task time limit must be from 1 to 3600 seconds")
-        if raw.get("max_candidate_iterations", 5) != 5:
+        iterations = raw.get("max_candidate_iterations", 5)
+        if isinstance(iterations, bool) or not isinstance(iterations, int) or iterations != 5:
             raise RuntimeError("ARE task driver must enforce exactly five candidate iterations")
+        max_steps = raw.get("max_steps", 20)
+        if (isinstance(max_steps, bool) or not isinstance(max_steps, int)
+                or not 3 * iterations <= max_steps <= 100):
+            raise RuntimeError("Harbor max_steps must fund three scheduler steps per candidate")
+        if (raw.get("status_probe_only") is not True
+                and raw["model_call_limit"] < 2 * iterations):
+            raise RuntimeError("model_call_limit must fund Optimizer and Integration Verifier per candidate")
         if not isinstance(raw["visible_path"], list) or not isinstance(raw["write_path"], list):
             raise RuntimeError("visible_path and write_path must be path arrays")
         if not isinstance(raw.get("status_probe_only", False), bool):
@@ -451,6 +460,10 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 },
             }
             return
+        try:
+            require_frozen_optimization_child(raw)
+        except ValueError as exc:
+            raise RuntimeError(f"Harbor BananLoop child is not ready: {exc}") from None
         loop = asyncio.get_running_loop()
         state_dir = Path(raw["state_dir"])
         state_dir.mkdir(parents=True, exist_ok=True)

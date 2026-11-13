@@ -228,6 +228,13 @@ def validate_prepared_job(
             or bl_config.get("max_candidate_iterations") != MAX_ITERATIONS
             or bl_config.get("time_limit_seconds") != MAX_SECONDS):
         raise ValueError(f"BananLoop config is not pinned to task/version/five iterations/one hour: {task_id}")
+    model_call_limit = bl_config.get("model_call_limit")
+    max_steps = bl_config.get("max_steps", 20)
+    if (isinstance(model_call_limit, bool) or not isinstance(model_call_limit, int)
+            or model_call_limit < 2 * MAX_ITERATIONS
+            or isinstance(max_steps, bool) or not isinstance(max_steps, int)
+            or not 3 * MAX_ITERATIONS <= max_steps <= 100):
+        raise ValueError(f"BananLoop/Harbor config cannot fund five candidate lifecycles: {task_id}")
     harbor_tasks = harbor_config.get("tasks")
     agents = harbor_config.get("agents")
     retry = harbor_config.get("retry", {})

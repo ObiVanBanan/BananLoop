@@ -9,8 +9,9 @@ tasks. CovType uses an explicitly external static-price diagnostic proxy and
 is not official benchmark-compatible scoring. Each task still requires its
 own approved protocol and Optimization run. `series_runner.py` dispatches only
 already-prepared task configs; it does not prepare or approve campaigns or
-protocols, implement the outer child-campaign loop, or automatically create
-the ten task configs. No completed
+protocols, or automatically create the ten task configs. One frozen
+Optimization child can now run up to five candidate iterations internally.
+No completed
 AutoResearchExam task score has been produced.
 
 ## Verified environment
@@ -127,13 +128,13 @@ AutoResearchExam task score has been produced.
    current task container is gone, so the campaign remains incomplete.
 2. Complete Integration Verifier and public Validation on a fresh owner-approved
    child run after the uncertainty policy and enrollment are explicit.
-3. Implement an outer durable campaign driver that creates the approved parent
-   and up to five child Optimization campaigns, carries evidence between them,
-   and resumes without duplicating evaluation.
-4. Generalize candidate/output mapping and independent evaluator protocol setup
-   for all ten selected tasks.
-5. Run the ten-task series after the single-task acceptance and durable driver
-   are complete.
+3. Prepare per-task frozen Optimization children and independently approve
+   their evaluator protocols; Harbor validates that each child funds five
+   candidate iterations within the one-hour job limit.
+4. Add an automated preparation workflow for the ten task descriptors and
+   configs, including durable resume without duplicating evaluation.
+5. Run the ten-task series after the single-task acceptance and all ten
+   prepared-job validations are complete.
 
 ## Harbor lifecycle preflight and artifact boundary
 
