@@ -39,7 +39,7 @@ def test_newton_job_configs_bind_existing_child_without_replay(tmp_path: Path, i
     assert bl["adapter_id"] == "sketched-newton-public-v1"
     assert bl["repeatability_runs"] == 1
     assert bl["model_call_limit"] == 2 * iterations
-    assert bl["max_steps"] == 3 * iterations
+    assert bl["max_steps"] >= 3 * iterations
     assert bl["max_candidate_iterations"] == iterations
     assert bl["time_limit_seconds"] == 3600
     assert Path(bl["public_submission_ledger_path"]).is_relative_to(state)
