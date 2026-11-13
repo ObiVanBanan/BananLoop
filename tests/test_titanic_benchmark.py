@@ -292,7 +292,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                     network_access=False,
                 ),
                 context_fields=("campaign_goal", "public_task"),
-                min_instances=1, max_instances=1, calls_per_instance=3,
+                min_instances=1, max_instances=1, calls_per_instance=5,
                 tokens_per_instance=300,
             ),
             RoleDefinitionV1(
@@ -306,7 +306,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                 ),
                 context_fields=("campaign_goal", "node_id", "node_phase", "public_task",
                                 "constraints", "evidence_refs", "dev_summary"),
-                min_instances=1, max_instances=1, calls_per_instance=3,
+                min_instances=1, max_instances=1, calls_per_instance=5,
                 # Provider-side output caps are unavailable, so reserve a
                 # realistic amount and settle against the observed receipt.
                 tokens_per_instance=60_000,
@@ -528,7 +528,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                 "max_evaluator_calls": 30, "deadline_seconds": 3600,
                 "plateau_experiments": 3,
             },
-            "max_candidate_iterations": live_epochs if live_mode else 3,
+            "max_candidate_iterations": live_epochs if live_mode else 5,
             "role_registry_digest": roles.digest(),
             "evaluation": {
                 "protocol_id": protocol.protocol_id, "version": protocol.version,
@@ -631,10 +631,10 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                 "changes": {
                     "src/model.json": json.dumps({
                         "schema": "titanic-linear-v1",
-                        "intercept": -0.5 if offline_dispatch_count == 2 else -0.4,
+                        "intercept": -0.5 + 0.05 * (offline_dispatch_count - 2),
                         "coefficients": {
                             "sex_female": 1.0,
-                            "male_pclass1_child": 1.5 if offline_dispatch_count == 2 else 1.6,
+                            "male_pclass1_child": 1.5 + 0.05 * (offline_dispatch_count - 2),
                         },
                     }, sort_keys=True, separators=(",", ":")),
                 },
@@ -708,7 +708,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                 write_paths=["src/model.json"],
                 model_reply=selected_optimizer,
                 integration_verifier_executor=selected_integration_executor,
-                max_steps=(3 * live_epochs) if live_mode else 9,
+                max_steps=(3 * live_epochs) if live_mode else 20,
                 worker_id=worker_id,
             )
         except Exception as exc:
@@ -742,11 +742,11 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
             assert len(live_receipts) == live_epochs
         assert result["status"] == "ALL_NODES_COMPLETE"
         if not live_mode:
-            assert offline_dispatch_count == 3
+            assert offline_dispatch_count == 5
             assert sum(item.get("status") == "CANDIDATE_CREATED"
-                       for item in result["steps"]) == 3
+                       for item in result["steps"]) == 5
             assert sum(item.get("status") == "INDEPENDENT_VERIFICATION_PASS"
-                       for item in result["steps"]) == 2
+                       for item in result["steps"]) == 4
         assert result["holdout"]["status"] == "VERIFIED"
         assert result["holdout"]["tier"] == "holdout"
         assert 0.0 <= result["holdout"]["metric"]["value"] <= 1.0
