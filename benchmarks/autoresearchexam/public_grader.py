@@ -27,11 +27,15 @@ class PublicAREGrader:
     def __init__(self, database: str | Path, *, task_id: str,
                  contract_sha256: str,
                  call_tool: Callable[[str, Mapping[str, Any]], Mapping[str, Any]],
-                 repeatability_runs: int = 2,
+                 repeatability_runs: int | None = None,
                  time_limit_seconds: int = 3600,
                  clock: Callable[[], float] = time.time):
         if not task_id or len(task_id) > 200:
             raise ValueError("task_id must be nonempty and bounded")
+        if repeatability_runs is None:
+            repeatability_runs = (
+                4 if task_id == "sopcc-online-chance-constrained-policy" else 2
+            )
         if (len(contract_sha256) != 64
                 or any(char not in "0123456789abcdef" for char in contract_sha256)):
             raise ValueError("contract_sha256 must be a lowercase SHA-256 digest")

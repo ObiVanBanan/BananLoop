@@ -59,7 +59,10 @@ def test_sopcc_fixture_binds_public_task_and_backend_without_private_assets(tmp_
     assert [tier.tier for tier in fixture.tiers] == ["dev", "validation"]
     bundle = base64.b64decode(fixture.evaluator_bundle_base64)
     runner = AREPublicSOPCCEvaluatorRunner(
-        grader=SimpleNamespace(deadline_epoch=100_000, contract_sha256=contract["contract_sha256"]),
+        grader=SimpleNamespace(
+            deadline_epoch=100_000, contract_sha256=contract["contract_sha256"],
+            repeatability_runs=4,
+        ),
         publish_candidate=lambda _: None, task_id=TASK_ID,
         task_version=TASK_VERSION, contract_sha256=contract["contract_sha256"],
         candidate_path="benchmarks/autoresearchexam/solutions/sopcc/policy.py",
@@ -69,6 +72,7 @@ def test_sopcc_fixture_binds_public_task_and_backend_without_private_assets(tmp_
         evaluator_bundle_sha256=result["evaluator_bundle_sha256"],
         metric_id="sopcc_score", metric_field="sopcc_score",
         direction="MAXIMIZE", aggregation="MEAN",
+        repeatability_runs=4, timeout_seconds=3600,
     )
     runner._verify_backend_bundle(protocol, bundle)
 
@@ -77,8 +81,8 @@ def test_sopcc_fixture_binds_public_task_and_backend_without_private_assets(tmp_
     intent = EvaluatorProtocolIntentV1(
         protocol_id="sopcc-public-dev-score", version=1,
         metric_id="sopcc_score", metric_field="sopcc_score",
-        direction="MAXIMIZE", aggregation="MEAN", repeatability_runs=2,
-        timeout_seconds=120,
+        direction="MAXIMIZE", aggregation="MEAN", repeatability_runs=4,
+        timeout_seconds=3600,
     )
     draft, artifacts = fixture.bind(intent, source_snapshot_id="a" * 40)
     published = tmp_path / "published"

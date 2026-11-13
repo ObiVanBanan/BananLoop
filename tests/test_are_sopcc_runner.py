@@ -82,6 +82,8 @@ def _bundle():
         "metric_contract": {
             "metric_id": "sopcc_score", "metric_field": "sopcc_score",
             "unit": "reward", "direction": "MAXIMIZE", "aggregation": "MEAN",
+            "repeatability_runs": cls.default_repeatability_runs,
+            "timeout_seconds": 3600,
         },
         "dev_execution": {
             "container_network": "none", "root_filesystem_read_only": True,
@@ -128,7 +130,10 @@ def test_sopcc_runner_default_dev_path_runs_and_normalizes_public_result(monkeyp
 
     monkeypatch.setattr(sopcc_runner_module, "run_public_sopcc_dev", fake_public_runner)
     runner = AREPublicSOPCCEvaluatorRunner(
-        grader=SimpleNamespace(deadline_epoch=100_000, contract_sha256=CONTRACT_SHA),
+        grader=SimpleNamespace(
+            deadline_epoch=100_000, contract_sha256=CONTRACT_SHA,
+            repeatability_runs=4,
+        ),
         publish_candidate=lambda _: None,
         task_id=TASK_ID, task_version=TASK_VERSION,
         contract_sha256=CONTRACT_SHA,
@@ -155,7 +160,7 @@ def _runner():
     runner.dev_image = runner.default_dev_image
     runner.dev_image_id = runner.default_dev_image_id
     runner.dev_cell_count = runner.default_dev_cell_count
-    runner.grader = SimpleNamespace(contract_sha256=CONTRACT_SHA)
+    runner.grader = SimpleNamespace(contract_sha256=CONTRACT_SHA, repeatability_runs=4)
     return runner
 
 
@@ -166,6 +171,7 @@ def test_sopcc_backend_bundle_is_bound_to_public_sources_and_image():
         evaluator_bundle_sha256=hashlib.sha256(bundle).hexdigest(),
         metric_id="sopcc_score", metric_field="sopcc_score",
         direction="MAXIMIZE", aggregation="MEAN",
+        repeatability_runs=4, timeout_seconds=3600,
     )
     runner._verify_backend_bundle(protocol, bundle)
 
@@ -191,6 +197,7 @@ def test_sopcc_backend_refuses_mutated_bundle():
         evaluator_bundle_sha256=hashlib.sha256(bundle).hexdigest(),
         metric_id="sopcc_score", metric_field="sopcc_score",
         direction="MAXIMIZE", aggregation="MEAN",
+        repeatability_runs=4, timeout_seconds=3600,
     )
     with pytest.raises(TrustedEvaluatorError, match="bundle"):
         runner._verify_backend_bundle(protocol, bundle)
@@ -233,7 +240,7 @@ def test_sopcc_dev_runs_through_trusted_evaluator_runner_contract(tmp_path):
             EvaluatorTierManifestV1(tier="dev", manifest_sha256="0" * 64, case_count=1),
             EvaluatorTierManifestV1(tier="validation", manifest_sha256="0" * 64, case_count=1),
         ),
-        repeatability_runs=2, timeout_seconds=120,
+        repeatability_runs=4, timeout_seconds=3600,
     )
     protocol_sha = _case_protocol_digest(provisional)
     inputs = {}
@@ -261,6 +268,7 @@ def test_sopcc_dev_runs_through_trusted_evaluator_runner_contract(tmp_path):
     protocol = provisional.model_copy(update={"tiers": tuple(tiers)})
     grader = SimpleNamespace(
         deadline_epoch=10_000.0, contract_sha256=CONTRACT_SHA,
+        repeatability_runs=4,
     )
     runner = AREPublicSOPCCEvaluatorRunner(
         grader=grader, publish_candidate=lambda _: pytest.fail("DEV must not publish to grader"),

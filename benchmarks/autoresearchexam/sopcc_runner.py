@@ -63,6 +63,7 @@ class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
     default_dev_image = "bananloop-are-sopcc-public-dev:2026-11-12"
     default_dev_image_id = "sha256:5fc63eccd0a3448db1dd9240c3fe7ecb4cef02511bafc77e2c91f294c3d82b8e"
     default_dev_cell_count = 4
+    default_repeatability_runs = 4
     dev_aggregate_case_id = "public-sopcc-dev-aggregate"
     validation_aggregate_case_id = "public-sopcc-validation-aggregate"
     dev_draws = (0,)
@@ -77,6 +78,9 @@ class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
         # definition time, so bind SOPCC's class-level pins explicitly here.
         image = self.default_dev_image if dev_image is None else dev_image
         image_id = self.default_dev_image_id if dev_image_id is None else dev_image_id
+        grader = kwargs.get("grader")
+        if getattr(grader, "repeatability_runs", None) != self.default_repeatability_runs:
+            raise ValueError("SOPCC public grader must use the task-pinned four repeatability runs")
         if kwargs.get("evaluate_dev") is None:
             kwargs["evaluate_dev"] = lambda candidate, timeout: evaluate_sopcc_public_dev(
                 candidate, image=image, expected_image_id=image_id,
@@ -124,7 +128,9 @@ class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
         if (protocol.metric_id != "sopcc_score"
                 or protocol.metric_field != "sopcc_score"
                 or protocol.direction != "MAXIMIZE"
-                or protocol.aggregation != "MEAN"):
+                or protocol.aggregation != "MEAN"
+                or protocol.repeatability_runs != self.default_repeatability_runs
+                or protocol.timeout_seconds != 3600):
             raise TrustedEvaluatorError("SOPCC protocol metric does not match the pinned public reward contract")
         expected_names = {
             "are-public-sopcc-backend.json", "public_sopcc_dev.py",
@@ -192,6 +198,8 @@ class AREPublicSOPCCEvaluatorRunner(AREPublicEvaluatorRunner):
                     "metric_contract": {
                         "metric_id": "sopcc_score", "metric_field": "sopcc_score",
                         "unit": "reward", "direction": "MAXIMIZE", "aggregation": "MEAN",
+                        "repeatability_runs": self.default_repeatability_runs,
+                        "timeout_seconds": 3600,
                     },
                     "dev_execution": {
                         "container_network": "none", "root_filesystem_read_only": True,

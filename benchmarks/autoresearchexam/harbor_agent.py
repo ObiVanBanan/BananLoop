@@ -207,6 +207,17 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         }
         if adapter_id not in adapter_specs:
             raise RuntimeError("Harbor bridge adapter_id is not in the pinned allowlist")
+        expected_repeatability = (
+            AREPublicSOPCCEvaluatorRunner.default_repeatability_runs
+            if adapter_id == "sopcc-public-v1" else 2
+        )
+        repeatability_runs = raw.get("repeatability_runs", expected_repeatability)
+        if (isinstance(repeatability_runs, bool) or not isinstance(repeatability_runs, int)
+                or not 1 <= repeatability_runs <= 10
+                or (adapter_id == "sopcc-public-v1"
+                    and repeatability_runs != AREPublicSOPCCEvaluatorRunner.default_repeatability_runs)):
+            raise RuntimeError("Harbor bridge repeatability differs from the task-pinned public protocol")
+        raw["repeatability_runs"] = repeatability_runs
         expected_task, expected_candidate, expected_output, runner_type, expected_cells = adapter_specs[adapter_id]
         if raw["task_id"] != expected_task:
             raise RuntimeError("Harbor bridge adapter is bound to the wrong task ID")
@@ -441,7 +452,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             state_dir / "autoresearchexam-public-submissions.sqlite3",
             task_id=raw["task_id"],
             contract_sha256=raw["mcp_contract_sha256"],
-            repeatability_runs=int(raw.get("repeatability_runs", 2)),
+            repeatability_runs=raw["repeatability_runs"],
             time_limit_seconds=raw.get("time_limit_seconds", 3600),
             call_tool=lambda name, args: asyncio.run_coroutine_threadsafe(
                 self._call_public_tool(environment, name, args), loop,

@@ -101,6 +101,16 @@ def test_task_deadline_is_persisted_and_cannot_be_reset_on_resume(tmp_path):
         )
 
 
+def test_sopcc_defaults_to_four_validation_repetitions(tmp_path):
+    grader = PublicAREGrader(
+        tmp_path / "sopcc.sqlite3",
+        task_id="sopcc-online-chance-constrained-policy",
+        contract_sha256="a" * 64,
+        call_tool=lambda *_: {},
+    )
+    assert grader.repeatability_runs == 4
+
+
 def test_baseline_is_separate_from_five_candidate_iterations(tmp_path):
     next_id = 0
 

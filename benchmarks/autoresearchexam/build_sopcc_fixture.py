@@ -127,6 +127,8 @@ def build_fixture(*, repo: Path, source_task: Path, mcp_contract: Path,
         "metric_contract": {
             "metric_id": "sopcc_score", "metric_field": "sopcc_score",
             "unit": "reward", "direction": "MAXIMIZE", "aggregation": "MEAN",
+            "repeatability_runs": cls.default_repeatability_runs,
+            "timeout_seconds": 3600,
         },
         "dev_execution": {
             "container_network": "none", "root_filesystem_read_only": True,
