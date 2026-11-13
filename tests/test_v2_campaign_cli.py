@@ -457,9 +457,11 @@ def test_optimization_child_agent_budget_scales_with_candidate_cap():
     )
 
     assert _required_optimization_agent_calls(2, 2, 1) == 4
-    assert _required_optimization_agent_calls(2, 2, 5) == 20
+    assert _required_optimization_agent_calls(18, 18, 5) == 36
     with pytest.raises(V2CampaignCLIError, match="role call vector is invalid"):
         _required_optimization_agent_calls(2, 2, True)
+    with pytest.raises(V2CampaignCLIError, match="cannot fund its candidate cap"):
+        _required_optimization_agent_calls(4, 4, 5)
 
 
 def test_v2_nine_call_budget_funds_three_paired_optimization_epochs(tmp_path):

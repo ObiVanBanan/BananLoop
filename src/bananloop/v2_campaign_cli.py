@@ -64,16 +64,18 @@ def _required_optimization_evaluator_calls(
 
 
 def _required_optimization_agent_calls(
-    optimizer_calls_per_candidate: int, integration_calls_per_candidate: int,
+    optimizer_call_budget: int, integration_call_budget: int,
     candidate_iterations: int,
 ) -> int:
-    """Fund Optimizer and Integration Verifier for every frozen candidate slot."""
-    values = (optimizer_calls_per_candidate, integration_calls_per_candidate,
-              candidate_iterations)
+    """Check role budgets cover every candidate, then return their aggregate."""
+    values = (optimizer_call_budget, integration_call_budget, candidate_iterations)
     if any(isinstance(value, bool) or not isinstance(value, int) or value < 1
            for value in values) or candidate_iterations > 5:
         raise V2CampaignCLIError("Optimization role call vector is invalid")
-    return (optimizer_calls_per_candidate + integration_calls_per_candidate) * candidate_iterations
+    if (optimizer_call_budget < candidate_iterations
+            or integration_call_budget < candidate_iterations):
+        raise V2CampaignCLIError("Optimization role call vector cannot fund its candidate cap")
+    return optimizer_call_budget + integration_call_budget
 
 
 def _optimization_hypothesis_is_executable(selected: dict[str, Any]) -> bool:
