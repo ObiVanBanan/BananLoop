@@ -451,6 +451,17 @@ def test_v2_explicit_candidate_iteration_cap_is_frozen_and_funded(tmp_path):
     assert restored.approved_hash() == spec.approved_hash()
 
 
+def test_optimization_child_agent_budget_scales_with_candidate_cap():
+    from bananloop.v2_campaign_cli import (
+        V2CampaignCLIError, _required_optimization_agent_calls,
+    )
+
+    assert _required_optimization_agent_calls(2, 2, 1) == 4
+    assert _required_optimization_agent_calls(2, 2, 5) == 20
+    with pytest.raises(V2CampaignCLIError, match="role call vector is invalid"):
+        _required_optimization_agent_calls(2, 2, True)
+
+
 def test_v2_nine_call_budget_funds_three_paired_optimization_epochs(tmp_path):
     from bananloop.v2_campaign_cli import _build_spec
 

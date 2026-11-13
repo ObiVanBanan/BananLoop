@@ -63,6 +63,19 @@ def _required_optimization_evaluator_calls(
     return (3 + int(has_holdout)) * repeatability_runs * candidate_iterations
 
 
+def _required_optimization_agent_calls(
+    optimizer_calls_per_candidate: int, integration_calls_per_candidate: int,
+    candidate_iterations: int,
+) -> int:
+    """Fund Optimizer and Integration Verifier for every frozen candidate slot."""
+    values = (optimizer_calls_per_candidate, integration_calls_per_candidate,
+              candidate_iterations)
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 1
+           for value in values) or candidate_iterations > 5:
+        raise V2CampaignCLIError("Optimization role call vector is invalid")
+    return (optimizer_calls_per_candidate + integration_calls_per_candidate) * candidate_iterations
+
+
 def _optimization_hypothesis_is_executable(selected: dict[str, Any]) -> bool:
     """Protocol-preparation ideas without a registered experiment cannot be child goals."""
     if "experiment_id" not in selected:
@@ -643,7 +656,11 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
     researcher_calls = roles.role("researcher").calls_per_instance
     optimizer_calls = roles.role("optimizer").calls_per_instance
     integration_calls = roles.role("integration_verifier").calls_per_instance
-    child_calls = optimizer_calls + integration_calls
+    frozen_candidate_iterations = parent_spec.max_candidate_iterations
+    candidate_iterations = frozen_candidate_iterations or 1
+    child_calls = _required_optimization_agent_calls(
+        optimizer_calls, integration_calls, candidate_iterations,
+    )
     if researcher_calls + roles.role("independent_verifier").calls_per_instance + child_calls > parent_spec.budget.max_agent_calls:
         raise V2CampaignCLIError("frozen role call vector exceeds the parent budget")
     scope = AutonomyScopeV2(
@@ -680,9 +697,8 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
     # Each receipt requires the protocol's fixed repeatability count.
     # The scheduler records the Optimization task itself and the single
     # candidate as separate experiment work, so reserve two slots here.
-    candidate_iterations = parent_spec.max_candidate_iterations
-    if candidate_iterations is not None:
-        payload["max_candidate_iterations"] = candidate_iterations
+    if frozen_candidate_iterations is not None:
+        payload["max_candidate_iterations"] = frozen_candidate_iterations
         payload["budget"]["max_experiments"] = 2 * candidate_iterations
     else:
         payload.pop("max_candidate_iterations", None)
