@@ -7,6 +7,7 @@ import stat
 import sqlite3
 import subprocess
 import zipfile
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -196,6 +197,21 @@ def test_runner_returns_private_execution_then_final_public_receipt():
     assert "private_case_hint" not in public
     assert len(execution.artifacts) == 0
     assert set(inputs)  # test fixture carries actual protected inputs
+
+
+def test_final_receipt_accepts_one_approved_aggregate_run():
+    execution, *_ = _run()
+    execution = replace(execution, repeatability_runs=1)
+    proof = EvaluatorBudgetProofV1(
+        campaign_id="campaign-1", spec_hash="4" * 64,
+        job_id="eval-job-single", fence=1, receipt_digest="3" * 64,
+        actual_amount=1, actual_usage={"evaluator_calls": 1},
+    )
+
+    receipt = EvaluatorRunReceiptV1.from_completed_runs((execution,), (proof,))
+
+    assert receipt.repeatability_runs == 1
+    assert receipt.budget_proofs == (proof,)
 
 
 def test_verified_artifact_bytes_return_only_to_core_with_public_digest():

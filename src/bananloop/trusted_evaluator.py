@@ -96,7 +96,7 @@ class EvaluatorRunReceiptV1(BaseModel):
     case_count: int = Field(ge=1, le=10000)
     result_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     repeatability_runs: int = Field(ge=1, le=10)
-    budget_proofs: tuple[EvaluatorBudgetProofV1, ...] = Field(min_length=2, max_length=10)
+    budget_proofs: tuple[EvaluatorBudgetProofV1, ...] = Field(min_length=1, max_length=10)
     output_artifact_digests: tuple[str, ...] = ()
 
     @model_validator(mode="after")
