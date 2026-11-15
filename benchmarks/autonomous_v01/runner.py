@@ -15,6 +15,7 @@ import re
 import shlex
 import shutil
 import sqlite3
+import stat
 import subprocess
 import tempfile
 import time
@@ -151,8 +152,8 @@ def _implementation_gates() -> dict[str, bool]:
     """Check for linked implementation surfaces required before READY is possible."""
     return {
         "codex_direct_backend": callable(globals().get("CodexDirectBackend")),
-        "codex_best_verified_checkpoint_integration": callable(
-            getattr(globals().get("CodexDirectBackend"), "run_with_checkpoint_archive", None)
+        "codex_final_artifact_export": callable(
+            getattr(globals().get("CodexDirectBackend"), "snapshot_final_artifacts", None)
         ),
         "bananloop_full_backend": callable(globals().get("BananLoopFullBackend")),
         "benchmark_bound_pivot_authorizer": callable(globals().get("authorize_benchmark_pivot", None)),
@@ -676,36 +677,46 @@ class CodexDirectBackend:
 
     def run(self, arm_id: str, task: dict[str, Any], arm_root: Path,
             deadline_epoch: float, usage: UsageLedger) -> dict[str, Any]:
+        deadline_monotonic = time.monotonic() + max(0.0, deadline_epoch - time.time())
+        remaining = lambda: deadline_monotonic - time.monotonic()
         repo = arm_root / "repo"
-        remaining = deadline_epoch - time.time()
-        if remaining <= 0:
-            return {"status": "TIMED_OUT_BEFORE_CLONE", "model_turns_observed": 0}
+
+        def terminal(status: str, *, model_turns_observed: int = 0,
+                     **extra: Any) -> dict[str, Any]:
+            # Every terminal path, including failures before Codex starts, must
+            # archive the as-is deliverable state so the series has no silent gaps.
+            artifact = self.snapshot_final_artifacts(task=task, repo=repo, arm_root=arm_root)
+            return {"status": status, "model_turns_observed": model_turns_observed,
+                    "final_artifact": artifact, **extra}
+
+        if remaining() <= 0:
+            return terminal("TIMED_OUT_BEFORE_CLONE")
         try:
             clone = subprocess.run(["git", "clone", "--no-hardlinks", "--quiet",
                                     str(self.initial_repo), str(repo)],
-                                   capture_output=True, timeout=min(90, remaining))
+                                   capture_output=True, timeout=min(90, remaining()))
         except subprocess.TimeoutExpired:
-            return {"status": "TIMED_OUT_DURING_CLONE", "model_turns_observed": 0}
+            return terminal("TIMED_OUT_DURING_CLONE")
         if clone.returncode != 0:
-            return {"status":"FAILED_TO_CLONE_INITIAL_REPOSITORY", "model_turns_observed":0}
-        remaining = deadline_epoch - time.time()
-        if remaining <= 0:
-            return {"status": "TIMED_OUT_BEFORE_CHECKOUT", "model_turns_observed": 0}
+            return terminal("FAILED_TO_CLONE_INITIAL_REPOSITORY")
+        if remaining() <= 0:
+            return terminal("TIMED_OUT_BEFORE_CHECKOUT")
         try:
             checkout = subprocess.run(["git", "-C", str(repo), "checkout", "--detach", self.base_sha],
-                                      capture_output=True, timeout=min(30, remaining))
+                                      capture_output=True, timeout=min(30, remaining()))
         except subprocess.TimeoutExpired:
-            return {"status": "TIMED_OUT_DURING_CHECKOUT", "model_turns_observed": 0}
+            return terminal("TIMED_OUT_DURING_CHECKOUT")
         if checkout.returncode != 0:
-            return {"status":"FAILED_TO_PIN_INITIAL_REVISION", "model_turns_observed":0}
+            return terminal("FAILED_TO_PIN_INITIAL_REVISION")
         instruction = self.task_instruction.read_text(encoding="utf-8")
         (repo / "TASK-INSTRUCTION.md").write_text(instruction, encoding="utf-8")
         prompt = (
             "You are the Codex Direct arm in a preregistered AutoResearchExam study. "
             "Work only in this repository. Iteratively inspect the task, implement and improve "
             "the required candidate, run the pinned public DEV evaluator, read its numeric feedback, "
-            "and continue improving while useful until the absolute task deadline. Keep the best "
-            "verified candidate and its DEV receipt in this arm's artifacts. Never access private "
+            "and continue improving while useful until the absolute task deadline. Keep your "
+            "final deliverable in the task's declared output directory; the harness captures those "
+            "bytes as-is when time expires. Never access private "
             "grader or hidden data, never contact external services, and do not compare against "
             "another arm. Task:\n\n" + instruction + "\n\nPinned DEV command: "
             + shlex.join(self.dev_command) + f"\nReasoning setting: {self.reasoning}."
@@ -713,9 +724,8 @@ class CodexDirectBackend:
         log = arm_root / "codex-events.jsonl"
         stderr = arm_root / "codex-stderr.log"
         env = {k: v for k, v in os.environ.items() if k not in {"OPENAI_API_KEY", "AZURE_OPENAI_API_KEY"}}
-        remaining = deadline_epoch - time.time()
-        if remaining <= 0:
-            return {"status":"TIMED_OUT_BEFORE_START", "model_turns_observed":0}
+        if remaining() <= 0:
+            return terminal("TIMED_OUT_BEFORE_START")
         command = [self.codex_binary, "exec", "--json", "--sandbox", "workspace-write",
                    "--model", self.model, "-c", f"model_reasoning_effort={self.reasoning}",
                    "-C", str(repo), "--output-last-message",
@@ -726,7 +736,7 @@ class CodexDirectBackend:
                                        start_new_session=(os.name != "nt"))
             try:
                 process.communicate(prompt.encode("utf-8"),
-                                    timeout=max(0.1, deadline_epoch - time.time()))
+                                    timeout=max(0.1, remaining()))
                 status = "COMPLETED" if process.returncode == 0 else "FAILED"
             except subprocess.TimeoutExpired:
                 status = "TIMED_OUT"
@@ -751,10 +761,80 @@ class CodexDirectBackend:
                     process.wait()
         observed = parse_codex_jsonl_usage(log)
         usage.record(arm_id, "codex_direct", observed)
+        final_artifact = self.snapshot_final_artifacts(task=task, repo=repo, arm_root=arm_root)
         return {"status":status, "returncode":process.returncode,
                 "model_turns_observed":observed["model_turns_observed"],
                 "usage_unknown":observed["usage_unknown"],
-                "repo":str(repo), "codex_events":str(log)}
+                "repo":str(repo), "codex_events":str(log),
+                "final_artifact":final_artifact}
+
+    @staticmethod
+    def snapshot_final_artifacts(*, task: dict[str, Any], repo: Path,
+                                 arm_root: Path) -> dict[str, Any]:
+        """Copy the task output directory as-is, preserving missing/invalid status."""
+        adapter = task.get("adapter", {})
+        relative_entry = adapter.get("candidate_path") if isinstance(adapter, dict) else None
+        if not isinstance(relative_entry, str) or not relative_entry or "\\" in relative_entry:
+            return {"status": "INVALID_TASK_OUTPUT_PATH", "files": []}
+        entry = Path(relative_entry)
+        if entry.is_absolute() or any(part in {"", ".", ".."} for part in entry.parts):
+            return {"status": "INVALID_TASK_OUTPUT_PATH", "files": []}
+        repo_real = repo.resolve()
+        output_dir = repo.joinpath(*entry.parts[:-1])
+        if output_dir.is_symlink() or not output_dir.resolve(strict=False).is_relative_to(repo_real):
+            return {"status": "INVALID_TASK_OUTPUT_PATH", "files": []}
+        target = arm_root / "final-artifacts"
+        if target.exists() or target.is_symlink():
+            return {"status": "ARTIFACT_SNAPSHOT_ALREADY_EXISTS", "files": []}
+        target.mkdir(mode=0o700)
+        entry_exists = False
+        files: list[dict[str, Any]] = []
+        violations: list[str] = []
+        total_bytes = 0
+        source_files = sorted(output_dir.rglob("*")) if output_dir.is_dir() else []
+        if len(source_files) > 256:
+            violations.append("too_many_output_entries")
+            source_files = source_files[:256]
+        for path in source_files:
+            if path.is_dir() and not path.is_symlink():
+                continue
+            rel = path.relative_to(output_dir)
+            if path.is_symlink():
+                violations.append(f"symlink:{rel.as_posix()}")
+                continue
+            try:
+                metadata = path.stat(follow_symlinks=False)
+            except OSError:
+                violations.append(f"unreadable:{rel.as_posix()}")
+                continue
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                violations.append(f"nonregular_or_hardlinked:{rel.as_posix()}")
+                continue
+            if metadata.st_size > 64_000_000 or total_bytes + metadata.st_size > 128_000_000:
+                violations.append(f"oversized:{rel.as_posix()}")
+                continue
+            try:
+                content = path.read_bytes()
+            except OSError:
+                violations.append(f"unreadable:{rel.as_posix()}")
+                continue
+            out = target / rel
+            out.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            with out.open("xb") as stream:
+                stream.write(content)
+            os.chmod(out, 0o400)
+            files.append({"path": rel.as_posix(), "sha256": hashlib.sha256(content).hexdigest(),
+                          "size_bytes": len(content)})
+            total_bytes += len(content)
+            if rel.as_posix() == entry.name:
+                entry_exists = True
+        status = "CAPTURED" if entry_exists and not violations else (
+            "PARTIAL_INVALID" if files or violations else "MISSING_OUTPUT"
+        )
+        return {"status": status, "entrypoint": relative_entry,
+                "entrypoint_sha256": next((item["sha256"] for item in files
+                                           if item["path"] == entry.name), None),
+                "files": files, "violations": violations, "total_bytes": total_bytes}
 
 
 def main() -> int:

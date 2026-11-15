@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -119,7 +120,8 @@ def _existing_image_pins() -> dict[str, tuple[str, str]]:
             for task_id, cls in classes.items()}
 
 
-def build_catalogue(source_root: Path) -> dict[str, Any]:
+def build_catalogue(source_root: Path, *,
+                    new_image_ids: dict[str, str] | None = None) -> dict[str, Any]:
     source_root = source_root.expanduser().resolve()
     if source_root.is_symlink() or not source_root.is_dir():
         raise ValueError("ARE source root must be a regular directory")
@@ -127,6 +129,12 @@ def build_catalogue(source_root: Path) -> dict[str, Any]:
                               check=True, capture_output=True, text=True).stdout.strip()
     if revision != SOURCE_REVISION:
         raise ValueError(f"ARE source revision differs from frozen {SOURCE_REVISION}")
+    new_image_ids = new_image_ids or {}
+    if set(new_image_ids) - set(NEW_TASKS):
+        raise ValueError("new image pins contain an unknown task ID")
+    for task_id, image_id in new_image_ids.items():
+        if not isinstance(image_id, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+            raise ValueError(f"{task_id}: local Docker image pin is not a SHA-256 image ID")
     license_bytes = (source_root / "LICENSE").read_bytes()
     if _sha(license_bytes) != APACHE_LICENSE_SHA256:
         raise ValueError("ARE license differs from the pinned Apache-2.0 license")
@@ -156,7 +164,7 @@ def build_catalogue(source_root: Path) -> dict[str, Any]:
             raise ValueError(f"{task_id}: task does not match the approved CPU resource class")
         if task_id in NEW_TASKS:
             image_name = NEW_IMAGE_TAGS[task_id]
-            image_id = None
+            image_id = new_image_ids.get(task_id)
         else:
             image_name, image_id = image_pins[task_id]
         dockerfile = _read_public_file(task_root / "environment/Dockerfile", task_root, max_bytes=128_000)
@@ -173,7 +181,7 @@ def build_catalogue(source_root: Path) -> dict[str, Any]:
             "adapter": dict(adapter), "resources": {"cpus": 8, "memory_mb": 14336,
                                                         "storage_mb": int(env.get("storage_mb", 0)), "gpus": 0},
             "integration_status": (
-                "DEV_SCORER_ONLY_PROTOCOL_FIXTURE_AND_HARBOR_ADAPTER_PENDING"
+                "PINNED_DEV_IMAGE_PUBLIC_SCORER_FIXTURE_AND_HARBOR_ADAPTER_PENDING"
                 if task_id in NEW_TASKS else "PINNED_DEV_VALIDATION_ADAPTER"
             ),
             "license": "Apache-2.0", "license_sha256": APACHE_LICENSE_SHA256,
@@ -203,8 +211,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--out", type=Path, default=CATALOGUE_PATH)
+    parser.add_argument("--new-image-id", action="append", default=[],
+                        metavar="TASK_ID=sha256:...",
+                        help="local Docker image ID for one of the three new tasks; repeat once per task")
     args = parser.parse_args()
-    value = build_catalogue(args.source)
+    image_pins = {}
+    for item in args.new_image_id:
+        task_id, sep, image_id = item.partition("=")
+        if not sep or not task_id or task_id in image_pins:
+            parser.error("--new-image-id must be unique TASK_ID=sha256:... entries")
+        image_pins[task_id] = image_id
+    value = build_catalogue(args.source, new_image_ids=image_pins)
     write_catalogue(value, args.out)
     print(json.dumps({"status": "CATALOGUE_BUILT", "catalogue_sha256": value["catalogue_sha256"],
                       "task_count": len(value["tasks"]), "output": str(args.out)}, indent=2))

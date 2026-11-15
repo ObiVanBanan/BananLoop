@@ -3,31 +3,27 @@
   "arm_deadline_seconds": 3600,
   "arms": 24,
   "blockers": [
-    "PREP_BLOCKED_IMPLEMENTATION: codex_best_verified_checkpoint_integration is not implemented and linked to the series runner",
     "PREP_BLOCKED_IMPLEMENTATION: bananloop_full_backend is not implemented and linked to the series runner",
     "PREP_BLOCKED_IMPLEMENTATION: benchmark_bound_pivot_authorizer is not implemented and linked to the series runner",
     "act-tensor-sparse-panel-imputation-r2: public DEV scorer exists but trusted fixture/protocol/Harbor adapter is incomplete",
-    "act-tensor-sparse-panel-imputation-r2: public DEV image has not been content-pinned",
     "causalpfn-cate-pehe-ihdp-surfaceb: public DEV scorer exists but trusted fixture/protocol/Harbor adapter is incomplete",
-    "causalpfn-cate-pehe-ihdp-surfaceb: public DEV image has not been content-pinned",
-    "hicard-latent-encoder: public DEV scorer exists but trusted fixture/protocol/Harbor adapter is incomplete",
-    "hicard-latent-encoder: public DEV image has not been content-pinned"
+    "hicard-latent-encoder: public DEV scorer exists but trusted fixture/protocol/Harbor adapter is incomplete"
   ],
   "call_limit_policy": "OBSERVE_ONLY",
   "capacity": {
-    "available_memory_mb": 26347,
+    "available_memory_mb": 25589,
     "conservative_arm_slots": 1,
     "cpu_bound_arm_slots": 1,
     "currently_memory_bound_arm_slots": 1,
-    "disk_free_bytes": 925942140928,
+    "disk_free_bytes": 923625414656,
     "logical_cpus": 12,
     "minimum_series_wall_hours_at_one_slot": 24,
     "per_task_requested_cpus": 8,
     "per_task_requested_memory_mb": 14336,
     "total_memory_mb": 32011
   },
-  "catalogue_file_sha256": "66adabf99790376e307a6d74092f256748644615f3fdf7b1b3d922e1cebaafd2",
-  "catalogue_sha256": "2b71344d0b2012d36808280213a85b0fd8cef7fcf1f1dd499c215f5f94a5cfaf",
+  "catalogue_file_sha256": "31e16efe9f6a5c47831537272b7e269c4fa647d452fc821a156d8719b8df4dc6",
+  "catalogue_sha256": "1cad63485ac2237a4d41540bcf5bd206b8869a727211cc68a5b3bee960c4e570",
   "codex_auth_status": "Logged in using ChatGPT",
   "codex_version": "codex-cli 0.169.0",
   "eligible_task_ids": [
@@ -51,8 +47,8 @@
     "24_arm_result_archiver": true,
     "bananloop_full_backend": false,
     "benchmark_bound_pivot_authorizer": false,
-    "codex_best_verified_checkpoint_integration": false,
-    "codex_direct_backend": true
+    "codex_direct_backend": true,
+    "codex_final_artifact_export": true
   },
   "integrity_note": "Local are-grader-ctx source snippets for the three new tasks were inspected during offline contract research. Owner accepted continued use for an internal non-RPDI-14 diagnostic with disclosure; no blind/independent holdout claim is permitted.",
   "live_models_started": false,

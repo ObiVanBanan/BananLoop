@@ -33,6 +33,9 @@ def _finite_metric(value: float) -> float:
 
 
 def _module(path: Path):
+    candidate_dir = str(path.parent.resolve())
+    if candidate_dir not in sys.path:
+        sys.path.insert(0, candidate_dir)
     spec = importlib.util.spec_from_file_location("are_public_candidate", path)
     if spec is None or spec.loader is None:
         raise ImportError("cannot load candidate entrypoint")

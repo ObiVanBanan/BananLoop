@@ -62,7 +62,10 @@ def test_preflight_reports_missing_content_pins_without_launching_anything():
     assert report["live_models_started"] is False
     assert report["harbor_started"] is False
     assert report["ai_judge_started"] is False
-    assert any("content-pinned" in item for item in report["blockers"])
+    for task_id in ("act-tensor-sparse-panel-imputation-r2",
+                    "causalpfn-cate-pehe-ihdp-surfaceb", "hicard-latent-encoder"):
+        assert any(task_id in item and "local public DEV image ID differs" in item
+                   for item in report["blockers"])
     assert sum("trusted fixture/protocol/Harbor adapter is incomplete" in item
                for item in report["blockers"]) == 3
     assert report["operator_private_source_exposure"]["accepted_for_internal_diagnostic"] is True
@@ -73,7 +76,7 @@ def test_preflight_reports_missing_content_pins_without_launching_anything():
         "hicard-latent-encoder",
     }
     assert report["implementation_gates"]["codex_direct_backend"] is True
-    assert report["implementation_gates"]["codex_best_verified_checkpoint_integration"] is False
+    assert report["implementation_gates"]["codex_final_artifact_export"] is True
     assert report["implementation_gates"]["bananloop_full_backend"] is False
     assert report["implementation_gates"]["benchmark_bound_pivot_authorizer"] is False
     assert report["implementation_gates"]["24_arm_result_archiver"] is True
@@ -246,8 +249,10 @@ def test_codex_direct_backend_uses_fake_cli_and_enforces_deadline(tmp_path):
     fake_codex = tmp_path / "fake-codex"
     fake_codex.write_text(
         "#!/usr/bin/env python3\n"
-        "import json,sys,time\n"
+        "import json,os,sys,time\n"
         "prompt=sys.stdin.read()\n"
+        "os.makedirs('benchmarks/fake',exist_ok=True)\n"
+        "open('benchmarks/fake/solution.py','w').write('final candidate')\n"
         "if 'sleep past deadline' in prompt: time.sleep(5)\n"
         "print(json.dumps({'type':'turn.completed','usage':{'input_tokens':7,'output_tokens':3}}),flush=True)\n",
         encoding="utf-8")
@@ -258,18 +263,35 @@ def test_codex_direct_backend_uses_fake_cli_and_enforces_deadline(tmp_path):
         initial_repo=initial, base_sha=base_sha,
     )
     usage = UsageLedger(tmp_path / "usage.sqlite3")
+    task = {"task_id": "task-fake", "adapter": {"candidate_path": "benchmarks/fake/solution.py"}}
+    expired_root = tmp_path / "expired"
+    expired_root.mkdir()
+    expired = backend.run("arm-expired", task, expired_root,
+                          time.time() - 1, usage)
+    assert expired["status"] == "TIMED_OUT_BEFORE_CLONE"
+    assert expired["final_artifact"]["status"] == "MISSING_OUTPUT"
+    assert (expired_root / "final-artifacts").is_dir()
+
     complete_root = tmp_path / "complete"
     complete_root.mkdir()
-    completed = backend.run("arm-fake", {"task_id": "task-fake"}, complete_root,
+    completed = backend.run("arm-fake", task, complete_root,
                             time.time() + 10, usage)
     assert completed["status"] == "COMPLETED"
     assert completed["model_turns_observed"] == 1
     assert (complete_root / "repo" / "README.md").read_text(encoding="utf-8") == "initial tree\n"
+    assert completed["final_artifact"]["status"] == "CAPTURED"
+    assert (complete_root / "final-artifacts" / "solution.py").read_text(encoding="utf-8") == "final candidate"
 
     (instruction).write_text("sleep past deadline", encoding="utf-8")
     timeout_root = tmp_path / "timeout"
     timeout_root.mkdir()
-    timed_out = backend.run("arm-timeout", {"task_id": "task-fake"}, timeout_root,
+    timed_out = backend.run("arm-timeout", task, timeout_root,
                             time.time() + 0.5, usage)
     assert timed_out["status"] == "TIMED_OUT"
     assert timed_out["model_turns_observed"] == 0
+    assert timed_out["final_artifact"]["status"] == "CAPTURED"
+    (timeout_root / "missing-snapshot").mkdir()
+    missing = CodexDirectBackend.snapshot_final_artifacts(
+        task=task, repo=timeout_root / "missing-repo", arm_root=timeout_root / "missing-snapshot",
+    )
+    assert missing["status"] == "MISSING_OUTPUT"

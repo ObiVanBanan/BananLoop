@@ -31,9 +31,10 @@ The fake-series harness accepts only an injected backend. Its tests create 24
 separate arm roots and produce a hash-indexed archive without models, Harbor,
 evaluators, or AI Judge calls. The archiver refuses incomplete/duplicate arms,
 symlinks, credential-like paths, and common API-key/Bearer-token patterns.
-`CodexDirectBackend` can run a persistent Codex
-CLI task, but best-verified checkpoint integration and a complete series
-launcher are not yet implemented. BananLoop Full is not yet implemented.
+`CodexDirectBackend` can run a persistent Codex CLI task and snapshot its final
+task output directory as-is, including missing or invalid output status. A
+complete series launcher and BananLoop Full backend with the frozen auto-pivot
+policy are not yet implemented.
 
 ## Current status: `PREP_BLOCKED`
 
