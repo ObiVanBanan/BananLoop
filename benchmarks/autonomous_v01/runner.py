@@ -11,23 +11,85 @@ import hashlib
 import json
 import os
 import random
+import shlex
+import shutil
 import sqlite3
+import subprocess
+import tempfile
 import time
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
 ROOT = Path(__file__).resolve().parents[2]
-SELECTION = ROOT / "benchmarks/autoresearchexam/task-selection.json"
-MAX_CALLS = 250
+CATALOGUE = Path(__file__).with_name("task-catalogue.json")
 ARM_SECONDS = 3600
-PER_ARM_CALLS = 10
+HARBOR_BINARY = Path("/home/sonik/bananloop-benchmark-env/harbor-venv/bin/harbor")
+EXPECTED_TASK_COUNT = 12
+TASK_IDS = (
+    "budgeted-imputation-mcar50", "carps-star-discrepancy-subset-select",
+    "cpu-decoder-graph-executor", "cpu-llm-decode-throughput",
+    "dctabeval-aeac-pooled-cat-statistics", "label-efficient-risk-estimator",
+    "shortest-valid-ci-l2-ece", "sketched-newton-cov-estimator",
+    "sopcc-online-chance-constrained-policy",
+    "act-tensor-sparse-panel-imputation-r2",
+    "causalpfn-cate-pehe-ihdp-surfaceb", "hicard-latent-encoder",
+)
 
 
 def canonical_sha(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
                                 ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+
+
+def host_capacity_report() -> dict[str, Any]:
+    logical_cpus = os.cpu_count()
+    total_memory_mb = available_memory_mb = None
+    try:
+        memory = {}
+        for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
+            name, raw = line.split(":", 1)
+            if name in {"MemTotal", "MemAvailable"}:
+                memory[name] = int(raw.strip().split()[0]) // 1024
+        total_memory_mb = memory.get("MemTotal")
+        available_memory_mb = memory.get("MemAvailable")
+    except (OSError, ValueError, IndexError):
+        pass
+    cpu_slots = logical_cpus // 8 if isinstance(logical_cpus, int) else 0
+    memory_slots = available_memory_mb // 14336 if isinstance(available_memory_mb, int) else 0
+    slots = min(cpu_slots, memory_slots) if memory_slots else cpu_slots
+    return {
+        "logical_cpus": logical_cpus, "total_memory_mb": total_memory_mb,
+        "available_memory_mb": available_memory_mb,
+        "per_task_requested_cpus": 8, "per_task_requested_memory_mb": 14336,
+        "cpu_bound_arm_slots": cpu_slots, "currently_memory_bound_arm_slots": memory_slots,
+        "conservative_arm_slots": slots,
+        "minimum_series_wall_hours_at_one_slot": 24,
+        "disk_free_bytes": shutil.disk_usage(ROOT).free,
+    }
+
+
+def inspect_docker_image(image: str, docker_binary: str = "docker") -> str | None:
+    try:
+        result = subprocess.run([docker_binary, "image", "inspect", "--format", "{{.Id}}", image],
+                                capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    return value if len(value) == 71 and value.startswith("sha256:") else None
+
+
+def inspect_harbor(binary: Path = HARBOR_BINARY) -> str | None:
+    if binary.is_symlink() or not binary.is_file() or not os.access(binary, os.X_OK):
+        return None
+    try:
+        result = subprocess.run([str(binary), "--version"], capture_output=True,
+                                text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -39,61 +101,79 @@ def read_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def task_readiness(selection: dict[str, Any]) -> tuple[list[str], list[str]]:
-    """Return eligible pinned task IDs and evidence-based exclusions."""
-    tasks = selection.get("tasks")
+def validate_catalogue(catalogue: dict[str, Any]) -> None:
+    """Validate the content address and required source/evaluator pins."""
+    declared = catalogue.get("catalogue_sha256")
+    body = {key: value for key, value in catalogue.items() if key != "catalogue_sha256"}
+    actual = hashlib.sha256(json.dumps(
+        body, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    if not isinstance(declared, str) or declared != actual:
+        raise ValueError("task catalogue content digest does not match its contents")
+    tasks = catalogue.get("tasks")
     if not isinstance(tasks, list):
-        raise ValueError("selection.tasks must be a list")
-    proxy_ids = {"budgeted-covtype-dual-market-open"}
-    eligible = [t["task_id"] for t in tasks
-                if isinstance(t, dict) and isinstance(t.get("task_id"), str)
-                and t["task_id"] not in proxy_ids]
-    excluded = [f"{task_id}: evaluator is static-price proxy, not official task score"
-                for task_id in sorted(proxy_ids)
-                if any(isinstance(t, dict) and t.get("task_id") == task_id for t in tasks)]
-    return eligible, excluded
+        raise ValueError("task catalogue has no tasks list")
+    ids = [item.get("task_id") for item in tasks if isinstance(item, dict)]
+    if len(ids) != EXPECTED_TASK_COUNT or set(ids) != set(TASK_IDS):
+        raise ValueError("task catalogue must contain exactly 12 distinct curated tasks")
+    for item in tasks:
+        adapter, resources = item.get("adapter", {}), item.get("resources", {})
+        storage = resources.get("storage_mb")
+        if (not all(isinstance(item.get(key), str) and len(item[key]) == 64
+                    for key in ("task_sha256", "instruction_sha256", "dockerfile_sha256"))
+                or not adapter.get("adapter_id")
+                or adapter.get("direction") not in {"MAXIMIZE", "MINIMIZE"}
+                or resources.get("cpus") != 8 or resources.get("memory_mb") != 14336
+                or resources.get("gpus") != 0 or isinstance(storage, bool)
+                or not isinstance(storage, int)):
+            raise ValueError(f"task catalogue pins are incomplete or malformed: {item.get('task_id')}")
 
 
-def build_manifest(*, eligible_tasks: list[dict[str, Any]], seed: int,
-                   source_revision: str, evaluator_digest: str,
-                   model: str, reasoning: str) -> dict[str, Any]:
-    """Freeze 12 preregistered task pairs from a complete eligible pool."""
-    required = {"task_id", "task_sha256", "instruction_sha256", "metric", "direction",
-                "adapter_sha256"}
-    if len({item.get("task_id") for item in eligible_tasks}) < 12:
-        raise ValueError("PREP_BLOCKED_INSUFFICIENT_TASKS: need 12 eligible task adapters")
+def build_manifest(*, catalogue: dict[str, Any], seed: int,
+                   model: str, reasoning: str, codex_version: str,
+                   full_feature_flags: dict[str, Any]) -> dict[str, Any]:
+    """Freeze the owner-curated 12 tasks and reproducibly randomize arm order."""
+    validate_catalogue(catalogue)
+    tasks_in = catalogue["tasks"]
+    task_map = {item.get("task_id"): item for item in tasks_in if isinstance(item, dict)}
+    if set(task_map) != set(TASK_IDS):
+        raise ValueError("catalogue must contain exactly the 12 owner-curated ARE tasks")
     if isinstance(seed, bool) or not isinstance(seed, int):
         raise ValueError("selection seed must be an integer")
-    if not source_revision or not evaluator_digest or not model or not reasoning:
-        raise ValueError("source, evaluator, model and reasoning pins are required")
-    for item in eligible_tasks:
-        if not required <= item.keys() or item["direction"] not in {"higher", "lower"}:
-            raise ValueError("eligible task lacks pinned source, adapter, or metric contract")
-    ordered = sorted(eligible_tasks, key=lambda item: item["task_id"])
+    if not model or not reasoning or not codex_version or not full_feature_flags:
+        raise ValueError("model, reasoning, Codex version, and Full flags are required")
     rng = random.Random(seed)
-    rng.shuffle(ordered)
-    selected = ordered[:12]
     tasks = []
-    for index, task in enumerate(selected, start=1):
+    for index, task_id in enumerate(TASK_IDS, start=1):
+        task = task_map[task_id]
+        adapter = task.get("adapter", {})
+        if (not all(task.get(key) for key in ("task_sha256", "instruction_sha256", "dockerfile_sha256"))
+                or not adapter.get("adapter_id") or adapter.get("direction") not in {"MAXIMIZE", "MINIMIZE"}):
+            raise ValueError(f"task lacks source pins or scorer contract: {task_id}")
         arms = ["bananloop_full", "codex_direct"]
         rng.shuffle(arms)
         tasks.append({"pair_id": f"are-{index:02d}", "task": dict(task),
                       "arm_order": arms,
                       "arms": [{"system": system, "deadline_seconds": ARM_SECONDS,
-                                "call_reservation": PER_ARM_CALLS}
+                                "usage_policy": "OBSERVE_ONLY"}
                                for system in arms]})
     manifest = {
         "schema": "bananloop-autonomous-v01-experiment-manifest-v1",
         "kind": "ARE_PRIMARY_ONLY",
         "seed": seed,
-        "source_revision": source_revision,
-        "evaluator_digest": evaluator_digest,
+        "catalogue_sha256": catalogue.get("catalogue_sha256"),
+        "source_revision": catalogue.get("source_revision"),
         "model": model,
         "reasoning": reasoning,
-        "global_call_cap": MAX_CALLS,
-        "reserved_calls": 240,
-        "reserve_calls": 10,
+        "codex_version": codex_version,
+        "full_feature_flags": full_feature_flags,
+        "seconds_per_arm": ARM_SECONDS,
+        "call_limit_policy": "OBSERVE_ONLY",
         "judge_policy": "after_all_24_arms_terminal_and_frozen",
+        "integrity_note": (
+            "Local are-grader-ctx source snippets for the three new tasks were inspected during offline contract research. "
+            "No candidate execution, grader call, Harbor evaluation, or model call occurred; treat independent evaluator review as pending."
+        ),
         "tasks": tasks,
         "board_games": "separate_secondary_experiment_requires_separate_approval_and_budget",
     }
@@ -101,30 +181,79 @@ def build_manifest(*, eligible_tasks: list[dict[str, Any]], seed: int,
     return manifest
 
 
-def offline_preflight(*, selection_path: Path = SELECTION,
-                      codex_help: str | None = None) -> dict[str, Any]:
-    """Verify task count and key run-control prerequisites without external calls."""
-    selection = read_json(selection_path)
-    eligible, exclusions = task_readiness(selection)
-    expected = 12
-    blockers: list[str] = []
-    if len(set(eligible)) < expected:
-        blockers.append(f"PREP_BLOCKED_INSUFFICIENT_TASKS: {len(set(eligible))} eligible adapters; require {expected}")
-    if codex_help is not None and "max-turns" not in codex_help and "max-requests" not in codex_help:
-        blockers.append("Codex CLI exposes no hard per-run provider-request cap; 250-call global enforcement is unproven")
+def offline_preflight(*, catalogue_path: Path = CATALOGUE,
+                      codex_auth_status: str | None = None,
+                      codex_version: str | None = None,
+                      harbor_version: str | None = None,
+                      image_inspector: Callable[[str], str | None] | None = None) -> dict[str, Any]:
+    """Check frozen task inputs and local runtime pins without running any agent."""
+    catalogue = read_json(catalogue_path)
+    try:
+        validate_catalogue(catalogue)
+    except ValueError as exc:
+        return {
+            "schema": "bananloop-autonomous-v01-preflight-v1",
+            "status": "PREP_BLOCKED",
+            "catalogue_sha256": catalogue.get("catalogue_sha256"),
+            "catalogue_file_sha256": hashlib.sha256(catalogue_path.read_bytes()).hexdigest(),
+            "planned_distinct_tasks": EXPECTED_TASK_COUNT,
+            "arms": EXPECTED_TASK_COUNT * 2,
+            "arm_deadline_seconds": ARM_SECONDS,
+            "capacity": host_capacity_report(),
+            "call_limit_policy": "OBSERVE_ONLY",
+            "blockers": [f"PREP_BLOCKED_CATALOGUE_INTEGRITY: {exc}"],
+            "live_models_started": False, "harbor_started": False,
+            "ai_judge_started": False,
+        }
+    tasks = catalogue.get("tasks", [])
+    blockers: list[str] = [
+        "PREP_BLOCKED_SOURCE_ACCESS_REVIEW: local are-grader-ctx source snippets for the three new tasks were inspected during contract research; owner/reviewer disposition is required before claiming a clean evaluator review"
+    ]
+    ids = [item.get("task_id") for item in tasks if isinstance(item, dict)]
+    if set(ids) != set(TASK_IDS) or len(ids) != EXPECTED_TASK_COUNT:
+        blockers.append("PREP_BLOCKED_TASK_CATALOGUE: curated 12 task set/pins are incomplete")
+    if catalogue.get("source_revision") != "23c0d92e11af1dea821f972b5f0a739060958002":
+        blockers.append("PREP_BLOCKED_SOURCE_REVISION: AutoResearchExam source pin changed")
+    for item in tasks:
+        if not isinstance(item, dict):
+            continue
+        adapter = item.get("adapter", {})
+        if not adapter.get("adapter_id"):
+            blockers.append(f"{item.get('task_id')}: task-specific adapter is missing")
+        if item.get("integration_status") != "PINNED_DEV_VALIDATION_ADAPTER":
+            blockers.append(f"{item.get('task_id')}: public DEV scorer exists but trusted fixture/protocol/Harbor adapter is incomplete")
+        image, image_id = item.get("public_dev_image"), item.get("public_dev_image_id")
+        if not image or not image_id:
+            blockers.append(f"{item.get('task_id')}: public DEV image has not been content-pinned")
+        elif image_inspector is not None and image_inspector(image) != image_id:
+            blockers.append(f"{item.get('task_id')}: local public DEV image ID differs from catalogue pin")
+    if codex_auth_status != "Logged in using ChatGPT":
+        blockers.append("Codex Direct subscription authentication has not been verified")
+    if not codex_version:
+        blockers.append("Codex CLI version is not frozen")
+    if not harbor_version:
+        blockers.append("Pinned Harbor executable is unavailable or its version could not be read")
+    block_unique = list(dict.fromkeys(blockers))
+    blockers = block_unique
     return {
         "schema": "bananloop-autonomous-v01-preflight-v1",
         "status": "PREP_BLOCKED" if blockers else "READY_NON_RPDI_DIAGNOSTIC",
-        "selection_sha256": hashlib.sha256(selection_path.read_bytes()).hexdigest(),
-        "eligible_task_ids": sorted(set(eligible)),
-        "excluded": exclusions,
-        "planned_distinct_tasks": expected,
-        "arms": expected * 2,
+        "catalogue_sha256": catalogue.get("catalogue_sha256"),
+        "catalogue_file_sha256": hashlib.sha256(catalogue_path.read_bytes()).hexdigest(),
+        "eligible_task_ids": sorted(ids),
+        "planned_distinct_tasks": EXPECTED_TASK_COUNT,
+        "arms": EXPECTED_TASK_COUNT * 2,
         "arm_deadline_seconds": ARM_SECONDS,
-        "global_chatgpt_call_cap": MAX_CALLS,
-        "per_arm_reservation": PER_ARM_CALLS,
-        "all_calls_reserved": expected * 2 * PER_ARM_CALLS,
-        "reserve_calls": MAX_CALLS - expected * 2 * PER_ARM_CALLS,
+        "capacity": host_capacity_report(),
+        "call_limit_policy": "OBSERVE_ONLY",
+        "codex_version": codex_version,
+        "codex_auth_status": codex_auth_status,
+        "integrity_note": (
+            "Local are-grader-ctx source snippets for the three new tasks were inspected during offline contract research. "
+            "No candidate execution, grader call, Harbor evaluation, or model call occurred; treat independent evaluator review as pending."
+        ),
+        "harbor_binary": str(HARBOR_BINARY),
+        "harbor_version": harbor_version,
         "blockers": blockers,
         "live_models_started": False,
         "harbor_started": False,
@@ -132,30 +261,15 @@ def offline_preflight(*, selection_path: Path = SELECTION,
     }
 
 
-class GlobalCallLedger:
-    """Atomic reservation ledger; ambiguous calls permanently consume budget."""
+class UsageLedger:
+    """Durable observed usage log; it records, but never caps, provider calls."""
 
-    def __init__(self, path: Path, *, cap: int = MAX_CALLS, arm_cap: int = PER_ARM_CALLS):
-        if isinstance(cap, bool) or cap < 1 or isinstance(arm_cap, bool) or arm_cap < 1:
-            raise ValueError("caps must be positive")
+    def __init__(self, path: Path):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.cap = cap
         with self._connect() as db:
-            db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-            db.execute("CREATE TABLE IF NOT EXISTS calls (id TEXT PRIMARY KEY, arm_id TEXT NOT NULL, "
-                       "status TEXT NOT NULL, reserved_at REAL NOT NULL, receipt_json TEXT)")
-            row = db.execute("SELECT value FROM meta WHERE key='cap'").fetchone()
-            if row is None:
-                db.execute("INSERT INTO meta VALUES('cap', ?)", (str(cap),))
-            elif int(row[0]) != cap:
-                raise ValueError("ledger cap differs from its frozen cap")
-            row = db.execute("SELECT value FROM meta WHERE key='arm_cap'").fetchone()
-            if row is None:
-                db.execute("INSERT INTO meta VALUES('arm_cap', ?)", (str(arm_cap),))
-            elif int(row[0]) != arm_cap:
-                raise ValueError("ledger per-arm cap differs from its frozen cap")
-        self.arm_cap = arm_cap
+            db.execute("CREATE TABLE IF NOT EXISTS usage_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, "
+                       "arm_id TEXT NOT NULL, source TEXT NOT NULL, event_json TEXT NOT NULL, recorded_at REAL NOT NULL)")
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.path, timeout=30, isolation_level=None)
@@ -163,41 +277,44 @@ class GlobalCallLedger:
         db.execute("PRAGMA synchronous=FULL")
         return db
 
-    def reserve(self, arm_id: str) -> str:
-        if not arm_id:
-            raise ValueError("arm_id is required")
-        db = self._connect()
-        try:
-            db.execute("BEGIN IMMEDIATE")
-            count = db.execute("SELECT COUNT(*) FROM calls").fetchone()[0]
-            if count >= self.cap:
-                db.rollback()
-                raise RuntimeError("global ChatGPT call budget exhausted")
-            arm_count = db.execute("SELECT COUNT(*) FROM calls WHERE arm_id=?", (arm_id,)).fetchone()[0]
-            if arm_count >= self.arm_cap:
-                db.rollback()
-                raise RuntimeError("per-arm ChatGPT call budget exhausted")
-            call_id = "call-" + uuid.uuid4().hex
-            db.execute("INSERT INTO calls VALUES(?,?, 'RESERVED_UNKNOWN', ?, NULL)",
-                       (call_id, arm_id, time.time()))
-            db.commit()
-            return call_id
-        finally:
-            db.close()
-
-    def settle(self, call_id: str, *, status: str, receipt: dict[str, Any] | None = None) -> None:
-        if status not in {"COMPLETED", "FAILED", "UNKNOWN"}:
-            raise ValueError("invalid call settlement status")
+    def record(self, arm_id: str, source: str, event: dict[str, Any]) -> int:
+        if not arm_id or not source or not isinstance(event, dict):
+            raise ValueError("usage event requires arm, source, and object payload")
+        payload = json.dumps(event, sort_keys=True, separators=(",", ":"), allow_nan=False)
         with self._connect() as db:
-            changed = db.execute("UPDATE calls SET status=?, receipt_json=? WHERE id=? AND status='RESERVED_UNKNOWN'",
-                                 (status, json.dumps(receipt, sort_keys=True) if receipt else None,
-                                  call_id)).rowcount
-            if changed != 1:
-                raise ValueError("call reservation missing or already settled")
+            cursor = db.execute("INSERT INTO usage_events(arm_id,source,event_json,recorded_at) VALUES(?,?,?,?)",
+                                (arm_id, source, payload, time.time()))
+            return int(cursor.lastrowid)
 
-    def count(self) -> int:
+    def summary(self) -> dict[str, Any]:
         with self._connect() as db:
-            return int(db.execute("SELECT COUNT(*) FROM calls").fetchone()[0])
+            rows = db.execute("SELECT source,event_json FROM usage_events ORDER BY seq").fetchall()
+        summary: dict[str, Any] = {"observed_events": len(rows), "model_turns_observed": 0,
+                                   "input_tokens": 0, "output_tokens": 0,
+                                   "unknown_usage_events": 0, "by_source": {}}
+        for source, raw in rows:
+            event = json.loads(raw)
+            stats = summary["by_source"].setdefault(source, {"events": 0, "model_turns_observed": 0,
+                "input_tokens": 0, "output_tokens": 0, "unknown_usage_events": 0})
+            stats["events"] += 1
+            turns = event.get("model_turns_observed", event.get("model_calls", 1 if event.get("dispatched") else 0))
+            if isinstance(turns, int) and not isinstance(turns, bool) and turns >= 0:
+                stats["model_turns_observed"] += turns
+                summary["model_turns_observed"] += turns
+            usage = event.get("usage")
+            if not isinstance(usage, dict):
+                stats["unknown_usage_events"] += int(bool(calls))
+                summary["unknown_usage_events"] += int(bool(calls))
+                continue
+            for key in ("input_tokens", "output_tokens"):
+                value = usage.get(key)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    stats[key] += value
+                    summary[key] += value
+                else:
+                    stats["unknown_usage_events"] += 1
+                    summary["unknown_usage_events"] += 1
+        return summary
 
 
 @dataclass(frozen=True)
@@ -266,36 +383,220 @@ class CandidateArchive:
 
 
 class ArmBackend(Protocol):
-    def run(self, arm_id: str, task: dict[str, Any], deadline_epoch: float,
-            call_budget: int) -> dict[str, Any]: ...
+    def run(self, arm_id: str, task: dict[str, Any], arm_root: Path,
+            deadline_epoch: float, usage: UsageLedger) -> dict[str, Any]: ...
+
+
+def _atomic_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + "\n"
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def run_fake_series(tasks: list[dict[str, Any]], root: Path,
                     backend_factory: Callable[[str], ArmBackend]) -> dict[str, Any]:
-    """Run deterministic fake backends only; never constructs a live backend."""
-    if len(tasks) != 12 or len({t.get("task_id") for t in tasks}) != 12:
+    """Run 24 isolated injected fake arms; no real backend is imported or launched."""
+    if len(tasks) != EXPECTED_TASK_COUNT or len({t.get("task_id") for t in tasks}) != EXPECTED_TASK_COUNT:
         raise ValueError("offline acceptance run requires exactly 12 distinct tasks")
-    ledger = GlobalCallLedger(root / "budget.sqlite3")
+    if root.exists() or root.is_symlink():
+        raise ValueError("offline fake-series state root must be new")
+    root.mkdir(parents=True, mode=0o700)
+    usage = UsageLedger(root / "observed-usage.sqlite3")
     runs = []
     for task in tasks:
-        for system in ("bananloop_full", "codex_direct"):
+        for system in task.get("arm_order", ("bananloop_full", "codex_direct")):
+            if system not in {"bananloop_full", "codex_direct"}:
+                raise ValueError("manifest contains unknown system")
             arm_id = f"{task['task_id']}--{system}"
+            arm_root = root / arm_id
+            arm_root.mkdir(mode=0o700)
+            deadline = time.time() + ARM_SECONDS
             backend = backend_factory(system)
-            result = backend.run(arm_id, task, time.time() + ARM_SECONDS, PER_ARM_CALLS)
-            runs.append({"arm_id": arm_id, "result": result})
-    return {"runs": runs, "call_reservations": ledger.count(), "model_calls": 0,
-            "harbor_evaluations": 0, "ai_judge_calls": 0, "status": "OFFLINE_FAKE_COMPLETE"}
+            result = backend.run(arm_id, task, arm_root, deadline, usage)
+            record = {"arm_id": arm_id, "task_id": task["task_id"], "system": system,
+                      "deadline_epoch": deadline, "result": result}
+            _atomic_json(arm_root / "result.json", record)
+            runs.append(record)
+    report = {"status": "OFFLINE_FAKE_COMPLETE", "runs": runs,
+              "usage": usage.summary(), "model_calls": 0,
+              "harbor_evaluations": 0, "ai_judge_calls": 0}
+    _atomic_json(root / "summary.json", report)
+    return report
+
+
+def parse_codex_jsonl_usage(path: Path) -> dict[str, Any]:
+    """Summarize observed Codex JSONL turn and token events; malformed tail is unknown."""
+    turns = 0
+    input_tokens = output_tokens = 0
+    unknown = False
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            unknown = True
+            continue
+        if not isinstance(event, dict):
+            unknown = True
+            continue
+        if event.get("type") == "turn.completed":
+            turns += 1
+            usage = event.get("usage") or event.get("token_usage")
+            if isinstance(usage, dict):
+                for key, target in (("input_tokens", "input"), ("output_tokens", "output")):
+                    value = usage.get(key)
+                    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                        if target == "input":
+                            input_tokens += value
+                        else:
+                            output_tokens += value
+                    else:
+                        unknown = True
+            else:
+                unknown = True
+    return {"model_turns_observed": turns, "usage": None if unknown else {
+        "input_tokens": input_tokens, "output_tokens": output_tokens},
+        "usage_unknown": unknown}
+
+
+class CodexDirectBackend:
+    """Persistent iterative Codex subscription run with a wall-clock stop."""
+
+    def __init__(self, *, codex_binary: str, model: str, reasoning: str,
+                 task_instruction: Path, dev_command: list[str],
+                 initial_repo: Path, base_sha: str):
+        self.codex_binary = codex_binary
+        self.model = model
+        self.reasoning = reasoning
+        self.task_instruction = task_instruction
+        self.dev_command = dev_command
+        self.initial_repo = initial_repo
+        self.base_sha = base_sha
+
+    def run(self, arm_id: str, task: dict[str, Any], arm_root: Path,
+            deadline_epoch: float, usage: UsageLedger) -> dict[str, Any]:
+        repo = arm_root / "repo"
+        remaining = deadline_epoch - time.time()
+        if remaining <= 0:
+            return {"status": "TIMED_OUT_BEFORE_CLONE", "model_turns_observed": 0}
+        try:
+            clone = subprocess.run(["git", "clone", "--no-hardlinks", "--quiet",
+                                    str(self.initial_repo), str(repo)],
+                                   capture_output=True, timeout=min(90, remaining))
+        except subprocess.TimeoutExpired:
+            return {"status": "TIMED_OUT_DURING_CLONE", "model_turns_observed": 0}
+        if clone.returncode != 0:
+            return {"status":"FAILED_TO_CLONE_INITIAL_REPOSITORY", "model_turns_observed":0}
+        remaining = deadline_epoch - time.time()
+        if remaining <= 0:
+            return {"status": "TIMED_OUT_BEFORE_CHECKOUT", "model_turns_observed": 0}
+        try:
+            checkout = subprocess.run(["git", "-C", str(repo), "checkout", "--detach", self.base_sha],
+                                      capture_output=True, timeout=min(30, remaining))
+        except subprocess.TimeoutExpired:
+            return {"status": "TIMED_OUT_DURING_CHECKOUT", "model_turns_observed": 0}
+        if checkout.returncode != 0:
+            return {"status":"FAILED_TO_PIN_INITIAL_REVISION", "model_turns_observed":0}
+        instruction = self.task_instruction.read_text(encoding="utf-8")
+        (repo / "TASK-INSTRUCTION.md").write_text(instruction, encoding="utf-8")
+        prompt = (
+            "You are the Codex Direct arm in a preregistered AutoResearchExam study. "
+            "Work only in this repository. Iteratively inspect the task, implement and improve "
+            "the required candidate, run the pinned public DEV evaluator, read its numeric feedback, "
+            "and continue improving while useful until the absolute task deadline. Keep the best "
+            "verified candidate and its DEV receipt in this arm's artifacts. Never access private "
+            "grader or hidden data, never contact external services, and do not compare against "
+            "another arm. Task:\n\n" + instruction + "\n\nPinned DEV command: "
+            + shlex.join(self.dev_command) + f"\nReasoning setting: {self.reasoning}."
+        )
+        log = arm_root / "codex-events.jsonl"
+        stderr = arm_root / "codex-stderr.log"
+        env = {k: v for k, v in os.environ.items() if k not in {"OPENAI_API_KEY", "AZURE_OPENAI_API_KEY"}}
+        remaining = deadline_epoch - time.time()
+        if remaining <= 0:
+            return {"status":"TIMED_OUT_BEFORE_START", "model_turns_observed":0}
+        command = [self.codex_binary, "exec", "--json", "--sandbox", "workspace-write",
+                   "--model", self.model, "-c", f"model_reasoning_effort={self.reasoning}",
+                   "-C", str(repo), "--output-last-message",
+                   str(arm_root / "codex-last-message.txt"), "-"]
+        with log.open("wb") as stdout_file, stderr.open("wb") as stderr_file:
+            process = subprocess.Popen(command, cwd=repo, stdin=subprocess.PIPE,
+                                       stdout=stdout_file, stderr=stderr_file, env=env,
+                                       start_new_session=(os.name != "nt"))
+            try:
+                process.communicate(prompt.encode("utf-8"),
+                                    timeout=max(0.1, deadline_epoch - time.time()))
+                status = "COMPLETED" if process.returncode == 0 else "FAILED"
+            except subprocess.TimeoutExpired:
+                status = "TIMED_OUT"
+                if os.name != "nt":
+                    import signal
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    if os.name != "nt":
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    else:
+                        process.kill()
+                    process.wait()
+        observed = parse_codex_jsonl_usage(log)
+        usage.record(arm_id, "codex_direct", observed)
+        return {"status":status, "returncode":process.returncode,
+                "model_turns_observed":observed["model_turns_observed"],
+                "usage_unknown":observed["usage_unknown"],
+                "repo":str(repo), "codex_events":str(log)}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("preflight",))
-    parser.add_argument("--selection", type=Path, default=SELECTION)
-    parser.add_argument("--codex-help-file", type=Path)
+    parser.add_argument("--catalogue", type=Path, default=CATALOGUE)
+    parser.add_argument("--codex-auth-status")
+    parser.add_argument("--codex-version")
+    parser.add_argument("--docker-binary", default="docker")
+    parser.add_argument("--harbor-binary", type=Path, default=HARBOR_BINARY)
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
-    help_text = args.codex_help_file.read_text(encoding="utf-8") if args.codex_help_file else None
-    report = offline_preflight(selection_path=args.selection, codex_help=help_text)
+    auth_status = args.codex_auth_status
+    if auth_status is None:
+        try:
+            auth = subprocess.run(["codex", "login", "status"], capture_output=True,
+                                  text=True, timeout=10, check=False)
+            auth_status = auth.stdout.strip() if auth.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired):
+            auth_status = None
+    codex_version = args.codex_version
+    if codex_version is None:
+        try:
+            version = subprocess.run(["codex", "--version"], capture_output=True,
+                                     text=True, timeout=10, check=False)
+            codex_version = version.stdout.strip() if version.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired):
+            codex_version = None
+    harbor_version = inspect_harbor(args.harbor_binary)
+    report = offline_preflight(catalogue_path=args.catalogue,
+                               codex_auth_status=auth_status,
+                               codex_version=codex_version,
+                               harbor_version=harbor_version,
+                               image_inspector=lambda image: inspect_docker_image(image, args.docker_binary))
     encoded = json.dumps(report, sort_keys=True, indent=2) + "\n"
     if args.out:
         if args.out.exists() or args.out.is_symlink():

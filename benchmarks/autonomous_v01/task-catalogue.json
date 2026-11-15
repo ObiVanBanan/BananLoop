@@ -1,0 +1,1053 @@
+{
+  "catalogue_sha256": "2b71344d0b2012d36808280213a85b0fd8cef7fcf1f1dd499c215f5f94a5cfaf",
+  "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+  "schema": "bananloop-autonomous-v01-task-catalogue-v1",
+  "source_revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+  "task_policy": "CURATED_12_RANDOMIZED_ARM_ORDER",
+  "tasks": [
+    {
+      "adapter": {
+        "adapter_id": "imputation-public-v2",
+        "aggregation": "MEAN",
+        "candidate_path": "benchmarks/autoresearchexam/solutions/impute.py",
+        "direction": "MAXIMIZE",
+        "entrypoint": "impute",
+        "metric_field": "imputation_r2",
+        "metric_id": "imputation_r2",
+        "public_output_path": "/app/output/impute.py"
+      },
+      "dev_files": [],
+      "dockerfile_sha256": "db4287837f939b925e9ded958953713889f16044efb71ddc853e86aa802f3714",
+      "dockerignore_sha256": "172c9772dd4171f99e71b3648c2da214e5e24c74d8b8166159cddfca1acb64bb",
+      "instruction_sha256": "db5f523c327513114bb130af24984f89bd384fe0f01357dd69c1b0eded0f009f",
+      "integration_status": "PINNED_DEV_VALIDATION_ADAPTER",
+      "license": "Apache-2.0",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "public_dev_image": "bananloop-are-public-devkit-probe:2026-11-12",
+      "public_dev_image_id": "sha256:5d2bac54769dc124be218efc1a1495210197a25652f6005ad327d9fa5bc8f9f4",
+      "requirements_sha256": "9b9c22ff5500eb31fdf5059becef25b53caf412b8fe0d3500736ff1724263c41",
+      "resources": {
+        "cpus": 8,
+        "gpus": 0,
+        "memory_mb": 14336,
+        "storage_mb": 153600
+      },
+      "task_id": "budgeted-imputation-mcar50",
+      "task_sha256": "a3760c5eac35277ddfde9ff039921a7119cc4dd8b43d4d2a580df52ec9fb864c",
+      "version": "1.1.0"
+    },
+    {
+      "adapter": {
+        "adapter_id": "carps-public-v1",
+        "aggregation": "MEAN",
+        "candidate_path": "benchmarks/autoresearchexam/solutions/carps/select_subset.py",
+        "direction": "MAXIMIZE",
+        "entrypoint": "select_subset",
+        "metric_field": "public_task_score",
+        "metric_id": "autoresearchexam.carps.public_task_score",
+        "public_output_path": "/app/output/select_subset.py"
+      },
+      "dev_files": [],
+      "dockerfile_sha256": "db4287837f939b925e9ded958953713889f16044efb71ddc853e86aa802f3714",
+      "dockerignore_sha256": "172c9772dd4171f99e71b3648c2da214e5e24c74d8b8166159cddfca1acb64bb",
+      "instruction_sha256": "77138bdffa578f1211e19fc2c1e74a6fec18323a91dfb97bb7808e5b26427987",
+      "integration_status": "PINNED_DEV_VALIDATION_ADAPTER",
+      "license": "Apache-2.0",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "public_dev_image": "bananloop-are-carps-public-dev:1.1.0",
+      "public_dev_image_id": "sha256:59f83ddb37abcc1a284c673a02a8b811aea94e06e99ffc40f745921a13b5e2e2",
+      "requirements_sha256": "cf4d1dc9a101f290fca565d8a6fb4f3ca3f1ada0912c93a81bf37f3fcdf20973",
+      "resources": {
+        "cpus": 8,
+        "gpus": 0,
+        "memory_mb": 14336,
+        "storage_mb": 153600
+      },
+      "task_id": "carps-star-discrepancy-subset-select",
+      "task_sha256": "e149dd3b1c959c445e2d06f25ad2753124837bae6011e540ec9e516fdf5c1482",
+      "version": "1.1.0"
+    },
+    {
+      "adapter": {
+        "adapter_id": "cpudecoder-public-v1",
+        "aggregation": "MEAN",
+        "candidate_path": "benchmarks/autoresearchexam/solutions/cpu_decoder/executor.py",
+        "direction": "MAXIMIZE",
+        "entrypoint": "execute",
+        "metric_field": "geometric_mean_speedup",
+        "metric_id": "cpu_decoder_geomean_speedup",
+        "public_output_path": "/app/output/executor.py"
+      },
+      "dev_files": [],
+      "dockerfile_sha256": "d3474350fb3e93949afd1b29a8eaf952b62ef08d8cc93c268a26dde82ac59123",
+      "dockerignore_sha256": "172c9772dd4171f99e71b3648c2da214e5e24c74d8b8166159cddfca1acb64bb",
+      "instruction_sha256": "826bde245fa3fa4eac4235b3cf0fc7f95d06a2d4c643d5ccab3b63c5a71840f7",
+      "integration_status": "PINNED_DEV_VALIDATION_ADAPTER",
+      "license": "Apache-2.0",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "public_dev_image": "bananloop-are-cpudecoder-public-dev:1.1.0",
+      "public_dev_image_id": "sha256:dd54ec300f39cb3bb9766592fcde5e92fce7b09df64364a21551cb8eb04757f7",
+      "requirements_sha256": "e79f852cbfe98fab4d4d3d99100f306aadcb58e15f139d9663682393f867022b",
+      "resources": {
+        "cpus": 8,
+        "gpus": 0,
+        "memory_mb": 14336,
+        "storage_mb": 153600
+      },
+      "task_id": "cpu-decoder-graph-executor",
+      "task_sha256": "ce70b7172769b2e569c3bbcd93644a185f5480bb15299bae9de7c374761ec4e4",
+      "version": "1.1.0"
+    },
+    {
+      "adapter": {
+        "adapter_id": "cpu-llm-public-v1",
+        "aggregation": "MEDIAN",
+        "candidate_path": "benchmarks/autoresearchexam/solutions/cpu_llm/engine.py",
+        "direction": "MAXIMIZE",
+        "entrypoint": "Engine",
+        "metric_field": "speedup",
+        "metric_id": "cpu_llm_decode_speedup",
+        "public_output_path": "/app/output/engine.py"
+      },
+      "dev_files": [],
+      "dockerfile_sha256": "32e1ba814715ba1515f9b8c2456ba772c970b3eadd137e0530dcd1182d56cb98",
+      "dockerignore_sha256": "172c9772dd4171f99e71b3648c2da214e5e24c74d8b8166159cddfca1acb64bb",
+      "instruction_sha256": "e3150dff47a1ac0e18360f59fc62bbb495ec94011806f277656799d4478ab4e1",
+      "integration_status": "PINNED_DEV_VALIDATION_ADAPTER",
+      "license": "Apache-2.0",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "public_dev_image": "bananloop-are-cpullm-public-dev:1.1.0",
+      "public_dev_image_id": "sha256:682b01ecc8b472b9cf422bf2732d6f30a08c9a6fbc7d75703a5e4b7028c02ddd",
+      "requirements_sha256": "a71fb82e7c13bf3a11d80d857efddd1fccb2315b3af33be9976896bea04fbbfd",
+      "resources": {
+        "cpus": 8,
+        "gpus": 0,
+        "memory_mb": 14336,
+        "storage_mb": 153600
+      },
+      "task_id": "cpu-llm-decode-throughput",
+      "task_sha256": "fdc497deb6874fb72c2549a272c6cf866d3e6f29789be2b5c74a0df475b8042e",
+      "version": "1.1.0"
+    },
+    {
+      "adapter": {
+        "adapter_id": "dctabeval-public-v1",
+        "aggregation": "MEAN",
+        "candidate_path": "benchmarks/autoresearchexam/solutions/dctabeval/solution.py",
+        "direction": "MAXIMIZE",
+        "entrypoint": "evaluate",
+        "metric_field": "roc_auc",
+        "metric_id": "roc_auc",
+        "public_output_path": "/app/output/solution.py"
+      },
+      "dev_files": [],
+      "dockerfile_sha256": "8102e073527a81e3765b3005c542e2b80647033eb0adc9abc041b60ec44e6e8c",
+      "dockerignore_sha256": "172c9772dd4171f99e71b3648c2da214e5e24c74d8b8166159cddfca1acb64bb",
+      "instruction_sha256": "23f85e039f68534902627ccc2cdb6f9acea4b039f466f54a4f5032d6ba291e71",
+      "integration_status": "PINNED_DEV_VALIDATION_ADAPTER",
+      "license": "Apache-2.0",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "public_dev_image": "bananloop-are-dctabeval-public-dev:2026-11-13",
+      "public_dev_image_id": "sha256:7c4cefdf35f1455fb2817780d50360401d257709ec8f72f392e67c069e977e68",
+      "requirements_sha256": "bd2e9d2c7b2085e8c0d12cca5de05611c1f501710e396728bedb44ecb5096c4d",
+      "resources": {
+        "cpus": 8,
+        "gpus": 0,
+        "memory_mb": 14336,
+        "storage_mb": 153600
+      },
+      "task_id": "dctabeval-aeac-pooled-cat-statistics",
+      "task_sha256": "321de9811c9ffd08e0eb8de105eb6536ad9aad4bf43e54b19900496917117bae",
+      "version": "1.1.0"
+    },
+    {
+      "adapter": {
+        "adapter_id": "labelrisk-public-v1",
+        "aggregation": "MEDIAN",
+        "candidate_path": "benchmarks/autoresearchexam/solutions/label_risk/estimator.py",
+        "direction": "MINIMIZE",
+        "entrypoint": "estimate_risk",
+        "metric_field": "median_relative_squared_error_ratio",
+        "metric_id": "labelrisk_median_relative_squared_error",
+        "public_output_path": "/app/output/estimator.py"
+      },
+      "dev_files": [],
+      "dockerfile_sha256": "4b91fc76584c48c7b9a74e61a3b18594f40c50dcddf32bcb3a43b234bcd166d6",
+      "dockerignore_sha256": "172c9772dd4171f99e71b3648c2da214e5e24c74d8b8166159cddfca1acb64bb",
+      "instruction_sha256": "66a209cd63aaaa9060abd535855f03521e2bed022a65507c7cd5ae67a7129d3a",
+      "integration_status": "PINNED_DEV_VALIDATION_ADAPTER",
+      "license": "Apache-2.0",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "public_dev_image": "bananloop-are-labelrisk-public-dev:1.1.0",
+      "public_dev_image_id": "sha256:14d2cd7c8f7b36314841805af2784620b406757f92ddc7603b8fcef2057c19e1",
+      "requirements_sha256": "8afe2dab8e71cdfff123950a7104eed064b3d478f1dc5710e041c22ff96454c4",
+      "resources": {
+        "cpus": 8,
+        "gpus": 0,
+        "memory_mb": 14336,
+        "storage_mb": 153600
+      },
+      "task_id": "label-efficient-risk-estimator",
+      "task_sha256": "7fe491cec532818d52e699a6db6d87325bf421f280aa94a10f497a4afb06e12c",
+      "version": "1.1.0"
+    },
+    {
+      "adapter": {
+        "adapter_id": "shortest-ci-public-v1",
+        "aggregation": "MEAN",
+        "candidate_path": "benchmarks/autoresearchexam/solutions/shortest_valid_ci/interval.py",
+        "direction": "MINIMIZE",
+        "entrypoint": "predict_interval",
+        "metric_field": "metric",
+        "metric_id": "relative_interval_length",
+        "public_output_path": "/app/output/interval.py"
+      },
+      "dev_files": [],
+      "dockerfile_sha256": "76b77309b993c68a5a64c854eda61b9d885492ca7c2199cc533181faee2a5118",
+      "dockerignore_sha256": "172c9772dd4171f99e71b3648c2da214e5e24c74d8b8166159cddfca1acb64bb",
+      "instruction_sha256": "be11f61a026312478f96b11af65a2872d7108682970b6a1d686fdf7996739726",
+      "integration_status": "PINNED_DEV_VALIDATION_ADAPTER",
+      "license": "Apache-2.0",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "public_dev_image": "bananloop-are-shortest-ci-public-dev:1.1.0",
+      "public_dev_image_id": "sha256:926252b1f9c047d96fac104aebbcd9128739d23c22a7bb3a7de9ddb1f9682fe7",
+      "requirements_sha256": "cf4d1dc9a101f290fca565d8a6fb4f3ca3f1ada0912c93a81bf37f3fcdf20973",
+      "resources": {
+        "cpus": 8,
+        "gpus": 0,
+        "memory_mb": 14336,
+        "storage_mb": 153600
+      },
+      "task_id": "shortest-valid-ci-l2-ece",
+      "task_sha256": "5c6344e36db8db95f7a89aca961ba14de65874b27ca61de299ac4e2f54530ba3",
+      "version": "1.1.0"
+    },
+    {
+      "adapter": {
+        "adapter_id": "sketched-newton-public-v1",
+        "aggregation": "MEAN",
+        "candidate_path": "benchmarks/autoresearchexam/solutions/sketched_newton/estimator.py",
+        "direction": "MAXIMIZE",
+        "entrypoint": "estimate",
+        "metric_field": "task_score",
+        "metric_id": "task_score",
+        "public_output_path": "/app/output/estimator.py"
+      },
+      "dev_files": [],
+      "dockerfile_sha256": "3da867f38842c2553f7ab69c67dd169d3d6c0a20c04600df90b87854c50ce243",
+      "dockerignore_sha256": "172c9772dd4171f99e71b3648c2da214e5e24c74d8b8166159cddfca1acb64bb",
+      "instruction_sha256": "1e843187ae1ca642747afec357b4f931b0fb8eeaf077e15b9545a157a2b4a2da",
+      "integration_status": "PINNED_DEV_VALIDATION_ADAPTER",
+      "license": "Apache-2.0",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "public_dev_image": "bananloop-are-newton-public-dev:1.1.0",
+      "public_dev_image_id": "sha256:50b2c2cf5ae3009161edcd000c6485d1f0c99445cb8de86d3c410552aab750c8",
+      "requirements_sha256": "cf4d1dc9a101f290fca565d8a6fb4f3ca3f1ada0912c93a81bf37f3fcdf20973",
+      "resources": {
+        "cpus": 8,
+        "gpus": 0,
+        "memory_mb": 14336,
+        "storage_mb": 153600
+      },
+      "task_id": "sketched-newton-cov-estimator",
+      "task_sha256": "df9b2bacf143f20d139d8cad8112ce8ee5a3902a679cf6c99b28dd77fffae9f8",
+      "version": "1.1.0"
+    },
+    {
+      "adapter": {
+        "adapter_id": "sopcc-public-v1",
+        "aggregation": "MEAN",
+        "candidate_path": "benchmarks/autoresearchexam/solutions/sopcc/policy.py",
+        "direction": "MAXIMIZE",
+        "entrypoint": "policy",
+        "metric_field": "sopcc_score",
+        "metric_id": "sopcc_score",
+        "public_output_path": "/app/solution/policy.py"
+      },
+      "dev_files": [],
+      "dockerfile_sha256": "178ddfa84b1e4f63c214322eab4595e0966e4fdfca0138d95183f7b46dcf4cac",
+      "dockerignore_sha256": "172c9772dd4171f99e71b3648c2da214e5e24c74d8b8166159cddfca1acb64bb",
+      "instruction_sha256": "6eeb6a3162149487c9ef7ab1607657dceaefec2ac3154432a1e2da520c65dc07",
+      "integration_status": "PINNED_DEV_VALIDATION_ADAPTER",
+      "license": "Apache-2.0",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "public_dev_image": "bananloop-are-sopcc-public-dev:2026-11-12",
+      "public_dev_image_id": "sha256:5fc63eccd0a3448db1dd9240c3fe7ecb4cef02511bafc77e2c91f294c3d82b8e",
+      "requirements_sha256": "1d4af681c1ad7863590ef9d9df65d871ba636f05699c481e3698caf4fbc958e7",
+      "resources": {
+        "cpus": 8,
+        "gpus": 0,
+        "memory_mb": 14336,
+        "storage_mb": 153600
+      },
+      "task_id": "sopcc-online-chance-constrained-policy",
+      "task_sha256": "b3f895a3e518fd6fb6c738fe663b7d95a2265d66373b9509431b34665861f071",
+      "version": "1.1.0"
+    },
+    {
+      "adapter": {
+        "adapter_id": "act-tensor-public-v1",
+        "aggregation": "MEAN",
+        "candidate_path": "benchmarks/autoresearchexam/solutions/act_tensor/impute.py",
+        "dev_count": "8",
+        "dev_limit_seconds": "240",
+        "direction": "MAXIMIZE",
+        "entrypoint": "impute",
+        "metric_field": "imputation_r2",
+        "metric_id": "imputation_r2",
+        "public_output_path": "/app/solution/impute.py",
+        "repeatability_runs": "1"
+      },
+      "dev_files": [
+        {
+          "path": "environment/app/data/dev/instance_00.npz",
+          "sha256": "9e35d2973694fad018aee395cb063e5de725910845fc683714e8917e2cd97a81",
+          "size": 608178
+        },
+        {
+          "path": "environment/app/data/dev/instance_01.npz",
+          "sha256": "4b781dd604252e50424a29935d5328fc7813b351ba3d2b827807b8d35238c1ce",
+          "size": 716382
+        },
+        {
+          "path": "environment/app/data/dev/instance_02.npz",
+          "sha256": "b218a4fc67301ea7a387b3dd9bc45f31ee10fcfebce2ff689208afb75508d284",
+          "size": 712398
+        },
+        {
+          "path": "environment/app/data/dev/instance_03.npz",
+          "sha256": "e96f5bcef9a9c3bcf066d85d626a05151cb5395c407ad1cfe79660588696cf0e",
+          "size": 549042
+        },
+        {
+          "path": "environment/app/data/dev/instance_04.npz",
+          "sha256": "d625da2666c98f90262e636960d0287063002dd1a130cf67d21787938c35fe7a",
+          "size": 642512
+        },
+        {
+          "path": "environment/app/data/dev/instance_05.npz",
+          "sha256": "d1ba80f1e440fa3274fd6e6ec4e6b20c4f7d0db7bd526b547a509ed57e5ac059",
+          "size": 536020
+        },
+        {
+          "path": "environment/app/data/dev/instance_06.npz",
+          "sha256": "2d64fff387c9973d118fa32445d04a19e8d0087340578b957c0cfb304449658f",
+          "size": 552604
+        },
+        {
+          "path": "environment/app/data/dev/instance_07.npz",
+          "sha256": "eade09626fe8a80359abc370e99f62b36c5532579df5698a3b3a2adbc2f20343",
+          "size": 516296
+        }
+      ],
+      "dockerfile_sha256": "5781772ec66fd09ad66b5b462937a276efdb8ac2d0315a60739d5566fc839147",
+      "dockerignore_sha256": "172c9772dd4171f99e71b3648c2da214e5e24c74d8b8166159cddfca1acb64bb",
+      "instruction_sha256": "0c9ee2521673e86c5306355a9d028571c07cd083110014b919dc0bbc6451996b",
+      "integration_status": "DEV_SCORER_ONLY_PROTOCOL_FIXTURE_AND_HARBOR_ADAPTER_PENDING",
+      "license": "Apache-2.0",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "public_dev_image": "bananloop-v01-act-tensor-sparse-panel-imputation-r2:1.1.0",
+      "public_dev_image_id": null,
+      "requirements_sha256": "075730996bbce5d39457c5b54fde62e24a29a92d807b6e4f0b73c41806c866e1",
+      "resources": {
+        "cpus": 8,
+        "gpus": 0,
+        "memory_mb": 14336,
+        "storage_mb": 153600
+      },
+      "task_id": "act-tensor-sparse-panel-imputation-r2",
+      "task_sha256": "81d2a54cf10d0729ad9f38b52a0d02e167b9141f38453245899493629273ba55",
+      "version": "1.1.0"
+    },
+    {
+      "adapter": {
+        "adapter_id": "causalpfn-public-v1",
+        "aggregation": "MEAN",
+        "candidate_path": "benchmarks/autoresearchexam/solutions/causalpfn/estimator.py",
+        "dev_count": "100",
+        "dev_limit_seconds": "1200",
+        "direction": "MINIMIZE",
+        "entrypoint": "estimate_cate",
+        "metric_field": "mean_pehe",
+        "metric_id": "mean_pehe",
+        "public_output_path": "/app/output/estimator.py",
+        "repeatability_runs": "1"
+      },
+      "dev_files": [
+        {
+          "path": "environment/app/data/dev/realization_000.npz",
+          "sha256": "6e2ad4bb850655df7cf61a8eba9e3c698d818375b1564b4e329b60435e1573fc",
+          "size": 23611
+        },
+        {
+          "path": "environment/app/data/dev/realization_001.npz",
+          "sha256": "ae2c1aba88406366abc49d211b980a923bee1344fcf0ba0c8d3cbd995275e0b6",
+          "size": 23681
+        },
+        {
+          "path": "environment/app/data/dev/realization_002.npz",
+          "sha256": "9d2bf84e5186d8b0502a3e2baf00a8f9eb9079f7a9223f1441abe439f1a4c13a",
+          "size": 23655
+        },
+        {
+          "path": "environment/app/data/dev/realization_003.npz",
+          "sha256": "f6da29f3ea30b7bd1f11aca94f6845465a83dd240988e2285ab181fa174c6c0a",
+          "size": 23567
+        },
+        {
+          "path": "environment/app/data/dev/realization_004.npz",
+          "sha256": "8447f10d448c8bb9ebd65aef690baa9a715489e3d58996a4b3faddac46316e00",
+          "size": 23813
+        },
+        {
+          "path": "environment/app/data/dev/realization_005.npz",
+          "sha256": "553ac56858e51e8d5b1591d4fe506ecd8b632da757ff7044d678dbc3766b9e83",
+          "size": 23588
+        },
+        {
+          "path": "environment/app/data/dev/realization_006.npz",
+          "sha256": "f9745a70b945f1ecbe88f57c1687bf3c1536453724e7b1212fc5ddc504b8c7eb",
+          "size": 23722
+        },
+        {
+          "path": "environment/app/data/dev/realization_007.npz",
+          "sha256": "67728a8aa3011168c87a6ec43c1388afac9911c3a5b2e147c39a83a87e20e4ad",
+          "size": 23575
+        },
+        {
+          "path": "environment/app/data/dev/realization_008.npz",
+          "sha256": "21bfa647386ce1293dc800942e2bd8f446679af40992ccccb012974f6ed50bb0",
+          "size": 23609
+        },
+        {
+          "path": "environment/app/data/dev/realization_009.npz",
+          "sha256": "8c2091fca8cadce1354f5431c2b4945e135dbb95fe8223b0aa2aea56b7c4337c",
+          "size": 23245
+        },
+        {
+          "path": "environment/app/data/dev/realization_010.npz",
+          "sha256": "83b4d8f6980f05756b142a6646d6d624e204b8bb2d24e6d1a3af3fa422aea3b8",
+          "size": 23690
+        },
+        {
+          "path": "environment/app/data/dev/realization_011.npz",
+          "sha256": "e9fb850d937cda107bc94fe67395685694066dd04c9c2da76c5df133ca7121a3",
+          "size": 23303
+        },
+        {
+          "path": "environment/app/data/dev/realization_012.npz",
+          "sha256": "d8e1cb9bcf8637deb3a9ef638684281a573f7b067a3615f83c0b9ba525afe04b",
+          "size": 23594
+        },
+        {
+          "path": "environment/app/data/dev/realization_013.npz",
+          "sha256": "824b5f10963251f3f54d6c8d26f1fd7f7e915fc2bc2aa12734c5932c1dd44119",
+          "size": 23698
+        },
+        {
+          "path": "environment/app/data/dev/realization_014.npz",
+          "sha256": "e43e1ce52a9575fb7a9eea4306b65299abacf1a027af3db3263f9b475fc98556",
+          "size": 23660
+        },
+        {
+          "path": "environment/app/data/dev/realization_015.npz",
+          "sha256": "0d5fc8e2edee7ceeab78b8ea2293170cee63b94192c786585b63ac000b3c2b49",
+          "size": 23396
+        },
+        {
+          "path": "environment/app/data/dev/realization_016.npz",
+          "sha256": "9a01337ee6c6abafa27f64aa8351f7d8deda3a34cc4241a289624d79c01a704a",
+          "size": 23651
+        },
+        {
+          "path": "environment/app/data/dev/realization_017.npz",
+          "sha256": "afec268e7536b408970c157224a61a853561da30496348c5d78d7b6ac644b18b",
+          "size": 23710
+        },
+        {
+          "path": "environment/app/data/dev/realization_018.npz",
+          "sha256": "f2a50da2b7522083ead21dcf3247462f5c9adceab27c72adb4b6300efe9c3d07",
+          "size": 23691
+        },
+        {
+          "path": "environment/app/data/dev/realization_019.npz",
+          "sha256": "ee019a188fcaedce94245e4b86490bbf85b0bcd1d36c6b0631fca564610d736d",
+          "size": 23657
+        },
+        {
+          "path": "environment/app/data/dev/realization_020.npz",
+          "sha256": "3d89fb640b67d0a461790164760d438c8f4e47828d5ee681e59d8e77af77e752",
+          "size": 23616
+        },
+        {
+          "path": "environment/app/data/dev/realization_021.npz",
+          "sha256": "fe4a65b9653113e9e306be8704d78800be2d796de7b725400e3fa763a8549fd5",
+          "size": 23640
+        },
+        {
+          "path": "environment/app/data/dev/realization_022.npz",
+          "sha256": "1923bbd96304c48a73901cf524ed538e44226625511ace9393bf575d4728912c",
+          "size": 23808
+        },
+        {
+          "path": "environment/app/data/dev/realization_023.npz",
+          "sha256": "8e876c098b8dac14235078c46d3ae38de2038522406e41c588e9c0b72ce846ec",
+          "size": 23627
+        },
+        {
+          "path": "environment/app/data/dev/realization_024.npz",
+          "sha256": "2688e8c5600da32c546b6e40b33fa1fd7a7b6c6d2c02e260433fd503be3c6452",
+          "size": 23639
+        },
+        {
+          "path": "environment/app/data/dev/realization_025.npz",
+          "sha256": "08b89f51042233a41fc37d0eefe623f306bb1a8e71c9918f5fa9a74c7d97ac7a",
+          "size": 23610
+        },
+        {
+          "path": "environment/app/data/dev/realization_026.npz",
+          "sha256": "d0ea4c40c9b553a2079bdba1887dff51a1618659dee685724f4c4b84dca3711b",
+          "size": 23705
+        },
+        {
+          "path": "environment/app/data/dev/realization_027.npz",
+          "sha256": "f5ac0ff8572cf134a8f32ee6c34112d981fdf32003472a134454a95a3dd1dbb0",
+          "size": 23690
+        },
+        {
+          "path": "environment/app/data/dev/realization_028.npz",
+          "sha256": "7de3d683234cd9e7e2f2f266f9f016fef7d7f7dedbbadb2d9fb74d579bd4a24c",
+          "size": 23241
+        },
+        {
+          "path": "environment/app/data/dev/realization_029.npz",
+          "sha256": "1680b240b79ce12956fb396118329fa549c247597eef37b42d0636cf15c39fbb",
+          "size": 23776
+        },
+        {
+          "path": "environment/app/data/dev/realization_030.npz",
+          "sha256": "84c24f764dffe77054781fbf698ffacb8890f253c93570e94fe15bf69126cbfd",
+          "size": 23672
+        },
+        {
+          "path": "environment/app/data/dev/realization_031.npz",
+          "sha256": "0645af4b2fe352fda467522d116299b07f7913dd316cc29cef26896515edbdec",
+          "size": 23697
+        },
+        {
+          "path": "environment/app/data/dev/realization_032.npz",
+          "sha256": "8a05ec3f49c56b4acf85b786309d13ae03c473c1388527402a2347bcb6c85737",
+          "size": 23536
+        },
+        {
+          "path": "environment/app/data/dev/realization_033.npz",
+          "sha256": "7c73bdaa5fec4ac6dc31302c44535cd34787d522ed5d3f4d79da5cd02b08980f",
+          "size": 23690
+        },
+        {
+          "path": "environment/app/data/dev/realization_034.npz",
+          "sha256": "809902d41c1e470e338b75441de218a25497631ac76390c28f3eba034707efd9",
+          "size": 23690
+        },
+        {
+          "path": "environment/app/data/dev/realization_035.npz",
+          "sha256": "87ccf7e4610d73921be932c65214e4ba0382d74d52dd32de0dcc7947a856e339",
+          "size": 23764
+        },
+        {
+          "path": "environment/app/data/dev/realization_036.npz",
+          "sha256": "a8a9167c5d28f74920d17c4a47ecc648f74183bb1393cbafabe0b0aea821f16d",
+          "size": 23703
+        },
+        {
+          "path": "environment/app/data/dev/realization_037.npz",
+          "sha256": "3f6797c6e830cd6e7ceddfb3e38d7a289ae0c55924df2a5698f2d38c591f5c25",
+          "size": 23615
+        },
+        {
+          "path": "environment/app/data/dev/realization_038.npz",
+          "sha256": "dc177f65b9a666e3394bfe85b11d7a348af6d883db72fa956c858ab7ac71661f",
+          "size": 23721
+        },
+        {
+          "path": "environment/app/data/dev/realization_039.npz",
+          "sha256": "e4200b49939ecce0fcb0e4f5bebfe21bbc829816da2e1bfa6ebf366275d7f863",
+          "size": 23759
+        },
+        {
+          "path": "environment/app/data/dev/realization_040.npz",
+          "sha256": "f3c7b1d672c4ddc055b8fb69cb83a7ce4d2f358d829828a2919443e7310b5440",
+          "size": 23676
+        },
+        {
+          "path": "environment/app/data/dev/realization_041.npz",
+          "sha256": "3ecb6379b6d152c3b30b84537c3cbe8222e9c40034145ac8cc45e6d9864142b9",
+          "size": 23739
+        },
+        {
+          "path": "environment/app/data/dev/realization_042.npz",
+          "sha256": "b9ab4d995033e4300fbabc724a95f527eea46c427e430fa8d73cb4a39a7133b5",
+          "size": 23690
+        },
+        {
+          "path": "environment/app/data/dev/realization_043.npz",
+          "sha256": "9611e6cb7133ec58f5e63f3698aef9ef5f1d607f8ef3a4e8814ec2c3f7e0b5b4",
+          "size": 23592
+        },
+        {
+          "path": "environment/app/data/dev/realization_044.npz",
+          "sha256": "4a9100c06c55e9d6b5f1636fdc7782e43a0a0ceb8263d0e9cc1ed153d5d7f8c6",
+          "size": 23694
+        },
+        {
+          "path": "environment/app/data/dev/realization_045.npz",
+          "sha256": "ec1e9d9a17fda9901eae8ee2066c6c9a42a366966e1d27690e652d248ad7378b",
+          "size": 23641
+        },
+        {
+          "path": "environment/app/data/dev/realization_046.npz",
+          "sha256": "feaad096c6dd4d1f9b8cc1efafc1c949ef751d5ef0645776e296526d8a298a7b",
+          "size": 23652
+        },
+        {
+          "path": "environment/app/data/dev/realization_047.npz",
+          "sha256": "986a4ce63d11c6a5bdb64f14198247d2d979d16d340faa2817d25772f16d79fb",
+          "size": 23697
+        },
+        {
+          "path": "environment/app/data/dev/realization_048.npz",
+          "sha256": "3b85652bf26bb0237f7c68f3488975a23858e366ff5478064f87d7b8f2b0c81c",
+          "size": 23598
+        },
+        {
+          "path": "environment/app/data/dev/realization_049.npz",
+          "sha256": "e1eb9bc1b075011dbd643dfbfad335d64a5a6ff331ed7ba171874f1fbf64a318",
+          "size": 23645
+        },
+        {
+          "path": "environment/app/data/dev/realization_050.npz",
+          "sha256": "ca071c625f5ca083c72efbff10ffb0d9f9912cd1a2b8a6f09334f35317c979dd",
+          "size": 23655
+        },
+        {
+          "path": "environment/app/data/dev/realization_051.npz",
+          "sha256": "3c3e99bf350961175283ded45e00ea64e8c696b233aa4ea59551ecc988d545e9",
+          "size": 23715
+        },
+        {
+          "path": "environment/app/data/dev/realization_052.npz",
+          "sha256": "a7021b47c472cfc09961110ba1e1222741294859417e2dfe461a6d83260e4344",
+          "size": 23628
+        },
+        {
+          "path": "environment/app/data/dev/realization_053.npz",
+          "sha256": "44599fa2411ffb41df04861195d480be84534db1c7e7fd1c9b845ba1451cefca",
+          "size": 23649
+        },
+        {
+          "path": "environment/app/data/dev/realization_054.npz",
+          "sha256": "17952a1e8bc8593bc6d03d62d3d2cad28acc2ad6331616e054efae09eaae67e1",
+          "size": 23602
+        },
+        {
+          "path": "environment/app/data/dev/realization_055.npz",
+          "sha256": "1905551c07d689357d91a04f68625856c90d5d1d1d2ea28d7b9c73060776c054",
+          "size": 23597
+        },
+        {
+          "path": "environment/app/data/dev/realization_056.npz",
+          "sha256": "379f994c9c8724c8db91bc662b9eca5031420e84cf08fb270fc685aa07153a34",
+          "size": 23602
+        },
+        {
+          "path": "environment/app/data/dev/realization_057.npz",
+          "sha256": "c417b408eead932001014f117c22bfe48055cdf8cefcfd08605922b013e3b88a",
+          "size": 23744
+        },
+        {
+          "path": "environment/app/data/dev/realization_058.npz",
+          "sha256": "41f266a53b5194173c78ae55fbd6d6c5856ab1cc86afdc5609990f7a976a0805",
+          "size": 23723
+        },
+        {
+          "path": "environment/app/data/dev/realization_059.npz",
+          "sha256": "1be682f436e48c8e4a6e2751002b3a4d1717de8ca55e823787e822b44304deb2",
+          "size": 23630
+        },
+        {
+          "path": "environment/app/data/dev/realization_060.npz",
+          "sha256": "176eb95952e4c3e36deecad4e0c8718e345d993068c1bc9506b7d81ade4223dd",
+          "size": 23605
+        },
+        {
+          "path": "environment/app/data/dev/realization_061.npz",
+          "sha256": "5f15e77410dc3a5a00035141a987e670f321659a84f247ddcdad35b8907639df",
+          "size": 23583
+        },
+        {
+          "path": "environment/app/data/dev/realization_062.npz",
+          "sha256": "b0a2b6eb411404ba5d7d89fe39c552dc792de6cb87a98aabed701616ed4a94c5",
+          "size": 23685
+        },
+        {
+          "path": "environment/app/data/dev/realization_063.npz",
+          "sha256": "8b09c6c30f4dc67b3b06f2dabf79b5f669a175a89c3199037e8eb65df3478b8e",
+          "size": 23600
+        },
+        {
+          "path": "environment/app/data/dev/realization_064.npz",
+          "sha256": "fc2601e826c25e3c046e9ed20cea2b4820d9311ce2ba5bc33d3f2f7078c4408e",
+          "size": 23750
+        },
+        {
+          "path": "environment/app/data/dev/realization_065.npz",
+          "sha256": "0f4774c3e48fe80ab6ca1d5e02ff927f755c15c7a44c5e6e29ab5e8206876ffa",
+          "size": 23711
+        },
+        {
+          "path": "environment/app/data/dev/realization_066.npz",
+          "sha256": "fe60c369946934ab17cc8a00247f305c696b0e8c87dd2ab95009261eb1893e95",
+          "size": 23458
+        },
+        {
+          "path": "environment/app/data/dev/realization_067.npz",
+          "sha256": "cb49a9277d3e0bc176c1c24fdcd3653b1506a2534cb435c96b504177eff7604f",
+          "size": 23660
+        },
+        {
+          "path": "environment/app/data/dev/realization_068.npz",
+          "sha256": "d35a9fddfb49d4d67fbee241a3253062ffcf353bf48efe0b1c86e360a2f31fa6",
+          "size": 23691
+        },
+        {
+          "path": "environment/app/data/dev/realization_069.npz",
+          "sha256": "24692bced9b2b640c2b39d3b776dc8ec11052785c53494c115748e7f7025b0fd",
+          "size": 23652
+        },
+        {
+          "path": "environment/app/data/dev/realization_070.npz",
+          "sha256": "9a4a6364eb9c0a9a10568e36b033b8a7531ca8625e320aaae766b0258d8c7307",
+          "size": 23635
+        },
+        {
+          "path": "environment/app/data/dev/realization_071.npz",
+          "sha256": "c9b0f1f83ed6b39583acd714af1e3877fd7dc4b0b6b8f7ad6be695270b7d7b9d",
+          "size": 23268
+        },
+        {
+          "path": "environment/app/data/dev/realization_072.npz",
+          "sha256": "df8bffe7925f064061d1ffaf350feba23ba4f3ead33f748600d81cfb1ae75b92",
+          "size": 23667
+        },
+        {
+          "path": "environment/app/data/dev/realization_073.npz",
+          "sha256": "900495ce84bf223a8d8b3c746ea8e53ec4300b7d685ffed8cb41435d6358f520",
+          "size": 23573
+        },
+        {
+          "path": "environment/app/data/dev/realization_074.npz",
+          "sha256": "aad8045ee2cd424acac5424b3f963afa5825415ec8e4087e6c0903c1ab28d48f",
+          "size": 23508
+        },
+        {
+          "path": "environment/app/data/dev/realization_075.npz",
+          "sha256": "af7f450dbcf25f70e85429fbae159a4152b280de4d1301e575e71e9b87a5d217",
+          "size": 23331
+        },
+        {
+          "path": "environment/app/data/dev/realization_076.npz",
+          "sha256": "432ecd559ab3ecdc4f74e2aae64b12ae9a996ac8c08a88848289a2a0ebda879f",
+          "size": 23637
+        },
+        {
+          "path": "environment/app/data/dev/realization_077.npz",
+          "sha256": "fd2fe441bafe7a19b7a1e838a56529ebae3d8d8054e25e4dd1207b84b1b38fa9",
+          "size": 23631
+        },
+        {
+          "path": "environment/app/data/dev/realization_078.npz",
+          "sha256": "b6023c2e5512607be1640ed363adb0b04706a22c300306c9e5d2aef02a4937bb",
+          "size": 23613
+        },
+        {
+          "path": "environment/app/data/dev/realization_079.npz",
+          "sha256": "a0feb45b5652c6daef2044d36106409e964caaa235eebaf9a0334f85e7a375ee",
+          "size": 23616
+        },
+        {
+          "path": "environment/app/data/dev/realization_080.npz",
+          "sha256": "aced5a14d8043488ef1b01c072bf7f91043649e5c7f689fdbab14aaedb87f247",
+          "size": 23664
+        },
+        {
+          "path": "environment/app/data/dev/realization_081.npz",
+          "sha256": "46dfd86c6daa0a60f91f46195f86ba1ae49256bb8037fa290a7db6e947c440ff",
+          "size": 23647
+        },
+        {
+          "path": "environment/app/data/dev/realization_082.npz",
+          "sha256": "b9d084562d260a390bb73aac2411e51bb71bb6f6276ceecf6c6ca7a20d59ebbb",
+          "size": 23601
+        },
+        {
+          "path": "environment/app/data/dev/realization_083.npz",
+          "sha256": "fa60077c7b465884fb7eaa333c520896a42fc1c1bbce7a182061e844547333e3",
+          "size": 23647
+        },
+        {
+          "path": "environment/app/data/dev/realization_084.npz",
+          "sha256": "1afa552bda45bf62e618b5cc08856ee676082a079396cd02fc33e381a99a64c0",
+          "size": 23569
+        },
+        {
+          "path": "environment/app/data/dev/realization_085.npz",
+          "sha256": "503dd003165962f580d772ce39889f2e4dd906db0432ec31aa98e68a5f2a9e26",
+          "size": 23530
+        },
+        {
+          "path": "environment/app/data/dev/realization_086.npz",
+          "sha256": "586d3a0835ad39ff5eeb6660ba1fbdd9e0bb2e13293b2df0a62d7d0874f56eb0",
+          "size": 23650
+        },
+        {
+          "path": "environment/app/data/dev/realization_087.npz",
+          "sha256": "d41490e3aaa345edc23f0985619f7c9cbecd8328d032818a55f022b65b495d68",
+          "size": 23647
+        },
+        {
+          "path": "environment/app/data/dev/realization_088.npz",
+          "sha256": "4fda04a3fc2b74305ca5dc1e94b46336d1d73433ac607e3a3bd7235031f72f6a",
+          "size": 23763
+        },
+        {
+          "path": "environment/app/data/dev/realization_089.npz",
+          "sha256": "487410da5aff1e52f79ae772b5d9ab7c5efcdb5bd84472fe73c54aba4aba549d",
+          "size": 23470
+        },
+        {
+          "path": "environment/app/data/dev/realization_090.npz",
+          "sha256": "d898897e6b175b9a3ff79fb9842dbb792fd506b425343e1ca00e15e3343f19e5",
+          "size": 23369
+        },
+        {
+          "path": "environment/app/data/dev/realization_091.npz",
+          "sha256": "c49b29a98a04f881c1901cc8a0c2d71145b89dfd757115cd84c37abc6690dad4",
+          "size": 23722
+        },
+        {
+          "path": "environment/app/data/dev/realization_092.npz",
+          "sha256": "0f37c676460384cba3e1a697a3dad71c940c4e1fc98216ed8bf96ffc831d1735",
+          "size": 23588
+        },
+        {
+          "path": "environment/app/data/dev/realization_093.npz",
+          "sha256": "27ddca1d21a62b844b4ccabf3d73b85b83397f783504ba648285d6d3576d3b99",
+          "size": 23715
+        },
+        {
+          "path": "environment/app/data/dev/realization_094.npz",
+          "sha256": "235de9d7563c3cfa322af0b609ed24e97a005536702bc31c7c240a8c3784b5fb",
+          "size": 23524
+        },
+        {
+          "path": "environment/app/data/dev/realization_095.npz",
+          "sha256": "f41d45640277b1b537e25b0e624533db64f9806165f48ab0b7c50ae8b7f29ac0",
+          "size": 23627
+        },
+        {
+          "path": "environment/app/data/dev/realization_096.npz",
+          "sha256": "75cc59420dfe7db00fdba2f3730433fec317f6cf2e72817c6c5ba1e236c1e18f",
+          "size": 23767
+        },
+        {
+          "path": "environment/app/data/dev/realization_097.npz",
+          "sha256": "f95d218e63e810438d40507a33776bb49e9db9ca9bdfdbdde1a733d685884193",
+          "size": 23707
+        },
+        {
+          "path": "environment/app/data/dev/realization_098.npz",
+          "sha256": "549d31c0c4462e9d1f822db5fa984e3acca5c78d59e1056f1de710583f27ccd9",
+          "size": 23678
+        },
+        {
+          "path": "environment/app/data/dev/realization_099.npz",
+          "sha256": "cb085b262a0aa8517900eca6e612d314d8bc1f9564ef1095416c85401e0f7e87",
+          "size": 23768
+        }
+      ],
+      "dockerfile_sha256": "4e44f857ba0e201f4f606d9a355deaabb784f4215544a37be0f6f7b798821a16",
+      "dockerignore_sha256": "172c9772dd4171f99e71b3648c2da214e5e24c74d8b8166159cddfca1acb64bb",
+      "instruction_sha256": "282f76f0102ca6647fbfd4ffff0eb3c6a6ae3c5cca535c057ba04adc5226c921",
+      "integration_status": "DEV_SCORER_ONLY_PROTOCOL_FIXTURE_AND_HARBOR_ADAPTER_PENDING",
+      "license": "Apache-2.0",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "public_dev_image": "bananloop-v01-causalpfn-cate-pehe-ihdp-surfaceb:1.1.0",
+      "public_dev_image_id": null,
+      "requirements_sha256": "4e7bfc4154a85b087e7296ee412decceb2c69b896ecc240ef9f97891b6509dea",
+      "resources": {
+        "cpus": 8,
+        "gpus": 0,
+        "memory_mb": 14336,
+        "storage_mb": 153600
+      },
+      "task_id": "causalpfn-cate-pehe-ihdp-surfaceb",
+      "task_sha256": "b85cb56673be920d7a027f8925080a158fbbf0578ec8bf4c6763603267605c7c",
+      "version": "1.1.0"
+    },
+    {
+      "adapter": {
+        "adapter_id": "hicard-public-v1",
+        "aggregation": "MEAN",
+        "candidate_path": "benchmarks/autoresearchexam/solutions/hicard/encoder.py",
+        "dev_count": "24",
+        "dev_limit_seconds": "2400",
+        "direction": "MAXIMIZE",
+        "entrypoint": "Encoder",
+        "metric_field": "onehot_mse_reduction_pct",
+        "metric_id": "onehot_mse_reduction_pct",
+        "public_output_path": "/app/output/encoder.py",
+        "repeatability_runs": "1"
+      },
+      "dev_files": [
+        {
+          "path": "environment/app/data/dev/instance_00000.npz",
+          "sha256": "08fdfac6d329575e00d7a81c066ba4447bc38e63e295fe85c99bfb141e314b04",
+          "size": 765119
+        },
+        {
+          "path": "environment/app/data/dev/instance_00001.npz",
+          "sha256": "fd6d2329a8596a0e0babf17650b014fe0d42f7b1e90bd2f98f40196a9b47667e",
+          "size": 765180
+        },
+        {
+          "path": "environment/app/data/dev/instance_00002.npz",
+          "sha256": "5ab4fdcd3759d06b89e995eeda55a0ceec463e2ba9894ad53eb43a3f36ee5845",
+          "size": 765180
+        },
+        {
+          "path": "environment/app/data/dev/instance_00003.npz",
+          "sha256": "c6c70124a2da62318b67ad186e4baed60308d3f6a806a9cf1d7a035a0fdc5b43",
+          "size": 765280
+        },
+        {
+          "path": "environment/app/data/dev/instance_00004.npz",
+          "sha256": "e3d5b05651e9956627803a70973b56f05101e92e6eea6cb88ebdd1cdf8429b7c",
+          "size": 765174
+        },
+        {
+          "path": "environment/app/data/dev/instance_00005.npz",
+          "sha256": "4a7492036ab77fd7212456a9fb3c8da9c7c9e1501af31aceb10d939ac41111cf",
+          "size": 765083
+        },
+        {
+          "path": "environment/app/data/dev/instance_00006.npz",
+          "sha256": "f915309ed71b74bd11a497e80160b9c298fb6abc0a6f8bc20945bc9cc52578cc",
+          "size": 765215
+        },
+        {
+          "path": "environment/app/data/dev/instance_00007.npz",
+          "sha256": "a1e4ca3092040cd0feb6016dbd99cad02d3ace8344821c98d74adcc4d4343db1",
+          "size": 764973
+        },
+        {
+          "path": "environment/app/data/dev/instance_00008.npz",
+          "sha256": "75f90c9ca4fa94017848627f03a3c22e06324799c13d6666c380578533374c88",
+          "size": 765066
+        },
+        {
+          "path": "environment/app/data/dev/instance_00009.npz",
+          "sha256": "b461eb7b4613571ae5bb0649fb115baa04978a0400973661d47ae61412667499",
+          "size": 765236
+        },
+        {
+          "path": "environment/app/data/dev/instance_00010.npz",
+          "sha256": "1b5a4f9b0c69695b9c55f05cb28581b43adc43570331aa9875174e0afdb1686d",
+          "size": 765186
+        },
+        {
+          "path": "environment/app/data/dev/instance_00011.npz",
+          "sha256": "a7db0b3e3de017ef3b04dd92345270264de359ac7bb079ef00f89b4461201ea9",
+          "size": 765144
+        },
+        {
+          "path": "environment/app/data/dev/instance_00012.npz",
+          "sha256": "4934d7a922f1b7f0e839ec614989ff2d8cd3a5c1a245daa5747135b20b2b80c8",
+          "size": 765029
+        },
+        {
+          "path": "environment/app/data/dev/instance_00013.npz",
+          "sha256": "04b0e75c1b42b3069a98158983504467c00f4b314e2e03ba74d01f5171ee0a18",
+          "size": 765163
+        },
+        {
+          "path": "environment/app/data/dev/instance_00014.npz",
+          "sha256": "3511567ff9ce5128e0d3a472a4853209afe188dd1aa297f72bff43b6b9d136aa",
+          "size": 765172
+        },
+        {
+          "path": "environment/app/data/dev/instance_00015.npz",
+          "sha256": "599b286f0afb995eeab28a5f39abf1592f3ee40a4f0b9c1857357dafd94d5bb4",
+          "size": 765196
+        },
+        {
+          "path": "environment/app/data/dev/instance_00016.npz",
+          "sha256": "94e2ac2900a8dc35f211261b29c47206c387c0d73915d2ba59c56366daa73372",
+          "size": 765064
+        },
+        {
+          "path": "environment/app/data/dev/instance_00017.npz",
+          "sha256": "290dc10081654caaeb92ff23fe93bb280ad12094e42698be97e102010baef3ff",
+          "size": 765164
+        },
+        {
+          "path": "environment/app/data/dev/instance_00018.npz",
+          "sha256": "2870b0220947166df3eccdc087eb37c184c209eed5e4b663190ddf5391be7def",
+          "size": 765051
+        },
+        {
+          "path": "environment/app/data/dev/instance_00019.npz",
+          "sha256": "219f3e5d77d10282e03983bbb08d5a5aae0237c35d747a003fb69e37facc3586",
+          "size": 765112
+        },
+        {
+          "path": "environment/app/data/dev/instance_00020.npz",
+          "sha256": "2def8c0b045fb9df56727cf9e337f93b2fb7ad3ab4825722fd0a44640e9a6420",
+          "size": 765319
+        },
+        {
+          "path": "environment/app/data/dev/instance_00021.npz",
+          "sha256": "faef92a1f7b4754cfbbae28479f2b9ccaed9a35adf43d25ff8429edc574b12ef",
+          "size": 765340
+        },
+        {
+          "path": "environment/app/data/dev/instance_00022.npz",
+          "sha256": "f513dae8897081f3dbc98c4b3d77495c4f6720a8e819edadc213c5c04eaec30a",
+          "size": 765037
+        },
+        {
+          "path": "environment/app/data/dev/instance_00023.npz",
+          "sha256": "d4b608e9c0822df7ce372c22acc4c712a19488a696cbb4df9c00ee0e1dc4cc30",
+          "size": 765172
+        }
+      ],
+      "dockerfile_sha256": "743861687e20b2d6bd753a40f87ee65e336dfe56e0bf2bb4f403dd17c3b6a5e3",
+      "dockerignore_sha256": "172c9772dd4171f99e71b3648c2da214e5e24c74d8b8166159cddfca1acb64bb",
+      "instruction_sha256": "26f263ab432d30044de3d5a031a8dde0d2a5c24172855090ac8fa5d2789f5e08",
+      "integration_status": "DEV_SCORER_ONLY_PROTOCOL_FIXTURE_AND_HARBOR_ADAPTER_PENDING",
+      "license": "Apache-2.0",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "public_dev_image": "bananloop-v01-hicard-latent-encoder:1.1.0",
+      "public_dev_image_id": null,
+      "requirements_sha256": "9b9c22ff5500eb31fdf5059becef25b53caf412b8fe0d3500736ff1724263c41",
+      "resources": {
+        "cpus": 8,
+        "gpus": 0,
+        "memory_mb": 14336,
+        "storage_mb": 153600
+      },
+      "task_id": "hicard-latent-encoder",
+      "task_sha256": "dd09dd774a8c64664119f34e663f7ca8bc9d3c25306596342ae876274c84c0b3",
+      "version": "1.1.0"
+    }
+  ]
+}

@@ -1,40 +1,58 @@
 # Autonomous benchmark v0.1 offline preparation
 
-This package is an **offline preparation gate**, not a live benchmark launcher.
-It does not construct a BananLoop campaign, start Codex, invoke Harbor, contact
-an evaluator, or run an AI Judge. `OFFLINE-PREFLIGHT.json` records the current
-evidence and therefore fails closed.
+This package is the offline preparation path for the 12-task AutoResearchExam
+paired comparison. It does not start research agents, score through Harbor, or
+invoke an AI Judge. A separate owner approval over a frozen launch manifest is
+required before any live series.
 
-Run the read-only preflight with:
+The time policy is **3600 wall-clock seconds per arm**. Exploration, verification,
+the Optimization child, and grader waits share that deadline. Model-turn and
+token usage are recorded where the CLI reports them; they are not call caps and
+do not prove provider-request counts. No paid API or fallback is permitted.
+
+## Offline tools
+
+Build the owner-curated catalogue from the exact pinned upstream checkout:
+
+```sh
+python -m benchmarks.autonomous_v01.task_catalogue \
+  --source /home/sonik/bananloop-benchmark-env/sources/AutoResearchExam
+```
+
+Regenerate a read-only local preflight report (it also inspects Docker image IDs,
+but does not start a container):
 
 ```sh
 python -m benchmarks.autonomous_v01.runner preflight \
-  --codex-help-file /path/to/captured-codex-exec-help.txt
+  --out benchmarks/autonomous_v01/OFFLINE-PREFLIGHT-YYYY-MM-DD.json
 ```
 
-The module contains reusable primitives for an atomic shared reservation
-ledger, evaluator-bound verified candidate checkpoints, and 24-arm fake-run
-acceptance checks. `build_manifest` reproducibly selects and orders pairs only
-when 12 complete task/metric/adapter records are supplied. The fake runner
-accepts only injected fake backends; there is no live backend in this package.
+The fake-series harness accepts only an injected backend. Its tests create 24
+separate arm roots and verify artifact writing without models, Harbor, evaluators,
+or AI Judge calls. `CodexDirectBackend` can run a persistent iterative Codex CLI
+session, but a complete series launcher and BananLoop Full backend are not yet
+implemented or authorized.
 
-## Current blockers
+## Current status: `PREP_BLOCKED`
 
-The frozen AutoResearchExam shortlist has nine non-proxy adapters. Its tenth
-task (`budgeted-covtype-dual-market-open`) has a static-price proxy evaluator
-and is excluded. Three additional task-specific preparations, evaluator
-contracts, and reviewed Harbor overlays are needed before a 12-task manifest
-can be frozen. Selecting arbitrary upstream tasks would not meet the pinned
-adapter/evaluator acceptance criteria.
+The catalogue pins 12 distinct official tasks at AutoResearchExam source revision
+`23c0d92e11af1dea821f972b5f0a739060958002`. Nine task images have local image IDs
+that match their existing pins. Three new CPU tasks now have public DEV scorer
+code, but still need trusted DEV/VALIDATION fixtures, task-specific Harbor agent
+adapters, and content-pinned DEV images. Do not describe those tasks as runnable
+until the preflight reports all of those pins ready.
 
-Policy revised 2026-11-15: time-only 3600s per arm, no 250-call hard cap. The
-current Python runner STILL enforces the older cap and must be refactored before
-it can be run live. Record usage as observational data. The normal Optimization
-handoff pauses for owner approval; only a benchmark-specific preregistered
-and scope-bound pivot authorization can replace repeated manual pauses.
+The host exposes 12 logical CPUs and about 32 GiB RAM. With 8 CPUs and 14 GiB
+requested per task, measured capacity is one arm at a time; the series therefore
+needs at least 24 arm-hours, plus preparation and final evaluation. No 10-hour
+completion estimate is supported.
 
-For these reasons the status remains `PREP_BLOCKED`. Prior offline-preflight
-is historical and must be regenerated under the new time-only policy. See
-[updated decisions](../../docs/benchmarks/AUTONOMOUS-BENCHMARK-V01-DECISIONS-2026-11-15.md).
-RPDI-14 is unchanged and a real run needs separate owner approval of exact
-frozen manifest and launch command.
+The latest evidence is in
+[`OFFLINE-PREFLIGHT-2026-11-15.json`](OFFLINE-PREFLIGHT-2026-11-15.json).
+During offline contract research, local `are-grader-ctx` source snippets for the
+three new tasks were inspected accidentally. No candidate, evaluator, Harbor
+grader, or model was run; independent evaluator review still needs owner/reviewer
+disposition, as recorded by the preflight.
+RPDI-14 is unchanged. Board Games remains a separately approved secondary
+experiment. See the [plan](../../docs/benchmarks/AUTONOMOUS-BENCHMARK-V01-PLAN.md)
+and [updated decisions](../../docs/benchmarks/AUTONOMOUS-BENCHMARK-V01-DECISIONS-2026-11-15.md).

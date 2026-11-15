@@ -9,14 +9,14 @@ Compare BananLoop v0.2 Full with *iterative* Codex Direct on 12 curated eligible
 - 12 DISTINCT ARE tasks, 2 arms/task, 24 arm runs, each **3600 seconds wall clock end-to-end**, including BananLoop Exploration + verification + Optimization child, model and grader waiting, cleanup. One persistent goal and repository per arm; Codex may iteratively edit/run DEV/read feedback. No artificial iteration/call limit: stop on wall time, subscription unavailability, verified evaluator constraints or normal completion.
 - **Time-only owner decision 2026-11-15:** no hard model-call/iteration cap; maximum 3600 research seconds per arm. Subscription use is observed, not forcibly limited to 250 calls; no separately billed API. Details in the decision memo.
 - Target overall wall clock ~10 hours, NOT a fairness constraint. 24 arm-hours need at least 3 fully resourced concurrent arm slots to approach 8h before overhead. Begin concurrency=1 and prove capacity; do not oversubscribe host/Harbor/provider rate limits. Eligible tasks declare 8 CPUs, 14 GiB RAM and 150 GiB storage each, plus possible grader resources. Use resource measurements, no fabricated ETA.
-- Board Games = ten operator-composed questions, **600 seconds per arm** only in a separately approved secondary budget; current 250-call plan is reserved for ARE. Of ten questions only bg-01 is the upstream DiscoveryBench question. No shared composite score.
+- Board Games = ten operator-composed questions, **600 seconds per arm** only in a separately approved secondary run manifest and time budget. Of ten questions only bg-01 is the upstream DiscoveryBench question. No shared composite score or budget.
 - AutoResearchExam primary outcome = frozen per-task numeric evaluator result. Pin direction and score transform; aggregate paired wins/ties/losses, differences, uncertainty, time-to-best, failures and token/call usage. Never average incompatible raw scores or call CovType static-price proxy an official task score. No private holdout claim without real evidence.
 - Freeze exact task instructions/catalogue revision, initial tree, evaluator/DEV image and contract, Full flags, model/reasoning/tool settings, budget and deterministic selection seed before any arm receives a task. Randomize arm order without sharing state; no arm can see other's outputs or feedback.
 
 ## Phase 0 — offline eligibility and freeze
 1. Verify local Newton baseline commit c00fdbbd7d3ac79b9f27b489fd9f4793288f15bb; this was ahead of remote branch at last check. Do not pretend it is pushed. Branch should incorporate it before the final run freeze.
 2. Inventory official ARE catalogue and task rights. Existing benchmarks/autoresearchexam/task-selection.json has TEN tasks only, not 12. Ten task-pinned adapters exist but NOT twelve approved ready job descriptors. Expand actual official/task-version/metric/adapter/fixture support to at least 12 eligible tasks, or stop with PREP_BLOCKED_INSUFFICIENT_TASKS. Sampling must be reproducible from a recorded eligible set and seed, not cherry-picked after results.
-3. Validate official image, public DEV, submitted output contract, exact grader feedback and per-task metric orientation. Pseudorandomly choose 12 from a predeclared eligible pool. Pin source, SHA of assets and frozen protocol. Preserve proper rights. No model calls.
+3. Validate official image, public DEV, submitted output contract, exact grader feedback and per-task metric orientation. The owner-curated set of 12 is frozen in the updated decision memo; randomize only the paired arm order. Pin source, SHA of assets and frozen protocol. Preserve proper rights. No model calls.
 
 ## Phase 1 — build new autonomous runner
 1. Add new benchmarks/autonomous_v01 runner, not a silent conversion of the current ARE series_runner.py. Existing series_runner enforces five iterations, 3600s and only dispatches preprepared Harbor jobs. Build actual task/arm preparation and Codex Direct coding adapter.
@@ -37,15 +37,15 @@ Compare BananLoop v0.2 Full with *iterative* Codex Direct on 12 curated eligible
 Run 12 tasks x 2 arms with independently isolated state. Each has one persistent goal and maximum 3600s. Keep all calls, checkpoints, DEV outcomes, provider receipts, failure states, and per-task scores. Stop at research wall-time deadline or unavailable subscription and freeze results. Never show comparisons or AI Judge outputs during run, never change task pool based on early results.
 
 ## Phase 4 — Board Games (optional, separately funded)
-Run 10 x 2 arms, 600s per arm, after new approved call budget. Historical pilot in benchmarks/BOARDGAMES-LIVE-PILOT-2026-11-12.md / PR #144: 10 tasks x five iterations = 50 BananLoop calls; successful tasks ~2 minutes each; PR #144 reports 417,496 provider-reported tokens. Do not silently spend the primary 250-call budget on Board Games.
+Run 10 x 2 arms, 600s per arm, only after a separate owner-approved secondary run manifest and time budget. Historical pilot in benchmarks/BOARDGAMES-LIVE-PILOT-2026-11-12.md / PR #144: 10 tasks x five iterations = 50 BananLoop calls; successful tasks ~2 minutes each; PR #144 reports 417,496 provider-reported tokens. This is historical usage evidence, not a new hard call cap.
 
 ## Phase 5 — final archive and retrospective
 After ALL arms reach frozen terminal states, write summary.json, experiment-manifest.json, per-task score/usage/checkpoint records, source snapshots, complete Codex and BananLoop logs, ledgers and errors, index with SHA-256 for every artifact. Explicitly flag incomplete campaigns. Exclude auth secrets, private grader data, API keys and any unredacted credentials. Archive safely, verify integrity and give owner a file to upload to Google Drive. Later ChatGPT/Astra checks conclusions once, with the two arms anonymized when a qualitative judgement is needed; official numeric metric stays primary.
 
 ## Tests / acceptance criteria
-- 12 distinct official non-proxy tasks with actual adapters; random selection reproducible from predeclared eligible pool.
+- Exactly the 12 owner-curated official non-proxy tasks with actual adapters and source pins.
 - Frozen manifest, two iterative arms, equal end-to-end time, same goal/input/DEV/evaluator and disclosed differences.
-- Full workflow duration and ALL role-model calls enforced. Exactly <=250 reservations globally; NO paid API.
+- Full workflow duration enforced at 3600 seconds per arm, including Exploration and its Optimization child. Provider turns/tokens are durably observed where reported; there is no hard call or iteration cap. NO paid API or fallback.
 - Deadline chooses verified best; timeout/unknown/no-result are faithfully preserved without replay.
 - No model/grader calls in CI, offline prep or benchmark archive; explicit real-run authorization.
 - Post-run-only judging; no accidental intermediate sharing/cross-arm data leakage.

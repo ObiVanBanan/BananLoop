@@ -33,6 +33,9 @@ REVIEWED_COLLECT_TIMEOUTS = {
     "shortest-valid-ci-l2-ece": 3600.0,
     "sketched-newton-cov-estimator": 3600.0,
     "sopcc-online-chance-constrained-policy": 3600.0,
+    "act-tensor-sparse-panel-imputation-r2": 3600.0,
+    "causalpfn-cate-pehe-ihdp-surfaceb": 3600.0,
+    "hicard-latent-encoder": 3600.0,
 }
 EXPECTED_COLLECTOR_COMMAND = "/opt/are/venv/bin/python /opt/are/drain.py"
 
@@ -94,7 +97,16 @@ def prepare_overlay(source_root: Path, task_id: str, output: Path) -> dict[str, 
     if output.exists() or output.is_symlink():
         raise OverlayError("overlay output path must not already exist")
     selection = json.loads(SELECTION.read_text(encoding="utf-8"))
+    catalogue = None
     matches = [task for task in selection.get("tasks", []) if task.get("task_id") == task_id]
+    if not matches and task_id in {
+        "act-tensor-sparse-panel-imputation-r2",
+        "causalpfn-cate-pehe-ihdp-surfaceb", "hicard-latent-encoder",
+    }:
+        catalogue_path = ROOT / "benchmarks/autonomous_v01/task-catalogue.json"
+        catalogue = json.loads(catalogue_path.read_text(encoding="utf-8"))
+        matches = [task for task in catalogue.get("tasks", [])
+                   if task.get("task_id") == task_id]
     if len(matches) != 1:
         raise OverlayError("task ID is not uniquely pinned in the pilot shortlist")
     task = matches[0]
@@ -104,7 +116,8 @@ def prepare_overlay(source_root: Path, task_id: str, output: Path) -> dict[str, 
         ["git", "-C", str(source_root), "rev-parse", "HEAD"],
         check=True, capture_output=True, text=True,
     ).stdout.strip()
-    if revision != selection["source_revision"]:
+    pinned_revision = catalogue["source_revision"] if catalogue is not None else selection["source_revision"]
+    if revision != pinned_revision:
         raise OverlayError("AutoResearchExam source revision differs from the pinned shortlist")
     source = source_root / task_id
     task_path = source / "task.toml"
