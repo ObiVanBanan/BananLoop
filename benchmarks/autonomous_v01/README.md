@@ -27,12 +27,14 @@ contracts, and reviewed Harbor overlays are needed before a 12-task manifest
 can be frozen. Selecting arbitrary upstream tasks would not meet the pinned
 adapter/evaluator acceptance criteria.
 
-The installed `codex exec --help` documents no hard per-run provider-request
-cap. A process-level reservation cannot prove a 250-request maximum if one CLI
-process makes multiple subscription requests. A separately reviewed adapter
-or a supported hard cap is required. BananLoop's current Optimization handoff
-also pauses for an owner pivot decision; this package does not bypass it.
+Policy revised 2026-11-15: time-only 3600s per arm, no 250-call hard cap. The
+current Python runner STILL enforces the older cap and must be refactored before
+it can be run live. Record usage as observational data. The normal Optimization
+handoff pauses for owner approval; only a benchmark-specific preregistered
+and scope-bound pivot authorization can replace repeated manual pauses.
 
-For these reasons the only permitted result today is `PREP_BLOCKED`. The 250
-calls remain unused. RPDI-14 is unchanged, and a real run requires a separate
-owner authorization over a frozen manifest and exact launch command.
+For these reasons the status remains `PREP_BLOCKED`. Prior offline-preflight
+is historical and must be regenerated under the new time-only policy. See
+[updated decisions](../../docs/benchmarks/AUTONOMOUS-BENCHMARK-V01-DECISIONS-2026-11-15.md).
+RPDI-14 is unchanged and a real run needs separate owner approval of exact
+frozen manifest and launch command.
