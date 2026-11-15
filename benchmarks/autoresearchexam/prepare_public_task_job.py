@@ -5,6 +5,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,8 @@ def _sha(path: Path) -> str:
 
 def prepare(*, repo: Path, state_dir: Path, campaign_id: str, role_registry: Path,
             source_task: Path, fixture_path: Path, overlay: Path, jobs_dir: Path,
-            output_dir: Path, adapter_id: str, max_candidate_iterations: int = 5
+            output_dir: Path, adapter_id: str, benchmark_time_only: bool = True,
+            deadline_epoch: float | None = None
             ) -> dict[str, Any]:
     repo = repo.expanduser().resolve(strict=True)
     state_dir = state_dir.expanduser().resolve(strict=True)
@@ -39,8 +41,11 @@ def prepare(*, repo: Path, state_dir: Path, campaign_id: str, role_registry: Pat
         raise PreparationError("Harbor jobs and prepared configs must not overlap")
     if not campaign_id or not campaign_id.startswith("c-"):
         raise PreparationError("prepared Optimization child campaign ID is required")
-    if type(max_candidate_iterations) is not int or not 1 <= max_candidate_iterations <= 5:
-        raise PreparationError("Optimization iteration cap must be from one to five")
+    if benchmark_time_only is not True:
+        raise PreparationError("public task jobs must use the benchmark time-only policy")
+    if (isinstance(deadline_epoch, bool) or not isinstance(deadline_epoch, (int, float))
+            or not math.isfinite(deadline_epoch) or deadline_epoch <= 0):
+        raise PreparationError("public task jobs require the inherited absolute arm deadline")
     spec = AREPublicTaskEvaluatorRunner.spec(adapter_id)
     if source_task.name != spec["task_id"] or not source_task.is_dir():
         raise PreparationError("public task root differs from selected adapter")
@@ -82,10 +87,13 @@ def prepare(*, repo: Path, state_dir: Path, campaign_id: str, role_registry: Pat
         "public_task_contract_sha256": contract,
         "public_dev_image": spec["image"], "public_dev_image_id": spec["image_id"],
         "public_dev_cell_count": spec["count"], "repeatability_runs": 1,
-        "max_candidate_iterations": max_candidate_iterations,
+        "benchmark_time_only": True,
+        "technical_call_ceiling": 1000,
+        "technical_step_ceiling": 1000,
+        "deadline_epoch": deadline_epoch,
         "time_limit_seconds": 3600,
-        "model_call_limit": 2 * max_candidate_iterations,
-        "timeout_seconds": 120, "max_steps": 20,
+        "model_call_limit": 1000,
+        "timeout_seconds": 120, "max_steps": 1000,
     }
     harbor_config = {
         "job_name": f"are-public-{adapter_id}-{safe_id}", "jobs_dir": str(jobs_dir),
@@ -117,13 +125,13 @@ def main() -> int:
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--campaign-id", required=True)
     parser.add_argument("--adapter-id", choices=("act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1"), required=True)
-    parser.add_argument("--max-candidate-iterations", type=int, default=5)
+    parser.add_argument("--deadline-epoch", type=float, required=True)
     args = parser.parse_args()
     result = prepare(repo=args.repo, state_dir=args.state_dir, campaign_id=args.campaign_id,
                      role_registry=args.role_registry, source_task=args.source_task,
                      fixture_path=args.fixture, overlay=args.overlay, jobs_dir=args.jobs_dir,
                      output_dir=args.output_dir, adapter_id=args.adapter_id,
-                     max_candidate_iterations=args.max_candidate_iterations)
+                     deadline_epoch=args.deadline_epoch)
     print(json.dumps(result, sort_keys=True, indent=2))
     return 0
 

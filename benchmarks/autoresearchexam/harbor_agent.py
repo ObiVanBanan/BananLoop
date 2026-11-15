@@ -11,6 +11,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import math
 import shlex
 import tempfile
 import time
@@ -153,6 +154,9 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         local_public_dev_only = raw.get("local_public_dev_only", False)
         if not isinstance(local_public_dev_only, bool):
             raise RuntimeError("local_public_dev_only must be a boolean")
+        benchmark_time_only = raw.get("benchmark_time_only", False)
+        if not isinstance(benchmark_time_only, bool):
+            raise RuntimeError("benchmark_time_only must be a boolean")
         local_public_adapters = {
             "act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1",
         }
@@ -274,6 +278,8 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                     and repeatability_runs != expected_repeatability)):
             raise RuntimeError("Harbor bridge repeatability differs from the task-pinned public protocol")
         raw["repeatability_runs"] = repeatability_runs
+        if benchmark_time_only and adapter_id not in adapter_specs:
+            raise RuntimeError("time-only execution requires a pinned AutoResearchExam public adapter")
         expected_task, expected_candidate, expected_output, runner_type, expected_cells = adapter_specs[adapter_id]
         if raw["task_id"] != expected_task:
             raise RuntimeError("Harbor bridge adapter is bound to the wrong task ID")
@@ -341,21 +347,39 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             value = raw[field]
             if isinstance(value, bool) or not isinstance(value, int):
                 raise RuntimeError(f"{field} must be an integer")
-        if not 0 <= raw["model_call_limit"] <= 20 or not 1 <= raw["timeout_seconds"] <= 300:
+        call_ceiling = 1000 if benchmark_time_only else 20
+        if not 0 <= raw["model_call_limit"] <= call_ceiling or not 1 <= raw["timeout_seconds"] <= 300:
             raise RuntimeError("model call or request timeout limit is outside the supported range")
         time_limit = raw.get("time_limit_seconds", 3600)
         if isinstance(time_limit, bool) or not isinstance(time_limit, int) or not 1 <= time_limit <= 3600:
             raise RuntimeError("task time limit must be from 1 to 3600 seconds")
-        iterations = raw.get("max_candidate_iterations", 5)
-        if isinstance(iterations, bool) or not isinstance(iterations, int) or not 1 <= iterations <= 5:
-            raise RuntimeError("ARE task driver must enforce between one and five candidate iterations")
-        max_steps = raw.get("max_steps", 20)
-        if (isinstance(max_steps, bool) or not isinstance(max_steps, int)
-                or not 3 * iterations <= max_steps <= 100):
-            raise RuntimeError("Harbor max_steps must fund three scheduler steps per candidate")
-        if (raw.get("status_probe_only") is not True
-                and raw["model_call_limit"] < 2 * iterations):
-            raise RuntimeError("model_call_limit must fund Optimizer and Integration Verifier per candidate")
+        if benchmark_time_only:
+            deadline_epoch = raw.get("deadline_epoch")
+            if (isinstance(deadline_epoch, bool) or not isinstance(deadline_epoch, (int, float))
+                    or not math.isfinite(deadline_epoch) or deadline_epoch <= time.time()
+                    or deadline_epoch > time.time() + 3600.5):
+                raise RuntimeError("benchmark arm absolute deadline is missing, expired, or exceeds one hour")
+            time_limit = min(time_limit, max(1, int(deadline_epoch - time.time())))
+            raw["time_limit_seconds"] = time_limit
+        iterations = raw.get("max_candidate_iterations")
+        if benchmark_time_only:
+            if (iterations is not None or raw["model_call_limit"] != 1000
+                    or raw.get("technical_call_ceiling") != 1000
+                    or raw.get("technical_step_ceiling") != 1000
+                    or raw.get("max_steps") != 1000):
+                raise RuntimeError("time-only benchmark technical ceilings differ from the frozen policy")
+            max_steps = 1000
+        else:
+            if (isinstance(iterations, bool) or not isinstance(iterations, int)
+                    or not 1 <= iterations <= 5):
+                raise RuntimeError("ordinary ARE task driver must enforce one to five candidate iterations")
+            max_steps = raw.get("max_steps", 20)
+            if (isinstance(max_steps, bool) or not isinstance(max_steps, int)
+                    or not 3 * iterations <= max_steps <= 100):
+                raise RuntimeError("Harbor max_steps must fund three scheduler steps per candidate")
+            if (raw.get("status_probe_only") is not True
+                    and raw["model_call_limit"] < 2 * iterations):
+                raise RuntimeError("model_call_limit must fund Optimizer and Integration Verifier per candidate")
         if not isinstance(raw["visible_path"], list) or not isinstance(raw["write_path"], list):
             raise RuntimeError("visible_path and write_path must be path arrays")
         if not isinstance(raw.get("status_probe_only", False), bool):
@@ -411,11 +435,13 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 raise RuntimeError("CPU LLM validation score semantics are not explicitly pinned")
         self._public_output_path = expected_output
         raw["adapter_id"] = adapter_id
-        iterations = raw.get("max_candidate_iterations", 5)
-        if (isinstance(iterations, bool) or not isinstance(iterations, int)
-                or not 1 <= iterations <= 5
-                or raw.get("time_limit_seconds", 3600) > 3600):
-            raise RuntimeError("ARE bridge may run at most five candidates and one hour")
+        iterations = raw.get("max_candidate_iterations")
+        if benchmark_time_only:
+            if iterations is not None or raw.get("time_limit_seconds", 3600) > 3600:
+                raise RuntimeError("benchmark bridge must not impose a candidate cap or exceed one hour")
+        elif (isinstance(iterations, bool) or not isinstance(iterations, int)
+              or not 1 <= iterations <= 5 or raw.get("time_limit_seconds", 3600) > 3600):
+            raise RuntimeError("ordinary ARE bridge may run at most five candidates and one hour")
         servers = [item for item in self.mcp_servers if item.name == "are"]
         if local_public_dev_only:
             if servers:
@@ -578,7 +604,8 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         ledger_path.parent.mkdir(parents=True, exist_ok=True)
         if raw.get("local_public_dev_only") is True:
             grader = SimpleNamespace(
-                deadline_epoch=time.time() + raw.get("time_limit_seconds", 3600),
+                deadline_epoch=(raw["deadline_epoch"] if raw.get("benchmark_time_only") is True
+                                else time.time() + raw.get("time_limit_seconds", 3600)),
                 task_id=raw["task_id"], contract_sha256=raw["mcp_contract_sha256"],
                 repeatability_runs=raw["repeatability_runs"],
                 candidate_iterations_used=0, last_transport_failure_category=None,
@@ -615,6 +642,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             approve_up_to_calls=raw["model_call_limit"],
             max_steps=raw.get("max_steps", 20), timeout_seconds=raw["timeout_seconds"],
             task_deadline_epoch=grader.deadline_epoch,
+            benchmark_time_only=benchmark_time_only,
         )
 
         def runner_factory(protocol: Any) -> Any:

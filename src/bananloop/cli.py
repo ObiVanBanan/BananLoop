@@ -1141,6 +1141,8 @@ def parser() -> argparse.ArgumentParser:
                             help="exact file eligible for an Optimization child; must also be a read path")
     v2_explore.add_argument("--benchmark-auto-pivot", action="store_true",
                             help="preauthorize one frozen in-scope Optimization pivot for a benchmark run")
+    v2_explore.add_argument("--benchmark-time-only", action="store_true",
+                            help="use 1000-call/attempt/experiment technical ceilings without candidate-count cap")
     v2_explore.add_argument("--evaluator-fixture",
                             help="owner-controlled evaluator bundle and tier inputs; pass the same fixture on every resume")
     v2_explore.add_argument("--boardgames-task-id",
@@ -1159,6 +1161,8 @@ def parser() -> argparse.ArgumentParser:
                             help="maximum candidate Optimization iterations (1-5); omitted uses the legacy budget-limited behavior")
     v2_explore.add_argument("--deadline-seconds", type=int, default=3600,
                             help="absolute campaign time limit; defaults to one hour")
+    v2_explore.add_argument("--task-deadline-epoch", type=float,
+                            help="inherit an absolute arm deadline; never reset during Exploration-to-Optimization")
     v2_explore.add_argument("--approve-up-to-calls", type=int, default=0,
                             help="explicit consent to spend up to this many ChatGPT plan requests now")
     v2_explore.add_argument("--timeout-seconds", type=int, default=120)
@@ -1182,6 +1186,8 @@ def parser() -> argparse.ArgumentParser:
         "--task-deadline-epoch", type=float,
         help="absolute end-to-end deadline inherited from the paired task arm; never resets at child start",
     )
+    v2_optimize.add_argument("--benchmark-time-only", action="store_true",
+                             help="use benchmark-only 1000-step/call technical ceilings without an iteration cap")
     v2_optimize.add_argument("--approve-up-to-calls", type=int, default=0,
                              help="explicit consent to spend up to this many ChatGPT plan requests now")
     v2_optimize.add_argument("--timeout-seconds", type=int, default=120)

@@ -7,6 +7,7 @@ be supplied by a separately authorized launcher after ``preflight`` is READY.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -17,6 +18,7 @@ import shutil
 import sqlite3
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -148,6 +150,84 @@ def validate_source_access_declaration(path: Path = SOURCE_ACCESS_DECLARATION) -
     return declaration
 
 
+def validate_task_runtime_descriptors(runtime_root: Path, tasks: list[dict[str, Any]]) -> list[str]:
+    """Verify per-task source, fixture, overlay, and launch pins without running them."""
+    blockers: list[str] = []
+    root_unsafe = runtime_root.is_symlink() or not runtime_root.is_dir()
+    for task in tasks:
+        task_id = task.get("task_id", "<unknown>")
+        path = runtime_root / f"{task_id}.json"
+        if root_unsafe or path.is_symlink() or not path.is_file():
+            blockers.append(f"{task_id}: task runtime descriptor is missing: {path}")
+            continue
+        try:
+            descriptor = read_json(path)
+            adapter = task.get("adapter", {})
+            if (descriptor.get("schema") != "bananloop-autonomous-v01-task-runtime-v1"
+                    or descriptor.get("task_id") != task_id
+                    or descriptor.get("adapter_id") != adapter.get("adapter_id")
+                    or descriptor.get("candidate_path") != adapter.get("candidate_path")
+                    or descriptor.get("task_sha256") != task.get("task_sha256")
+                    or descriptor.get("instruction_sha256") != task.get("instruction_sha256")
+                    or descriptor.get("public_dev_image_id") != task.get("public_dev_image_id")):
+                raise ValueError("descriptor does not match the frozen catalogue pins")
+            source = Path(descriptor["source_task_root"]).expanduser()
+            fixture = Path(descriptor["fixture_path"]).expanduser()
+            overlay = Path(descriptor["overlay_path"]).expanduser()
+            for location in (source, fixture, overlay):
+                if location.is_symlink():
+                    raise ValueError("source, fixture, or overlay path is a symlink")
+            instruction_path, task_path = source / "instruction.md", source / "task.toml"
+            overlay_task = overlay / "task.toml"
+            if (not instruction_path.is_file() or instruction_path.is_symlink()
+                    or hashlib.sha256(instruction_path.read_bytes()).hexdigest() != task["instruction_sha256"]
+                    or not task_path.is_file() or task_path.is_symlink()
+                    or hashlib.sha256(task_path.read_bytes()).hexdigest() != task["task_sha256"]):
+                raise ValueError("source task instruction/task.toml SHA differs from catalogue")
+            if (not fixture.is_file() or fixture.is_symlink()
+                    or hashlib.sha256(fixture.read_bytes()).hexdigest() != descriptor.get("fixture_sha256")):
+                raise ValueError("evaluator fixture is missing or its SHA differs from descriptor")
+            if (not overlay.is_dir() or not overlay_task.is_file() or overlay_task.is_symlink()
+                    or hashlib.sha256(overlay_task.read_bytes()).hexdigest()
+                    != descriptor.get("overlay_task_sha256")):
+                raise ValueError("safe Harbor overlay task.toml is missing or changed")
+            dev_command = descriptor.get("dev_command")
+            if (not isinstance(dev_command, list) or not dev_command
+                    or any(not isinstance(item, str) or not item for item in dev_command)):
+                raise ValueError("task-specific public DEV command is missing")
+            if adapter.get("adapter_id") not in {
+                "act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1",
+            }:
+                builder = descriptor.get("config_builder_command")
+                if (not isinstance(builder, list) or not builder
+                        or any(not isinstance(item, str) or not item for item in builder)):
+                    raise ValueError("task-specific Harbor child config builder is missing")
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            blockers.append(f"{task_id}: invalid task runtime descriptor: {exc}")
+    return blockers
+
+
+def authorize_benchmark_pivot(*, binding: dict[str, Any], pivot: dict[str, Any],
+                              arm_deadline_epoch: float, now_epoch: float | None = None) -> bool:
+    """Fail closed unless the Core-created child exactly matches this frozen arm."""
+    now = time.time() if now_epoch is None else now_epoch
+    if not isinstance(binding, dict) or not isinstance(pivot, dict):
+        return False
+    if (pivot.get("status") != "BENCHMARK_AUTO_CHILD_CREATED"
+            or pivot.get("benchmark_binding") != binding
+            or pivot.get("benchmark_binding_sha256") != canonical_sha(binding)
+            or pivot.get("inherited_deadline_epoch") != arm_deadline_epoch
+            or now >= arm_deadline_epoch
+            or pivot.get("child_candidate_iteration_cap") is not None
+            or pivot.get("child_agent_call_ceiling", 0) > 1000
+            or pivot.get("child_evaluator_call_ceiling", 0) > 1000
+            or pivot.get("changed_paths") != [binding.get("candidate_path")]
+            or not pivot.get("child_campaign_id")
+            or pivot.get("pivot_authorization") != "FROZEN_BENCHMARK_FULL_AUTO_SCOPE"):
+        return False
+    return True
+
+
 def _implementation_gates() -> dict[str, bool]:
     """Check for linked implementation surfaces required before READY is possible."""
     return {
@@ -156,7 +236,10 @@ def _implementation_gates() -> dict[str, bool]:
             getattr(globals().get("CodexDirectBackend"), "snapshot_final_artifacts", None)
         ),
         "bananloop_full_backend": callable(globals().get("BananLoopFullBackend")),
-        "benchmark_bound_pivot_authorizer": callable(globals().get("authorize_benchmark_pivot", None)),
+        "benchmark_bound_pivot_authorizer": (
+            callable(globals().get("BananLoopFullBackend"))
+            and callable(globals().get("authorize_benchmark_pivot", None))
+        ),
         "24_arm_result_archiver": callable(globals().get("archive_series_results", None)),
     }
 
@@ -224,7 +307,8 @@ def offline_preflight(*, catalogue_path: Path = CATALOGUE,
                       codex_auth_status: str | None = None,
                       codex_version: str | None = None,
                       harbor_version: str | None = None,
-                      image_inspector: Callable[[str], str | None] | None = None) -> dict[str, Any]:
+                      image_inspector: Callable[[str], str | None] | None = None,
+                      runtime_root: Path | None = None) -> dict[str, Any]:
     """Check frozen task inputs and local runtime pins without running any agent."""
     catalogue = read_json(catalogue_path)
     try:
@@ -262,14 +346,17 @@ def offline_preflight(*, catalogue_path: Path = CATALOGUE,
         blockers.append("PREP_BLOCKED_TASK_CATALOGUE: curated 12 task set/pins are incomplete")
     if catalogue.get("source_revision") != "23c0d92e11af1dea821f972b5f0a739060958002":
         blockers.append("PREP_BLOCKED_SOURCE_REVISION: AutoResearchExam source pin changed")
+    resolved_runtime_root = runtime_root or Path(os.environ.get(
+        "BANANLOOP_AUTONOMOUS_V01_RUNTIME_ROOT",
+        "/home/sonik/bananloop-benchmark-env/autonomous-v01-task-runtime-v1",
+    ))
+    blockers.extend(validate_task_runtime_descriptors(resolved_runtime_root, tasks))
     for item in tasks:
         if not isinstance(item, dict):
             continue
         adapter = item.get("adapter", {})
         if not adapter.get("adapter_id"):
             blockers.append(f"{item.get('task_id')}: task-specific adapter is missing")
-        if item.get("integration_status") != "PINNED_DEV_VALIDATION_ADAPTER":
-            blockers.append(f"{item.get('task_id')}: public DEV scorer exists but trusted fixture/protocol/Harbor adapter is incomplete")
         image, image_id = item.get("public_dev_image"), item.get("public_dev_image_id")
         if not image or not image_id:
             blockers.append(f"{item.get('task_id')}: public DEV image has not been content-pinned")
@@ -318,6 +405,7 @@ def offline_preflight(*, catalogue_path: Path = CATALOGUE,
             sorted(access_declaration["affected_task_ids"]) if access_declaration is not None else []
         ),
         "harbor_binary": str(HARBOR_BINARY),
+        "task_runtime_root": str(resolved_runtime_root),
         "harbor_version": harbor_version,
         "blockers": blockers,
         "live_models_started": False,
@@ -368,8 +456,9 @@ class UsageLedger:
                 summary["model_turns_observed"] += turns
             usage = event.get("usage")
             if not isinstance(usage, dict):
-                stats["unknown_usage_events"] += int(bool(turns))
-                summary["unknown_usage_events"] += int(bool(turns))
+                unknown = bool(turns) or event.get("usage_unknown") is True
+                stats["unknown_usage_events"] += int(unknown)
+                summary["unknown_usage_events"] += int(unknown)
                 continue
             for key in ("input_tokens", "output_tokens"):
                 value = usage.get(key)
@@ -487,7 +576,12 @@ def run_fake_series(tasks: list[dict[str, Any]], root: Path,
             arm_root.mkdir(mode=0o700)
             deadline = time.time() + ARM_SECONDS
             backend = backend_factory(system)
-            result = backend.run(arm_id, task, arm_root, deadline, usage)
+            try:
+                result = backend.run(arm_id, task, arm_root, deadline, usage)
+            except Exception as exc:
+                result = {"status": "BACKEND_EXCEPTION",
+                          "failure_type": type(exc).__name__,
+                          "detail": str(exc)[:300]}
             record = {"arm_id": arm_id, "task_id": task["task_id"], "system": system,
                       "deadline_epoch": deadline, "result": result}
             _atomic_json(arm_root / "result.json", record)
@@ -666,7 +760,8 @@ class CodexDirectBackend:
 
     def __init__(self, *, codex_binary: str, model: str, reasoning: str,
                  task_instruction: Path, dev_command: list[str],
-                 initial_repo: Path, base_sha: str):
+                 initial_repo: Path, base_sha: str,
+                 runtime_root: Path | None = None):
         self.codex_binary = codex_binary
         self.model = model
         self.reasoning = reasoning
@@ -674,12 +769,17 @@ class CodexDirectBackend:
         self.dev_command = dev_command
         self.initial_repo = initial_repo
         self.base_sha = base_sha
+        self.runtime_root = runtime_root.expanduser().resolve(strict=True) if runtime_root else None
 
     def run(self, arm_id: str, task: dict[str, Any], arm_root: Path,
             deadline_epoch: float, usage: UsageLedger) -> dict[str, Any]:
         deadline_monotonic = time.monotonic() + max(0.0, deadline_epoch - time.time())
         remaining = lambda: deadline_monotonic - time.monotonic()
-        repo = arm_root / "repo"
+        # Keep mutable worktrees beside, not inside, the immutable result root:
+        # archive_series_results intentionally refuses .git metadata. Only the
+        # final task artifacts and logs belong in the arm archive.
+        workspace_root = arm_root.parent / ".workspaces"
+        repo = workspace_root / arm_id
 
         def terminal(status: str, *, model_turns_observed: int = 0,
                      **extra: Any) -> dict[str, Any]:
@@ -688,6 +788,12 @@ class CodexDirectBackend:
             artifact = self.snapshot_final_artifacts(task=task, repo=repo, arm_root=arm_root)
             return {"status": status, "model_turns_observed": model_turns_observed,
                     "final_artifact": artifact, **extra}
+
+        if workspace_root.is_symlink():
+            return terminal("FAILED_UNSAFE_WORKSPACE_ROOT")
+        workspace_root.mkdir(mode=0o700, exist_ok=True)
+        if repo.exists() or repo.is_symlink():
+            return terminal("FAILED_WORKSPACE_ALREADY_EXISTS")
 
         if remaining() <= 0:
             return terminal("TIMED_OUT_BEFORE_CLONE")
@@ -708,7 +814,38 @@ class CodexDirectBackend:
             return terminal("TIMED_OUT_DURING_CHECKOUT")
         if checkout.returncode != 0:
             return terminal("FAILED_TO_PIN_INITIAL_REVISION")
-        instruction = self.task_instruction.read_text(encoding="utf-8")
+        instruction_path = self.task_instruction
+        dev_command = self.dev_command
+        if self.runtime_root is not None:
+            descriptor_path = self.runtime_root / f"{task['task_id']}.json"
+            if descriptor_path.is_symlink() or not descriptor_path.is_file():
+                return terminal("FAILED_TASK_RUNTIME_DESCRIPTOR")
+            try:
+                descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+                source_root = Path(descriptor["source_task_root"]).expanduser()
+                instruction_path = source_root / "instruction.md"
+                pinned = (descriptor.get("schema") == "bananloop-autonomous-v01-task-runtime-v1"
+                          and descriptor.get("task_id") == task["task_id"]
+                          and descriptor.get("task_sha256") == task.get("task_sha256")
+                          and descriptor.get("instruction_sha256") == task.get("instruction_sha256"))
+                if not pinned:
+                    return terminal("FAILED_TASK_RUNTIME_PIN")
+                configured_dev = descriptor.get("dev_command")
+                if configured_dev is not None:
+                    if (not isinstance(configured_dev, list) or not configured_dev
+                            or any(not isinstance(item, str) or not item for item in configured_dev)):
+                        return terminal("FAILED_DEV_COMMAND_PIN")
+                    dev_command = configured_dev
+            except (OSError, ValueError, KeyError, TypeError):
+                return terminal("FAILED_TASK_RUNTIME_DESCRIPTOR")
+        try:
+            if (instruction_path.is_symlink() or not instruction_path.is_file()
+                    or (task.get("instruction_sha256") and hashlib.sha256(
+                        instruction_path.read_bytes()).hexdigest() != task["instruction_sha256"])):
+                return terminal("FAILED_TASK_INSTRUCTION_PIN")
+            instruction = instruction_path.read_text(encoding="utf-8")
+        except OSError:
+            return terminal("FAILED_TASK_INSTRUCTION_PIN")
         (repo / "TASK-INSTRUCTION.md").write_text(instruction, encoding="utf-8")
         prompt = (
             "You are the Codex Direct arm in a preregistered AutoResearchExam study. "
@@ -719,7 +856,7 @@ class CodexDirectBackend:
             "bytes as-is when time expires. Never access private "
             "grader or hidden data, never contact external services, and do not compare against "
             "another arm. Task:\n\n" + instruction + "\n\nPinned DEV command: "
-            + shlex.join(self.dev_command) + f"\nReasoning setting: {self.reasoning}."
+            + shlex.join(dev_command) + f"\nReasoning setting: {self.reasoning}."
         )
         log = arm_root / "codex-events.jsonl"
         stderr = arm_root / "codex-stderr.log"
@@ -837,6 +974,420 @@ class CodexDirectBackend:
                 "files": files, "violations": violations, "total_bytes": total_bytes}
 
 
+class BananLoopFullBackend:
+    """Run the native v2 Exploration -> auto-pivot -> Harbor Optimization path.
+
+    A task runtime descriptor is required for each task. It pins the public
+    source task, fixture, safe Harbor overlay, and configuration builder; the
+    parent campaign is created by the existing v2 CLI only after this arm
+    starts. No model/evaluator dependency is injected into this class.
+    """
+
+    def __init__(self, *, initial_repo: Path, base_sha: str, runtime_root: Path,
+                 state_root: Path, jobs_root: Path, manifest_sha256: str,
+                 model: str = "gpt-6-luna", harbor_binary: Path = HARBOR_BINARY,
+                 python_binary: str = sys.executable, docker_binary: str = "docker"):
+        self.initial_repo = initial_repo.expanduser().resolve(strict=True)
+        self.base_sha = base_sha
+        self.runtime_root = runtime_root.expanduser().resolve(strict=True)
+        self.state_root = state_root.expanduser().absolute()
+        self.jobs_root = jobs_root.expanduser().absolute()
+        self.manifest_sha256 = manifest_sha256
+        self.model = model
+        self.harbor_binary = harbor_binary
+        self.python_binary = python_binary
+        self.docker_binary = docker_binary
+        if not re.fullmatch(r"[0-9a-f]{64}", manifest_sha256):
+            raise ValueError("BananLoop Full backend requires the frozen series manifest SHA")
+
+    @staticmethod
+    def _kill_process(process: subprocess.Popen[Any]) -> None:
+        if process.poll() is not None:
+            return
+        if os.name != "nt":
+            import signal
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        else:
+            process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+    def _run_until_deadline(self, command: list[str], *, cwd: Path,
+                            deadline_epoch: float, stdout_path: Path,
+                            stderr_path: Path) -> tuple[str, int | None]:
+        remaining = deadline_epoch - time.time()
+        if remaining <= 0:
+            return "TIMED_OUT_BEFORE_START", None
+        with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+            try:
+                process = subprocess.Popen(command, cwd=cwd, stdout=stdout, stderr=stderr,
+                                           start_new_session=(os.name != "nt"))
+            except OSError:
+                return "FAILED_TO_START", None
+            while process.poll() is None:
+                if time.time() >= deadline_epoch:
+                    self._kill_process(process)
+                    return "TIMED_OUT", process.returncode
+                time.sleep(min(0.1, max(0.01, deadline_epoch - time.time())))
+            if time.time() >= deadline_epoch:
+                return "TIMED_OUT", process.returncode
+            return ("COMPLETED" if process.returncode == 0 else "FAILED", process.returncode)
+
+    def _runtime(self, task_id: str) -> dict[str, Any]:
+        path = self.runtime_root / f"{task_id}.json"
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"no frozen Full runtime descriptor for {task_id}")
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict) or value.get("task_id") != task_id:
+            raise ValueError(f"Full runtime descriptor task identity differs for {task_id}")
+        return value
+
+    @staticmethod
+    def _fill(value: Any, replacements: dict[str, str]) -> Any:
+        if isinstance(value, str):
+            for key, replacement in replacements.items():
+                value = value.replace("{" + key + "}", replacement)
+            return value
+        if isinstance(value, list):
+            return [BananLoopFullBackend._fill(item, replacements) for item in value]
+        if isinstance(value, dict):
+            return {key: BananLoopFullBackend._fill(item, replacements)
+                    for key, item in value.items()}
+        return value
+
+    @staticmethod
+    def _read_json_object_from_output(path: Path) -> dict[str, Any]:
+        """Parse the CLI's normal pretty JSON or its last complete JSONL record."""
+        content = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            value = json.loads(content)
+            if isinstance(value, dict):
+                return value
+        except json.JSONDecodeError:
+            pass
+        lines = content.splitlines()
+        for start in range(len(lines) - 1, -1, -1):
+            try:
+                value = json.loads("\n".join(lines[start:]))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                return value
+        raise ValueError("BananLoop Exploration output contains no complete JSON object")
+
+    def run(self, arm_id: str, task: dict[str, Any], arm_root: Path,
+            deadline_epoch: float, usage: UsageLedger) -> dict[str, Any]:
+        task_id = task.get("task_id")
+        runtime = self._runtime(task_id)
+        adapter = task.get("adapter", {})
+        candidate_path = adapter.get("candidate_path") if isinstance(adapter, dict) else None
+        if (runtime.get("schema") != "bananloop-autonomous-v01-task-runtime-v1"
+                or runtime.get("adapter_id") != adapter.get("adapter_id")
+                or not isinstance(candidate_path, str) or not candidate_path
+                or runtime.get("candidate_path") != candidate_path
+                or runtime.get("task_sha256") != task.get("task_sha256")
+                or runtime.get("instruction_sha256") != task.get("instruction_sha256")
+                or runtime.get("public_dev_image_id") != task.get("public_dev_image_id")):
+            raise ValueError("Full runtime candidate or source pins differ from the frozen catalogue")
+        workspace_root = arm_root.parent / ".workspaces"
+        if workspace_root.is_symlink():
+            raise ValueError("Full backend workspace root is a symlink")
+        workspace_root.mkdir(mode=0o700, exist_ok=True)
+        repo = workspace_root / arm_id
+        if repo.exists() or repo.is_symlink():
+            raise ValueError("Full backend workspace already exists")
+        if self.state_root.is_symlink():
+            raise ValueError("Full backend campaign state root is a symlink")
+        self.state_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+        state_dir = self.state_root / arm_id
+        state_dir.mkdir(mode=0o700, exist_ok=False)
+
+        observed_calls = 0
+        optimization_calls = 0
+        usage_unknown = False
+        def terminal(status: str, **extra: Any) -> dict[str, Any]:
+            artifact = CodexDirectBackend.snapshot_final_artifacts(
+                task=task, repo=repo, arm_root=arm_root,
+            )
+            return {"status": status, "final_artifact": artifact,
+                    "model_turns_observed": observed_calls + optimization_calls,
+                    "usage_unknown": usage_unknown,
+                    "deadline_epoch": deadline_epoch, **extra}
+
+        remaining = deadline_epoch - time.time()
+        if remaining <= 0:
+            return terminal("TIMED_OUT_BEFORE_CLONE")
+        try:
+            clone = subprocess.run(["git", "clone", "--no-hardlinks", "--quiet",
+                                    str(self.initial_repo), str(repo)],
+                                   capture_output=True, timeout=min(60, remaining))
+        except subprocess.TimeoutExpired:
+            return terminal("TIMED_OUT_DURING_CLONE")
+        if clone.returncode != 0:
+            return terminal("FAILED_TO_CLONE_INITIAL_REPOSITORY")
+        remaining = deadline_epoch - time.time()
+        if remaining <= 0:
+            return terminal("TIMED_OUT_BEFORE_CHECKOUT")
+        try:
+            checkout = subprocess.run(["git", "-C", str(repo), "checkout", "--detach", self.base_sha],
+                                      capture_output=True, timeout=min(30, remaining))
+        except subprocess.TimeoutExpired:
+            return terminal("TIMED_OUT_DURING_CHECKOUT")
+        if checkout.returncode != 0:
+            return terminal("FAILED_TO_PIN_INITIAL_REVISION")
+
+        source_task_in = Path(runtime["source_task_root"]).expanduser()
+        fixture_path_in = Path(runtime["fixture_path"]).expanduser()
+        overlay_path_in = Path(runtime["overlay_path"]).expanduser()
+        if any(path.is_symlink() for path in (source_task_in, fixture_path_in, overlay_path_in)):
+            return terminal("UNSAFE_RUNTIME_SYMLINK")
+        source_task = source_task_in.resolve(strict=True)
+        fixture_path = fixture_path_in.resolve(strict=True)
+        overlay_path = overlay_path_in.resolve(strict=True)
+        from bananloop.evaluator_fixture import EvaluatorFixtureV1
+
+        instruction_path = source_task / "instruction.md"
+        task_toml = source_task / "task.toml"
+        if (instruction_path.is_symlink() or not instruction_path.is_file()
+                or hashlib.sha256(instruction_path.read_bytes()).hexdigest() != task["instruction_sha256"]
+                or task_toml.is_symlink() or not task_toml.is_file()
+                or hashlib.sha256(task_toml.read_bytes()).hexdigest() != task["task_sha256"]):
+            return terminal("FAILED_TASK_SOURCE_PIN")
+        fixture_digest = hashlib.sha256(fixture_path.read_bytes()).hexdigest()
+        if runtime.get("fixture_sha256") != fixture_digest:
+            return terminal("FAILED_EVALUATOR_FIXTURE_PIN")
+        if (overlay_path.is_symlink() or not overlay_path.is_dir()
+                or (overlay_path / "task.toml").is_symlink()
+                or not (overlay_path / "task.toml").is_file()
+                or runtime.get("overlay_task_sha256") != hashlib.sha256(
+                    (overlay_path / "task.toml").read_bytes()).hexdigest()):
+            return terminal("FAILED_SAFE_OVERLAY_PIN")
+        local_instruction = ".benchmark-task-instruction.md"
+        if (repo / local_instruction).exists():
+            return terminal("FAILED_INSTRUCTION_PATH_COLLISION")
+        shutil.copyfile(instruction_path, repo / local_instruction)
+        (repo / local_instruction).chmod(0o444)
+
+        fixture = EvaluatorFixtureV1.load(fixture_path)
+        bundle = base64.b64decode(fixture.evaluator_bundle_base64, validate=True)
+        bundle_sha = hashlib.sha256(bundle).hexdigest()
+        binding = {
+            "schema": "bananloop-autonomous-v01-pivot-binding-v1",
+            "manifest_sha256": self.manifest_sha256,
+            "task_id": task_id, "task_sha256": task["task_sha256"],
+            "instruction_sha256": task["instruction_sha256"],
+            "adapter_id": adapter["adapter_id"],
+            "execution_backend_id": fixture.execution_backend_id,
+            "evaluator_fixture_sha256": fixture.content_digest(),
+            "evaluator_bundle_sha256": bundle_sha,
+            "candidate_path": candidate_path, "instruction_path": local_instruction,
+            "public_output_path": adapter["public_output_path"],
+            "public_dev_image_id": task["public_dev_image_id"],
+            "metric_field": adapter["metric_field"],
+            "metric_direction": adapter["direction"], "model": self.model,
+            "permissions": {"read": sorted([candidate_path, local_instruction]),
+                            "write": [candidate_path], "network_access": False},
+            "deadline_seconds": max(1, min(3600, int(deadline_epoch-time.time()))),
+        }
+        goal = ("BANANLOOP_BENCHMARK_BINDING_V1:" + json.dumps(
+            binding, sort_keys=True, separators=(",", ":"),
+        ) + "\nSolve the frozen AutoResearchExam task. Read the public instruction file "
+            + local_instruction + "; improve only the declared candidate and use the approved public evaluator.")
+        remaining_seconds = max(1, min(3600, int(deadline_epoch-time.time())))
+        explore_command = [
+            self.python_binary, "-m", "bananloop.cli", "v2", "explore",
+            "--repo", str(repo), "--state-dir", str(state_dir), "--goal", goal,
+            "--read-path", candidate_path, "--read-path", local_instruction,
+            "--optimization-write-path", candidate_path,
+            "--benchmark-auto-pivot", "--benchmark-time-only",
+            "--evaluator-fixture", str(fixture_path), "--model", self.model,
+            "--max-agent-calls", "1000", "--max-evaluator-calls", "1000",
+            "--max-model-tokens", "100000", "--max-iterations", "1000",
+            "--deadline-seconds", str(remaining_seconds),
+            "--task-deadline-epoch", str(deadline_epoch),
+            "--approve-up-to-calls", "1000", "--timeout-seconds", "120",
+        ]
+        explore_status, explore_return = self._run_until_deadline(
+            explore_command, cwd=self.initial_repo, deadline_epoch=deadline_epoch,
+            stdout_path=arm_root / "bananloop-exploration.jsonl",
+            stderr_path=arm_root / "bananloop-exploration.stderr",
+        )
+        if explore_status != "COMPLETED":
+            usage_unknown = True
+            usage.record(arm_id, "bananloop_full_exploration", {
+                "model_turns_observed": 0, "usage": None, "usage_unknown": True,
+            })
+            return terminal("TIMED_OUT_DURING_EXPLORATION" if explore_status == "TIMED_OUT"
+                            else "EXPLORATION_FAILED", exploration_returncode=explore_return)
+        try:
+            explore_report = self._read_json_object_from_output(
+                arm_root / "bananloop-exploration.jsonl",
+            )
+        except (OSError, ValueError, IndexError):
+            usage_unknown = True
+            usage.record(arm_id, "bananloop_full_exploration", {
+                "model_turns_observed": 0, "usage": None, "usage_unknown": True,
+            })
+            return terminal("EXPLORATION_REPORT_INVALID")
+        request_history = explore_report.get("request_history", [])
+        observed_calls = (sum(bool(item.get("dispatched")) for item in request_history
+                              if isinstance(item, dict))
+                          if isinstance(request_history, list) else 0)
+        observed_usage = explore_report.get("usage")
+        usage_unknown = not isinstance(observed_usage, dict)
+        usage.record(arm_id, "bananloop_full_exploration", {
+            "model_turns_observed": observed_calls,
+            "usage": observed_usage if isinstance(observed_usage, dict) else None,
+            "usage_unknown": not isinstance(observed_usage, dict),
+        })
+        pivots = [item for item in explore_report.get("optimization_pivot", [])
+                  if isinstance(item, dict) and item.get("status") == "BENCHMARK_AUTO_CHILD_CREATED"]
+        if len(pivots) != 1:
+            return terminal(explore_report.get("status", "NO_OPTIMIZATION_CHILD"),
+                            exploration_status=explore_report.get("status"))
+        pivot = pivots[0]
+        if not authorize_benchmark_pivot(
+                binding=binding, pivot=pivot, arm_deadline_epoch=deadline_epoch):
+            return terminal("BENCHMARK_PIVOT_SCOPE_MISMATCH")
+        remaining = deadline_epoch - time.time()
+        if remaining <= 0:
+            return terminal("TIMED_OUT_DURING_PIVOT")
+
+        prepared_dir = arm_root / "harbor-prepared"
+        jobs_dir = arm_root / "harbor-jobs"
+        jobs_dir.mkdir(mode=0o700)
+        try:
+            if adapter["adapter_id"] in {
+                "act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1",
+            }:
+                from benchmarks.autoresearchexam.prepare_public_task_job import prepare as prepare_public_job
+                prepared = prepare_public_job(
+                    repo=repo, state_dir=state_dir, campaign_id=pivot["child_campaign_id"],
+                    role_registry=Path(pivot["role_registry_path"]), source_task=source_task,
+                    fixture_path=fixture_path, overlay=overlay_path, jobs_dir=jobs_dir,
+                    output_dir=prepared_dir, adapter_id=adapter["adapter_id"],
+                    deadline_epoch=deadline_epoch,
+                )
+            else:
+                template = runtime.get("config_builder_command")
+                if (not isinstance(template, list) or not template
+                        or any(not isinstance(item, str) for item in template)):
+                    raise ValueError("task runtime has no frozen child configuration builder")
+                replacements = {
+                    "python": self.python_binary, "repo": str(repo),
+                    "state_dir": str(state_dir), "campaign_id": pivot["child_campaign_id"],
+                    "role_registry": pivot["role_registry_path"],
+                    "source_task": str(source_task), "fixture": str(fixture_path),
+                    "overlay": str(overlay_path), "jobs_dir": str(jobs_dir),
+                    "output_dir": str(prepared_dir), "adapter_id": adapter["adapter_id"],
+                    "arm_id": arm_id, "task_id": task_id,
+                    "candidate_path": candidate_path,
+                    "public_output_path": adapter["public_output_path"],
+                    "public_dev_image_id": task["public_dev_image_id"],
+                    "deadline_epoch": str(deadline_epoch),
+                }
+                prepared_dir.mkdir(mode=0o700)
+                remaining = deadline_epoch - time.time()
+                if remaining <= 0:
+                    return terminal("TIMED_OUT_BEFORE_HARBOR_PREPARATION")
+                prepare_result = subprocess.run(
+                    self._fill(template, replacements), cwd=self.initial_repo,
+                    capture_output=True, text=True,
+                    timeout=min(30, remaining),
+                )
+                if prepare_result.returncode != 0:
+                    raise ValueError("frozen child configuration builder failed")
+                prepared = json.loads(prepare_result.stdout)
+        except subprocess.TimeoutExpired:
+            return terminal("TIMED_OUT_DURING_HARBOR_PREPARATION")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            return terminal("CHILD_CONFIGURATION_FAILED", error_type=type(exc).__name__)
+        bl_config_path = Path(prepared["bananloop_config"])
+        harbor_config_path = Path(prepared["harbor_config"])
+        bl_config = json.loads(bl_config_path.read_text(encoding="utf-8"))
+        bl_config["deadline_epoch"] = deadline_epoch
+        bl_config["time_limit_seconds"] = max(1, min(3600, int(remaining)))
+        bl_config["repo"] = str(repo)
+        bl_config["state_dir"] = str(state_dir)
+        bl_config_path.write_text(json.dumps(bl_config, sort_keys=True, indent=2) + "\n")
+        harbor_config = json.loads(harbor_config_path.read_text(encoding="utf-8"))
+        harbor_config["agents"][0]["override_timeout_sec"] = max(1, int(remaining))
+        harbor_config_path.write_text(json.dumps(harbor_config, sort_keys=True, indent=2) + "\n")
+        harbor_status, harbor_return = self._run_until_deadline(
+            [str(self.harbor_binary), "run", "--config", str(harbor_config_path), "--disable-verification"],
+            cwd=self.initial_repo, deadline_epoch=deadline_epoch,
+            stdout_path=arm_root / "bananloop-optimization.stdout",
+            stderr_path=arm_root / "bananloop-optimization.stderr",
+        )
+        final_artifact = CodexDirectBackend.snapshot_final_artifacts(
+            task=task, repo=repo, arm_root=arm_root,
+        )
+        status = "TIMED_OUT" if harbor_status == "TIMED_OUT" else (
+            "COMPLETED" if harbor_status == "COMPLETED" and final_artifact["status"] == "CAPTURED"
+            else "FAILED")
+        bridge_receipt = None
+        if harbor_status == "COMPLETED":
+            from benchmarks.autoresearchexam.series_runner import inspect_harbor_result
+            try:
+                bridge_receipt = inspect_harbor_result(
+                    Path(harbor_config["jobs_dir"]) / harbor_config["job_name"],
+                    task_id=task_id, overlay_path=str(overlay_path),
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                status = "HARBOR_RECEIPT_INVALID"
+                usage_unknown = True
+                usage.record(arm_id, "bananloop_full_optimization", {
+                    "model_turns_observed": 0, "usage": None, "usage_unknown": True,
+                })
+            else:
+                raw_calls = bridge_receipt.get("model_calls")
+                optimization_calls = raw_calls if isinstance(raw_calls, int) and not isinstance(raw_calls, bool) else 0
+                raw_usage = bridge_receipt.get("token_usage")
+                usage.record(arm_id, "bananloop_full_optimization", {
+                    "model_turns_observed": optimization_calls,
+                    "usage": raw_usage if isinstance(raw_usage, dict) else None,
+                    "usage_unknown": (raw_calls == "UNKNOWN" or not isinstance(raw_usage, dict)
+                                      or any(not isinstance(raw_usage.get(key), int)
+                                             for key in ("input_tokens", "output_tokens"))),
+                })
+                usage_unknown = usage_unknown or raw_calls == "UNKNOWN" or not isinstance(raw_usage, dict)
+                if bridge_receipt.get("model_calls") == 1000 or bridge_receipt.get("bananloop_status") in {
+                    "LIMIT_EXHAUSTED", "STEP_LIMIT", "ITERATION_LIMIT",
+                }:
+                    status = "LIMIT_EXHAUSTED"
+                elif bridge_receipt.get("public_submission_unknown"):
+                    status = "INTERRUPTED_UNKNOWN"
+        else:
+            usage_unknown = True
+            usage.record(arm_id, "bananloop_full_optimization", {
+                "model_turns_observed": 0, "usage": None, "usage_unknown": True,
+            })
+        return {"status": status, "exploration_status": explore_report.get("status"),
+                "model_turns_observed": observed_calls + optimization_calls,
+                "usage_unknown": usage_unknown,
+                "optimization_returncode": harbor_return, "deadline_epoch": deadline_epoch,
+                "pivot_binding_sha256": canonical_sha(binding),
+                "child_campaign_id": pivot["child_campaign_id"],
+                "prepared_config_sha256": {
+                    "bananloop": hashlib.sha256(bl_config_path.read_bytes()).hexdigest(),
+                    "harbor": hashlib.sha256(harbor_config_path.read_bytes()).hexdigest(),
+                }, "final_artifact": final_artifact,
+                "harbor_bridge_receipt": bridge_receipt}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("preflight",))
@@ -845,6 +1396,10 @@ def main() -> int:
     parser.add_argument("--codex-version")
     parser.add_argument("--docker-binary", default="docker")
     parser.add_argument("--harbor-binary", type=Path, default=HARBOR_BINARY)
+    parser.add_argument("--runtime-root", type=Path, default=Path(os.environ.get(
+        "BANANLOOP_AUTONOMOUS_V01_RUNTIME_ROOT",
+        "/home/sonik/bananloop-benchmark-env/autonomous-v01-task-runtime-v1",
+    )))
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
     auth_status = args.codex_auth_status
@@ -868,7 +1423,8 @@ def main() -> int:
                                codex_auth_status=auth_status,
                                codex_version=codex_version,
                                harbor_version=harbor_version,
-                               image_inspector=lambda image: inspect_docker_image(image, args.docker_binary))
+                               image_inspector=lambda image: inspect_docker_image(image, args.docker_binary),
+                               runtime_root=args.runtime_root)
     encoded = json.dumps(report, sort_keys=True, indent=2) + "\n"
     if args.out:
         if args.out.is_symlink() or (args.out.exists() and not args.out.is_file()):

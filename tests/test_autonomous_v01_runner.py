@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import time
 
 import pytest
@@ -14,10 +15,13 @@ from benchmarks.autonomous_v01.runner import (
     TASK_IDS,
     CandidateArchive,
     CodexDirectBackend,
+    BananLoopFullBackend,
     UsageLedger,
     VerifiedCandidate,
     archive_series_results,
     build_manifest,
+    authorize_benchmark_pivot,
+    canonical_sha,
     offline_preflight,
     parse_codex_jsonl_usage,
     run_fake_series,
@@ -52,9 +56,12 @@ def test_manifest_rejects_missing_or_duplicate_catalogue_entries():
                        codex_version="v", full_feature_flags={"full": True})
 
 
-def test_preflight_reports_missing_content_pins_without_launching_anything():
+def test_preflight_reports_missing_content_pins_without_launching_anything(tmp_path):
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
     report = offline_preflight(codex_auth_status="Logged in using ChatGPT",
-                               codex_version="0.169.0", image_inspector=lambda _: None)
+                               codex_version="0.169.0", image_inspector=lambda _: None,
+                               runtime_root=runtime_root)
     assert report["status"] == "PREP_BLOCKED"
     assert report["planned_distinct_tasks"] == 12
     assert report["arms"] == 24
@@ -66,8 +73,8 @@ def test_preflight_reports_missing_content_pins_without_launching_anything():
                     "causalpfn-cate-pehe-ihdp-surfaceb", "hicard-latent-encoder"):
         assert any(task_id in item and "local public DEV image ID differs" in item
                    for item in report["blockers"])
-    assert sum("trusted fixture/protocol/Harbor adapter is incomplete" in item
-               for item in report["blockers"]) == 3
+    assert sum("task runtime descriptor is missing" in item
+               for item in report["blockers"]) == 12
     assert report["operator_private_source_exposure"]["accepted_for_internal_diagnostic"] is True
     assert report["operator_private_source_exposure"]["disclosure_valid"] is True
     assert set(report["source_access_affected_task_ids"]) == {
@@ -77,11 +84,38 @@ def test_preflight_reports_missing_content_pins_without_launching_anything():
     }
     assert report["implementation_gates"]["codex_direct_backend"] is True
     assert report["implementation_gates"]["codex_final_artifact_export"] is True
-    assert report["implementation_gates"]["bananloop_full_backend"] is False
-    assert report["implementation_gates"]["benchmark_bound_pivot_authorizer"] is False
+    assert report["implementation_gates"]["bananloop_full_backend"] is True
+    assert report["implementation_gates"]["benchmark_bound_pivot_authorizer"] is True
     assert report["implementation_gates"]["24_arm_result_archiver"] is True
     assert report["capacity"]["per_task_requested_cpus"] == 8
     assert report["capacity"]["per_task_requested_memory_mb"] == 14336
+
+
+def test_benchmark_pivot_authorizer_binds_exact_frozen_scope_and_deadline():
+    binding = {"candidate_path": "src/candidate.py", "manifest_sha256": "a" * 64}
+    deadline = 5000.0
+    pivot = {
+        "status": "BENCHMARK_AUTO_CHILD_CREATED",
+        "benchmark_binding": binding,
+        "benchmark_binding_sha256": canonical_sha(binding),
+        "inherited_deadline_epoch": deadline,
+        "child_candidate_iteration_cap": None,
+        "child_agent_call_ceiling": 1000,
+        "child_evaluator_call_ceiling": 1000,
+        "changed_paths": ["src/candidate.py"],
+        "child_campaign_id": "c-" + "a" * 32,
+        "pivot_authorization": "FROZEN_BENCHMARK_FULL_AUTO_SCOPE",
+    }
+    assert authorize_benchmark_pivot(
+        binding=binding, pivot=pivot, arm_deadline_epoch=deadline, now_epoch=4999,
+    ) is True
+    changed = {**pivot, "changed_paths": ["src/other.py"]}
+    assert authorize_benchmark_pivot(
+        binding=binding, pivot=changed, arm_deadline_epoch=deadline, now_epoch=4999,
+    ) is False
+    assert authorize_benchmark_pivot(
+        binding=binding, pivot=pivot, arm_deadline_epoch=deadline, now_epoch=deadline,
+    ) is False
 
 
 def test_usage_ledger_is_observational_and_does_not_enforce_a_call_cap(tmp_path):
@@ -154,6 +188,187 @@ def test_fake_series_runs_24_isolated_arms_without_external_calls(tmp_path):
     index = json.loads((archive / "SHA256SUMS.json").read_text(encoding="utf-8"))
     assert len(index["files"]) == 26  # 24 arm records plus manifest and summary
     assert all(len(item["sha256"]) == 64 for item in index["files"])
+
+
+def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tmp_path, monkeypatch):
+    """Exercise both production backend classes with subprocess-only fakes."""
+    from bananloop.evaluator_fixture import EvaluatorFixtureV1
+    from benchmarks.autoresearchexam import prepare_public_task_job
+
+    catalogue = json.loads(CATALOGUE.read_text(encoding="utf-8"))
+    tasks = [json.loads(json.dumps(item)) for item in catalogue["tasks"]]
+    baseline = tmp_path / "baseline"
+    baseline.mkdir()
+    subprocess.run(["git", "init", "-q", str(baseline)], check=True)
+    subprocess.run(["git", "-C", str(baseline), "config", "user.email", "fake@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(baseline), "config", "user.name", "Offline Fake"], check=True)
+    for task in tasks:
+        candidate = baseline / task["adapter"]["candidate_path"]
+        candidate.parent.mkdir(parents=True, exist_ok=True)
+        candidate.write_text("# original candidate\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(baseline), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(baseline), "commit", "-qm", "fake baseline"], check=True)
+    base_sha = subprocess.run(["git", "-C", str(baseline), "rev-parse", "HEAD"],
+                             check=True, capture_output=True, text=True).stdout.strip()
+
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    source_root = tmp_path / "source"
+    overlay_root = tmp_path / "overlays"
+    fixtures_root = tmp_path / "fixtures"
+    source_root.mkdir(); overlay_root.mkdir(); fixtures_root.mkdir()
+    fixture = EvaluatorFixtureV1.model_validate({
+        "schema_version": 1,
+        "evaluator_bundle_base64": "eyJmYWtlIjoxfQ==",
+        "execution_backend_id": "autoresearchexam-public-v1",
+        "entrypoint": ["python3", "{evaluator}/evaluate.py"],
+        "tiers": [
+            {"tier": "dev", "cases": [{"case_id": "dev", "input_base64": "ZGV2"}]},
+            {"tier": "validation", "cases": [{"case_id": "validation", "input_base64": "dmFs"}]},
+        ],
+    })
+    fixture_bytes = fixture.canonical_bytes()
+    fixture_path = fixtures_root / "fixture.json"
+    fixture_path.write_bytes(fixture_bytes)
+    fixture_sha = hashlib.sha256(fixture_bytes).hexdigest()
+    for task in tasks:
+        task_id = task["task_id"]
+        source = source_root / task_id
+        source.mkdir()
+        instruction = f"Solve fake task {task_id}.\n".encode()
+        task_toml = f"[task]\nid = '{task_id}'\n".encode()
+        (source / "instruction.md").write_bytes(instruction)
+        (source / "task.toml").write_bytes(task_toml)
+        task["instruction_sha256"] = hashlib.sha256(instruction).hexdigest()
+        task["task_sha256"] = hashlib.sha256(task_toml).hexdigest()
+        overlay = overlay_root / task_id
+        overlay.mkdir()
+        (overlay / "task.toml").write_text("[task]\n", encoding="utf-8")
+        config_builder = tmp_path / f"builder-{task_id}.py"
+        config_builder.write_text(
+            "import json, pathlib, sys\n"
+            "out, jobs, task, candidate, repo, state, deadline, overlay = sys.argv[1:]\n"
+            "out=pathlib.Path(out); jobs=pathlib.Path(jobs); out.mkdir(parents=True, exist_ok=True)\n"
+            "bl=out/'bananloop.json'; harbor=out/'harbor.json'\n"
+            "bl.write_text(json.dumps({'repo':repo,'state_dir':state,'candidate_path':candidate,'deadline_epoch':float(deadline)}))\n"
+            "job='job-'+task\n"
+            "harbor.write_text(json.dumps({'jobs_dir':str(jobs),'job_name':job,'task_id':task,'overlay_path':sys.argv[8],'candidate_path':candidate,'repo':repo,'bananloop_config':str(bl),'agents':[{}]}))\n"
+            "print(json.dumps({'bananloop_config':str(bl),'harbor_config':str(harbor)}))\n",
+            encoding="utf-8",
+        )
+        # Pass each path through the production template substitution path.
+        task["runtime_descriptor"] = {
+            "source_task_root": str(source), "overlay_path": str(overlay),
+            "config_builder_command": [sys.executable, str(config_builder), "{output_dir}",
+                                       "{jobs_dir}", task_id, "{candidate_path}", "{repo}",
+                                       "{state_dir}", "{deadline_epoch}", str(overlay)],
+        }
+        adapter = task["adapter"]
+        descriptor = {
+            "schema": "bananloop-autonomous-v01-task-runtime-v1", "task_id": task_id,
+            "adapter_id": adapter["adapter_id"], "candidate_path": adapter["candidate_path"],
+            "task_sha256": task["task_sha256"], "instruction_sha256": task["instruction_sha256"],
+            "public_dev_image_id": task["public_dev_image_id"],
+            "fixture_sha256": fixture_sha,
+            "overlay_task_sha256": hashlib.sha256((overlay / "task.toml").read_bytes()).hexdigest(),
+            "source_task_root": str(source), "fixture_path": str(fixture_path),
+            "overlay_path": str(overlay),
+            "dev_command": ["fake-dev", "--task", task_id],
+            "config_builder_command": task["runtime_descriptor"]["config_builder_command"],
+        }
+        (runtime_root / f"{task_id}.json").write_text(json.dumps(descriptor), encoding="utf-8")
+
+    fake_python = tmp_path / "fake-python"
+    fake_python.write_text(
+        "#!/usr/bin/env python3\nimport json, pathlib, sys\n"
+        "args=sys.argv[1:]; goal=args[args.index('--goal')+1]\n"
+        "binding=json.loads(goal.split('BANANLOOP_BENCHMARK_BINDING_V1:',1)[1].split('\\n',1)[0])\n"
+        "state=pathlib.Path(args[args.index('--state-dir')+1]); state.mkdir(parents=True, exist_ok=True)\n"
+        "registry=state/'roles.json'; registry.write_text('{}')\n"
+        "deadline=float(args[args.index('--task-deadline-epoch')+1]); child='c-'+'a'*32\n"
+        "pivot={'status':'BENCHMARK_AUTO_CHILD_CREATED','benchmark_binding':binding,"
+        "'benchmark_binding_sha256':__import__('hashlib').sha256(json.dumps(binding,sort_keys=True,separators=(',',':')).encode()).hexdigest(),"
+        "'inherited_deadline_epoch':deadline,'child_candidate_iteration_cap':None,"
+        "'child_agent_call_ceiling':1000,'child_evaluator_call_ceiling':1000,"
+        "'changed_paths':[binding['candidate_path']],'child_campaign_id':child,"
+        "'pivot_authorization':'FROZEN_BENCHMARK_FULL_AUTO_SCOPE','role_registry_path':str(registry)}\n"
+        "print(json.dumps({'status':'BENCHMARK_AUTO_CHILD_CREATED','usage':{'input_tokens':0,'output_tokens':0},'request_history':[],'optimization_pivot':[pivot]}))\n",
+        encoding="utf-8",
+    ); fake_python.chmod(0o755)
+    fake_codex = tmp_path / "fake-codex"
+    fake_codex.write_text(
+        "#!/usr/bin/env python3\nimport json, pathlib, sys\n"
+        "repo=pathlib.Path(sys.argv[sys.argv.index('-C')+1]); inst=pathlib.Path(repo/'TASK-INSTRUCTION.md').read_text()\n"
+        "path=repo/'benchmarks/autoresearchexam/solutions'; path.mkdir(parents=True, exist_ok=True)\n"
+        "# The task-specific entry point is already present in the pinned baseline.\n"
+        "print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_tokens':1}}))\n",
+        encoding="utf-8",
+    ); fake_codex.chmod(0o755)
+    fake_harbor = tmp_path / "fake-harbor"
+    fake_harbor.write_text(
+        "#!/usr/bin/env python3\nimport json, pathlib, sys, time\n"
+        "cfg=json.loads(pathlib.Path(sys.argv[sys.argv.index('--config')+1]).read_text())\n"
+        "job=pathlib.Path(cfg['jobs_dir'])/cfg['job_name']; trial=job/'trial-001'; trial.mkdir(parents=True)\n"
+        "now=time.time(); (job/'result.json').write_text(json.dumps({'id':cfg['job_name'],'finished_at':now,'n_total_trials':1,'stats':{'n_completed_trials':1,'n_errored_trials':0,'n_running_trials':0,'n_pending_trials':0,'n_cancelled_trials':0,'n_retries':0}}))\n"
+        "(trial/'result.json').write_text(json.dumps({'id':'trial-001','finished_at':now,'task_id':{'path':cfg['overlay_path']},'agent_result':{'metadata':{'bananloop_are':{'task_id':cfg['task_id'],'status':'COMPLETED','provider_call_attempts':7,'usage':{'input_tokens':11,'output_tokens':13,'total_tokens':24}}}}}))\n",
+        encoding="utf-8",
+    ); fake_harbor.chmod(0o755)
+
+    # Public-task config preparation is replaced only at its filesystem edge;
+    # the backend's real pivot authorizer and Harbor receipt validator remain active.
+    def fake_public_prepare(**kwargs):
+        out, jobs = kwargs["output_dir"], kwargs["jobs_dir"]
+        out.mkdir(parents=True, exist_ok=True)
+        bl, harbor = out / "bananloop.json", out / "harbor.json"
+        task_id = kwargs["source_task"].name
+        adapter = kwargs["adapter_id"]
+        # Resolve exact task record from frozen closure.
+        task = next(item for item in tasks if item["task_id"] == task_id)
+        bl.write_text(json.dumps({"repo": str(kwargs["repo"]), "state_dir": str(kwargs["state_dir"]),
+                                  "candidate_path": task["adapter"]["candidate_path"]}))
+        harbor.write_text(json.dumps({"jobs_dir": str(jobs), "job_name": "job-" + task_id,
+                                      "task_id": task_id, "overlay_path": str(kwargs["overlay"]),
+                                      "candidate_path": task["adapter"]["candidate_path"],
+                                      "repo": str(kwargs["repo"]), "bananloop_config": str(bl), "agents": [{}]}))
+        return {"bananloop_config": str(bl), "harbor_config": str(harbor)}
+
+    monkeypatch.setattr(prepare_public_task_job, "prepare", fake_public_prepare)
+
+    instruction = tmp_path / "codex-instruction.md"
+    instruction.write_text("Write any candidate.\n", encoding="utf-8")
+    manifest_sha = "f" * 64
+    root = tmp_path / "real-backend-fakes"
+
+    def backend_factory(system):
+        if system == "bananloop_full":
+            return BananLoopFullBackend(
+                initial_repo=baseline, base_sha=base_sha, runtime_root=runtime_root,
+                state_root=tmp_path / "states", jobs_root=tmp_path / "jobs",
+                manifest_sha256=manifest_sha, python_binary=str(fake_python),
+                harbor_binary=fake_harbor,
+            )
+        return CodexDirectBackend(codex_binary=str(fake_codex), model="fake", reasoning="low",
+                                  task_instruction=instruction, dev_command=["fake-dev"],
+                                  initial_repo=baseline, base_sha=base_sha,
+                                  runtime_root=runtime_root)
+
+    report = run_fake_series(tasks, root, backend_factory)
+    assert len(report["runs"]) == 24
+    assert report["model_calls"] == report["harbor_evaluations"] == report["ai_judge_calls"] == 0
+    assert report["usage"]["model_turns_observed"] == 96
+    assert report["usage"]["by_source"]["bananloop_full_optimization"]["model_turns_observed"] == 84
+    assert all(item["result"]["status"] == "COMPLETED" for item in report["runs"]), [(item["arm_id"], item["result"]) for item in report["runs"] if item["result"]["status"] != "COMPLETED"]
+    full = [item for item in report["runs"] if item["system"] == "bananloop_full"]
+    direct = [item for item in report["runs"] if item["system"] == "codex_direct"]
+    assert len(full) == len(direct) == 12
+    assert all(item["result"].get("child_campaign_id") == "c-" + "a" * 32 for item in full)
+    assert all(item["result"]["final_artifact"]["status"] == "CAPTURED" for item in direct)
+    archive = root / "final-archive"
+    index = json.loads((archive / "SHA256SUMS.json").read_text(encoding="utf-8"))
+    assert index["manifest_sha256"] == canonical_sha({
+        key: value for key, value in json.loads((archive / "experiment-manifest.json").read_text()).items()
+        if key != "manifest_sha256"
+    })
 
 
 def test_series_archiver_refuses_credential_paths_and_content(tmp_path):
@@ -278,7 +493,7 @@ def test_codex_direct_backend_uses_fake_cli_and_enforces_deadline(tmp_path):
                             time.time() + 10, usage)
     assert completed["status"] == "COMPLETED"
     assert completed["model_turns_observed"] == 1
-    assert (complete_root / "repo" / "README.md").read_text(encoding="utf-8") == "initial tree\n"
+    assert (complete_root.parent / ".workspaces" / "arm-fake" / "README.md").read_text(encoding="utf-8") == "initial tree\n"
     assert completed["final_artifact"]["status"] == "CAPTURED"
     assert (complete_root / "final-artifacts" / "solution.py").read_text(encoding="utf-8") == "final candidate"
 

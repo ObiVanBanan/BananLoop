@@ -324,7 +324,8 @@ def inspect_harbor_result(job_dir: Path, *, task_id: str, overlay_path: str) -> 
     if status in {"RUN_FAILED", "FAILED", "ERROR", "CANCELLED"}:
         raise ValueError(f"BananLoop bridge reported terminal failure ({status})")
     if status not in {"ALL_NODES_COMPLETE", "STEP_LIMIT", "ITERATION_LIMIT",
-                      "DEADLINE_EXCEEDED", "CONVERGED_REPEATED_EXPERIMENT", "COMPLETED"}:
+                      "DEADLINE_EXCEEDED", "CONVERGED_REPEATED_EXPERIMENT", "COMPLETED",
+                      "LIMIT_EXHAUSTED"}:
         raise ValueError("BananLoop bridge returned an unrecognized terminal status")
     calls = bananloop.get("provider_call_attempts")
     if type(calls) is not int or calls < 0:
