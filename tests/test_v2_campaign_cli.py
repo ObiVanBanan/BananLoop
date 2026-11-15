@@ -202,6 +202,15 @@ def test_cli_explore_is_a_separate_v2_route():
     )
 
 
+def test_cli_optimization_accepts_inherited_absolute_task_deadline():
+    args = parser().parse_args([
+        "v2", "optimize", "--campaign-id", "child-1", "--role-registry", "roles.json",
+        "--visible-path", "src/model.py", "--write-path", "src/model.py",
+        "--task-deadline-epoch", "1790000000.5",
+    ])
+    assert args.task_deadline_epoch == 1790000000.5
+
+
 def test_v2_explore_stages_owner_attestation_before_no_model_preflight(tmp_path):
     repo = _repo(tmp_path)
     attestation_path = repo / "public-attestation.json"

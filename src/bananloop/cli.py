@@ -1176,6 +1176,10 @@ def parser() -> argparse.ArgumentParser:
     v2_optimize.add_argument("--write-path", action="append", required=True,
                              help="exact candidate-writable path; repeat as needed")
     v2_optimize.add_argument("--max-steps", type=int, default=8)
+    v2_optimize.add_argument(
+        "--task-deadline-epoch", type=float,
+        help="absolute end-to-end deadline inherited from the paired task arm; never resets at child start",
+    )
     v2_optimize.add_argument("--approve-up-to-calls", type=int, default=0,
                              help="explicit consent to spend up to this many ChatGPT plan requests now")
     v2_optimize.add_argument("--timeout-seconds", type=int, default=120)
