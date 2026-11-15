@@ -450,6 +450,43 @@ def test_v2_default_call_budget_preserves_exploration_and_funds_two_paired_epoch
     assert sum(role.calls_per_instance for role in roles.roles) == 7
 
 
+def test_benchmark_auto_pivot_is_explicit_and_limited_to_one_exact_write_path(tmp_path):
+    from bananloop.v2_campaign_cli import _build_spec
+
+    repo = _repo(tmp_path)
+    auto, _, _ = _build_spec(
+        repo, "Benchmark-only auto pivot", ("README.md",),
+        max_agent_calls=6, max_model_tokens=128, model="gpt-6-luna",
+        optimization_write_paths=("README.md",), benchmark_auto_pivot=True,
+    )
+    assert auto.autonomy.mode == "FULL_AUTO"
+    assert auto.autonomy.authorize_pivot(("README.md",)) == "AUTO_ALLOWED"
+    assert auto.autonomy.authorize_pivot(("pyproject.toml",)) == "DENIED"
+    assert auto.autonomy.scope.max_child_depth == 1
+    assert auto.autonomy.scope.max_child_campaigns == 1
+
+    supervised, _, _ = _build_spec(
+        repo, "Ordinary supervised campaign", ("README.md",),
+        max_agent_calls=6, max_model_tokens=128, model="gpt-6-luna",
+        optimization_write_paths=("README.md",),
+    )
+    assert supervised.autonomy.mode == "SUPERVISED"
+    assert supervised.autonomy.authorize_pivot(("README.md",)) == "APPROVAL_REQUIRED"
+
+
+def test_benchmark_auto_pivot_rejects_missing_or_protected_write_scope(tmp_path):
+    from bananloop.v2_campaign_cli import _build_spec
+
+    repo = _repo(tmp_path)
+    args = dict(max_agent_calls=6, max_model_tokens=128, model="gpt-6-luna",
+                benchmark_auto_pivot=True)
+    with pytest.raises(V2CampaignCLIError, match="exact Optimization write path"):
+        _build_spec(repo, "No path", ("README.md",), **args)
+    with pytest.raises(Exception):
+        _build_spec(repo, "Protected path", ("validation/data.py",),
+                    optimization_write_paths=("validation/data.py",), **args)
+
+
 def test_v2_explicit_candidate_iteration_cap_is_frozen_and_funded(tmp_path):
     from bananloop.v2_campaign_cli import _build_spec
 

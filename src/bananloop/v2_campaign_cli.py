@@ -246,7 +246,8 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
                 max_candidate_iterations: int | None = None,
                 deadline_seconds: int = 3600,
                 optimization_write_paths: tuple[str, ...] = (),
-                evaluator_fixture_digest: str | None = None):
+                evaluator_fixture_digest: str | None = None,
+                benchmark_auto_pivot: bool = False):
     if (max_candidate_iterations is not None and (isinstance(max_candidate_iterations, bool)
             or not isinstance(max_candidate_iterations, int)
             or not 1 <= max_candidate_iterations <= 5)):
@@ -261,6 +262,10 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
         )
     if not set(optimization_write_paths) <= set(paths):
         raise V2CampaignCLIError("optimization write paths must be included in the read-path allowlist")
+    if not isinstance(benchmark_auto_pivot, bool):
+        raise V2CampaignCLIError("benchmark auto-pivot mode must be a boolean")
+    if benchmark_auto_pivot and not optimization_write_paths:
+        raise V2CampaignCLIError("benchmark auto-pivot requires an exact Optimization write path")
     policy = {
         "policy_version": 1,
         "tools": ["read_file", "list_files", "write_artifact", "commit_candidate"],
@@ -347,11 +352,21 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
         "repo": str(repo), "goal": goal, "read_paths": paths,
         "model": model, "version": 1,
     }, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    autonomy_scope = None
+    if benchmark_auto_pivot:
+        autonomy_scope = AutonomyScopeV2(
+            version=1, allowed_paths=optimization_write_paths,
+            max_child_depth=1, max_child_campaigns=1,
+        )
+        scope_digest = autonomy_scope.content_digest()
     spec = ExplorationCampaignSpecV2.model_validate({
         "schema_version": 2, "mode": "EXPLORATION", "goal": goal,
         "source_repo": str(repo), "base_commit": _git(repo, "rev-parse", "HEAD"),
         "autonomy": {
-            "mode": "SUPERVISED", "scope_digest": scope_digest, "scope_version": 1,
+            "mode": "FULL_AUTO" if benchmark_auto_pivot else "SUPERVISED",
+            "scope_digest": scope_digest, "scope_version": 1,
+            **({"scope": autonomy_scope.model_dump(mode="json")}
+               if autonomy_scope is not None else {}),
             "capability_policy": policy,
         },
         "budget": {
@@ -767,16 +782,19 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
         ),
         execution_plan=plan,
     )
-    queue.set_campaign_control(
-        campaign_id, "PAUSED", reason=f"verified Optimization pivot {pivot.proposal_id} requires owner decision",
-    )
+    benchmark_auto = parent_spec.autonomy.mode == "FULL_AUTO"
+    if not benchmark_auto:
+        queue.set_campaign_control(
+            campaign_id, "PAUSED", reason=f"verified Optimization pivot {pivot.proposal_id} requires owner decision",
+        )
     with sqlite3.connect(state_root / "campaign.sqlite3", timeout=30) as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT status FROM campaigns WHERE id=1").fetchone()
-        if row is None or row[0] not in {"READY", "PAUSED_NEEDS_INPUT"}:
+        allowed_statuses = {"READY", "PAUSED_NEEDS_INPUT"} if not benchmark_auto else {"READY"}
+        if row is None or row[0] not in allowed_statuses:
             conn.rollback()
-            raise V2CampaignCLIError("parent campaign cannot enter supervised pivot review from its current status")
-        if row[0] == "READY":
+            raise V2CampaignCLIError("parent campaign cannot enter the benchmark pivot decision from its current status")
+        if row[0] == "READY" and not benchmark_auto:
             conn.execute(
                 "UPDATE campaigns SET status='PAUSED_NEEDS_INPUT',updated_at=? WHERE id=1",
                 (utc_now(),),
@@ -791,6 +809,12 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
         conn.commit()
     saga = V2PivotSaga(repo=repo, parent_campaign_id=campaign_id, state_root=registry_root)
     saga.record_pivot_proposal(pivot)
+    auto_child: dict[str, Any] | None = None
+    if benchmark_auto:
+        auto_child = saga.create_child(
+            idempotency_key=f"benchmark-auto-{pivot.proposal_id}",
+            proposal=pivot, child_spec=child,
+        )
     roles_path = _persist_role_registry(state_root, roles)
     with sqlite3.connect(state_root / "campaign.sqlite3", timeout=30) as conn:
         pivot_status = conn.execute(
@@ -804,11 +828,16 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
         "REJECTED": "OWNER_REJECTED_PIVOT",
         "STALE": "STALE_PIVOT_REQUIRES_REVIEW",
     }[pivot_status[0]]
+    if auto_child is not None:
+        status = "BENCHMARK_AUTO_CHILD_CREATED" if auto_child.get("state") == "ACTIVE" else "BENCHMARK_AUTO_CHILD_PENDING"
     return {
         "status": status, "proposal_id": pivot.proposal_id,
         "proposal_digest": pivot.digest, "protocol_approval_digest": receipt.approval_digest,
         "child_spec_hash": child.approved_hash(), "changed_paths": list(write_paths),
         "child_agent_call_budget": child_calls, "role_registry_path": str(roles_path),
+        **({"child_campaign_id": auto_child.get("child_campaign_id"),
+            "pivot_authorization": "FROZEN_BENCHMARK_FULL_AUTO_SCOPE"}
+           if auto_child is not None else {}),
     }
 
 
@@ -1070,6 +1099,9 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
         experiment_catalog = experiment_executor.catalog
     requested_write_paths = list(getattr(args, "optimization_write_path", ()) or ())
     write_paths = _read_paths(repo, requested_write_paths) if requested_write_paths else ()
+    benchmark_auto_pivot = getattr(args, "benchmark_auto_pivot", False)
+    if not isinstance(benchmark_auto_pivot, bool):
+        raise V2CampaignCLIError("benchmark auto-pivot mode must be a boolean")
     if not set(write_paths) <= set(paths):
         raise V2CampaignCLIError("--optimization-write-path values must also appear in --read-path")
     fixture = None
@@ -1100,6 +1132,7 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
         deadline_seconds=getattr(args, "deadline_seconds", 3600),
         optimization_write_paths=write_paths,
         evaluator_fixture_digest=fixture.content_digest() if fixture else None,
+        benchmark_auto_pivot=benchmark_auto_pivot,
     )
     runtime_paths = RuntimePaths.for_repo(
         repo, Path(args.state_dir).expanduser() if args.state_dir else None,
@@ -1306,6 +1339,9 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             if any(item.get("status") == "PENDING_OWNER_PIVOT_DECISION"
                    for item in result["optimization_pivot"]):
                 result["status"] = "PENDING_OWNER_PIVOT_DECISION"
+            if any(item.get("status") == "BENCHMARK_AUTO_CHILD_CREATED"
+                   for item in result["optimization_pivot"]):
+                result["status"] = "BENCHMARK_AUTO_CHILD_CREATED"
         except Exception as exc:
             token_budget = _model_token_budget_status(
                 call_history, per_call_limit=args.max_model_tokens,

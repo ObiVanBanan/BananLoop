@@ -1,0 +1,52 @@
+{
+  "date": "2026-11-15",
+  "note": "Configurations use a synthetic child ID for generation validation; no campaign was created. No Docker scoring, Harbor, model, or grader invocation occurred. Public DEV only; Validation repeats DEV and is not a holdout.",
+  "schema": "bananloop-autonomous-v01-public-task-config-smokes-v1",
+  "source_revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+  "status": "OFFLINE_CONFIG_GENERATION_ONLY",
+  "synthetic_child_id": "c-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "tasks": [
+    {
+      "adapter_id": "act-tensor-public-v1",
+      "bananloop_config_sha256": "cd6494ed02417e210272ecd40cb6d33edc99a459476e9b3824f468776e6616ef",
+      "bundle_sha256": "0e07445d45222ee3264a3f49db25996fcc61aedc8efbfa7979a1323c045e1c68",
+      "candidate_path": "benchmarks/autoresearchexam/solutions/act_tensor/impute.py",
+      "fixture_sha256": "4a4904ce9a80bf3dfb1bd3768d72fb08219a3005c514bd20adbe3f3da1799f01",
+      "harbor_config_sha256": "c4bd70789c4c61eb93a965d34be3cf835e96f7f03bd8dd23bd2765c931024875",
+      "metric_direction": "MAXIMIZE",
+      "metric_field": "imputation_r2",
+      "public_dev_image_id": "sha256:f8609c86115e4f304fc0c9e1e9d176693d3c11e53f7986a07d3bdbece23d6875",
+      "public_output_path": "/app/solution/impute.py",
+      "safe_overlay_task_sha256": "d2365c402910240f8e47d3afaaabcf0327256288fd48c76af0f0e19115a4e575",
+      "task_id": "act-tensor-sparse-panel-imputation-r2"
+    },
+    {
+      "adapter_id": "causalpfn-public-v1",
+      "bananloop_config_sha256": "a0c59b917a6d6fe7ffe94d68ecae3df066ee16a7125bfa20a6fd2083d54db501",
+      "bundle_sha256": "7e1103194b9dafe65e67a643ef2f1852eb75022c7d0bf0dc68a94e97a91f7bd6",
+      "candidate_path": "benchmarks/autoresearchexam/solutions/causalpfn/estimator.py",
+      "fixture_sha256": "698b5850c132e3960acbd5446203964759226244f443732c1d513f2b28e3f548",
+      "harbor_config_sha256": "cc052c7abc4b321ebdd2e6348d5e17859af938b644965b364e563b601263abbc",
+      "metric_direction": "MINIMIZE",
+      "metric_field": "mean_pehe",
+      "public_dev_image_id": "sha256:3b043696a33b787b0e05f960a7c180e47378016c0c7c0e72ec2cf658af795bac",
+      "public_output_path": "/app/output/estimator.py",
+      "safe_overlay_task_sha256": "a8734a89a865196878187096e3f0da25d2c2deb2a0fcc1f1090aa39eaf66c1e4",
+      "task_id": "causalpfn-cate-pehe-ihdp-surfaceb"
+    },
+    {
+      "adapter_id": "hicard-public-v1",
+      "bananloop_config_sha256": "a8b7d4e04132b252fae88e604cd98ea2316c988460d455ca16880df4397f1c99",
+      "bundle_sha256": "25a08e9161c63cc4b4250badd82a423a4eadce5ace3436674ea9beacf4553be8",
+      "candidate_path": "benchmarks/autoresearchexam/solutions/hicard/encoder.py",
+      "fixture_sha256": "e3554ae80fe3572065f824caa3a096268b3180f868d5c504667287d6525d0bc2",
+      "harbor_config_sha256": "c19d1060d0a43d98d8dbcce41fb04299109799ee856104a2ba9e090304357fec",
+      "metric_direction": "MAXIMIZE",
+      "metric_field": "onehot_mse_reduction_pct",
+      "public_dev_image_id": "sha256:4ac7196375b04b6804f2b9ccf0059a64fdfc0e1fb0058ee5d7275dbdb0e6198a",
+      "public_output_path": "/app/output/encoder.py",
+      "safe_overlay_task_sha256": "2f423a73e4b70599967f8829c9f55b0324c33abb4c4350799308d0cc22f5511d",
+      "task_id": "hicard-latent-encoder"
+    }
+  ]
+}

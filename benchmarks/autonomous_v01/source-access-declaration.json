@@ -65,6 +65,16 @@
     "query_terms": ["mcp", "validation", "submit", "result", "grader", "score", "metric", "interface", "output", "DEV", "dev"],
     "inventory_status": "INCOMPLETE_TERMINAL_OUTPUT_WAS_TRUNCATED; do not infer that the known direct paths are the complete set of snippets returned"
   },
+  "additional_build_context_access_attempts": [
+    {
+      "task_id": "act-tensor-sparse-panel-imputation-r2",
+      "path": "act-tensor-sparse-panel-imputation-r2/environment/are-grader-ctx",
+      "operator": "Codex",
+      "access_date_local": "2026-11-15",
+      "access": "Harbor status-only contract probe was interrupted after Docker BuildKit was observed with an fs.read grant for this context; whether BuildKit read any context bytes is unknown",
+      "classification": "potential private grader build-context access; no grader submission, result, or model call occurred"
+    }
+  ],
   "hidden_answer_data": {
     "private_dataset_or_npz_opened": false,
     "answer_key_or_exact_private_test_seed_seen": false,

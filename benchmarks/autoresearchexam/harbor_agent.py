@@ -13,10 +13,12 @@ import hashlib
 import json
 import shlex
 import tempfile
+import time
 from argparse import Namespace
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
 from pathlib import PurePosixPath
+from types import SimpleNamespace
 from typing import Any, Mapping
 from uuid import uuid4
 
@@ -28,6 +30,7 @@ from harbor.models.agent.context import AgentContext
 from pydantic import Field
 
 from bananloop.trusted_evaluator import TrustedEvaluatorError
+from bananloop.evaluator_fixture import EvaluatorFixtureV1
 from bananloop.v2_optimization_cli import run_v2_optimize
 
 from .optimization_runner import AREPublicEvaluatorRunner
@@ -40,6 +43,11 @@ from .labelrisk_runner import AREPublicLabelRiskEvaluatorRunner
 from .cpudecoder_runner import AREPublicCPUDecoderEvaluatorRunner
 from .cpu_llm_runner import AREPublicCPULLMEvaluatorRunner
 from .covtype_runner import AREPublicCovTypeEvaluatorRunner
+from .public_task_evaluator import (
+    AREACTPublicEvaluatorRunner, ARECausalPFNPublicEvaluatorRunner,
+    AREHiCardPublicEvaluatorRunner, AREPublicTaskEvaluatorRunner,
+)
+from .public_task_runner import run_public_task_dev
 from .public_sopcc_dev import run_public_sopcc_dev
 from .public_shortest_ci_dev import run_public_shortest_ci_dev
 from .public_sketched_newton_dev import run_public_newton_dev
@@ -84,6 +92,8 @@ _PUBLIC_OUTPUT_ALLOWLIST = {
     _CPUDECODER_PUBLIC_OUTPUT,
     _CPULLM_PUBLIC_OUTPUT,
     _COVTYPE_PUBLIC_OUTPUT,
+    "/app/solution/impute.py", "/app/output/estimator.py",
+    "/app/output/encoder.py",
 }
 
 
@@ -120,6 +130,13 @@ class AREBananLoopOptimizationAgent(BaseAgent):
     async def setup(self, environment: BaseEnvironment) -> None:
         if self.config_path is None or not self.config_path.is_file() or self.config_path.is_symlink():
             raise RuntimeError("Harbor bridge requires a local nonsymlink config_path")
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        if config.get("local_public_dev_only") is True:
+            if config.get("adapter_id") not in {
+                "act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1",
+            }:
+                raise RuntimeError("local public DEV mode is not allowlisted for this adapter")
+            return
         if not _MCP_CLIENT.is_file() or _MCP_CLIENT.is_symlink():
             raise RuntimeError("public ARE MCP client script is missing or unsafe")
         await environment.upload_file(_MCP_CLIENT, _REMOTE_MCP_CLIENT)
@@ -132,13 +149,27 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         contract_probe_only = raw.get("contract_probe_only", False)
         if not isinstance(contract_probe_only, bool):
             raise RuntimeError("contract_probe_only must be a boolean")
+        adapter_id = raw.get("adapter_id", "imputation-public-v2")
+        local_public_dev_only = raw.get("local_public_dev_only", False)
+        if not isinstance(local_public_dev_only, bool):
+            raise RuntimeError("local_public_dev_only must be a boolean")
+        local_public_adapters = {
+            "act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1",
+        }
+        if local_public_dev_only and (
+                adapter_id not in local_public_adapters or contract_probe_only):
+            raise RuntimeError("local public DEV mode requires one allowlisted task adapter")
         required = {
             "repo", "state_dir", "campaign_id", "role_registry", "task_id",
             "task_version", "task_instruction_sha256", "model_call_limit", "timeout_seconds",
             "visible_path", "write_path", "public_dev_image", "public_dev_image_id",
         }
-        if not contract_probe_only:
+        if not contract_probe_only and not local_public_dev_only:
             required |= {"mcp_contract_sha256", "mcp_contract_path"}
+        if local_public_dev_only:
+            required |= {"public_task_root", "public_task_fixture_path",
+                         "public_task_fixture_sha256", "public_task_contract_sha256",
+                         "public_task_bundle_sha256"}
         if required - set(raw):
             raise RuntimeError("Harbor bridge config is missing required pinned fields")
         repo = Path(raw["repo"]).expanduser().resolve()
@@ -146,6 +177,14 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         selection = json.loads(selection_path.read_text(encoding="utf-8"))
         matches = [task for task in selection.get("tasks", [])
                    if task.get("task_id") == raw["task_id"]]
+        if not matches and raw["task_id"] in {
+            "act-tensor-sparse-panel-imputation-r2",
+            "causalpfn-cate-pehe-ihdp-surfaceb", "hicard-latent-encoder",
+        }:
+            catalogue_path = repo / "benchmarks/autonomous_v01/task-catalogue.json"
+            catalogue = json.loads(catalogue_path.read_text(encoding="utf-8"))
+            matches = [task for task in catalogue.get("tasks", [])
+                       if task.get("task_id") == raw["task_id"]]
         if len(matches) != 1:
             raise RuntimeError("task ID is not uniquely pinned in the AutoResearchExam shortlist")
         task = matches[0]
@@ -154,7 +193,6 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 or task.get("instruction_sha256") != raw["task_instruction_sha256"]
                 or instruction_digest != raw["task_instruction_sha256"]):
             raise RuntimeError("Harbor task instruction or version differs from the pinned shortlist")
-        adapter_id = raw.get("adapter_id", "imputation-public-v2")
         adapter_specs = {
             "imputation-public-v2": (
                 "budgeted-imputation-mcar50", _CANDIDATE_PATH, _PUBLIC_OUTPUT,
@@ -205,13 +243,29 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 _COVTYPE_PUBLIC_OUTPUT, AREPublicCovTypeEvaluatorRunner,
                 AREPublicCovTypeEvaluatorRunner.default_dev_cell_count,
             ),
+            "act-tensor-public-v1": (
+                "act-tensor-sparse-panel-imputation-r2",
+                "benchmarks/autoresearchexam/solutions/act_tensor/impute.py",
+                "/app/solution/impute.py", AREACTPublicEvaluatorRunner, 8,
+            ),
+            "causalpfn-public-v1": (
+                "causalpfn-cate-pehe-ihdp-surfaceb",
+                "benchmarks/autoresearchexam/solutions/causalpfn/estimator.py",
+                "/app/output/estimator.py", ARECausalPFNPublicEvaluatorRunner, 100,
+            ),
+            "hicard-public-v1": (
+                "hicard-latent-encoder",
+                "benchmarks/autoresearchexam/solutions/hicard/encoder.py",
+                "/app/output/encoder.py", AREHiCardPublicEvaluatorRunner, 24,
+            ),
         }
         if adapter_id not in adapter_specs:
             raise RuntimeError("Harbor bridge adapter_id is not in the pinned allowlist")
         expected_repeatability = (
             AREPublicSOPCCEvaluatorRunner.default_repeatability_runs
             if adapter_id == "sopcc-public-v1"
-            else 1 if adapter_id == "cpudecoder-public-v1" else 2
+            else 1 if adapter_id in {"cpudecoder-public-v1", "act-tensor-public-v1",
+                                     "causalpfn-public-v1", "hicard-public-v1"} else 2
         )
         repeatability_runs = raw.get("repeatability_runs", expected_repeatability)
         if (isinstance(repeatability_runs, bool) or not isinstance(repeatability_runs, int)
@@ -227,6 +281,35 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             if raw.get("status_probe_only") is not True or raw.get("model_call_limit") != 0:
                 raise RuntimeError("contract discovery requires a zero-call status-only probe")
             raw["mcp_contract_sha256"] = "0" * 64
+        elif local_public_dev_only:
+            spec = AREPublicTaskEvaluatorRunner.spec(adapter_id)
+            task_root_arg = Path(raw["public_task_root"]).expanduser()
+            if task_root_arg.is_symlink() or not task_root_arg.is_dir() or task_root_arg.name != raw["task_id"]:
+                raise RuntimeError("public task root is missing or unsafe")
+            task_root = task_root_arg.resolve()
+            task_file = task_root / "task.toml"
+            instruction_file = task_root / "instruction.md"
+            if any(path.is_symlink() or not path.is_file()
+                   for path in (task_file, instruction_file)):
+                raise RuntimeError("public task source files are missing or unsafe")
+            dev_files = AREPublicTaskEvaluatorRunner._public_dev_manifest(task_root, spec["count"])
+            expected_task_contract = AREPublicTaskEvaluatorRunner.task_contract_digest(
+                adapter_id=adapter_id, task_version=raw["task_version"],
+                task_sha256=hashlib.sha256(task_file.read_bytes()).hexdigest(),
+                instruction_sha256=hashlib.sha256(instruction_file.read_bytes()).hexdigest(),
+                dev_files=dev_files,
+            )
+            if expected_task_contract != raw["public_task_contract_sha256"]:
+                raise RuntimeError("local public task fixture differs from its frozen task contract")
+            fixture_path = Path(raw["public_task_fixture_path"]).expanduser()
+            fixture = EvaluatorFixtureV1.load(fixture_path)
+            bundle = base64.b64decode(fixture.evaluator_bundle_base64, validate=True)
+            if (fixture.content_digest() != raw["public_task_fixture_sha256"]
+                    or fixture.execution_backend_id != f"autoresearchexam-{adapter_id}"
+                    or hashlib.sha256(bundle).hexdigest() != raw["public_task_bundle_sha256"]):
+                raise RuntimeError("public task evaluator fixture or bundle digest differs from config")
+            raw["public_task_root"] = str(task_root)
+            raw["mcp_contract_sha256"] = expected_task_contract
         else:
             contract_path = Path(raw["mcp_contract_path"]).expanduser()
             if contract_path.is_symlink():
@@ -298,7 +381,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             expected_image_id = getattr(runner_type, "default_dev_image_id", None)
             if expected_image_id and raw["public_dev_image_id"] != expected_image_id:
                 raise RuntimeError("public DEV image ID differs from the task adapter pin")
-        if adapter_id in {"carps-public-v1", "dctabeval-public-v1", "sketched-newton-public-v1", "labelrisk-public-v1", "cpudecoder-public-v1", "cpu-llm-public-v1", "covtype-external-proxy-v1"}:
+        if adapter_id in {"carps-public-v1", "dctabeval-public-v1", "sketched-newton-public-v1", "labelrisk-public-v1", "cpudecoder-public-v1", "cpu-llm-public-v1", "covtype-external-proxy-v1", "act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1"}:
             task_root = Path(raw.get("public_task_root", "")).expanduser()
             if task_root.is_symlink() or not task_root.is_dir() or task_root.name != raw["task_id"]:
                 raise RuntimeError("public task root is missing or does not match the adapter task")
@@ -334,8 +417,11 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 or raw.get("time_limit_seconds", 3600) > 3600):
             raise RuntimeError("ARE bridge may run at most five candidates and one hour")
         servers = [item for item in self.mcp_servers if item.name == "are"]
-        if (len(servers) != 1 or servers[0].transport != "streamable-http"
-                or servers[0].url != "http://grader:8000/mcp"):
+        if local_public_dev_only:
+            if servers:
+                raise RuntimeError("local public DEV task unexpectedly exposes an ARE MCP server")
+        elif (len(servers) != 1 or servers[0].transport != "streamable-http"
+              or servers[0].url != "http://grader:8000/mcp"):
             raise RuntimeError("Harbor task lacks the pinned public ARE MCP endpoint")
         raw["repo"] = str(repo)
         raw["state_dir"] = str(Path(raw["state_dir"]).expanduser().resolve())
@@ -490,16 +576,25 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         if ledger_path.is_symlink():
             raise RuntimeError("public submission ledger path must not contain symlinks")
         ledger_path.parent.mkdir(parents=True, exist_ok=True)
-        grader = PublicAREGrader(
-            ledger_path,
-            task_id=raw["task_id"],
-            contract_sha256=raw["mcp_contract_sha256"],
-            repeatability_runs=raw["repeatability_runs"],
-            time_limit_seconds=raw.get("time_limit_seconds", 3600),
-            call_tool=lambda name, args: asyncio.run_coroutine_threadsafe(
-                self._call_public_tool(environment, name, args), loop,
-            ).result(timeout=130),
-        )
+        if raw.get("local_public_dev_only") is True:
+            grader = SimpleNamespace(
+                deadline_epoch=time.time() + raw.get("time_limit_seconds", 3600),
+                task_id=raw["task_id"], contract_sha256=raw["mcp_contract_sha256"],
+                repeatability_runs=raw["repeatability_runs"],
+                candidate_iterations_used=0, last_transport_failure_category=None,
+                submission_summary=lambda: {"submissions": 0, "graded": 0, "pending": 0},
+            )
+        else:
+            grader = PublicAREGrader(
+                ledger_path,
+                task_id=raw["task_id"],
+                contract_sha256=raw["mcp_contract_sha256"],
+                repeatability_runs=raw["repeatability_runs"],
+                time_limit_seconds=raw.get("time_limit_seconds", 3600),
+                call_tool=lambda name, args: asyncio.run_coroutine_threadsafe(
+                    self._call_public_tool(environment, name, args), loop,
+                ).result(timeout=130),
+            )
 
         def publish_candidate(data: bytes) -> None:
             future = asyncio.run_coroutine_threadsafe(
@@ -535,6 +630,9 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 "cpudecoder-public-v1": AREPublicCPUDecoderEvaluatorRunner,
                 "cpu-llm-public-v1": AREPublicCPULLMEvaluatorRunner,
                 "covtype-external-proxy-v1": AREPublicCovTypeEvaluatorRunner,
+                "act-tensor-public-v1": AREACTPublicEvaluatorRunner,
+                "causalpfn-public-v1": ARECausalPFNPublicEvaluatorRunner,
+                "hicard-public-v1": AREHiCardPublicEvaluatorRunner,
             }
             runner_type = runner_types[adapter_id]
             expected_backend = runner_type.backend_id
@@ -596,6 +694,15 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                         expected_image_id=raw["public_dev_image_id"],
                         timeout_seconds=min(3600, timeout_seconds),
                     )
+                if adapter_id in {"act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1"}:
+                    result = run_public_task_dev(
+                        raw["task_id"], candidate,
+                        image=raw["public_dev_image"],
+                        expected_image_id=raw["public_dev_image_id"],
+                        timeout_seconds=min(3600, timeout_seconds),
+                    )
+                    return {"status": "GRADED", "dev_score": result["metric"],
+                            "dev_cells": result["dev_cases"]}
                 return run_public_devkit(
                     candidate,
                     image=raw["public_dev_image"],
@@ -678,6 +785,15 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                     proxy_root=Path(raw["covtype_proxy_root"]),
                     dev_image=raw["public_dev_image"],
                     dev_image_id=raw["public_dev_image_id"],
+                )
+            if adapter_id in {"act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1"}:
+                return runner_type(
+                    **common, adapter_id=adapter_id,
+                    task_version=raw["task_version"],
+                    dev_image=raw["public_dev_image"],
+                    dev_image_id=raw["public_dev_image_id"],
+                    public_dev_cell_count=raw["public_dev_cell_count"],
+                    public_task_root=Path(raw["public_task_root"]),
                 )
             return runner_type(
                 **common,

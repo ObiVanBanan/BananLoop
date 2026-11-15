@@ -11,11 +11,11 @@
   ],
   "call_limit_policy": "OBSERVE_ONLY",
   "capacity": {
-    "available_memory_mb": 25589,
+    "available_memory_mb": 25302,
     "conservative_arm_slots": 1,
     "cpu_bound_arm_slots": 1,
     "currently_memory_bound_arm_slots": 1,
-    "disk_free_bytes": 923625414656,
+    "disk_free_bytes": 923434545152,
     "logical_cpus": 12,
     "minimum_series_wall_hours_at_one_slot": 24,
     "per_task_requested_cpus": 8,
@@ -60,7 +60,7 @@
       "hicard-latent-encoder"
     ],
     "disclosure_path": "benchmarks/autonomous_v01/source-access-declaration.json",
-    "disclosure_sha256": "fc4d7b66d8bf1863a72b907f931a88c5944b77ab03c3e14258d872e2e858b333",
+    "disclosure_sha256": "4e37162f863412ee42a04dfddf1d2b7cfb41a266ab058a474fbb97df534bdca9",
     "disclosure_valid": true,
     "pristine_blind_or_independent_holdout_claim_allowed": false
   },
@@ -71,6 +71,6 @@
     "causalpfn-cate-pehe-ihdp-surfaceb",
     "hicard-latent-encoder"
   ],
-  "source_access_declaration_sha256": "fc4d7b66d8bf1863a72b907f931a88c5944b77ab03c3e14258d872e2e858b333",
+  "source_access_declaration_sha256": "4e37162f863412ee42a04dfddf1d2b7cfb41a266ab058a474fbb97df534bdca9",
   "status": "PREP_BLOCKED"
 }

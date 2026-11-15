@@ -1138,7 +1138,9 @@ def parser() -> argparse.ArgumentParser:
     v2_explore.add_argument("--read-path", action="append", required=True,
                             help="exact public source file path visible to the researcher; repeat as needed")
     v2_explore.add_argument("--optimization-write-path", action="append", default=[],
-                            help="exact file eligible for a supervised Optimization child; must also be a read path")
+                            help="exact file eligible for an Optimization child; must also be a read path")
+    v2_explore.add_argument("--benchmark-auto-pivot", action="store_true",
+                            help="preauthorize one frozen in-scope Optimization pivot for a benchmark run")
     v2_explore.add_argument("--evaluator-fixture",
                             help="owner-controlled evaluator bundle and tier inputs; pass the same fixture on every resume")
     v2_explore.add_argument("--boardgames-task-id",
