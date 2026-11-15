@@ -1,0 +1,47 @@
+{
+  "schema": "bananloop-autonomous-benchmark-v0.1",
+  "status": "DRAFT_NOT_RUNNABLE",
+  "track": "ARE_PRIMARY",
+  "task_catalogue_revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+  "source_sha256_or_commit": "REPLACE_WITH_REMOTE_FULL_SHA",
+  "full_feature_flag_sha256": "REPLACE_WITH_FROZEN_FLAG_HASH",
+  "selection_seed": "REPLACE_BEFORE_FREEZE",
+  "eligible_task_ids": [],
+  "task_count": 12,
+  "tasks": [],
+  "arms": [
+    {
+      "id": "codex-direct",
+      "mode": "iterative",
+      "model": "gpt-6-luna",
+      "configuration_sha256": "REPLACE"
+    },
+    {
+      "id": "bananloop-full",
+      "mode": "exploration-optimization-full",
+      "model": "gpt-6-luna",
+      "configuration_sha256": "REPLACE"
+    }
+  ],
+  "limits": {
+    "seconds_per_arm": 3600,
+    "max_global_wall_seconds": 36000,
+    "max_global_chatgpt_calls": 250,
+    "max_calls_per_arm": 10,
+    "reserved_global_calls": 10,
+    "max_parallel_arms": 1,
+    "separately_billed_api_allowed": false
+  },
+  "scoring": {
+    "primary": "pinned_per_task_numeric_metric",
+    "llm_judge_during_series": false,
+    "llm_judge_after_all_frozen": true,
+    "allow_private_holdout_claim": false
+  },
+  "board_games": {
+    "enabled": false,
+    "questions": 10,
+    "seconds_per_arm": 600,
+    "budget_scope": "SEPARATE_NOT_IN_250"
+  }
+}
