@@ -16,6 +16,7 @@ from benchmarks.autonomous_v01.runner import (
     CodexDirectBackend,
     UsageLedger,
     VerifiedCandidate,
+    archive_series_results,
     build_manifest,
     offline_preflight,
     parse_codex_jsonl_usage,
@@ -64,6 +65,18 @@ def test_preflight_reports_missing_content_pins_without_launching_anything():
     assert any("content-pinned" in item for item in report["blockers"])
     assert sum("trusted fixture/protocol/Harbor adapter is incomplete" in item
                for item in report["blockers"]) == 3
+    assert report["operator_private_source_exposure"]["accepted_for_internal_diagnostic"] is True
+    assert report["operator_private_source_exposure"]["disclosure_valid"] is True
+    assert set(report["source_access_affected_task_ids"]) == {
+        "act-tensor-sparse-panel-imputation-r2",
+        "causalpfn-cate-pehe-ihdp-surfaceb",
+        "hicard-latent-encoder",
+    }
+    assert report["implementation_gates"]["codex_direct_backend"] is True
+    assert report["implementation_gates"]["codex_best_verified_checkpoint_integration"] is False
+    assert report["implementation_gates"]["bananloop_full_backend"] is False
+    assert report["implementation_gates"]["benchmark_bound_pivot_authorizer"] is False
+    assert report["implementation_gates"]["24_arm_result_archiver"] is True
     assert report["capacity"]["per_task_requested_cpus"] == 8
     assert report["capacity"]["per_task_requested_memory_mb"] == 14336
 
@@ -77,6 +90,18 @@ def test_usage_ledger_is_observational_and_does_not_enforce_a_call_cap(tmp_path)
     assert result["observed_events"] == result["model_turns_observed"] == 260
     assert result["input_tokens"] == 520
     assert result["output_tokens"] == 780
+
+
+def test_usage_ledger_preserves_turn_count_when_token_usage_is_unknown(tmp_path):
+    ledger = UsageLedger(tmp_path / "usage-unknown.sqlite3")
+    ledger.record("arm-a", "codex_direct", {
+        "model_turns_observed": 3, "usage": None, "usage_unknown": True,
+    })
+    result = ledger.summary()
+    assert result["model_turns_observed"] == 3
+    assert result["unknown_usage_events"] == 1
+    assert result["input_tokens"] == result["output_tokens"] == 0
+    assert result["by_source"]["codex_direct"]["model_turns_observed"] == 3
 
 
 def test_archive_selects_best_verified_in_deadline_candidate_and_rejects_forgery(tmp_path):
@@ -120,6 +145,58 @@ def test_fake_series_runs_24_isolated_arms_without_external_calls(tmp_path):
     assert len(set(roots)) == 24
     assert all(root.is_dir() and (root / "result.json").is_file() for root in roots)
     assert (tmp_path / "series" / "summary.json").is_file()
+    archive = tmp_path / "series" / "final-archive"
+    assert (archive / "experiment-manifest.json").is_file()
+    assert (archive / "summary.json").is_file()
+    index = json.loads((archive / "SHA256SUMS.json").read_text(encoding="utf-8"))
+    assert len(index["files"]) == 26  # 24 arm records plus manifest and summary
+    assert all(len(item["sha256"]) == 64 for item in index["files"])
+
+
+def test_series_archiver_refuses_credential_paths_and_content(tmp_path):
+    tasks = [{"task_id": task_id, "arm_order": ["bananloop_full", "codex_direct"]}
+             for task_id in TASK_IDS]
+
+    class FakeBackend:
+        def run(self, arm_id, task, arm_root, deadline_epoch, usage):
+            (arm_root / ".env.local").write_text("OPENAI_API_KEY=redacted", encoding="utf-8")
+            return {"status": "FAKE_COMPLETE"}
+
+    with pytest.raises(ValueError, match="sensitive artifact path"):
+        run_fake_series(tasks, tmp_path / "series", lambda _: FakeBackend())
+
+    class LeakingBackend:
+        def run(self, arm_id, task, arm_root, deadline_epoch, usage):
+            (arm_root / "events.log").write_text("Authorization: Bearer fake-secret-token", encoding="utf-8")
+            return {"status": "FAKE_COMPLETE"}
+
+    with pytest.raises(ValueError, match="credential-like content"):
+        run_fake_series(tasks, tmp_path / "series-content", lambda _: LeakingBackend())
+
+
+def test_series_archiver_rejects_missing_duplicate_or_modified_manifest(tmp_path):
+    tasks = [{"task_id": task_id, "arm_order": ["bananloop_full", "codex_direct"]}
+             for task_id in TASK_IDS]
+
+    class FakeBackend:
+        def run(self, arm_id, task, arm_root, deadline_epoch, usage):
+            return {"status": "FAKE_COMPLETE"}
+
+    report = run_fake_series(tasks, tmp_path / "source", lambda _: FakeBackend())
+    manifest = json.loads((tmp_path / "source" / "final-archive" / "experiment-manifest.json")
+                          .read_text(encoding="utf-8"))
+    with pytest.raises(ValueError, match="exactly the 24"):
+        archive_series_results(manifest=manifest, run_records=report["runs"][:-1],
+                               result_root=tmp_path / "source", archive_root=tmp_path / "partial")
+    unpaired = [dict(record) for record in report["runs"]]
+    unpaired[0]["system"] = "codex_direct"
+    with pytest.raises(ValueError, match="exactly the 24"):
+        archive_series_results(manifest=manifest, run_records=unpaired,
+                               result_root=tmp_path / "source", archive_root=tmp_path / "unpaired")
+    manifest["seconds_per_arm"] = 1
+    with pytest.raises(ValueError, match="manifest digest"):
+        archive_series_results(manifest=manifest, run_records=report["runs"],
+                               result_root=tmp_path / "source", archive_root=tmp_path / "tampered")
 
 
 def test_fake_series_requires_new_state_root_and_exactly_12_distinct_tasks(tmp_path):

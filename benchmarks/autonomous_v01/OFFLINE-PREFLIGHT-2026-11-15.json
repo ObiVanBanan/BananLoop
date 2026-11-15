@@ -3,7 +3,9 @@
   "arm_deadline_seconds": 3600,
   "arms": 24,
   "blockers": [
-    "PREP_BLOCKED_SOURCE_ACCESS_REVIEW: local are-grader-ctx source snippets for the three new tasks were inspected during contract research; owner/reviewer disposition is required before claiming a clean evaluator review",
+    "PREP_BLOCKED_IMPLEMENTATION: codex_best_verified_checkpoint_integration is not implemented and linked to the series runner",
+    "PREP_BLOCKED_IMPLEMENTATION: bananloop_full_backend is not implemented and linked to the series runner",
+    "PREP_BLOCKED_IMPLEMENTATION: benchmark_bound_pivot_authorizer is not implemented and linked to the series runner",
     "act-tensor-sparse-panel-imputation-r2: public DEV scorer exists but trusted fixture/protocol/Harbor adapter is incomplete",
     "act-tensor-sparse-panel-imputation-r2: public DEV image has not been content-pinned",
     "causalpfn-cate-pehe-ihdp-surfaceb: public DEV scorer exists but trusted fixture/protocol/Harbor adapter is incomplete",
@@ -13,11 +15,11 @@
   ],
   "call_limit_policy": "OBSERVE_ONLY",
   "capacity": {
-    "available_memory_mb": 26444,
+    "available_memory_mb": 26347,
     "conservative_arm_slots": 1,
     "cpu_bound_arm_slots": 1,
     "currently_memory_bound_arm_slots": 1,
-    "disk_free_bytes": 925939982336,
+    "disk_free_bytes": 925942140928,
     "logical_cpus": 12,
     "minimum_series_wall_hours_at_one_slot": 24,
     "per_task_requested_cpus": 8,
@@ -45,9 +47,34 @@
   "harbor_binary": "/home/sonik/bananloop-benchmark-env/harbor-venv/bin/harbor",
   "harbor_started": false,
   "harbor_version": "0.25.0",
-  "integrity_note": "Local are-grader-ctx source snippets for the three new tasks were inspected during offline contract research. No candidate execution, grader call, Harbor evaluation, or model call occurred; treat independent evaluator review as pending.",
+  "implementation_gates": {
+    "24_arm_result_archiver": true,
+    "bananloop_full_backend": false,
+    "benchmark_bound_pivot_authorizer": false,
+    "codex_best_verified_checkpoint_integration": false,
+    "codex_direct_backend": true
+  },
+  "integrity_note": "Local are-grader-ctx source snippets for the three new tasks were inspected during offline contract research. Owner accepted continued use for an internal non-RPDI-14 diagnostic with disclosure; no blind/independent holdout claim is permitted.",
   "live_models_started": false,
+  "operator_private_source_exposure": {
+    "accepted_for_internal_diagnostic": true,
+    "affected_task_ids": [
+      "act-tensor-sparse-panel-imputation-r2",
+      "causalpfn-cate-pehe-ihdp-surfaceb",
+      "hicard-latent-encoder"
+    ],
+    "disclosure_path": "benchmarks/autonomous_v01/source-access-declaration.json",
+    "disclosure_sha256": "fc4d7b66d8bf1863a72b907f931a88c5944b77ab03c3e14258d872e2e858b333",
+    "disclosure_valid": true,
+    "pristine_blind_or_independent_holdout_claim_allowed": false
+  },
   "planned_distinct_tasks": 12,
   "schema": "bananloop-autonomous-v01-preflight-v1",
+  "source_access_affected_task_ids": [
+    "act-tensor-sparse-panel-imputation-r2",
+    "causalpfn-cate-pehe-ihdp-surfaceb",
+    "hicard-latent-encoder"
+  ],
+  "source_access_declaration_sha256": "fc4d7b66d8bf1863a72b907f931a88c5944b77ab03c3e14258d872e2e858b333",
   "status": "PREP_BLOCKED"
 }

@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import shlex
 import shutil
 import sqlite3
@@ -23,6 +24,7 @@ from typing import Any, Callable, Protocol
 
 ROOT = Path(__file__).resolve().parents[2]
 CATALOGUE = Path(__file__).with_name("task-catalogue.json")
+SOURCE_ACCESS_DECLARATION = Path(__file__).with_name("source-access-declaration.json")
 ARM_SECONDS = 3600
 HARBOR_BINARY = Path("/home/sonik/bananloop-benchmark-env/harbor-venv/bin/harbor")
 EXPECTED_TASK_COUNT = 12
@@ -129,11 +131,41 @@ def validate_catalogue(catalogue: dict[str, Any]) -> None:
             raise ValueError(f"task catalogue pins are incomplete or malformed: {item.get('task_id')}")
 
 
+def validate_source_access_declaration(path: Path = SOURCE_ACCESS_DECLARATION) -> dict[str, Any]:
+    declaration = read_json(path)
+    expected_affected = {
+        "act-tensor-sparse-panel-imputation-r2",
+        "causalpfn-cate-pehe-ihdp-surfaceb",
+        "hicard-latent-encoder",
+    }
+    if (declaration.get("schema") != "bananloop-autonomous-v01-source-access-disclosure-v1"
+            or declaration.get("decision") != "ACCEPTED_FOR_INTERNAL_NON_RPDI14_DIAGNOSTIC_WITH_LIMITATION"
+            or set(declaration.get("affected_task_ids", ())) != expected_affected
+            or declaration.get("candidate_or_scorer_execution") is not False
+            or declaration.get("model_or_harbor_evaluation_calls") is not False):
+        raise ValueError("source-access disclosure is missing, changed, or does not match the owner disposition")
+    return declaration
+
+
+def _implementation_gates() -> dict[str, bool]:
+    """Check for linked implementation surfaces required before READY is possible."""
+    return {
+        "codex_direct_backend": callable(globals().get("CodexDirectBackend")),
+        "codex_best_verified_checkpoint_integration": callable(
+            getattr(globals().get("CodexDirectBackend"), "run_with_checkpoint_archive", None)
+        ),
+        "bananloop_full_backend": callable(globals().get("BananLoopFullBackend")),
+        "benchmark_bound_pivot_authorizer": callable(globals().get("authorize_benchmark_pivot", None)),
+        "24_arm_result_archiver": callable(globals().get("archive_series_results", None)),
+    }
+
+
 def build_manifest(*, catalogue: dict[str, Any], seed: int,
                    model: str, reasoning: str, codex_version: str,
                    full_feature_flags: dict[str, Any]) -> dict[str, Any]:
     """Freeze the owner-curated 12 tasks and reproducibly randomize arm order."""
     validate_catalogue(catalogue)
+    access_declaration = validate_source_access_declaration()
     tasks_in = catalogue["tasks"]
     task_map = {item.get("task_id"): item for item in tasks_in if isinstance(item, dict)}
     if set(task_map) != set(TASK_IDS):
@@ -172,12 +204,18 @@ def build_manifest(*, catalogue: dict[str, Any], seed: int,
         "judge_policy": "after_all_24_arms_terminal_and_frozen",
         "integrity_note": (
             "Local are-grader-ctx source snippets for the three new tasks were inspected during offline contract research. "
-            "No candidate execution, grader call, Harbor evaluation, or model call occurred; treat independent evaluator review as pending."
+            "Owner accepted continued use for an internal non-RPDI-14 diagnostic with disclosure; no blind/independent holdout claim is permitted."
         ),
+        "operator_private_source_exposure": True,
+        "source_access_declaration_sha256": hashlib.sha256(
+            SOURCE_ACCESS_DECLARATION.read_bytes()).hexdigest(),
+        "source_access_affected_task_ids": sorted(access_declaration["affected_task_ids"]),
         "tasks": tasks,
         "board_games": "separate_secondary_experiment_requires_separate_approval_and_budget",
     }
-    manifest["manifest_sha256"] = canonical_sha(manifest)
+    manifest["manifest_sha256"] = canonical_sha(
+        {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    )
     return manifest
 
 
@@ -206,9 +244,18 @@ def offline_preflight(*, catalogue_path: Path = CATALOGUE,
             "ai_judge_started": False,
         }
     tasks = catalogue.get("tasks", [])
-    blockers: list[str] = [
-        "PREP_BLOCKED_SOURCE_ACCESS_REVIEW: local are-grader-ctx source snippets for the three new tasks were inspected during contract research; owner/reviewer disposition is required before claiming a clean evaluator review"
-    ]
+    blockers: list[str] = []
+    try:
+        access_declaration = validate_source_access_declaration()
+        access_declaration_sha256 = hashlib.sha256(SOURCE_ACCESS_DECLARATION.read_bytes()).hexdigest()
+    except ValueError as exc:
+        access_declaration = None
+        access_declaration_sha256 = None
+        blockers.append(f"PREP_BLOCKED_SOURCE_ACCESS_DISCLOSURE: {exc}")
+    implementation_gates = _implementation_gates()
+    for gate, ready in implementation_gates.items():
+        if not ready:
+            blockers.append(f"PREP_BLOCKED_IMPLEMENTATION: {gate} is not implemented and linked to the series runner")
     ids = [item.get("task_id") for item in tasks if isinstance(item, dict)]
     if set(ids) != set(TASK_IDS) or len(ids) != EXPECTED_TASK_COUNT:
         blockers.append("PREP_BLOCKED_TASK_CATALOGUE: curated 12 task set/pins are incomplete")
@@ -245,12 +292,29 @@ def offline_preflight(*, catalogue_path: Path = CATALOGUE,
         "arms": EXPECTED_TASK_COUNT * 2,
         "arm_deadline_seconds": ARM_SECONDS,
         "capacity": host_capacity_report(),
+        "implementation_gates": implementation_gates,
         "call_limit_policy": "OBSERVE_ONLY",
         "codex_version": codex_version,
         "codex_auth_status": codex_auth_status,
+        "operator_private_source_exposure": {
+            "accepted_for_internal_diagnostic": True,
+            "affected_task_ids": [
+                "act-tensor-sparse-panel-imputation-r2",
+                "causalpfn-cate-pehe-ihdp-surfaceb",
+                "hicard-latent-encoder",
+            ],
+            "pristine_blind_or_independent_holdout_claim_allowed": False,
+            "disclosure_path": "benchmarks/autonomous_v01/source-access-declaration.json",
+            "disclosure_sha256": access_declaration_sha256,
+            "disclosure_valid": access_declaration is not None,
+        },
         "integrity_note": (
             "Local are-grader-ctx source snippets for the three new tasks were inspected during offline contract research. "
-            "No candidate execution, grader call, Harbor evaluation, or model call occurred; treat independent evaluator review as pending."
+            "Owner accepted continued use for an internal non-RPDI-14 diagnostic with disclosure; no blind/independent holdout claim is permitted."
+        ),
+        "source_access_declaration_sha256": access_declaration_sha256,
+        "source_access_affected_task_ids": (
+            sorted(access_declaration["affected_task_ids"]) if access_declaration is not None else []
         ),
         "harbor_binary": str(HARBOR_BINARY),
         "harbor_version": harbor_version,
@@ -303,8 +367,8 @@ class UsageLedger:
                 summary["model_turns_observed"] += turns
             usage = event.get("usage")
             if not isinstance(usage, dict):
-                stats["unknown_usage_events"] += int(bool(calls))
-                summary["unknown_usage_events"] += int(bool(calls))
+                stats["unknown_usage_events"] += int(bool(turns))
+                summary["unknown_usage_events"] += int(bool(turns))
                 continue
             for key in ("input_tokens", "output_tokens"):
                 value = usage.get(key)
@@ -431,7 +495,135 @@ def run_fake_series(tasks: list[dict[str, Any]], root: Path,
               "usage": usage.summary(), "model_calls": 0,
               "harbor_evaluations": 0, "ai_judge_calls": 0}
     _atomic_json(root / "summary.json", report)
+    manifest = {
+        "schema": "bananloop-autonomous-v01-fake-manifest-v1",
+        "kind": "OFFLINE_FAKE_ONLY",
+        "seconds_per_arm": ARM_SECONDS,
+        "task_ids": sorted(t["task_id"] for t in tasks),
+        "arm_ids": sorted(record["arm_id"] for record in runs),
+        "manifest_sha256": None,
+    }
+    manifest["manifest_sha256"] = canonical_sha(
+        {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    )
+    archive_series_results(manifest=manifest, run_records=runs, result_root=root,
+                           archive_root=root / "final-archive")
     return report
+
+
+def archive_series_results(*, manifest: dict[str, Any], run_records: list[dict[str, Any]],
+                           result_root: Path, archive_root: Path) -> dict[str, Any]:
+    """Freeze all terminal arm records and artifacts into a hash-indexed archive.
+
+    This function is intentionally agnostic to model/evaluator execution. It
+    refuses incomplete or duplicate series so a partial archive cannot be
+    mistaken for a complete 24-arm result.
+    """
+    if archive_root.exists() or archive_root.is_symlink():
+        raise ValueError("series archive root must be new")
+    if not isinstance(manifest, dict) or not isinstance(run_records, list):
+        raise ValueError("series archive requires manifest and run records")
+    digest = manifest.get("manifest_sha256")
+    body = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    if not isinstance(digest, str) or digest != canonical_sha(body):
+        raise ValueError("series manifest digest does not match its contents")
+    task_entries = manifest.get("tasks", ())
+    if task_entries and all(isinstance(item, dict) for item in task_entries):
+        expected_pairs: dict[str, set[str]] = {}
+        for entry in task_entries:
+            task = entry.get("task", {})
+            task_id = task.get("task_id") if isinstance(task, dict) else None
+            arms = entry.get("arms", ())
+            if not isinstance(task_id, str) or not isinstance(arms, list):
+                raise ValueError("series manifest task/arm records are malformed")
+            expected_pairs[task_id] = {arm.get("system") for arm in arms if isinstance(arm, dict)}
+        expected_task_ids = set(expected_pairs)
+        expected = {f"{task_id}--{system}" for task_id, systems in expected_pairs.items()
+                    for system in systems}
+    else:
+        expected_task_ids = set(manifest.get("task_ids", ()))
+        expected = set(manifest.get("arm_ids", ()))
+        expected_pairs = {task_id: {"bananloop_full", "codex_direct"}
+                          for task_id in expected_task_ids}
+    observed = [record.get("arm_id") for record in run_records if isinstance(record, dict)]
+    observed_pairs: dict[str, set[str]] = {}
+    for record in run_records:
+        if not isinstance(record, dict):
+            continue
+        task_id, system = record.get("task_id"), record.get("system")
+        if not isinstance(task_id, str) or system not in {"bananloop_full", "codex_direct"}:
+            raise ValueError("every series arm must identify its task and system")
+        observed_pairs.setdefault(task_id, set()).add(system)
+    if (len(expected) != EXPECTED_TASK_COUNT * 2 or len(observed) != EXPECTED_TASK_COUNT * 2
+            or set(observed) != expected or len(set(observed)) != len(observed)
+            or expected_task_ids != set(TASK_IDS) or expected_pairs != {
+                task_id: {"bananloop_full", "codex_direct"} for task_id in TASK_IDS}
+            or observed_pairs != expected_pairs):
+        raise ValueError("series archive requires exactly the 24 unique manifest arms")
+    if any(not isinstance(record.get("result"), dict)
+           or not isinstance(record["result"].get("status"), str)
+           for record in run_records):
+        raise ValueError("every archived arm must have a terminal result status")
+    if result_root.is_symlink() or not result_root.is_dir():
+        raise ValueError("result root must be a regular directory")
+    secret_pattern = re.compile(
+        rb"(?:sk-[A-Za-z0-9]{32,}|gh[pousr]_[A-Za-z0-9]{30,}|"
+        rb"(?i:OPENAI_API_KEY|AZURE_OPENAI_API_KEY|ANTHROPIC_API_KEY)\s*[:=]\s*\S+|"
+        rb"(?i:authorization\s*:\s*bearer\s+)\S+)"
+    )
+    archive_root.mkdir(parents=True, mode=0o700)
+    try:
+        for record in run_records:
+            arm_id = record["arm_id"]
+            source = result_root / arm_id
+            target = archive_root / arm_id
+            if source.is_symlink() or not source.is_dir():
+                raise ValueError(f"arm artifact root missing or unsafe: {arm_id}")
+            target.mkdir(mode=0o700)
+            for path in source.rglob("*"):
+                relative = path.relative_to(source)
+                if path.is_symlink():
+                    raise ValueError(f"symlink found in arm artifacts: {arm_id}/{relative}")
+                if not path.is_file():
+                    continue
+                if any(part == ".git" or part.lower().startswith((".env", "secret", "credential"))
+                       for part in relative.parts):
+                    raise ValueError(f"sensitive artifact path refused: {arm_id}/{relative}")
+                content = path.read_bytes()
+                if secret_pattern.search(content):
+                    raise ValueError(f"credential-like content refused from archive: {arm_id}/{relative}")
+                output = target / relative
+                output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                with output.open("xb") as stream:
+                    stream.write(content)
+                os.chmod(output, 0o600)
+        _atomic_json(archive_root / "experiment-manifest.json", manifest)
+        summary = {
+            "status": "ARCHIVED_24_ARMS",
+            "arm_count": len(run_records),
+            "task_count": EXPECTED_TASK_COUNT,
+            "results": sorted(run_records, key=lambda item: item["arm_id"]),
+            "model_turns_observed_total": sum(
+                int(item["result"].get("model_turns_observed", 0) or 0)
+                for item in run_records
+            ),
+            "ai_judge_calls": 0,
+        }
+        _atomic_json(archive_root / "summary.json", summary)
+        files = sorted(path for path in archive_root.rglob("*") if path.is_file())
+        index = {
+            "schema": "bananloop-autonomous-v01-archive-index-v1",
+            "manifest_sha256": digest,
+            "files": [{"path": path.relative_to(archive_root).as_posix(),
+                       "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                       "size_bytes": path.stat().st_size}
+                      for path in files],
+        }
+        _atomic_json(archive_root / "SHA256SUMS.json", index)
+        return index
+    except Exception:
+        shutil.rmtree(archive_root, ignore_errors=True)
+        raise
 
 
 def parse_codex_jsonl_usage(path: Path) -> dict[str, Any]:
@@ -580,7 +772,7 @@ def main() -> int:
         try:
             auth = subprocess.run(["codex", "login", "status"], capture_output=True,
                                   text=True, timeout=10, check=False)
-            auth_status = auth.stdout.strip() if auth.returncode == 0 else None
+            auth_status = (auth.stdout or auth.stderr).strip() if auth.returncode == 0 else None
         except (OSError, subprocess.TimeoutExpired):
             auth_status = None
     codex_version = args.codex_version
@@ -599,10 +791,22 @@ def main() -> int:
                                image_inspector=lambda image: inspect_docker_image(image, args.docker_binary))
     encoded = json.dumps(report, sort_keys=True, indent=2) + "\n"
     if args.out:
-        if args.out.exists() or args.out.is_symlink():
-            parser.error("--out must be a new path")
+        if args.out.is_symlink() or (args.out.exists() and not args.out.is_file()):
+            parser.error("--out must be a regular nonsymlink file path")
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(encoded, encoding="utf-8")
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{args.out.name}.", suffix=".tmp", dir=args.out.parent,
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, args.out)
+        finally:
+            temporary.unlink(missing_ok=True)
     print(encoded, end="")
     return 0 if report["status"] == "READY_NON_RPDI_DIAGNOSTIC" else 2
 

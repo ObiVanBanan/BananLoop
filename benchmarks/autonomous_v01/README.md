@@ -28,10 +28,12 @@ python -m benchmarks.autonomous_v01.runner preflight \
 ```
 
 The fake-series harness accepts only an injected backend. Its tests create 24
-separate arm roots and verify artifact writing without models, Harbor, evaluators,
-or AI Judge calls. `CodexDirectBackend` can run a persistent iterative Codex CLI
-session, but a complete series launcher and BananLoop Full backend are not yet
-implemented or authorized.
+separate arm roots and produce a hash-indexed archive without models, Harbor,
+evaluators, or AI Judge calls. The archiver refuses incomplete/duplicate arms,
+symlinks, credential-like paths, and common API-key/Bearer-token patterns.
+`CodexDirectBackend` can run a persistent Codex
+CLI task, but best-verified checkpoint integration and a complete series
+launcher are not yet implemented. BananLoop Full is not yet implemented.
 
 ## Current status: `PREP_BLOCKED`
 
@@ -47,12 +49,14 @@ requested per task, measured capacity is one arm at a time; the series therefore
 needs at least 24 arm-hours, plus preparation and final evaluation. No 10-hour
 completion estimate is supported.
 
-The latest evidence is in
+The owner accepted continued use of the three affected tasks for an internal,
+non-RPDI-14 diagnostic, provided source exposure is disclosed. The record is
+[`source-access-declaration.json`](source-access-declaration.json); do not claim
+blind or independent holdout evaluation for those tasks. The latest evidence is in
 [`OFFLINE-PREFLIGHT-2026-11-15.json`](OFFLINE-PREFLIGHT-2026-11-15.json).
 During offline contract research, local `are-grader-ctx` source snippets for the
 three new tasks were inspected accidentally. No candidate, evaluator, Harbor
-grader, or model was run; independent evaluator review still needs owner/reviewer
-disposition, as recorded by the preflight.
+grader, or model was run. This disposition does not restore RPDI-14 independence.
 RPDI-14 is unchanged. Board Games remains a separately approved secondary
 experiment. See the [plan](../../docs/benchmarks/AUTONOMOUS-BENCHMARK-V01-PLAN.md)
 and [updated decisions](../../docs/benchmarks/AUTONOMOUS-BENCHMARK-V01-DECISIONS-2026-11-15.md).
