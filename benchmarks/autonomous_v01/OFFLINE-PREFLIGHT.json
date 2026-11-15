@@ -1,0 +1,33 @@
+{
+  "ai_judge_started": false,
+  "all_calls_reserved": 240,
+  "arm_deadline_seconds": 3600,
+  "arms": 24,
+  "blockers": [
+    "PREP_BLOCKED_INSUFFICIENT_TASKS: 9 eligible adapters; require 12",
+    "Codex CLI exposes no hard per-run provider-request cap; 250-call global enforcement is unproven"
+  ],
+  "eligible_task_ids": [
+    "budgeted-imputation-mcar50",
+    "carps-star-discrepancy-subset-select",
+    "cpu-decoder-graph-executor",
+    "cpu-llm-decode-throughput",
+    "dctabeval-aeac-pooled-cat-statistics",
+    "label-efficient-risk-estimator",
+    "shortest-valid-ci-l2-ece",
+    "sketched-newton-cov-estimator",
+    "sopcc-online-chance-constrained-policy"
+  ],
+  "excluded": [
+    "budgeted-covtype-dual-market-open: evaluator is static-price proxy, not official task score"
+  ],
+  "global_chatgpt_call_cap": 250,
+  "harbor_started": false,
+  "live_models_started": false,
+  "per_arm_reservation": 10,
+  "planned_distinct_tasks": 12,
+  "reserve_calls": 10,
+  "schema": "bananloop-autonomous-v01-preflight-v1",
+  "selection_sha256": "071671c5d6a0bf073fb46e277c71fcea46259d0e48ee49943c4c57a26adf0316",
+  "status": "PREP_BLOCKED"
+}
