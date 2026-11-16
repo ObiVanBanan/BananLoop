@@ -1,0 +1,70 @@
+{
+    "schema_version": 3,
+    "created_at": "2026-11-14T18:58:23.764441Z",
+    "harbor": {
+        "version": "0.25.0",
+        "is_editable": false
+    },
+    "n_concurrent_trials": 1,
+    "retry": {
+        "max_retries": 0,
+        "exclude_exceptions": [
+            "RewardFileNotFoundError",
+            "AgentTimeoutError",
+            "AgentAuthenticationError",
+            "VerifierOutputParseError",
+            "ApiUsageLimitError",
+            "ModelNotFoundError",
+            "VerifierTimeoutError",
+            "AgentSafetyRefusalError",
+            "RewardFileEmptyError",
+            "UnsupportedModelParametersError"
+        ],
+        "wait_multiplier": 1.0,
+        "min_wait_sec": 1.0,
+        "max_wait_sec": 60.0
+    },
+    "trials": [
+        {
+            "schema_version": 2,
+            "task": {
+                "name": "are-v1.1-sketched-newton-cov-estimator",
+                "version": "1.1.0",
+                "type": "local",
+                "digest": "sha256:bae34e3731778a7a58766c590437323ed6810634b0d8cd6b358a4bd95179313f",
+                "path": "/home/sonik/bananloop-benchmark-env/safe-overlays/are-v1.1-sketched-newton-cov-estimator"
+            },
+            "install_only": false,
+            "timeout_multiplier": 1.0,
+            "agent": {
+                "import_path": "benchmarks.autoresearchexam.harbor_agent:AREBananLoopOptimizationAgent",
+                "skip_model_parsing": false,
+                "skills": [],
+                "override_timeout_sec": 3600.0,
+                "resume_trajectory": false,
+                "extra_allowed_hosts": [],
+                "kwargs": {
+                    "config_path": "/home/sonik/bananloop-benchmark-env/runs/sketched-newton-new-campaign-20261114-004/harbor-prepared/bananloop.json"
+                },
+                "mcp_servers": []
+            },
+            "bridge_inputs": {},
+            "skills": [],
+            "environment": {
+                "type": "docker",
+                "force_build": false,
+                "delete": true,
+                "stream": false,
+                "cpu_enforcement_policy": "auto",
+                "memory_enforcement_policy": "auto",
+                "extra_docker_compose": [],
+                "kwargs": {},
+                "extra_allowed_hosts": []
+            },
+            "verifier": {
+                "disable": true,
+                "environment_mode": "separate"
+            }
+        }
+    ]
+}

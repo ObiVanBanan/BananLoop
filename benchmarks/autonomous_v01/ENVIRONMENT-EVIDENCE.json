@@ -1,0 +1,28 @@
+{
+  "ai_judge_calls_made": 0,
+  "autoresearchexam_license": "Apache-2.0",
+  "autoresearchexam_license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+  "autoresearchexam_source_revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+  "bananloop_revision_at_preflight": "735ac4e2ef555356ff7723634c4dff2ccf7f6dda",
+  "branch": "codex/autonomous-benchmark-v01-prep",
+  "codex_cli": "/home/sonik/.local/bin/codex",
+  "codex_exec_help_sha256": "b7bbe3ad07a91a11393c9a83d97873e0bca1d1766e4d7cd9013da2c374d34f51",
+  "codex_version": "codex-cli 0.169.0",
+  "docker_image_id": "sha256:50b2c2cf5ae3009161edcd000c6485d1f0c99445cb8de86d3c410552aab750c8",
+  "docker_image_tag": "bananloop-are-newton-public-dev:1.1.0",
+  "docker_repo_digest": "bananloop-are-newton-public-dev@sha256:50b2c2cf5ae3009161edcd000c6485d1f0c99445cb8de86d3c410552aab750c8",
+  "harbor_evaluations_made": 0,
+  "harbor_executable": "/home/sonik/bananloop-benchmark-env/harbor-venv/bin/harbor",
+  "harbor_version": "0.25.0",
+  "host_cpu_count": 12,
+  "host_memory_bytes": {
+    "MemAvailable": 20879159296,
+    "MemTotal": 33566760960
+  },
+  "network_or_model_calls_made": 0,
+  "newton_baseline_commit_object_available": true,
+  "newton_baseline_sha": "c00fdbbd7d3ac79b9f27b489fd9f4793288f15bb",
+  "resource_capacity_concurrency_proven": false,
+  "schema": "bananloop-autonomous-v01-environment-evidence-v1",
+  "workspace_free_bytes": 926082715648
+}

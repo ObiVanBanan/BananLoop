@@ -1,0 +1,31 @@
+{
+  "adapter_id": "sketched-newton-public-v1",
+  "campaign_id": "c-b3a4557627e91e0e51da2a72495210db",
+  "candidate_path": "benchmarks/autoresearchexam/solutions/sketched_newton/estimator.py",
+  "max_candidate_iterations": 4,
+  "max_steps": 20,
+  "mcp_contract_path": "/home/sonik/bananloop-benchmark-env/runs/sketched-newton-new-campaign-20261114-004/public-mcp-contract.json",
+  "mcp_contract_sha256": "4e2559fa007be603adb87eff6749c1301b2e4900e2f7859f84377ec8c94835bb",
+  "model_call_limit": 8,
+  "public_dev_cell_count": 1,
+  "public_dev_image": "bananloop-are-newton-public-dev:1.1.0",
+  "public_dev_image_id": "sha256:50b2c2cf5ae3009161edcd000c6485d1f0c99445cb8de86d3c410552aab750c8",
+  "public_output_path": "/app/output/estimator.py",
+  "public_submission_ledger_path": "/home/sonik/bananloop-benchmark-env/runs/sketched-newton-new-campaign-20261114-004/state/are-public-ledgers/c-b3a4557627e91e0e51da2a72495210db-newton.sqlite3",
+  "public_task_root": "/home/sonik/bananloop-benchmark-env/sources/AutoResearchExam/sketched-newton-cov-estimator",
+  "repeatability_runs": 1,
+  "repo": "/home/sonik/Проекты/BananLoop-ARE-newton",
+  "role_registry": "/home/sonik/bananloop-benchmark-env/runs/sketched-newton-new-campaign-20261114-004/state/campaigns/c-2401433c487b6adf1dbf530f1dcdd39e/role-registry.json",
+  "state_dir": "/home/sonik/bananloop-benchmark-env/runs/sketched-newton-new-campaign-20261114-004/state",
+  "task_id": "sketched-newton-cov-estimator",
+  "task_instruction_sha256": "1e843187ae1ca642747afec357b4f931b0fb8eeaf077e15b9545a157a2b4a2da",
+  "task_version": "1.1.0",
+  "time_limit_seconds": 3600,
+  "timeout_seconds": 120,
+  "visible_path": [
+    "benchmarks/autoresearchexam/solutions/sketched_newton/estimator.py"
+  ],
+  "write_path": [
+    "benchmarks/autoresearchexam/solutions/sketched_newton/estimator.py"
+  ]
+}

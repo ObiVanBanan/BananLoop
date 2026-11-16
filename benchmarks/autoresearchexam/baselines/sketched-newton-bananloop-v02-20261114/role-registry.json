@@ -1,0 +1,142 @@
+{
+  "registry_id": "bananloop-v2-owner-researcher",
+  "version": 1,
+  "roles": [
+    {
+      "role_id": "independent_verifier",
+      "adapter": "codex",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "model_version": "siwc-responses-v1",
+      "prompt_digest": "5fa5c3b73c6962594acde3ee550d30e85c65338de5c3856160db003ee8119d41",
+      "capability_policy": {
+        "policy_version": 1,
+        "tools": [],
+        "read_paths": [],
+        "write_paths": [],
+        "backend": "ISOLATED",
+        "network_access": false
+      },
+      "context_fields": [
+        "campaign_goal",
+        "public_task"
+      ],
+      "priority": 100,
+      "min_instances": 0,
+      "max_instances": 1,
+      "calls_per_instance": 1,
+      "tokens_per_instance": 50000
+    },
+    {
+      "role_id": "integration_verifier",
+      "adapter": "codex",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "model_version": "siwc-responses-v1",
+      "prompt_digest": "bb0b6bc83a57e81d0191c2a67dc97cd5bd846682beb44a95bce4e91cf7beb11b",
+      "capability_policy": {
+        "policy_version": 1,
+        "tools": [],
+        "read_paths": [],
+        "write_paths": [],
+        "backend": "ISOLATED",
+        "network_access": false
+      },
+      "context_fields": [
+        "campaign_goal",
+        "public_task"
+      ],
+      "priority": 100,
+      "min_instances": 0,
+      "max_instances": 1,
+      "calls_per_instance": 5,
+      "tokens_per_instance": 250000
+    },
+    {
+      "role_id": "optimizer",
+      "adapter": "codex",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "model_version": "siwc-responses-v1",
+      "prompt_digest": "598fdcd55231265fd1d26a4aef0e3fd1f0e5c5779bb8badf084f2d44fc37f62f",
+      "capability_policy": {
+        "policy_version": 1,
+        "tools": [
+          "commit_candidate",
+          "read_file",
+          "write_file"
+        ],
+        "read_paths": [
+          "benchmarks/autoresearchexam/public-task-material/selected/sketched-newton-cov-estimator/instruction.md",
+          "benchmarks/autoresearchexam/public_sketched_newton_dev.py",
+          "benchmarks/autoresearchexam/sketched_newton_runner.py",
+          "benchmarks/autoresearchexam/solutions/sketched_newton/estimator.py",
+          "benchmarks/autoresearchexam/task-selection.json"
+        ],
+        "write_paths": [
+          "benchmarks/autoresearchexam/solutions/sketched_newton/estimator.py"
+        ],
+        "backend": "LOCAL",
+        "network_access": false
+      },
+      "context_fields": [
+        "budget_remaining",
+        "campaign_goal",
+        "constraints",
+        "dev_summary",
+        "evidence_refs",
+        "node_id",
+        "node_phase",
+        "public_task"
+      ],
+      "priority": 100,
+      "min_instances": 0,
+      "max_instances": 1,
+      "calls_per_instance": 5,
+      "tokens_per_instance": 250000
+    },
+    {
+      "role_id": "researcher",
+      "adapter": "codex",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "model_version": "siwc-responses-v1",
+      "prompt_digest": "48254bf6af0f730fec871979b6abd7a9504f47aafa4782f3e7d677168452662b",
+      "capability_policy": {
+        "policy_version": 1,
+        "tools": [
+          "commit_candidate",
+          "list_files",
+          "read_file",
+          "write_artifact"
+        ],
+        "read_paths": [
+          "benchmarks/autoresearchexam/public-task-material/selected/sketched-newton-cov-estimator/instruction.md",
+          "benchmarks/autoresearchexam/public_sketched_newton_dev.py",
+          "benchmarks/autoresearchexam/sketched_newton_runner.py",
+          "benchmarks/autoresearchexam/solutions/sketched_newton/estimator.py",
+          "benchmarks/autoresearchexam/task-selection.json"
+        ],
+        "write_paths": [
+          "**"
+        ],
+        "backend": "LOCAL",
+        "network_access": false
+      },
+      "context_fields": [
+        "budget_remaining",
+        "campaign_goal",
+        "dev_summary",
+        "evidence_refs",
+        "node_id",
+        "node_phase",
+        "public_task"
+      ],
+      "priority": 100,
+      "min_instances": 0,
+      "max_instances": 1,
+      "calls_per_instance": 1,
+      "tokens_per_instance": 50000
+    }
+  ]
+}

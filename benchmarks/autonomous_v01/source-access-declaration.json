@@ -1,0 +1,91 @@
+{
+  "schema": "bananloop-autonomous-v01-source-access-disclosure-v1",
+  "decision": "ACCEPTED_FOR_INTERNAL_NON_RPDI14_DIAGNOSTIC_WITH_LIMITATION",
+  "decision_basis": "Owner instruction in PR #146 conversation on 2026-11-15: continue internal comparison; preserve disclosure; do not claim blind or independent holdout evaluation.",
+  "operator": "Codex",
+  "access_date_local": "2026-11-15",
+  "upstream_revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+  "affected_task_ids": [
+    "act-tensor-sparse-panel-imputation-r2",
+    "causalpfn-cate-pehe-ihdp-surfaceb",
+    "hicard-latent-encoder"
+  ],
+  "known_directly_inspected_private_paths": [
+    {
+      "path": "act-tensor-sparse-panel-imputation-r2/environment/are-grader-ctx/intermediate.sh",
+      "sha256": "a102f746f0e0e3905856d9493435c55eaa559321c615e572a0695fa67403fbc2",
+      "access": "full file displayed",
+      "classification": "private validation test invocation and reported metric summary"
+    },
+    {
+      "path": "act-tensor-sparse-panel-imputation-r2/environment/are-grader-ctx/compute_reward.py",
+      "sha256": "28e31f204b719fadc303f483b27490138f325b238eeedad0ab07b4662e65680a",
+      "access": "full file displayed",
+      "classification": "private reward normalization implementation"
+    },
+    {
+      "path": "act-tensor-sparse-panel-imputation-r2/environment/are-grader-ctx/are/server.py",
+      "sha256": "d916612575bd7d22a13f3ec188235151f6911a2675bd7dfeea5018f6c51db2f51",
+      "access": "lines 1-120 and 410-440 displayed",
+      "classification": "private grader server and public MCP tool implementation"
+    },
+    {
+      "path": "causalpfn-cate-pehe-ihdp-surfaceb/environment/are-grader-ctx/intermediate.sh",
+      "sha256": "06d98ebfedd4b7903cba86b56d123a7e608bdef6481993cfe0010bca9161df75",
+      "access": "full file displayed",
+      "classification": "private validation test invocation"
+    },
+    {
+      "path": "causalpfn-cate-pehe-ihdp-surfaceb/environment/are-grader-ctx/compute_reward.py",
+      "sha256": "80fe5b5d9300d9127ce3bc155159ff8406801052df75f7ca3a828f9e7a929198",
+      "access": "full file displayed",
+      "classification": "private reward normalization implementation"
+    },
+    {
+      "path": "hicard-latent-encoder/environment/are-grader-ctx/intermediate.sh",
+      "sha256": "21683cee2597af893f7cd9a6470238f3bb846897bcebfb44ca19facefda79ae4",
+      "access": "full file displayed",
+      "classification": "private validation test invocation"
+    },
+    {
+      "path": "hicard-latent-encoder/environment/are-grader-ctx/compute_reward.py",
+      "sha256": "9310c1b029fd9cd2163157019f9e8f3efa0551e2173ab94f2ff340c68ea42440",
+      "access": "full file displayed",
+      "classification": "private reward normalization implementation"
+    }
+  ],
+  "additional_search_scope": {
+    "command_kind": "ripgrep content search",
+    "task_roots": [
+      "act-tensor-sparse-panel-imputation-r2",
+      "causalpfn-cate-pehe-ihdp-surfaceb",
+      "hicard-latent-encoder"
+    ],
+    "extensions": [".md", ".py", ".toml", ".json"],
+    "query_terms": ["mcp", "validation", "submit", "result", "grader", "score", "metric", "interface", "output", "DEV", "dev"],
+    "inventory_status": "INCOMPLETE_TERMINAL_OUTPUT_WAS_TRUNCATED; do not infer that the known direct paths are the complete set of snippets returned"
+  },
+  "additional_build_context_access_attempts": [
+    {
+      "task_id": "act-tensor-sparse-panel-imputation-r2",
+      "path": "act-tensor-sparse-panel-imputation-r2/environment/are-grader-ctx",
+      "operator": "Codex",
+      "access_date_local": "2026-11-15",
+      "access": "Harbor status-only contract probe was interrupted after Docker BuildKit was observed with an fs.read grant for this context; whether BuildKit read any context bytes is unknown",
+      "classification": "potential private grader build-context access; no grader submission, result, or model call occurred"
+    }
+  ],
+  "hidden_answer_data": {
+    "private_dataset_or_npz_opened": false,
+    "answer_key_or_exact_private_test_seed_seen": false,
+    "confidence": "to the best of the operator's recollection; text search output was truncated"
+  },
+  "candidate_or_scorer_execution": false,
+  "model_or_harbor_evaluation_calls": false,
+  "derived_code_policy": "DEV scorer implementations were authored from public instructions and public DEV data; no private snippets or answer material are embedded in the implementation.",
+  "limitations": [
+    "Do not claim pristine blind operator conditions or independent/private holdout evaluation for affected tasks.",
+    "The declaration is an operator access record, not an independent attestation.",
+    "No RPDI-14 eligibility or independence claim is restored by this owner disposition."
+  ]
+}

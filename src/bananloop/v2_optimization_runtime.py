@@ -1195,6 +1195,7 @@ class V2OptimizationRuntime:
         model_reply: OptimizerModelReply | None = None,
         integration_verifier_executor: Any | None = None,
         max_steps: int = 20,
+        benchmark_time_only: bool = False,
         worker_id: str = "v2-optimization",
     ) -> dict[str, Any]:
         """Run scheduler-selected Optimization/evaluation/verification steps.
@@ -1203,8 +1204,11 @@ class V2OptimizationRuntime:
         is consulted again. The caller supplies pinned role transports but
         cannot select a lane or bypass the trusted evaluator.
         """
-        if isinstance(max_steps, bool) or not isinstance(max_steps, int) or not 1 <= max_steps <= 100:
-            raise V2OptimizationError("max_steps must be an integer from 1 to 100")
+        if not isinstance(benchmark_time_only, bool):
+            raise V2OptimizationError("benchmark_time_only must be a boolean")
+        step_ceiling = 1000 if benchmark_time_only else 100
+        if isinstance(max_steps, bool) or not isinstance(max_steps, int) or not 1 <= max_steps <= step_ceiling:
+            raise V2OptimizationError(f"max_steps must be an integer from 1 to {step_ceiling}")
         steps: list[dict[str, Any]] = []
         for _ in range(max_steps):
             plan = self.plan()

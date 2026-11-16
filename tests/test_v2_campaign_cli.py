@@ -202,6 +202,15 @@ def test_cli_explore_is_a_separate_v2_route():
     )
 
 
+def test_cli_optimization_accepts_inherited_absolute_task_deadline():
+    args = parser().parse_args([
+        "v2", "optimize", "--campaign-id", "child-1", "--role-registry", "roles.json",
+        "--visible-path", "src/model.py", "--write-path", "src/model.py",
+        "--task-deadline-epoch", "1790000000.5",
+    ])
+    assert args.task_deadline_epoch == 1790000000.5
+
+
 def test_v2_explore_stages_owner_attestation_before_no_model_preflight(tmp_path):
     repo = _repo(tmp_path)
     attestation_path = repo / "public-attestation.json"
@@ -439,6 +448,81 @@ def test_v2_default_call_budget_preserves_exploration_and_funds_two_paired_epoch
     assert roles.role("optimizer").calls_per_instance == 2
     assert roles.role("integration_verifier").calls_per_instance == 2
     assert sum(role.calls_per_instance for role in roles.roles) == 7
+
+
+def test_benchmark_auto_pivot_is_explicit_and_limited_to_one_exact_write_path(tmp_path):
+    from bananloop.v2_campaign_cli import _build_spec
+
+    repo = _repo(tmp_path)
+    auto, _, _ = _build_spec(
+        repo, "Benchmark-only auto pivot", ("README.md",),
+        max_agent_calls=6, max_model_tokens=128, model="gpt-6-luna",
+        optimization_write_paths=("README.md",), benchmark_auto_pivot=True,
+    )
+    assert auto.autonomy.mode == "FULL_AUTO"
+    assert auto.autonomy.authorize_pivot(("README.md",)) == "AUTO_ALLOWED"
+    assert auto.autonomy.authorize_pivot(("pyproject.toml",)) == "DENIED"
+    assert auto.autonomy.scope.max_child_depth == 1
+    assert auto.autonomy.scope.max_child_campaigns == 1
+
+    supervised, _, _ = _build_spec(
+        repo, "Ordinary supervised campaign", ("README.md",),
+        max_agent_calls=6, max_model_tokens=128, model="gpt-6-luna",
+        optimization_write_paths=("README.md",),
+    )
+    assert supervised.autonomy.mode == "SUPERVISED"
+    assert supervised.autonomy.authorize_pivot(("README.md",)) == "APPROVAL_REQUIRED"
+
+
+def test_benchmark_auto_pivot_rejects_missing_or_protected_write_scope(tmp_path):
+    from bananloop.v2_campaign_cli import _build_spec
+
+    repo = _repo(tmp_path)
+    args = dict(max_agent_calls=6, max_model_tokens=128, model="gpt-6-luna",
+                benchmark_auto_pivot=True)
+    with pytest.raises(V2CampaignCLIError, match="exact Optimization write path"):
+        _build_spec(repo, "No path", ("README.md",), **args)
+    with pytest.raises(Exception):
+        _build_spec(repo, "Protected path", ("validation/data.py",),
+                    optimization_write_paths=("validation/data.py",), **args)
+
+
+def test_benchmark_time_only_spec_has_no_candidate_cap_and_uses_only_disclosed_ceiling(tmp_path):
+    from bananloop.v2_campaign_cli import _build_spec
+
+    repo = _repo(tmp_path)
+    spec, roles, _ = _build_spec(
+        repo, "Public task time-only benchmark", ("candidate.py",),
+        max_agent_calls=1000, max_model_tokens=128, model="gpt-6-luna",
+        max_evaluator_calls=1000, max_iterations=1000,
+        max_candidate_iterations=None, deadline_seconds=3600,
+        max_experiments=1000, optimization_write_paths=("candidate.py",),
+        evaluator_fixture_digest="a" * 64, benchmark_auto_pivot=True,
+        benchmark_time_only=True,
+    )
+
+    assert spec.max_candidate_iterations is None
+    assert spec.budget.deadline_seconds == 3600
+    assert spec.budget.max_experiments == spec.budget.max_attempts == 1000
+    assert spec.budget.max_agent_calls == spec.budget.max_evaluator_calls == 1000
+    assert roles.role("researcher").calls_per_instance > 1
+    assert roles.role("optimizer").calls_per_instance > 1
+    assert roles.role("integration_verifier").calls_per_instance > 1
+
+
+def test_time_only_mode_rejects_supervised_or_capped_campaign(tmp_path):
+    from bananloop.v2_campaign_cli import _build_spec
+
+    repo = _repo(tmp_path)
+    with pytest.raises(V2CampaignCLIError, match="time-only mode requires"):
+        _build_spec(
+            repo, "Invalid benchmark", ("candidate.py",),
+            max_agent_calls=1000, max_model_tokens=128, model="gpt-6-luna",
+            max_evaluator_calls=1000, max_iterations=1000,
+            max_candidate_iterations=None, max_experiments=1000,
+            optimization_write_paths=("candidate.py",),
+            evaluator_fixture_digest="a" * 64, benchmark_time_only=True,
+        )
 
 
 def test_v2_explicit_candidate_iteration_cap_is_frozen_and_funded(tmp_path):
@@ -1232,4 +1316,26 @@ def test_active_campaign_deadline_is_persisted_once_and_tamper_evident(tmp_path)
         _campaign_deadline(
             state, campaign_id="c-deadline", spec_hash="a" * 64,
             time_limit_seconds=3600,
+        )
+
+
+def test_benchmark_arm_absolute_deadline_is_inherited_without_reset(tmp_path):
+    deadline = __import__("time").time() + 1800
+    state = tmp_path / "inherited-state"
+    state.mkdir()
+    actual = _campaign_deadline(
+        state, campaign_id="c-inherited", spec_hash="b" * 64,
+        time_limit_seconds=1800, inherited_deadline_epoch=deadline,
+    )
+    record = json.loads((state / "campaign-run-deadline.json").read_text())
+    assert actual == deadline
+    assert record["started_epoch"] == deadline - 1800
+    assert _campaign_deadline(
+        state, campaign_id="c-inherited", spec_hash="b" * 64,
+        time_limit_seconds=1800, inherited_deadline_epoch=deadline,
+    ) == deadline
+    with pytest.raises(V2CampaignCLIError, match="deadline record is invalid"):
+        _campaign_deadline(
+            state, campaign_id="c-inherited", spec_hash="b" * 64,
+            time_limit_seconds=1800, inherited_deadline_epoch=deadline - 10,
         )

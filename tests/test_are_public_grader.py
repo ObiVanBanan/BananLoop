@@ -142,6 +142,41 @@ def test_baseline_is_separate_from_five_candidate_iterations(tmp_path):
         grader.submit_once(candidate_iteration=6, repetition=1, candidate=b"candidate-6")
 
 
+def test_benchmark_mode_inherits_absolute_deadline_and_expands_technical_ceiling(tmp_path):
+    now = [1500.0]
+    grader = PublicAREGrader(
+        tmp_path / "benchmark.sqlite3", task_id="budgeted-imputation-mcar50",
+        contract_sha256="a" * 64, call_tool=lambda *_: {},
+        time_limit_seconds=3100, max_candidate_iterations=1000,
+        deadline_epoch=4600.0, clock=lambda: now[0],
+    )
+    assert grader.deadline_epoch == 4600.0
+    assert grader._next_slot(5, grader.repeatability_runs, "GRADED") == (6, 1)
+    with grader._connect() as connection:
+        connection.execute(
+            "INSERT INTO are_candidate_iterations VALUES (?, ?, ?)",
+            ("6" * 40, 6, "a" * 64),
+        )
+    now[0] = 4600.0
+    with pytest.raises(PublicGraderError, match="deadline has expired"):
+        grader.submit_once(candidate_iteration=0, repetition=1, candidate=b"baseline")
+
+
+def test_inherited_deadline_cannot_be_extended_on_resume(tmp_path):
+    path = tmp_path / "benchmark-resume.sqlite3"
+    PublicAREGrader(
+        path, task_id="budgeted-imputation-mcar50", contract_sha256="a" * 64,
+        call_tool=lambda *_: {}, time_limit_seconds=3100,
+        max_candidate_iterations=1000, deadline_epoch=4600.0, clock=lambda: 1500.0,
+    )
+    with pytest.raises(PublicGraderError, match="another task, contract"):
+        PublicAREGrader(
+            path, task_id="budgeted-imputation-mcar50", contract_sha256="a" * 64,
+            call_tool=lambda *_: {}, time_limit_seconds=3600,
+            max_candidate_iterations=1000, deadline_epoch=5100.0, clock=lambda: 1500.0,
+        )
+
+
 def test_git_snapshots_are_durably_mapped_to_baseline_and_candidate_slots(tmp_path):
     next_id = 0
 

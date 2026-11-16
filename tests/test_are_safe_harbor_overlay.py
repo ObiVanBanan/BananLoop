@@ -6,6 +6,8 @@ import pytest
 
 from benchmarks.autoresearchexam.prepare_safe_harbor_task import (
     OverlayError,
+    local_public_dev_compose,
+    prepare_local_public_dev_task_toml,
     strip_grader_collection,
 )
 
@@ -68,3 +70,59 @@ def test_safe_overlay_accepts_only_task_specific_reviewed_collect_timeout():
 def test_safe_overlay_fails_closed_for_changed_artifacts_or_unhandled_layout(text):
     with pytest.raises(OverlayError):
         strip_grader_collection(text)
+
+
+def test_local_public_dev_task_toml_removes_grader_mcp_and_host():
+    source = SOURCE_TASK_TOML + '''\
+[agent]
+allowed_hosts = [
+    "api.openai.com",
+    "grader",
+]
+
+[environment]
+mcp_servers = [
+    { name = "are", transport = "streamable-http", url = "http://grader:8000/mcp" },
+]
+'''
+    transformed, report = prepare_local_public_dev_task_toml(
+        source, expected_timeout_sec=3600.0,
+    )
+    parsed = tomllib.loads(transformed)
+    assert "artifacts" not in parsed
+    assert parsed["verifier"].get("collect") is None
+    assert "mcp_servers" not in parsed["environment"]
+    assert "grader" not in parsed["agent"]["allowed_hosts"]
+    assert report["private_grader_enabled"] is False
+
+
+def test_local_public_dev_compose_keeps_only_main_and_deliverable_volume():
+    compose = '''\
+services:
+  main:
+    depends_on:
+      grader:
+        condition: service_healthy
+    volumes:
+      - are-deliverable-0:/app/output
+  grader:
+    build:
+      context: ./are-grader-ctx
+      dockerfile: Dockerfile.are
+  test-grader:
+    build:
+      context: ./are-grader-ctx
+      dockerfile: Dockerfile.are
+volumes:
+  are-deliverable-0: {}
+  are-secret: {}
+networks:
+  are-private:
+    internal: true
+'''
+    transformed = local_public_dev_compose(compose, expected_output="/app/output")
+    assert "main:" in transformed
+    assert "are-deliverable-0:/app/output" in transformed
+    assert "grader" not in transformed
+    assert "are-grader-ctx" not in transformed
+    assert "are-secret" not in transformed

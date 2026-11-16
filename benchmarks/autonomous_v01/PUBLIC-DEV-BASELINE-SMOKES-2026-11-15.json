@@ -1,0 +1,64 @@
+{
+  "catalogue_sha256": "1cad63485ac2237a4d41540bcf5bd206b8869a727211cc68a5b3bee960c4e570",
+  "harbor_used": false,
+  "model_calls": 0,
+  "purpose": "scorer and entrypoint baseline smoke only; public DEV data; not an optimization result or official benchmark score",
+  "results": [
+    {
+      "artifact_directory_sha256": "75f0a994548efbb6aa021b3a0c7e5e874cfeb532d5b0d0c833eb6059c0d737be",
+      "dev_cases": 8,
+      "dev_image_id": "sha256:f8609c86115e4f304fc0c9e1e9d176693d3c11e53f7986a07d3bdbece23d6875",
+      "direction": "MAXIMIZE",
+      "elapsed_seconds": 5.485,
+      "files": [
+        {
+          "path": "impute.py",
+          "sha256": "de698c7fe955613e2297088a7258ddbd0b99bf32d4f2febfe402b94659345861",
+          "size_bytes": 87
+        }
+      ],
+      "metric": -0.000438181838185947,
+      "metric_id": "imputation_r2",
+      "status": "SCORED",
+      "task_id": "act-tensor-sparse-panel-imputation-r2"
+    },
+    {
+      "artifact_directory_sha256": "deac233b9532ead799fb13224bd582c71fe8f5ef886a731323df5ce200476dff",
+      "dev_cases": 100,
+      "dev_image_id": "sha256:3b043696a33b787b0e05f960a7c180e47378016c0c7c0e72ec2cf658af795bac",
+      "direction": "MINIMIZE",
+      "elapsed_seconds": 5.525,
+      "files": [
+        {
+          "path": "estimator.py",
+          "sha256": "2d3860a204e45446e2f4e02017566967d652f80209ad4d533a5504bf5cb4478d",
+          "size_bytes": 213
+        }
+      ],
+      "metric": 4.130251584660836,
+      "metric_id": "mean_pehe",
+      "status": "SCORED",
+      "task_id": "causalpfn-cate-pehe-ihdp-surfaceb"
+    },
+    {
+      "artifact_directory_sha256": "1ff1f255ba8252295ab77f2a345e4383b14e3b937e1f6114f3985ad6c26fc07a",
+      "dev_cases": 24,
+      "dev_image_id": "sha256:4ac7196375b04b6804f2b9ccf0059a64fdfc0e1fb0058ee5d7275dbdb0e6198a",
+      "direction": "MAXIMIZE",
+      "elapsed_seconds": 34.341,
+      "files": [
+        {
+          "path": "encoder.py",
+          "sha256": "884260a07e00aec3fb05c07e53ff837780fecdba8805c690f9be5b3d363c30a2",
+          "size_bytes": 250
+        }
+      ],
+      "metric": -4.481569170868127,
+      "metric_id": "onehot_mse_reduction_pct",
+      "status": "SCORED",
+      "task_id": "hicard-latent-encoder"
+    }
+  ],
+  "schema": "bananloop-autonomous-v01-public-dev-smoke-v1",
+  "source_revision": "23c0d92e11af1dea821f972b5f0a739060958002"
+}

@@ -1,0 +1,143 @@
+{
+  "candidate_or_scorer_executed": false,
+  "catalogue_sha256": "1cad63485ac2237a4d41540bcf5bd206b8869a727211cc68a5b3bee960c4e570",
+  "harbor_started": false,
+  "host_docker_version": "Docker version 29.8.2, build 7fc2dff9bc",
+  "images": [
+    {
+      "build_command": [
+        "docker",
+        "build",
+        "--pull=false",
+        "--platform",
+        "linux/amd64",
+        "-t",
+        "bananloop-v01-act-tensor-sparse-panel-imputation-r2:1.1.0",
+        "/home/sonik/bananloop-benchmark-env/sources/AutoResearchExam/act-tensor-sparse-panel-imputation-r2/environment"
+      ],
+      "dev_file_count": 8,
+      "dev_manifest_sha256": "1e2a5615c34cab27d158dfe84852c062b7e255cb1eed861cbf4f736f6f8ed89b",
+      "dockerfile_sha256": "5781772ec66fd09ad66b5b462937a276efdb8ac2d0315a60739d5566fc839147",
+      "dockerignore_excludes_are_grader_ctx": true,
+      "dockerignore_sha256": "172c9772dd4171f99e71b3648c2da214e5e24c74d8b8166159cddfca1acb64bb",
+      "image_id": "sha256:f8609c86115e4f304fc0c9e1e9d176693d3c11e53f7986a07d3bdbece23d6875",
+      "image_tag": "bananloop-v01-act-tensor-sparse-panel-imputation-r2:1.1.0",
+      "instruction_sha256": "0c9ee2521673e86c5306355a9d028571c07cd083110014b919dc0bbc6451996b",
+      "platform": "linux/amd64",
+      "repo_tags": [
+        "bananloop-are-act-public-dev:1.1.0",
+        "bananloop-v01-act-tensor-sparse-panel-imputation-r2:1.1.0"
+      ],
+      "requirements_sha256": "075730996bbce5d39457c5b54fde62e24a29a92d807b6e4f0b73c41806c866e1",
+      "rootfs_layer_ids": [
+        "sha256:6143ee9e3de07e6ca35edaf392cf93dea566a5bcd0d3696607ae6c324193d099",
+        "sha256:707f05f9c84b69f54cf66e9ea2fc9a4e703fe023e727f517e590e97907bf36a8",
+        "sha256:017c8400b647e014fa8f6e90501a0741f5b8a3e9b4f268868e8cc7941f59a8ec",
+        "sha256:7ee20433ac93391e8d93cf192a4b5552f84308a7c4ca4b53dcf8a79ba9aa3738",
+        "sha256:39851eb7d2117f54ecabf95b1e7181bee76e54b59f375e88081761149e7ba684",
+        "sha256:4357523a506622db2d5c7b07cc3788b707e8fdf5b9db8026f49a4a2504dedaf9",
+        "sha256:62d95e44c904e4e8d9a2d8047e46fa173c2db70d6ddfb3d603aa797caf17b7a9",
+        "sha256:967fd99773fc525cdeb9f912b3f0fcbc86bf00db1895ba6d0e54438f015c7f50",
+        "sha256:fb45507d58be4c10dd25c36fb24a6126dbc47b3946df4aa8d29eac5765da7377",
+        "sha256:97faeff8033d9dcbcb19e8a9c7a65460c356986cca22566b4fd4ac339632deaf",
+        "sha256:12a7e0e74812e8f36b4f93ed2aef2a04409577db02179cd9c3dacb3ae4b58907",
+        "sha256:732bbf75cfed68378eea95086ecd72f7ffc2f57b006a2613be1bd9d83608a9c4"
+      ],
+      "source_dockerfile": "/home/sonik/bananloop-benchmark-env/sources/AutoResearchExam/act-tensor-sparse-panel-imputation-r2/environment/Dockerfile",
+      "task_id": "act-tensor-sparse-panel-imputation-r2",
+      "task_sha256": "81d2a54cf10d0729ad9f38b52a0d02e167b9141f38453245899493629273ba55",
+      "version": "1.1.0"
+    },
+    {
+      "build_command": [
+        "docker",
+        "build",
+        "--pull=false",
+        "--platform",
+        "linux/amd64",
+        "-t",
+        "bananloop-v01-causalpfn-cate-pehe-ihdp-surfaceb:1.1.0",
+        "/home/sonik/bananloop-benchmark-env/sources/AutoResearchExam/causalpfn-cate-pehe-ihdp-surfaceb/environment"
+      ],
+      "dev_file_count": 100,
+      "dev_manifest_sha256": "a3fa50b4a417a94f675d175c65dd462320a4c00245e07929d273463a8dfeb3b0",
+      "dockerfile_sha256": "4e44f857ba0e201f4f606d9a355deaabb784f4215544a37be0f6f7b798821a16",
+      "dockerignore_excludes_are_grader_ctx": true,
+      "dockerignore_sha256": "172c9772dd4171f99e71b3648c2da214e5e24c74d8b8166159cddfca1acb64bb",
+      "image_id": "sha256:3b043696a33b787b0e05f960a7c180e47378016c0c7c0e72ec2cf658af795bac",
+      "image_tag": "bananloop-v01-causalpfn-cate-pehe-ihdp-surfaceb:1.1.0",
+      "instruction_sha256": "282f76f0102ca6647fbfd4ffff0eb3c6a6ae3c5cca535c057ba04adc5226c921",
+      "platform": "linux/amd64",
+      "repo_tags": [
+        "bananloop-are-cate-public-dev:1.1.0",
+        "bananloop-v01-causalpfn-cate-pehe-ihdp-surfaceb:1.1.0"
+      ],
+      "requirements_sha256": "4e7bfc4154a85b087e7296ee412decceb2c69b896ecc240ef9f97891b6509dea",
+      "rootfs_layer_ids": [
+        "sha256:6143ee9e3de07e6ca35edaf392cf93dea566a5bcd0d3696607ae6c324193d099",
+        "sha256:707f05f9c84b69f54cf66e9ea2fc9a4e703fe023e727f517e590e97907bf36a8",
+        "sha256:017c8400b647e014fa8f6e90501a0741f5b8a3e9b4f268868e8cc7941f59a8ec",
+        "sha256:7ee20433ac93391e8d93cf192a4b5552f84308a7c4ca4b53dcf8a79ba9aa3738",
+        "sha256:8acc8d01e834809156470336c0305a178916cad73b2628e3ae2567e08ba47914",
+        "sha256:05b3bd420cc0f2c6f462f06cd4a5951ddddb3ff153f67b724ba3cfec8d113634",
+        "sha256:bf349f15383fd96c583f23bf181bb0f2838a4fb5551ebfd64d42ea7bb4d88948",
+        "sha256:1da6333d433a64ab4c6421670ca6254047dc1e2cf56ce1d409f4a683060323d7",
+        "sha256:6b026faca4ceb77dac5de5af8695000aaae8b18727701d119807db7848f7e869",
+        "sha256:1f2ca27cf657009d06eb8e86ef11d80b52665698b61e661b385c060635953aed",
+        "sha256:ce051aea51dae1fed05598bf3cfb54cceeac8e872d67b458bfd51f34e92486d5",
+        "sha256:c2d3620f4d066a824f3e06439929835f6ebb3ff2a6b518b94996773ef51c2b7d"
+      ],
+      "source_dockerfile": "/home/sonik/bananloop-benchmark-env/sources/AutoResearchExam/causalpfn-cate-pehe-ihdp-surfaceb/environment/Dockerfile",
+      "task_id": "causalpfn-cate-pehe-ihdp-surfaceb",
+      "task_sha256": "b85cb56673be920d7a027f8925080a158fbbf0578ec8bf4c6763603267605c7c",
+      "version": "1.1.0"
+    },
+    {
+      "build_command": [
+        "docker",
+        "build",
+        "--pull=false",
+        "--platform",
+        "linux/amd64",
+        "-t",
+        "bananloop-v01-hicard-latent-encoder:1.1.0",
+        "/home/sonik/bananloop-benchmark-env/sources/AutoResearchExam/hicard-latent-encoder/environment"
+      ],
+      "dev_file_count": 24,
+      "dev_manifest_sha256": "59e4d354496bd9e6c1285dfe65a783bfe21eb238f09e8b85158030f7a65b8a0c",
+      "dockerfile_sha256": "743861687e20b2d6bd753a40f87ee65e336dfe56e0bf2bb4f403dd17c3b6a5e3",
+      "dockerignore_excludes_are_grader_ctx": true,
+      "dockerignore_sha256": "172c9772dd4171f99e71b3648c2da214e5e24c74d8b8166159cddfca1acb64bb",
+      "image_id": "sha256:4ac7196375b04b6804f2b9ccf0059a64fdfc0e1fb0058ee5d7275dbdb0e6198a",
+      "image_tag": "bananloop-v01-hicard-latent-encoder:1.1.0",
+      "instruction_sha256": "26f263ab432d30044de3d5a031a8dde0d2a5c24172855090ac8fa5d2789f5e08",
+      "platform": "linux/amd64",
+      "repo_tags": [
+        "bananloop-are-hicard-public-dev:1.1.0",
+        "bananloop-v01-hicard-latent-encoder:1.1.0"
+      ],
+      "requirements_sha256": "9b9c22ff5500eb31fdf5059becef25b53caf412b8fe0d3500736ff1724263c41",
+      "rootfs_layer_ids": [
+        "sha256:6143ee9e3de07e6ca35edaf392cf93dea566a5bcd0d3696607ae6c324193d099",
+        "sha256:707f05f9c84b69f54cf66e9ea2fc9a4e703fe023e727f517e590e97907bf36a8",
+        "sha256:017c8400b647e014fa8f6e90501a0741f5b8a3e9b4f268868e8cc7941f59a8ec",
+        "sha256:7ee20433ac93391e8d93cf192a4b5552f84308a7c4ca4b53dcf8a79ba9aa3738",
+        "sha256:8acc8d01e834809156470336c0305a178916cad73b2628e3ae2567e08ba47914",
+        "sha256:2e958422ff9a0dfeabda03606faf0d9ae9733c144a4d0955b85201ea2d7e08d0",
+        "sha256:b4670aa2b896da456fbac4e75fb6a5c4b1f3b8fc44daceb030c626eb89aed22f",
+        "sha256:94eb617b539e77a4ec26168bf677ff736717c37df3bd5f41003d7e6bc5c103b0",
+        "sha256:98739604909f57d427cbe2e5c1736a061df4e71b38de27fbe66bc12390216bf2",
+        "sha256:00c344f8c5f43ed6f9b71675071f86f8392841341798430c25bea6967614b10a",
+        "sha256:8860cfc1b283f5ad7dc1b413938bddd1765caf46e395f4335d7f1318f6cc6264",
+        "sha256:90b5eceaacf101d5d04b685dcb9216a21c4b9fa2f8bae36ac6af74ecb5b2e979"
+      ],
+      "source_dockerfile": "/home/sonik/bananloop-benchmark-env/sources/AutoResearchExam/hicard-latent-encoder/environment/Dockerfile",
+      "task_id": "hicard-latent-encoder",
+      "task_sha256": "dd09dd774a8c64664119f34e663f7ca8bc9d3c25306596342ae876274c84c0b3",
+      "version": "1.1.0"
+    }
+  ],
+  "model_calls_started": false,
+  "schema": "bananloop-autonomous-v01-dev-image-build-evidence-v1",
+  "source_revision": "23c0d92e11af1dea821f972b5f0a739060958002"
+}

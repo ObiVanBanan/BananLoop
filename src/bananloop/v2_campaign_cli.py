@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import importlib.util
 import json
 import math
@@ -106,6 +107,49 @@ def _optimization_hypothesis_is_executable(selected: dict[str, Any]) -> bool:
     )
 
 
+def _read_benchmark_binding(goal: str) -> dict[str, Any]:
+    prefix = "BANANLOOP_BENCHMARK_BINDING_V1:"
+    first, separator, _rest = goal.partition("\n")
+    if not separator or not first.startswith(prefix):
+        raise V2CampaignCLIError("benchmark auto-pivot requires a frozen task binding in the campaign goal")
+    try:
+        value = json.loads(first[len(prefix):])
+    except ValueError as exc:
+        raise V2CampaignCLIError("benchmark task binding is malformed JSON") from exc
+    fields = {
+        "schema",
+        "manifest_sha256", "task_id", "task_sha256", "instruction_sha256",
+        "adapter_id", "execution_backend_id", "evaluator_fixture_sha256", "evaluator_bundle_sha256",
+        "candidate_path", "instruction_path", "public_output_path", "public_dev_image_id",
+        "metric_field", "metric_direction", "model", "permissions",
+        "deadline_seconds",
+    }
+    if (not isinstance(value, dict) or set(value) != fields
+            or value.get("schema") != "bananloop-autonomous-v01-pivot-binding-v1"):
+        raise V2CampaignCLIError("benchmark task binding does not match its frozen schema")
+    for field in ("manifest_sha256", "task_sha256", "instruction_sha256",
+                  "evaluator_fixture_sha256", "evaluator_bundle_sha256", "public_dev_image_id"):
+        raw = value.get(field)
+        if not isinstance(raw, str) or not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", raw):
+            raise V2CampaignCLIError(f"benchmark binding {field} is not a SHA-256 pin")
+    if (not isinstance(value.get("task_id"), str) or not value["task_id"]
+            or not isinstance(value.get("adapter_id"), str)
+            or not isinstance(value.get("execution_backend_id"), str)
+            or not isinstance(value.get("candidate_path"), str)
+            or not isinstance(value.get("instruction_path"), str)
+            or not isinstance(value.get("public_output_path"), str)
+            or value.get("metric_direction") not in {"MAXIMIZE", "MINIMIZE"}
+            or not isinstance(value.get("metric_field"), str)
+            or not isinstance(value.get("model"), str)
+            or value.get("permissions") != {"read": sorted([value.get("candidate_path"), value.get("instruction_path")]),
+                                             "write": [value.get("candidate_path")],
+                                             "network_access": False}
+            or type(value.get("deadline_seconds")) is not int
+            or not 1 <= value["deadline_seconds"] <= 3600):
+        raise V2CampaignCLIError("benchmark binding task, permissions, metric, or deadline are invalid")
+    return value
+
+
 def _minimum_fixture_optimization_evaluator_calls(
     fixture: EvaluatorFixtureV1, *, candidate_iterations: int | None = 1,
 ) -> int:
@@ -188,8 +232,16 @@ def _require_committed_pilot_inputs(repo: Path, paths: tuple[str, ...]) -> None:
 
 
 def _campaign_deadline(state_root: Path, *, campaign_id: str, spec_hash: str,
-                       time_limit_seconds: int) -> float:
+                       time_limit_seconds: int,
+                       inherited_deadline_epoch: float | None = None) -> float:
     """Create once and reuse the active-run deadline across campaign resumes."""
+    if inherited_deadline_epoch is not None and (
+            isinstance(inherited_deadline_epoch, bool)
+            or not isinstance(inherited_deadline_epoch, (int, float))
+            or not math.isfinite(inherited_deadline_epoch)
+            or inherited_deadline_epoch <= time.time()
+            or inherited_deadline_epoch > time.time() + 3600.5):
+        raise V2CampaignCLIError("inherited task deadline is expired or exceeds one hour")
     target = state_root / "campaign-run-deadline.json"
     if target.is_symlink():
         raise V2CampaignCLIError("campaign deadline record is a symlink")
@@ -206,12 +258,15 @@ def _campaign_deadline(state_root: Path, *, campaign_id: str, spec_hash: str,
                     or not isinstance(record.get("deadline_epoch"), (float, int))
                     or not math.isfinite(float(record["started_epoch"]))
                     or not math.isfinite(float(record["deadline_epoch"]))
-                    or float(record["deadline_epoch"]) != float(record["started_epoch"]) + time_limit_seconds):
+                    or float(record["deadline_epoch"]) != float(record["started_epoch"]) + time_limit_seconds
+                    or (inherited_deadline_epoch is not None
+                        and float(record["deadline_epoch"]) != float(inherited_deadline_epoch))):
                 raise ValueError
             return float(record["deadline_epoch"])
         except Exception as exc:
             raise V2CampaignCLIError("persisted campaign deadline record is invalid") from exc
-    started = time.time()
+    started = (float(inherited_deadline_epoch) - time_limit_seconds
+               if inherited_deadline_epoch is not None else time.time())
     record = {
         "schema": "bananloop-campaign-deadline-v1", "campaign_id": campaign_id,
         "spec_hash": spec_hash, "time_limit_seconds": time_limit_seconds,
@@ -224,6 +279,7 @@ def _campaign_deadline(state_root: Path, *, campaign_id: str, spec_hash: str,
         return _campaign_deadline(
             state_root, campaign_id=campaign_id, spec_hash=spec_hash,
             time_limit_seconds=time_limit_seconds,
+            inherited_deadline_epoch=inherited_deadline_epoch,
         )
     try:
         with os.fdopen(descriptor, "wb") as stream:
@@ -245,14 +301,25 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
                 max_iterations: int = 2,
                 max_candidate_iterations: int | None = None,
                 deadline_seconds: int = 3600,
+                max_experiments: int | None = None,
                 optimization_write_paths: tuple[str, ...] = (),
-                evaluator_fixture_digest: str | None = None):
+                evaluator_fixture_digest: str | None = None,
+                benchmark_auto_pivot: bool = False,
+                benchmark_time_only: bool = False):
     if (max_candidate_iterations is not None and (isinstance(max_candidate_iterations, bool)
             or not isinstance(max_candidate_iterations, int)
             or not 1 <= max_candidate_iterations <= 5)):
         raise V2CampaignCLIError("candidate iteration cap must be from 1 to 5")
     optimization_enabled = bool(optimization_write_paths)
     effective_candidate_iterations = max_candidate_iterations or 1
+    effective_max_experiments = max_experiments if max_experiments is not None else (
+        2 * effective_candidate_iterations
+        if optimization_enabled and max_candidate_iterations is not None else 5
+    )
+    if (isinstance(effective_max_experiments, bool)
+            or not isinstance(effective_max_experiments, int)
+            or not 1 <= effective_max_experiments <= 1000):
+        raise V2CampaignCLIError("max_experiments must be from 1 to 1000")
     minimum_calls = (2 + 2 * effective_candidate_iterations) if optimization_enabled else 2
     if max_agent_calls < minimum_calls:
         raise V2CampaignCLIError(
@@ -261,6 +328,15 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
         )
     if not set(optimization_write_paths) <= set(paths):
         raise V2CampaignCLIError("optimization write paths must be included in the read-path allowlist")
+    if not isinstance(benchmark_auto_pivot, bool):
+        raise V2CampaignCLIError("benchmark auto-pivot mode must be a boolean")
+    if benchmark_auto_pivot and not optimization_write_paths:
+        raise V2CampaignCLIError("benchmark auto-pivot requires an exact Optimization write path")
+    if benchmark_time_only and (
+            not benchmark_auto_pivot or max_candidate_iterations is not None
+            or max_experiments != 1000 or max_agent_calls > 1000
+            or max_evaluator_calls > 1000):
+        raise V2CampaignCLIError("time-only mode requires benchmark pivot, no candidate cap, and disclosed 1000 budgets")
     policy = {
         "policy_version": 1,
         "tools": ["read_file", "list_files", "write_artifact", "commit_candidate"],
@@ -274,10 +350,16 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
     # pair only when the campaign has an explicitly approved write scope;
     # otherwise unused Optimizer slots must not starve Researcher iterations.
     reserved_calls = 1 + (2 * effective_candidate_iterations if optimization_enabled else 0)
-    researcher_calls = min(max_iterations, max_agent_calls - reserved_calls)
-    optimization_pair_budget = (
-        max_agent_calls - researcher_calls - 1 if optimization_enabled else 0
-    )
+    if benchmark_time_only:
+        # Keep a quarter of the finite emergency request ceiling for discovery
+        # and protocol review; the remaining calls are available to the child.
+        researcher_calls = min(max_iterations, max(1, (max_agent_calls - 2) // 4))
+        optimization_pair_budget = max_agent_calls - researcher_calls - 1
+    else:
+        researcher_calls = min(max_iterations, max_agent_calls - reserved_calls)
+        optimization_pair_budget = (
+            max_agent_calls - researcher_calls - 1 if optimization_enabled else 0
+        )
     # Extra paired calls remain available for the existing bounded retry path;
     # max_candidate_iterations separately caps how many candidate snapshots
     # can enter the evaluator lifecycle.
@@ -347,17 +429,26 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
         "repo": str(repo), "goal": goal, "read_paths": paths,
         "model": model, "version": 1,
     }, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    autonomy_scope = None
+    if benchmark_auto_pivot:
+        autonomy_scope = AutonomyScopeV2(
+            version=1, allowed_paths=optimization_write_paths,
+            max_child_depth=1, max_child_campaigns=1,
+        )
+        scope_digest = autonomy_scope.content_digest()
     spec = ExplorationCampaignSpecV2.model_validate({
         "schema_version": 2, "mode": "EXPLORATION", "goal": goal,
         "source_repo": str(repo), "base_commit": _git(repo, "rev-parse", "HEAD"),
         "autonomy": {
-            "mode": "SUPERVISED", "scope_digest": scope_digest, "scope_version": 1,
+            "mode": "FULL_AUTO" if benchmark_auto_pivot else "SUPERVISED",
+            "scope_digest": scope_digest, "scope_version": 1,
+            **({"scope": autonomy_scope.model_dump(mode="json")}
+               if autonomy_scope is not None else {}),
             "capability_policy": policy,
         },
         "budget": {
-            "max_experiments": (2 * effective_candidate_iterations
-                                if optimization_enabled and max_candidate_iterations is not None
-                                else 5),
+            "max_experiments": effective_max_experiments,
+            "max_attempts": effective_max_experiments,
             "max_agent_calls": max_agent_calls,
             "max_evaluator_calls": max_evaluator_calls,
             "deadline_seconds": deadline_seconds,
@@ -661,7 +752,8 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
                                         roles: RoleRegistryV1,
                                         visible_paths: tuple[str, ...],
                                         write_paths: tuple[str, ...],
-                                        approval_digest: str) -> dict[str, Any]:
+                                        approval_digest: str,
+                                        deadline_epoch: float | None = None) -> dict[str, Any]:
     from .evaluator_verification import EvaluatorProtocolAuthority
     from .v2_pivot_saga import V2PivotSaga, _budget_caps
 
@@ -669,6 +761,59 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
         return {"status": "NEEDS_EXPLICIT_OPTIMIZATION_WRITE_PATH"}
     authority = EvaluatorProtocolAuthority(graph.conn)
     proposal, receipt = authority.approved_protocol(approval_digest)
+    benchmark_time_only = (
+        parent_spec.autonomy.mode == "FULL_AUTO"
+        and parent_spec.max_candidate_iterations is None
+        and parent_spec.budget.max_experiments == 1000
+        and parent_spec.budget.max_attempts == 1000
+    )
+    benchmark_binding = None
+    if benchmark_time_only:
+        benchmark_binding = _read_benchmark_binding(parent_spec.goal)
+        if (deadline_epoch is None or deadline_epoch <= time.time()
+                or parent_spec.budget.deadline_seconds != benchmark_binding["deadline_seconds"]
+                or parent_spec.evaluator_fixture_digest != benchmark_binding["evaluator_fixture_sha256"]
+                or tuple(visible_paths) != tuple(benchmark_binding["permissions"]["read"])
+                or tuple(write_paths) != (benchmark_binding["candidate_path"],)):
+            raise V2CampaignCLIError("benchmark pivot does not match the frozen task scope or inherited deadline")
+        fixture_path = state_root / "trusted-evaluator-fixture.json"
+        if fixture_path.is_symlink() or not fixture_path.is_file():
+            raise V2CampaignCLIError("benchmark pivot is missing its frozen evaluator fixture")
+        try:
+            fixture = EvaluatorFixtureV1.load(fixture_path)
+            bundle_bytes = base64.b64decode(fixture.evaluator_bundle_base64, validate=True)
+            bundle = json.loads(bundle_bytes)
+        except (ValueError, TypeError) as exc:
+            raise V2CampaignCLIError("benchmark evaluator fixture or bundle is malformed") from exc
+        expected_fields = {
+            "task_id": "task_id", "task_sha256": "task_sha256",
+            "instruction_sha256": "instruction_sha256", "adapter_id": "adapter_id",
+            "candidate_path": "candidate_path", "public_output_path": "public_output_path",
+            "public_dev_image_id": "dev_image_id", "metric_field": "metric_field",
+            "metric_direction": "metric_direction",
+        }
+        if (fixture.content_digest() != benchmark_binding["evaluator_fixture_sha256"]
+                or fixture.execution_backend_id != benchmark_binding["execution_backend_id"]
+                or hashlib.sha256(bundle_bytes).hexdigest() != benchmark_binding["evaluator_bundle_sha256"]
+                or proposal.protocol.evaluator_bundle_sha256 != benchmark_binding["evaluator_bundle_sha256"]
+                or proposal.protocol.metric_field != benchmark_binding["metric_field"]
+                or proposal.protocol.direction != benchmark_binding["metric_direction"]):
+            raise V2CampaignCLIError("approved evaluator protocol differs from the frozen benchmark task bundle")
+        if benchmark_binding["adapter_id"] in {
+            "act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1",
+        } and any(bundle.get(key) != benchmark_binding[value]
+                  for value, key in expected_fields.items()):
+            raise V2CampaignCLIError("public task adapter bundle differs from its exact task and output pins")
+        role_models = {roles.role(name).model for name in
+                       ("researcher", "independent_verifier", "optimizer", "integration_verifier")}
+        policy = parent_spec.autonomy.capability_policy
+        scope = parent_spec.autonomy.scope
+        if (role_models != {benchmark_binding["model"]}
+                or policy is None or policy.network_access
+                or policy.read_paths != tuple(benchmark_binding["permissions"]["read"])
+                or scope is None or scope.allowed_paths != (benchmark_binding["candidate_path"],)
+                or scope.max_child_depth != 1 or scope.max_child_campaigns != 1):
+            raise V2CampaignCLIError("benchmark pivot model, permissions, or child scope changed")
     optimization_task = _selected_optimization_task(
         proposal=proposal, graph=graph, state_root=state_root, queue=queue,
         campaign_id=campaign_id,
@@ -680,6 +825,12 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
     integration_calls = roles.role("integration_verifier").calls_per_instance
     frozen_candidate_iterations = parent_spec.max_candidate_iterations
     candidate_iterations = frozen_candidate_iterations or 1
+    benchmark_time_only = (
+        parent_spec.autonomy.mode == "FULL_AUTO"
+        and frozen_candidate_iterations is None
+        and parent_spec.budget.max_experiments == 1000
+        and parent_spec.budget.max_attempts == 1000
+    )
     child_calls = _required_optimization_agent_calls(
         optimizer_calls, integration_calls, candidate_iterations,
     )
@@ -722,6 +873,10 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
     if frozen_candidate_iterations is not None:
         payload["max_candidate_iterations"] = frozen_candidate_iterations
         payload["budget"]["max_experiments"] = 2 * candidate_iterations
+    elif benchmark_time_only:
+        payload.pop("max_candidate_iterations", None)
+        payload["budget"]["max_experiments"] = parent_spec.budget.max_experiments
+        payload["budget"]["max_attempts"] = parent_spec.budget.max_attempts
     else:
         payload.pop("max_candidate_iterations", None)
     has_holdout = any(item.tier == "holdout" for item in proposal.protocol.tiers)
@@ -736,7 +891,10 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
             f"{proposal.protocol.repeatability_runs}, has "
             f"{parent_spec.budget.max_evaluator_calls}"
         )
-    payload["budget"]["max_evaluator_calls"] = required_evaluator_calls
+    payload["budget"]["max_evaluator_calls"] = (
+        parent_spec.budget.max_evaluator_calls if benchmark_time_only
+        else required_evaluator_calls
+    )
     if parent_spec.budget.max_model_tokens is not None:
         per_call = parent_spec.budget.max_model_tokens // parent_spec.budget.max_agent_calls
         payload["budget"]["max_model_tokens"] = child_calls * per_call
@@ -767,16 +925,19 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
         ),
         execution_plan=plan,
     )
-    queue.set_campaign_control(
-        campaign_id, "PAUSED", reason=f"verified Optimization pivot {pivot.proposal_id} requires owner decision",
-    )
+    benchmark_auto = parent_spec.autonomy.mode == "FULL_AUTO"
+    if not benchmark_auto:
+        queue.set_campaign_control(
+            campaign_id, "PAUSED", reason=f"verified Optimization pivot {pivot.proposal_id} requires owner decision",
+        )
     with sqlite3.connect(state_root / "campaign.sqlite3", timeout=30) as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT status FROM campaigns WHERE id=1").fetchone()
-        if row is None or row[0] not in {"READY", "PAUSED_NEEDS_INPUT"}:
+        allowed_statuses = {"READY", "PAUSED_NEEDS_INPUT"} if not benchmark_auto else {"READY"}
+        if row is None or row[0] not in allowed_statuses:
             conn.rollback()
-            raise V2CampaignCLIError("parent campaign cannot enter supervised pivot review from its current status")
-        if row[0] == "READY":
+            raise V2CampaignCLIError("parent campaign cannot enter the benchmark pivot decision from its current status")
+        if row[0] == "READY" and not benchmark_auto:
             conn.execute(
                 "UPDATE campaigns SET status='PAUSED_NEEDS_INPUT',updated_at=? WHERE id=1",
                 (utc_now(),),
@@ -791,6 +952,12 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
         conn.commit()
     saga = V2PivotSaga(repo=repo, parent_campaign_id=campaign_id, state_root=registry_root)
     saga.record_pivot_proposal(pivot)
+    auto_child: dict[str, Any] | None = None
+    if benchmark_auto:
+        auto_child = saga.create_child(
+            idempotency_key=f"benchmark-auto-{pivot.proposal_id}",
+            proposal=pivot, child_spec=child,
+        )
     roles_path = _persist_role_registry(state_root, roles)
     with sqlite3.connect(state_root / "campaign.sqlite3", timeout=30) as conn:
         pivot_status = conn.execute(
@@ -804,11 +971,25 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
         "REJECTED": "OWNER_REJECTED_PIVOT",
         "STALE": "STALE_PIVOT_REQUIRES_REVIEW",
     }[pivot_status[0]]
+    if auto_child is not None:
+        status = "BENCHMARK_AUTO_CHILD_CREATED" if auto_child.get("state") == "ACTIVE" else "BENCHMARK_AUTO_CHILD_PENDING"
     return {
         "status": status, "proposal_id": pivot.proposal_id,
         "proposal_digest": pivot.digest, "protocol_approval_digest": receipt.approval_digest,
         "child_spec_hash": child.approved_hash(), "changed_paths": list(write_paths),
         "child_agent_call_budget": child_calls, "role_registry_path": str(roles_path),
+        **({"benchmark_binding": benchmark_binding,
+            "benchmark_binding_sha256": hashlib.sha256(json.dumps(
+                benchmark_binding, sort_keys=True, separators=(",", ":"),
+            ).encode()).hexdigest(),
+            "inherited_deadline_epoch": deadline_epoch,
+            "child_candidate_iteration_cap": child.max_candidate_iterations,
+            "child_agent_call_ceiling": child.budget.max_agent_calls,
+            "child_evaluator_call_ceiling": child.budget.max_evaluator_calls}
+           if benchmark_binding is not None else {}),
+        **({"child_campaign_id": auto_child.get("child_campaign_id"),
+            "pivot_authorization": "FROZEN_BENCHMARK_FULL_AUTO_SCOPE"}
+           if auto_child is not None else {}),
     }
 
 
@@ -1022,7 +1203,12 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
     goal = args.goal
     if not isinstance(goal, str) or not goal.strip() or len(goal) > 4000 or "\x00" in goal:
         raise V2CampaignCLIError("--goal must contain 1 to 4000 non-NUL characters")
-    if (isinstance(args.max_agent_calls, bool) or not 4 <= args.max_agent_calls <= 100
+    benchmark_time_only = getattr(args, "benchmark_time_only", False)
+    if not isinstance(benchmark_time_only, bool):
+        raise V2CampaignCLIError("benchmark_time_only must be a boolean")
+    max_budget = 1000 if benchmark_time_only else 100
+    iteration_ceiling = 1000 if benchmark_time_only else 100
+    if (isinstance(args.max_agent_calls, bool) or not 4 <= args.max_agent_calls <= max_budget
             or isinstance(getattr(args, "max_evaluator_calls", 16), bool)
             or not 1 <= getattr(args, "max_evaluator_calls", 16) <= 1000
             or isinstance(args.max_model_tokens, bool) or not 1 <= args.max_model_tokens <= 100_000
@@ -1030,8 +1216,13 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             or not 1 <= getattr(args, "deadline_seconds", 3600) <= 86_400
             or isinstance(args.approve_up_to_calls, bool)
             or not 0 <= args.approve_up_to_calls <= args.max_agent_calls
-            or isinstance(args.max_iterations, bool) or not 1 <= args.max_iterations <= 100
+            or isinstance(args.max_iterations, bool) or not 1 <= args.max_iterations <= iteration_ceiling
             or isinstance(args.timeout_seconds, bool) or not 1 <= args.timeout_seconds <= 300
+            or (getattr(args, "task_deadline_epoch", None) is not None
+                and (isinstance(args.task_deadline_epoch, bool)
+                     or not isinstance(args.task_deadline_epoch, (int, float))
+                     or not math.isfinite(args.task_deadline_epoch)
+                     or args.task_deadline_epoch <= time.time()))
             or not isinstance(args.model, str) or not args.model.strip() or len(args.model) > 200):
         raise V2CampaignCLIError("v2 call, token, or iteration bounds are invalid")
     if args.approve_up_to_calls > args.max_agent_calls:
@@ -1070,17 +1261,27 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
         experiment_catalog = experiment_executor.catalog
     requested_write_paths = list(getattr(args, "optimization_write_path", ()) or ())
     write_paths = _read_paths(repo, requested_write_paths) if requested_write_paths else ()
+    benchmark_auto_pivot = getattr(args, "benchmark_auto_pivot", False)
+    fixture_path_arg = getattr(args, "evaluator_fixture", None)
+    if not isinstance(benchmark_auto_pivot, bool):
+        raise V2CampaignCLIError("benchmark auto-pivot mode must be a boolean")
+    if benchmark_time_only and (not benchmark_auto_pivot or fixture_path_arg is None
+                                or not write_paths):
+        raise V2CampaignCLIError(
+            "time-only budgets require benchmark auto-pivot, an evaluator fixture, and exact write scope"
+        )
+    if benchmark_time_only and getattr(args, "max_candidate_iterations", None) is not None:
+        raise V2CampaignCLIError("time-only benchmark cannot set a candidate iteration cap")
     if not set(write_paths) <= set(paths):
         raise V2CampaignCLIError("--optimization-write-path values must also appear in --read-path")
     fixture = None
-    fixture_path_arg = getattr(args, "evaluator_fixture", None)
     if fixture_path_arg:
         try:
             fixture = EvaluatorFixtureV1.load(fixture_path_arg)
         except ValueError as exc:
             raise V2CampaignCLIError(f"--evaluator-fixture is invalid: {exc}") from exc
     if fixture is not None and write_paths:
-        candidate_iterations = getattr(args, "max_candidate_iterations", 1)
+        candidate_iterations = getattr(args, "max_candidate_iterations", None if benchmark_time_only else 1)
         minimum_evaluator_calls = _minimum_fixture_optimization_evaluator_calls(
             fixture, candidate_iterations=candidate_iterations,
         )
@@ -1096,10 +1297,14 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
         max_model_tokens=args.max_model_tokens, model=args.model,
         max_evaluator_calls=getattr(args, "max_evaluator_calls", 16),
         max_iterations=args.max_iterations,
-        max_candidate_iterations=getattr(args, "max_candidate_iterations", 1),
+        max_candidate_iterations=(None if benchmark_time_only else
+                                  getattr(args, "max_candidate_iterations", 1)),
         deadline_seconds=getattr(args, "deadline_seconds", 3600),
+        max_experiments=(1000 if benchmark_time_only else None),
         optimization_write_paths=write_paths,
         evaluator_fixture_digest=fixture.content_digest() if fixture else None,
+        benchmark_auto_pivot=benchmark_auto_pivot,
+        benchmark_time_only=benchmark_time_only,
     )
     runtime_paths = RuntimePaths.for_repo(
         repo, Path(args.state_dir).expanduser() if args.state_dir else None,
@@ -1215,6 +1420,7 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
         deadline_epoch = _campaign_deadline(
             state_root, campaign_id=entry.campaign_id, spec_hash=spec.approved_hash(),
             time_limit_seconds=spec.budget.deadline_seconds,
+            inherited_deadline_epoch=getattr(args, "task_deadline_epoch", None),
         )
         runtime.adapter.campaign_deadline_epoch = deadline_epoch
         try:
@@ -1298,7 +1504,7 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
                     registry_root=runtime_paths.root,
                     parent_spec=spec, graph=graph, queue=queue, roles=roles,
                     visible_paths=paths, write_paths=write_paths,
-                    approval_digest=approval_digest,
+                    approval_digest=approval_digest, deadline_epoch=deadline_epoch,
                 ))
             if any(item.get("status") == "NO_EXECUTABLE_RESEARCH_HYPOTHESIS"
                    for item in result["optimization_pivot"]):
@@ -1306,6 +1512,9 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             if any(item.get("status") == "PENDING_OWNER_PIVOT_DECISION"
                    for item in result["optimization_pivot"]):
                 result["status"] = "PENDING_OWNER_PIVOT_DECISION"
+            if any(item.get("status") == "BENCHMARK_AUTO_CHILD_CREATED"
+                   for item in result["optimization_pivot"]):
+                result["status"] = "BENCHMARK_AUTO_CHILD_CREATED"
         except Exception as exc:
             token_budget = _model_token_budget_status(
                 call_history, per_call_limit=args.max_model_tokens,
