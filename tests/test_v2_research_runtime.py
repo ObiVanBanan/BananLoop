@@ -95,6 +95,18 @@ def make_researcher_invoke(model_reply):
     return _make_researcher_invoke(compliant_reply)
 
 
+def test_time_only_exploration_iteration_ceiling_is_1000(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    runtime, _graph, _queue = _runtime(tmp_path)
+    monkeypatch.setattr(runtime, "plan", lambda: SimpleNamespace(candidates=(), reason="NO_ELIGIBLE_WORK"))
+    assert runtime.run_campaign(visible_paths=["README.md"], invoke=lambda *_a, **_k: {},
+                                max_iterations=1000)["status"] == "NO_ELIGIBLE_WORK"
+    with pytest.raises(V2RuntimeError, match="from 1 to 1000"):
+        runtime.run_campaign(visible_paths=["README.md"], invoke=lambda *_a, **_k: {},
+                             max_iterations=1001)
+
+
 def _runtime(tmp_path, *, max_agent_calls=3, ledger_agent_calls=None,
              role_calls_per_instance=2):
     source = tmp_path / "source"
