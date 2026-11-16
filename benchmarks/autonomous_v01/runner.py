@@ -10,6 +10,7 @@ import argparse
 import base64
 import hashlib
 import json
+import inspect
 import os
 import random
 import re
@@ -230,6 +231,12 @@ def authorize_benchmark_pivot(*, binding: dict[str, Any], pivot: dict[str, Any],
 
 def _implementation_gates() -> dict[str, bool]:
     """Check for linked implementation surfaces required before READY is possible."""
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from benchmarks.autoresearchexam.campaign_binding import require_frozen_optimization_child
+    from benchmarks.autoresearchexam.public_grader import PublicAREGrader
+
+    public_grader_parameters = set(inspect.signature(PublicAREGrader).parameters)
     return {
         "codex_direct_backend": callable(globals().get("CodexDirectBackend")),
         "codex_final_artifact_export": callable(
@@ -239,6 +246,10 @@ def _implementation_gates() -> dict[str, bool]:
         "benchmark_bound_pivot_authorizer": (
             callable(globals().get("BananLoopFullBackend"))
             and callable(globals().get("authorize_benchmark_pivot", None))
+        ),
+        "inherited_deadline_public_grader": (
+            callable(require_frozen_optimization_child)
+            and {"deadline_epoch", "max_candidate_iterations"} <= public_grader_parameters
         ),
         "24_arm_result_archiver": callable(globals().get("archive_series_results", None)),
     }

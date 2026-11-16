@@ -86,6 +86,7 @@ def test_preflight_reports_missing_content_pins_without_launching_anything(tmp_p
     assert report["implementation_gates"]["codex_final_artifact_export"] is True
     assert report["implementation_gates"]["bananloop_full_backend"] is True
     assert report["implementation_gates"]["benchmark_bound_pivot_authorizer"] is True
+    assert report["implementation_gates"]["inherited_deadline_public_grader"] is True
     assert report["implementation_gates"]["24_arm_result_archiver"] is True
     assert report["capacity"]["per_task_requested_cpus"] == 8
     assert report["capacity"]["per_task_requested_memory_mb"] == 14336

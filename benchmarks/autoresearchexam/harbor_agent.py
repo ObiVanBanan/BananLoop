@@ -612,12 +612,18 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 submission_summary=lambda: {"submissions": 0, "graded": 0, "pending": 0},
             )
         else:
+            remaining_time = raw.get("time_limit_seconds", 3600)
+            inherited_deadline = raw.get("deadline_epoch") if benchmark_time_only else None
+            if benchmark_time_only:
+                remaining_time = min(remaining_time, max(1, int(inherited_deadline - time.time())))
             grader = PublicAREGrader(
                 ledger_path,
                 task_id=raw["task_id"],
                 contract_sha256=raw["mcp_contract_sha256"],
                 repeatability_runs=raw["repeatability_runs"],
-                time_limit_seconds=raw.get("time_limit_seconds", 3600),
+                time_limit_seconds=remaining_time,
+                max_candidate_iterations=1000 if benchmark_time_only else 5,
+                deadline_epoch=inherited_deadline,
                 call_tool=lambda name, args: asyncio.run_coroutine_threadsafe(
                     self._call_public_tool(environment, name, args), loop,
                 ).result(timeout=130),

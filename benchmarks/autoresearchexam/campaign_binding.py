@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -13,17 +15,27 @@ from bananloop.contracts import OptimizationCampaignSpecV2, parse_campaign_spec_
 def require_frozen_optimization_child(config: Mapping[str, Any]) -> OptimizationCampaignSpecV2:
     """Fail closed unless the persisted child actually funds the configured run.
 
-    Harbor's one-hour and five-candidate config is not sufficient by itself:
-    the approved BananLoop child must freeze the same cap and enough role,
-    experiment, and wall-time budget to execute it.
+    Ordinary tasks retain the five-candidate cap. The preregistered time-only
+    mode instead binds an uncapped child and absolute deadline, with a disclosed
+    1000-operation technical ceiling.
     """
     campaign_id = config.get("campaign_id")
     if not isinstance(campaign_id, str) or not re.fullmatch(r"c-[0-9a-f]{32}", campaign_id):
         raise ValueError("BananLoop campaign ID is malformed")
     try:
+        benchmark_time_only = config.get("benchmark_time_only") is True
         candidate_cap = config.get("max_candidate_iterations", 5)
         time_limit = config.get("time_limit_seconds", 3600)
-        if (isinstance(candidate_cap, bool) or not isinstance(candidate_cap, int)
+        deadline_epoch = config.get("deadline_epoch")
+        if benchmark_time_only:
+            if candidate_cap is not None:
+                raise ValueError("time-only child must not impose a candidate iteration cap")
+            if (isinstance(deadline_epoch, bool) or not isinstance(deadline_epoch, (float, int))
+                    or not math.isfinite(deadline_epoch) or deadline_epoch <= time.time()
+                    or deadline_epoch > time.time() + 3600.5):
+                raise ValueError("time-only child must inherit a future absolute one-hour deadline")
+            candidate_cap = 1000
+        elif (isinstance(candidate_cap, bool) or not isinstance(candidate_cap, int)
                 or not 1 <= candidate_cap <= 5):
             raise ValueError("candidate iteration cap must be from 1 to 5")
         if (isinstance(time_limit, bool) or not isinstance(time_limit, int)
@@ -51,18 +63,29 @@ def require_frozen_optimization_child(config: Mapping[str, Any]) -> Optimization
         # scheduler executes one candidate cycle for those specs. Require the
         # Harbor job to pin that effective cap explicitly instead of treating
         # `None` as an unbounded series.
-        frozen_candidate_cap = (
-            1 if spec.max_candidate_iterations is None
-            else spec.max_candidate_iterations
-        )
-        if frozen_candidate_cap != candidate_cap:
-            raise ValueError("frozen BananLoop child candidate cap differs from Harbor config")
-        if (spec.budget.deadline_seconds is None
-                or spec.budget.deadline_seconds > time_limit):
-            raise ValueError("frozen BananLoop child deadline exceeds the Harbor task limit")
-        if (spec.budget.max_agent_calls < 2 * candidate_cap
-                or spec.budget.max_experiments < candidate_cap):
-            raise ValueError("frozen BananLoop child budget cannot fund its candidate cap")
+        if benchmark_time_only:
+            if (spec.max_candidate_iterations is not None
+                    or spec.budget.deadline_seconds != 3600
+                    or spec.budget.max_agent_calls > 1000
+                    or spec.budget.max_evaluator_calls > 1000
+                    or spec.budget.max_experiments > 1000
+                    or spec.budget.max_attempts > 1000
+                    or spec.budget.max_agent_calls < 2
+                    or spec.budget.max_experiments < 1):
+                raise ValueError("frozen BananLoop child differs from time-only technical ceilings")
+        else:
+            frozen_candidate_cap = (
+                1 if spec.max_candidate_iterations is None
+                else spec.max_candidate_iterations
+            )
+            if frozen_candidate_cap != candidate_cap:
+                raise ValueError("frozen BananLoop child candidate cap differs from Harbor config")
+            if (spec.budget.deadline_seconds is None
+                    or spec.budget.deadline_seconds > time_limit):
+                raise ValueError("frozen BananLoop child deadline exceeds the Harbor task limit")
+            if (spec.budget.max_agent_calls < 2 * candidate_cap
+                    or spec.budget.max_experiments < candidate_cap):
+                raise ValueError("frozen BananLoop child budget cannot fund its candidate cap")
         if spec.evaluation is None or spec.evaluation.approval_digest is None:
             raise ValueError("frozen BananLoop child has no independently approved evaluator protocol")
         return spec

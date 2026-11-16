@@ -29,6 +29,8 @@ class PublicAREGrader:
                  call_tool: Callable[[str, Mapping[str, Any]], Mapping[str, Any]],
                  repeatability_runs: int | None = None,
                  time_limit_seconds: int = 3600,
+                 max_candidate_iterations: int = 5,
+                 deadline_epoch: float | None = None,
                  clock: Callable[[], float] = time.time):
         if not task_id or len(task_id) > 200:
             raise ValueError("task_id must be nonempty and bounded")
@@ -47,6 +49,18 @@ class PublicAREGrader:
         if (isinstance(time_limit_seconds, bool) or not isinstance(time_limit_seconds, int)
                 or not 1 <= time_limit_seconds <= 3600):
             raise ValueError("time_limit_seconds must be an integer from 1 to 3600")
+        if (isinstance(max_candidate_iterations, bool)
+                or not isinstance(max_candidate_iterations, int)
+                or not 1 <= max_candidate_iterations <= 1000):
+            raise ValueError("max_candidate_iterations must be from 1 to 1000")
+        now = float(clock())
+        if (deadline_epoch is not None
+                and (isinstance(deadline_epoch, bool)
+                     or not isinstance(deadline_epoch, (int, float))
+                     or not math.isfinite(deadline_epoch)
+                     or deadline_epoch <= now
+                     or deadline_epoch > now + 3600.5)):
+            raise ValueError("inherited deadline must be in the future and within one hour")
         self.database = Path(database)
         self.database.parent.mkdir(parents=True, exist_ok=True)
         self.task_id = task_id
@@ -55,6 +69,8 @@ class PublicAREGrader:
         self.repeatability_runs = repeatability_runs
         self.time_limit_seconds = time_limit_seconds
         self.clock = clock
+        self.max_candidate_iterations = max_candidate_iterations
+        self.inherited_deadline_epoch = float(deadline_epoch) if deadline_epoch is not None else None
         # Safe transport classification only. Never retain server text or
         # grader output; callers may include this category in owner reports.
         self.last_transport_failure_category: str | None = None
@@ -70,7 +86,7 @@ class PublicAREGrader:
 
     def _initialize(self) -> None:
         with self._connect() as connection:
-            connection.execute("""
+            connection.execute(f"""
             CREATE TABLE IF NOT EXISTS are_public_grader_meta (
                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                     schema_version INTEGER NOT NULL,
@@ -80,12 +96,13 @@ class PublicAREGrader:
                     time_limit_seconds INTEGER NOT NULL CHECK (time_limit_seconds BETWEEN 1 AND 3600),
                     started_epoch REAL NOT NULL,
                     deadline_epoch REAL NOT NULL,
-                    max_candidate_iterations INTEGER NOT NULL CHECK (max_candidate_iterations = 5)
+                    max_candidate_iterations INTEGER NOT NULL
+                        CHECK (max_candidate_iterations BETWEEN 1 AND {self.max_candidate_iterations})
                 )
             """)
             connection.execute("""
                 CREATE TABLE IF NOT EXISTS are_public_submissions (
-                    candidate_iteration INTEGER NOT NULL CHECK (candidate_iteration BETWEEN 0 AND 5),
+                    candidate_iteration INTEGER NOT NULL CHECK (candidate_iteration BETWEEN 0 AND %d),
                     repetition INTEGER NOT NULL CHECK (repetition BETWEEN 1 AND 10),
                     candidate_sha256 TEXT NOT NULL,
                     state TEXT NOT NULL CHECK (state IN (
@@ -98,15 +115,15 @@ class PublicAREGrader:
                     public_result_json TEXT,
                     PRIMARY KEY (candidate_iteration, repetition)
                 )
-            """)
+            """ % self.max_candidate_iterations)
             connection.execute("""
                 CREATE TABLE IF NOT EXISTS are_candidate_iterations (
                     candidate_snapshot_id TEXT PRIMARY KEY,
                     candidate_iteration INTEGER NOT NULL UNIQUE
-                        CHECK (candidate_iteration BETWEEN 0 AND 5),
+                        CHECK (candidate_iteration BETWEEN 0 AND %d),
                     candidate_sha256 TEXT NOT NULL
                 )
-            """)
+            """ % self.max_candidate_iterations)
             columns = {row["name"] for row in connection.execute(
                 "PRAGMA table_info(are_public_grader_meta)"
             ).fetchall()}
@@ -124,21 +141,27 @@ class PublicAREGrader:
                     "existing ledger has no durable deadline; refusing to reset its task budget"
                 )
             if existing is None:
-                started = float(self.clock())
+                started = (self.inherited_deadline_epoch - self.time_limit_seconds
+                           if self.inherited_deadline_epoch is not None else float(self.clock()))
+                deadline = (self.inherited_deadline_epoch if self.inherited_deadline_epoch is not None
+                            else started + self.time_limit_seconds)
                 connection.execute(
                     "INSERT INTO are_public_grader_meta "
                     "(singleton, schema_version, task_id, contract_sha256, repeatability_runs, "
                     "time_limit_seconds, started_epoch, deadline_epoch, max_candidate_iterations) "
-                    "VALUES (1, 3, ?, ?, ?, ?, ?, ?, 5)",
+                    "VALUES (1, 3, ?, ?, ?, ?, ?, ?, ?)",
                     (self.task_id, self.contract_sha256, self.repeatability_runs,
-                     self.time_limit_seconds, started, started + self.time_limit_seconds),
+                     self.time_limit_seconds, started, deadline, self.max_candidate_iterations),
                 )
             elif (existing["schema_version"] != 3 or existing["task_id"] != self.task_id
                   or existing["contract_sha256"] != self.contract_sha256
                   or existing["repeatability_runs"] != self.repeatability_runs
                   or existing["time_limit_seconds"] != self.time_limit_seconds
-                  or existing["max_candidate_iterations"] != 5
-                  or existing["deadline_epoch"] != existing["started_epoch"] + self.time_limit_seconds):
+                  or existing["max_candidate_iterations"] != self.max_candidate_iterations
+                  or abs(existing["deadline_epoch"]
+                         - (existing["started_epoch"] + self.time_limit_seconds)) > 1e-6
+                  or (self.inherited_deadline_epoch is not None
+                      and existing["deadline_epoch"] != self.inherited_deadline_epoch)):
                 raise PublicGraderError(
                     "submission ledger is pinned to another task, contract, repeatability, or time limit"
                 )
@@ -210,10 +233,12 @@ class PublicAREGrader:
     def submit_once(self, *, candidate_iteration: int, repetition: int,
                     candidate: bytes | str,
                     note: str = "") -> dict[str, Any]:
-        """Submit baseline (iteration 0) or one of five candidates, at most once."""
+        """Submit baseline (iteration 0) or a pinned candidate, at most once."""
         if (isinstance(candidate_iteration, bool) or not isinstance(candidate_iteration, int)
-                or not 0 <= candidate_iteration <= 5):
-            raise ValueError("candidate_iteration must be an integer from 0 to 5")
+                or not 0 <= candidate_iteration <= self.max_candidate_iterations):
+            raise ValueError(
+                f"candidate_iteration must be an integer from 0 to {self.max_candidate_iterations}"
+            )
         if (isinstance(repetition, bool) or not isinstance(repetition, int)
                 or not 1 <= repetition <= self.repeatability_runs):
             raise ValueError(f"repetition must be an integer from 1 to {self.repeatability_runs}")
@@ -221,6 +246,8 @@ class PublicAREGrader:
             raise ValueError("note must be a string of at most 500 characters")
         digest = self._candidate_digest(candidate)
         now = float(self.clock())
+        if now >= self.deadline_epoch:
+            raise PublicGraderError("task deadline has expired; refusing a new grader submission")
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -293,9 +320,9 @@ class PublicAREGrader:
             raise PublicGraderError("previous submission is not graded; refusing another submission")
         if repetition < self.repeatability_runs:
             return candidate_iteration, repetition + 1
-        if candidate_iteration < 5:
+        if candidate_iteration < self.max_candidate_iterations:
             return candidate_iteration + 1, 1
-        raise PublicGraderError("five candidate iterations are already graded")
+        raise PublicGraderError("candidate iteration ceiling is exhausted")
 
     def submit_snapshot_once(self, *, candidate_snapshot_id: str,
                              source_snapshot_id: str, candidate: bytes | str,
@@ -332,9 +359,9 @@ class PublicAREGrader:
                     "SELECT MAX(candidate_iteration) FROM are_candidate_iterations"
                 ).fetchone()[0]
                 iteration = int(latest or 0) + (1 if candidate_snapshot_id != source_snapshot_id else 0)
-                if iteration > 5:
+                if iteration > self.max_candidate_iterations:
                     connection.rollback()
-                    raise PublicGraderError("five candidate iterations are already pinned")
+                    raise PublicGraderError("candidate iteration ceiling is exhausted")
                 latest_submission = connection.execute(
                     "SELECT candidate_iteration, repetition, state FROM are_public_submissions "
                     "ORDER BY candidate_iteration DESC, repetition DESC LIMIT 1"
