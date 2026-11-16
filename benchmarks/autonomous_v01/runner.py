@@ -1143,6 +1143,7 @@ class BananLoopFullBackend:
         observed_calls = 0
         optimization_calls = 0
         usage_unknown = False
+        source_overlay: dict[str, str] | None = None
         def terminal(status: str, **extra: Any) -> dict[str, Any]:
             artifact = CodexDirectBackend.snapshot_final_artifacts(
                 task=task, repo=repo, arm_root=arm_root,
@@ -1150,7 +1151,8 @@ class BananLoopFullBackend:
             return {"status": status, "final_artifact": artifact,
                     "model_turns_observed": observed_calls + optimization_calls,
                     "usage_unknown": usage_unknown,
-                    "deadline_epoch": deadline_epoch, **extra}
+                    "deadline_epoch": deadline_epoch,
+                    **({"source_overlay": source_overlay} if source_overlay else {}), **extra}
 
         remaining = deadline_epoch - time.time()
         if remaining <= 0:
@@ -1203,8 +1205,39 @@ class BananLoopFullBackend:
         local_instruction = ".benchmark-task-instruction.md"
         if (repo / local_instruction).exists():
             return terminal("FAILED_INSTRUCTION_PATH_COLLISION")
+        candidate_before_overlay = hashlib.sha256((repo / candidate_path).read_bytes()).hexdigest()
         shutil.copyfile(instruction_path, repo / local_instruction)
         (repo / local_instruction).chmod(0o444)
+        try:
+            subprocess.run(["git", "-C", str(repo), "add", "--", local_instruction],
+                           check=True, capture_output=True, timeout=15)
+            subprocess.run([
+                "git", "-C", str(repo), "-c", "user.name=BananLoop Benchmark",
+                "-c", "user.email=benchmark@localhost", "-c", "commit.gpgsign=false",
+                "commit", "--no-verify", "--only", "-m", "Freeze public task instruction",
+                "--", local_instruction,
+            ], check=True, capture_output=True, timeout=30)
+            overlay_commit = subprocess.check_output(
+                ["git", "-C", str(repo), "rev-parse", "--verify", "HEAD^{commit}"],
+                stderr=subprocess.PIPE, text=True, timeout=15,
+            ).strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{40}", overlay_commit):
+                raise ValueError("Git returned an invalid instruction-overlay commit")
+            source_overlay = {
+                "base_commit": self.base_sha,
+                "overlay_commit": overlay_commit,
+                "instruction_path": local_instruction,
+                "instruction_sha256": hashlib.sha256(instruction_path.read_bytes()).hexdigest(),
+                "candidate_path": candidate_path,
+                "candidate_sha256": hashlib.sha256((repo / candidate_path).read_bytes()).hexdigest(),
+            }
+            if source_overlay["candidate_sha256"] != candidate_before_overlay:
+                return terminal("FAILED_CANDIDATE_CHANGED_BY_INSTRUCTION_OVERLAY")
+            (arm_root / "source-overlay.json").write_text(
+                json.dumps(source_overlay, sort_keys=True, indent=2) + "\n", encoding="utf-8",
+            )
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return terminal("FAILED_TO_FREEZE_TASK_INSTRUCTION_OVERLAY")
 
         fixture = EvaluatorFixtureV1.load(fixture_path)
         bundle = base64.b64decode(fixture.evaluator_bundle_base64, validate=True)
@@ -1404,6 +1437,7 @@ class BananLoopFullBackend:
                 "model_turns_observed": observed_calls + optimization_calls,
                 "usage_unknown": usage_unknown,
                 "optimization_returncode": harbor_return, "deadline_epoch": deadline_epoch,
+                "source_overlay": source_overlay,
                 "pivot_binding_sha256": canonical_sha(binding),
                 "child_campaign_id": pivot["child_campaign_id"],
                 "prepared_config_sha256": {
