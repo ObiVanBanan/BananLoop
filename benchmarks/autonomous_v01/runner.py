@@ -199,6 +199,20 @@ def validate_task_runtime_descriptors(runtime_root: Path, tasks: list[dict[str, 
             if adapter.get("adapter_id") not in {
                 "act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1",
             }:
+                contract_path = Path(descriptor["mcp_contract_path"]).expanduser()
+                if (contract_path.is_symlink() or not contract_path.is_file()
+                        or hashlib.sha256(contract_path.read_bytes()).hexdigest()
+                        != descriptor.get("mcp_contract_file_sha256")):
+                    raise ValueError("public MCP contract is missing or its SHA differs")
+                contract = read_json(contract_path)
+                if contract.get("contract_sha256") != descriptor.get("mcp_contract_sha256"):
+                    raise ValueError("public MCP contract content digest differs")
+                from benchmarks.autoresearchexam.public_mcp_contract import validate_public_mcp_contract
+                validate_public_mcp_contract(
+                    contract, task_id=task_id, task_version=task["version"],
+                    task_sha256=task["task_sha256"],
+                    task_instruction_sha256=task["instruction_sha256"],
+                )
                 builder = descriptor.get("config_builder_command")
                 if (not isinstance(builder, list) or not builder
                         or any(not isinstance(item, str) or not item for item in builder)):
@@ -1302,6 +1316,7 @@ class BananLoopFullBackend:
                     "state_dir": str(state_dir), "campaign_id": pivot["child_campaign_id"],
                     "role_registry": pivot["role_registry_path"],
                     "source_task": str(source_task), "fixture": str(fixture_path),
+                    "mcp_contract_path": runtime["mcp_contract_path"],
                     "overlay": str(overlay_path), "jobs_dir": str(jobs_dir),
                     "output_dir": str(prepared_dir), "adapter_id": adapter["adapter_id"],
                     "arm_id": arm_id, "task_id": task_id,
@@ -1310,7 +1325,6 @@ class BananLoopFullBackend:
                     "public_dev_image_id": task["public_dev_image_id"],
                     "deadline_epoch": str(deadline_epoch),
                 }
-                prepared_dir.mkdir(mode=0o700)
                 remaining = deadline_epoch - time.time()
                 if remaining <= 0:
                     return terminal("TIMED_OUT_BEFORE_HARBOR_PREPARATION")

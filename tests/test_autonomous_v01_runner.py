@@ -274,6 +274,7 @@ def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tm
             "overlay_task_sha256": hashlib.sha256((overlay / "task.toml").read_bytes()).hexdigest(),
             "source_task_root": str(source), "fixture_path": str(fixture_path),
             "overlay_path": str(overlay),
+            "mcp_contract_path": str(tmp_path / f"{task_id}-contract.json"),
             "dev_command": ["fake-dev", "--task", task_id],
             "config_builder_command": task["runtime_descriptor"]["config_builder_command"],
         }
