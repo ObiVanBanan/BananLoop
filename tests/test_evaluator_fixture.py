@@ -71,11 +71,26 @@ def test_fixture_digest_is_canonical_and_rejects_model_created_hashes():
         EvaluatorFixtureV1.model_validate(payload)
 
 
-def test_fixture_requires_canonical_three_tier_scope():
+def test_fixture_rejects_scope_without_public_dev():
     payload = _fixture().model_dump(mode="json")
     payload["tiers"] = payload["tiers"][1:]
     with pytest.raises(ValueError):
         EvaluatorFixtureV1.model_validate(payload)
+
+
+def test_fixture_supports_a_public_dev_only_protocol():
+    fixture = _fixture().model_copy(update={"tiers": (_fixture().tiers[0],)})
+    intent = EvaluatorProtocolIntentV1(
+        protocol_id="public-dev-only", version=1, metric_id="accuracy",
+        metric_field="accuracy", direction="MAXIMIZE", aggregation="MEAN",
+    )
+    draft, artifacts = fixture.bind(intent, source_snapshot_id="a" * 40)
+    assert tuple(tier.tier for tier in draft.protocol.tiers) == ("dev",)
+    assert set(artifacts) == {
+        "core-assets/bundle.zip", "core-assets/inputs/tier-0/" +
+        hashlib.sha256(b"public input").hexdigest() + ".bin",
+        "core-assets/manifests/tier-0.json",
+    }
 
 
 def test_public_only_fixture_binds_dev_and_validation_without_holdout():

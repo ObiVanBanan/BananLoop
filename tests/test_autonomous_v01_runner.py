@@ -364,6 +364,10 @@ def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tm
     direct = [item for item in report["runs"] if item["system"] == "codex_direct"]
     assert len(full) == len(direct) == 12
     assert all(item["result"].get("child_campaign_id") == "c-" + "a" * 32 for item in full)
+    assert all(item["result"]["evaluator_scope"]["policy"] == "PUBLIC_DEV_ONLY_DURING_ARM"
+               and item["result"]["evaluator_scope"]["included_tiers"] == ["dev"]
+               and item["result"]["evaluator_scope"]["excluded_tiers"] == ["validation"]
+               for item in full)
     assert all(item["result"]["source_overlay"]["base_commit"] == base_sha
                and item["result"]["source_overlay"]["instruction_sha256"] == next(
                    task["instruction_sha256"] for task in tasks if task["task_id"] == item["task_id"]

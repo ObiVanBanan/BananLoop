@@ -1144,6 +1144,7 @@ class BananLoopFullBackend:
         optimization_calls = 0
         usage_unknown = False
         source_overlay: dict[str, str] | None = None
+        evaluator_scope: dict[str, Any] | None = None
         def terminal(status: str, **extra: Any) -> dict[str, Any]:
             artifact = CodexDirectBackend.snapshot_final_artifacts(
                 task=task, repo=repo, arm_root=arm_root,
@@ -1152,7 +1153,8 @@ class BananLoopFullBackend:
                     "model_turns_observed": observed_calls + optimization_calls,
                     "usage_unknown": usage_unknown,
                     "deadline_epoch": deadline_epoch,
-                    **({"source_overlay": source_overlay} if source_overlay else {}), **extra}
+                    **({"source_overlay": source_overlay} if source_overlay else {}),
+                    **({"evaluator_scope": evaluator_scope} if evaluator_scope else {}), **extra}
 
         remaining = deadline_epoch - time.time()
         if remaining <= 0:
@@ -1239,7 +1241,26 @@ class BananLoopFullBackend:
         except (OSError, ValueError, subprocess.SubprocessError):
             return terminal("FAILED_TO_FREEZE_TASK_INSTRUCTION_OVERLAY")
 
-        fixture = EvaluatorFixtureV1.load(fixture_path)
+        source_fixture = EvaluatorFixtureV1.load(fixture_path)
+        source_fixture_digest = source_fixture.content_digest()
+        dev_tier = next((tier for tier in source_fixture.tiers if tier.tier == "dev"), None)
+        if dev_tier is None:
+            return terminal("FAILED_PUBLIC_DEV_TIER_MISSING")
+        fixture = source_fixture.model_copy(update={"tiers": (dev_tier,)})
+        effective_fixture_path = arm_root / "benchmark-public-dev-fixture.json"
+        effective_fixture_path.write_bytes(fixture.canonical_bytes())
+        effective_fixture_path.chmod(0o400)
+        fixture_path = effective_fixture_path
+        evaluator_scope = {
+            "policy": "PUBLIC_DEV_ONLY_DURING_ARM",
+            "source_fixture_sha256": source_fixture_digest,
+            "effective_fixture_sha256": fixture.content_digest(),
+            "included_tiers": ["dev"],
+            "excluded_tiers": [tier.tier for tier in source_fixture.tiers if tier.tier != "dev"],
+        }
+        (arm_root / "evaluator-scope.json").write_text(
+            json.dumps(evaluator_scope, sort_keys=True, indent=2) + "\n", encoding="utf-8",
+        )
         bundle = base64.b64decode(fixture.evaluator_bundle_base64, validate=True)
         bundle_sha = hashlib.sha256(bundle).hexdigest()
         binding = {
@@ -1438,6 +1459,7 @@ class BananLoopFullBackend:
                 "usage_unknown": usage_unknown,
                 "optimization_returncode": harbor_return, "deadline_epoch": deadline_epoch,
                 "source_overlay": source_overlay,
+                "evaluator_scope": evaluator_scope,
                 "pivot_binding_sha256": canonical_sha(binding),
                 "child_campaign_id": pivot["child_campaign_id"],
                 "prepared_config_sha256": {
