@@ -1207,7 +1207,10 @@ class BananLoopFullBackend:
         local_instruction = ".benchmark-task-instruction.md"
         if (repo / local_instruction).exists():
             return terminal("FAILED_INSTRUCTION_PATH_COLLISION")
-        candidate_before_overlay = hashlib.sha256((repo / candidate_path).read_bytes()).hexdigest()
+        candidate_file = repo / candidate_path
+        if candidate_file.is_symlink() or not candidate_file.is_file():
+            return terminal("FAILED_INITIAL_CANDIDATE_MISSING", candidate_path=candidate_path)
+        candidate_before_overlay = hashlib.sha256(candidate_file.read_bytes()).hexdigest()
         shutil.copyfile(instruction_path, repo / local_instruction)
         (repo / local_instruction).chmod(0o444)
         try:
@@ -1304,13 +1307,6 @@ class BananLoopFullBackend:
             stdout_path=arm_root / "bananloop-exploration.jsonl",
             stderr_path=arm_root / "bananloop-exploration.stderr",
         )
-        if explore_status != "COMPLETED":
-            usage_unknown = True
-            usage.record(arm_id, "bananloop_full_exploration", {
-                "model_turns_observed": 0, "usage": None, "usage_unknown": True,
-            })
-            return terminal("TIMED_OUT_DURING_EXPLORATION" if explore_status == "TIMED_OUT"
-                            else "EXPLORATION_FAILED", exploration_returncode=explore_return)
         try:
             explore_report = self._read_json_object_from_output(
                 arm_root / "bananloop-exploration.jsonl",
@@ -1332,6 +1328,13 @@ class BananLoopFullBackend:
             "usage": observed_usage if isinstance(observed_usage, dict) else None,
             "usage_unknown": not isinstance(observed_usage, dict),
         })
+        if explore_status != "COMPLETED":
+            return terminal(
+                "TIMED_OUT_DURING_EXPLORATION" if explore_status.startswith("TIMED_OUT")
+                else "EXPLORATION_FAILED", exploration_returncode=explore_return,
+                failure_type=explore_report.get("failure_type"),
+                failure_diagnostics=explore_report.get("failure_diagnostics", []),
+            )
         pivots = [item for item in explore_report.get("optimization_pivot", [])
                   if isinstance(item, dict) and item.get("status") == "BENCHMARK_AUTO_CHILD_CREATED"]
         if len(pivots) != 1:

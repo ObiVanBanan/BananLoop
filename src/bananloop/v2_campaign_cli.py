@@ -782,7 +782,11 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
         try:
             fixture = EvaluatorFixtureV1.load(fixture_path)
             bundle_bytes = base64.b64decode(fixture.evaluator_bundle_base64, validate=True)
-            bundle = json.loads(bundle_bytes)
+            # Most ARE backends use an opaque ZIP bundle. Only the three
+            # public-task backends define a JSON bundle manifest.
+            bundle = (json.loads(bundle_bytes) if benchmark_binding["adapter_id"] in {
+                "act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1",
+            } else {})
         except (ValueError, TypeError) as exc:
             raise V2CampaignCLIError("benchmark evaluator fixture or bundle is malformed") from exc
         expected_fields = {

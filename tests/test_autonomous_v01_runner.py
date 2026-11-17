@@ -191,7 +191,8 @@ def test_fake_series_runs_24_isolated_arms_without_external_calls(tmp_path):
     assert all(len(item["sha256"]) == 64 for item in index["files"])
 
 
-def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tmp_path, monkeypatch):
+@pytest.mark.parametrize("exploration_fails", [False, True])
+def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tmp_path, monkeypatch, exploration_fails):
     """Exercise both production backend classes with subprocess-only fakes."""
     from bananloop.evaluator_fixture import EvaluatorFixtureV1
     from benchmarks.autoresearchexam import prepare_public_task_job
@@ -297,6 +298,13 @@ def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tm
         "print(json.dumps({'status':'BENCHMARK_AUTO_CHILD_CREATED','usage':{'input_tokens':0,'output_tokens':0},'request_history':[],'optimization_pivot':[pivot]}))\n",
         encoding="utf-8",
     ); fake_python.chmod(0o755)
+    if exploration_fails:
+        fake_python.write_text(
+            "#!/usr/bin/env python3\nimport json,sys\n"
+            "print(json.dumps({'status':'RUN_FAILED','failure_type':'V2CampaignCLIError',"
+            "'request_history':[{'dispatched':True},{'dispatched':True}],"
+            "'usage':{'input_tokens':123,'output_tokens':45}}))\nsys.exit(2)\n"
+        )
     fake_codex = tmp_path / "fake-codex"
     fake_codex.write_text(
         "#!/usr/bin/env python3\nimport json, pathlib, sys\n"
@@ -357,6 +365,15 @@ def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tm
     report = run_fake_series(tasks, root, backend_factory)
     assert len(report["runs"]) == 24
     assert report["model_calls"] == report["harbor_evaluations"] == report["ai_judge_calls"] == 0
+    if exploration_fails:
+        full = [item for item in report["runs"] if item["system"] == "bananloop_full"]
+        assert len(full) == 12
+        assert all(item["result"]["status"] == "EXPLORATION_FAILED" for item in full)
+        assert all(item["result"]["model_turns_observed"] == 2 for item in full)
+        assert all(item["result"]["failure_type"] == "V2CampaignCLIError" for item in full)
+        assert report["usage"]["by_source"]["bananloop_full_exploration"]["input_tokens"] == 12 * 123
+        assert report["usage"]["unknown_usage_events"] == 0
+        return
     assert report["usage"]["model_turns_observed"] == 96
     assert report["usage"]["by_source"]["bananloop_full_optimization"]["model_turns_observed"] == 84
     assert all(item["result"]["status"] == "COMPLETED" for item in report["runs"]), [(item["arm_id"], item["result"]) for item in report["runs"] if item["result"]["status"] != "COMPLETED"]
@@ -529,3 +546,13 @@ def test_codex_direct_backend_uses_fake_cli_and_enforces_deadline(tmp_path):
         task=task, repo=timeout_root / "missing-repo", arm_root=timeout_root / "missing-snapshot",
     )
     assert missing["status"] == "MISSING_OUTPUT"
+
+
+def test_all_catalogue_candidates_exist_in_repository():
+    from benchmarks.autonomous_v01.runner import ROOT
+    tasks = json.loads(CATALOGUE.read_text())["tasks"]
+    assert len(tasks) == 12
+    for task in tasks:
+        candidate = ROOT / task["adapter"]["candidate_path"]
+        assert candidate.is_file() and not candidate.is_symlink(), task["task_id"]
+        compile(candidate.read_bytes(), str(candidate), "exec")

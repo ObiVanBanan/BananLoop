@@ -1339,3 +1339,51 @@ def test_benchmark_arm_absolute_deadline_is_inherited_without_reset(tmp_path):
             state, campaign_id="c-inherited", spec_hash="b" * 64,
             time_limit_seconds=1800, inherited_deadline_epoch=deadline - 10,
         )
+
+
+def test_benchmark_pivot_accepts_opaque_zip_bundle_before_hypothesis_selection(tmp_path, monkeypatch):
+    import base64
+    import hashlib
+    import io
+    import zipfile
+    import time
+    from types import SimpleNamespace
+    import bananloop.v2_campaign_cli as cli
+    import bananloop.evaluator_verification as verification
+    from bananloop.evaluator_fixture import EvaluatorFixtureV1
+
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w') as archive:
+        archive.writestr('evaluate.py', '# public evaluator\n')
+    bundle = stream.getvalue()
+    fixture = EvaluatorFixtureV1.model_validate({
+        'evaluator_bundle_base64': base64.b64encode(bundle).decode(),
+        'execution_backend_id': 'autoresearchexam-sketched-newton-v1',
+        'entrypoint': ['python3', '{evaluator}/evaluate.py'],
+        'tiers': [{'tier': 'dev', 'cases': [{'case_id': 'dev', 'input_base64': 'ZGV2'}]}],
+    })
+    (tmp_path / 'trusted-evaluator-fixture.json').write_bytes(fixture.canonical_bytes())
+    binding = dict(deadline_seconds=3600, evaluator_fixture_sha256=fixture.content_digest(),
+                   evaluator_bundle_sha256=hashlib.sha256(bundle).hexdigest(),
+                   execution_backend_id=fixture.execution_backend_id,
+                   permissions={'read': ['candidate.py'], 'write': ['candidate.py']},
+                   candidate_path='candidate.py', adapter_id='sketched-newton-public-v1',
+                   metric_field='task_score', metric_direction='MAXIMIZE', model='fake')
+    spec = SimpleNamespace(autonomy=SimpleNamespace(mode='FULL_AUTO',
+        capability_policy=SimpleNamespace(network_access=False, read_paths=('candidate.py',)),
+        scope=SimpleNamespace(allowed_paths=('candidate.py',), max_child_depth=1, max_child_campaigns=1)),
+        max_candidate_iterations=None, budget=SimpleNamespace(max_experiments=1000, max_attempts=1000,
+        deadline_seconds=3600), goal='fake', evaluator_fixture_digest=fixture.content_digest())
+    protocol = SimpleNamespace(evaluator_bundle_sha256=binding['evaluator_bundle_sha256'],
+                               metric_field='task_score', direction='MAXIMIZE')
+    monkeypatch.setattr(cli, '_read_benchmark_binding', lambda goal: binding)
+    monkeypatch.setattr(verification, 'EvaluatorProtocolAuthority', lambda conn:
+        SimpleNamespace(approved_protocol=lambda digest: (SimpleNamespace(protocol=protocol), None)))
+    monkeypatch.setattr(cli, '_selected_optimization_task', lambda **kwargs: None)
+    result = cli._record_verified_optimization_pivot(
+        repo=tmp_path, state_root=tmp_path, registry_root=tmp_path, campaign_id='fake', parent_spec=spec,
+        graph=SimpleNamespace(conn=None), queue=None,
+        roles=SimpleNamespace(role=lambda name: SimpleNamespace(model='fake')),
+        visible_paths=('candidate.py',), write_paths=('candidate.py',),
+        approval_digest='a'*64, deadline_epoch=time.time()+3600)
+    assert result['status'] == 'NO_EXECUTABLE_RESEARCH_HYPOTHESIS'
