@@ -1288,6 +1288,12 @@ class BananLoopFullBackend:
             binding, sort_keys=True, separators=(",", ":"),
         ) + "\nSolve the frozen AutoResearchExam task. Read the public instruction file "
             + local_instruction + "; improve only the declared candidate and use the approved public evaluator.")
+        if adapter.get("adapter_id") == "sketched-newton-public-v1":
+            goal += (" The pinned public DEV scorer requires timeout_seconds=1200 and "
+                     "repeatability_runs=1; its score is task_score, MAXIMIZE, MEAN. "
+                     "The bundle includes the Codex Direct public_dev_cli.py and Full backend "
+                     "source, so the reviewer can inspect their shared DEV scoring path. "
+                     "This is a public DEV diagnostic and does not claim independent holdout.")
         remaining_seconds = max(1, min(3600, int(deadline_epoch-time.time())))
         explore_command = [
             self.python_binary, "-m", "bananloop.cli", "v2", "explore",
