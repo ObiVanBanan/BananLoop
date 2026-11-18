@@ -345,6 +345,11 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
         "backend": "LOCAL",
         "network_access": False,
     }
+    if benchmark_auto_pivot:
+        # The parent envelope must contain the optimizer's exact write capability;
+        # researcher role permissions remain separately restricted below.
+        policy["tools"].append("write_file")
+        policy["write_paths"].extend(optimization_write_paths)
     # Every Exploration iteration needs one Researcher call and the frozen
     # protocol needs one independent review call. Reserve the Optimization
     # pair only when the campaign has an explicitly approved write scope;

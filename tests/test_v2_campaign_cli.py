@@ -464,6 +464,8 @@ def test_benchmark_auto_pivot_is_explicit_and_limited_to_one_exact_write_path(tm
     assert auto.autonomy.authorize_pivot(("pyproject.toml",)) == "DENIED"
     assert auto.autonomy.scope.max_child_depth == 1
     assert auto.autonomy.scope.max_child_campaigns == 1
+    assert "write_file" in auto.autonomy.capability_policy.tools
+    assert "README.md" in auto.autonomy.capability_policy.write_paths
 
     supervised, _, _ = _build_spec(
         repo, "Ordinary supervised campaign", ("README.md",),
