@@ -1304,6 +1304,28 @@ def _build_protocol_review_material(
         for input_digest in sorted(input_digests):
             _read_published_blob(published_artifact_root, input_digest, allowed_artifact_digests)
         private_input_digests.update(input_digests)
+        # The Newton backend has a single, public aggregate DEV input. Compare
+        # it against the host backend's deterministic scope without exposing
+        # any case bytes or identifiers to the verifier.
+        newton_scope = None
+        if (protocol.execution_backend_id == "autoresearchexam-sketched-newton-public-v1"
+                and tier.tier == "dev" and len(manifest.cases) == 1):
+            from benchmarks.autoresearchexam.sketched_newton_runner import (
+                AREPublicSketchedNewtonEvaluatorRunner, DEV_CASE_ID, TASK_ID, TASK_VERSION,
+            )
+            case = manifest.cases[0]
+            backend = AREPublicSketchedNewtonEvaluatorRunner
+            expected = backend.aggregate_case_input(
+                tier="dev", task_id=TASK_ID, task_version=TASK_VERSION,
+                contract_sha256="", dev_image_id=backend.default_dev_image_id,
+                dev_cell_count=1,
+            )
+            raw_case = _read_published_blob(
+                published_artifact_root, case.input_sha256, allowed_artifact_digests,
+            )
+            newton_scope = (case.case_id == DEV_CASE_ID and case.repetition == 1
+                            and raw_case == expected
+                            and hashlib.sha256(raw_case).hexdigest() == case.input_sha256)
         tier_summaries.append({
             "tier": tier.tier,
             "manifest_sha256": tier.manifest_sha256,
@@ -1311,6 +1333,8 @@ def _build_protocol_review_material(
             "protocol_bound": True,
             "unique_case_repetitions": True,
             "all_input_artifacts_verified": True,
+            **({"newton_public_dev_matches_registered_backend_scope": newton_scope}
+               if newton_scope is not None else {}),
         })
 
     safe_evidence_refs = tuple(
