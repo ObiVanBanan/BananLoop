@@ -48,7 +48,7 @@ from .public_task_evaluator import (
     AREACTPublicEvaluatorRunner, ARECausalPFNPublicEvaluatorRunner,
     AREHiCardPublicEvaluatorRunner, AREPublicTaskEvaluatorRunner,
 )
-from .public_task_runner import run_public_task_dev
+from benchmarks.autonomous_v01.public_task_runner import run_public_task_dev
 from .public_sopcc_dev import run_public_sopcc_dev
 from .public_shortest_ci_dev import run_public_shortest_ci_dev
 from .public_sketched_newton_dev import run_public_newton_dev
