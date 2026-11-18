@@ -1047,9 +1047,20 @@ class EvaluatorProtocolAuthority:
             candidate_snapshot_id=evidence.candidate_snapshot_id,
         )
         if baseline.tier != "validation" or candidate.tier != "validation":
-            raise EvaluatorVerificationError(
-                "integration evidence requires VALIDATION receipts; HOLDOUT cannot feed graph decisions"
-            )
+            from .contracts import OptimizationCampaignSpecV2, parse_campaign_spec_document
+            try:
+                row = self.conn.execute("SELECT spec_json FROM campaigns WHERE id=1").fetchone()
+                spec = parse_campaign_spec_document(json.loads(row[0])) if row else None
+            except (sqlite3.Error, ValueError, TypeError):
+                spec = None
+            if (not isinstance(spec, OptimizationCampaignSpecV2)
+                    or spec.approved_hash() != evidence.spec_hash
+                    or spec.benchmark_integration_tier != "dev"
+                    or tuple(t.tier for t in proposal.protocol.tiers) != ("dev",)
+                    or baseline.tier != "dev" or candidate.tier != "dev"):
+                raise EvaluatorVerificationError(
+                    "integration evidence requires VALIDATION or explicitly approved DEV-only receipts; HOLDOUT cannot feed graph decisions"
+                )
         if (baseline.tier_manifest_sha256 != candidate.tier_manifest_sha256
                 or baseline.case_count != candidate.case_count):
             raise EvaluatorVerificationError("integration evidence run receipts use different evaluator scopes")

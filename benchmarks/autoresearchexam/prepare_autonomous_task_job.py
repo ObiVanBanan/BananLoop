@@ -133,7 +133,7 @@ def prepare(*, repo: Path, state_dir: Path, campaign_id: str, role_registry: Pat
     if cell_count is None:
         raise PreparationError("no existing public MCP Harbor adapter for this task")
     repeatability = 4 if adapter["adapter_id"] == "sopcc-public-v1" else (
-        1 if adapter["adapter_id"] == "cpudecoder-public-v1" else 2
+        1 if adapter["adapter_id"] in {"cpudecoder-public-v1", "sketched-newton-public-v1"} else 2
     )
     output_dir.mkdir(parents=True, mode=0o700)
     jobs_dir.mkdir(parents=True, mode=0o700)
@@ -157,6 +157,7 @@ def prepare(*, repo: Path, state_dir: Path, campaign_id: str, role_registry: Pat
         "public_dev_cell_count": cell_count,
         "repeatability_runs": repeatability,
         "benchmark_time_only": True,
+        "local_public_dev_only": adapter["adapter_id"] == "sketched-newton-public-v1",
         "technical_call_ceiling": 1000,
         "technical_step_ceiling": 1000,
         "deadline_epoch": float(deadline_epoch),

@@ -81,7 +81,7 @@ def _render_final_report_markdown(report: dict[str, Any]) -> str:
         f"- Status: `{report.get('status', optimization.get('status', 'UNKNOWN'))}`",
         f"- Goal: {optimization.get('goal', 'Not recorded.')}",
         "",
-        "## Validation baseline / candidate / delta",
+        f"## {str(comparison.get('tier', 'validation')).upper()} baseline / candidate / delta",
         "",
     ]
     rows = comparison.get("comparison_table", []) if isinstance(comparison, dict) else []
@@ -102,7 +102,7 @@ def _render_final_report_markdown(report: dict[str, Any]) -> str:
     else:
         lines.append(
             f"Comparison `{comparison.get('status', 'INCOMPLETE')}`: "
-            f"{comparison.get('reason', 'validation receipts are unavailable.')}"
+            f"{comparison.get('reason', 'comparison receipts are unavailable.')}"
         )
     holdout = optimization.get("holdout")
     if isinstance(holdout, dict):
@@ -1595,9 +1595,11 @@ class V2OptimizationRuntime:
                 "report_markdown_path": str(markdown_target)}
 
     def _build_baseline_candidate_delta(self, champion_report: dict[str, Any] | None) -> dict[str, Any]:
-        """Build an owner-only baseline/candidate comparison from VALIDATION receipts."""
+        """Build an owner-only comparison using the frozen integration tier."""
+        spec = self.graph.campaign_spec()
+        integration_tier = getattr(spec, "benchmark_integration_tier", None) or "validation"
         incomplete = {
-            "status": "INCOMPLETE", "tier": "validation",
+            "status": "INCOMPLETE", "tier": integration_tier,
             "comparison_table": [],
         }
         if not isinstance(champion_report, dict):
@@ -1609,7 +1611,6 @@ class V2OptimizationRuntime:
         from .evaluator_verification import EvaluatorProtocolAuthority
         from .trusted_evaluator import EvaluatorRunReceiptV1
 
-        spec = self.graph.campaign_spec()
         authority = EvaluatorProtocolAuthority(self.graph.conn)
         proposal, _ = authority.approved_protocol(spec.evaluation.approval_digest)
         protocol = proposal.protocol
@@ -1628,7 +1629,7 @@ class V2OptimizationRuntime:
                 receipt = EvaluatorRunReceiptV1.model_validate_json(row["receipt_json"])
             except Exception:
                 raise V2OptimizationError("durable evaluator receipt is malformed while building final comparison") from None
-            if receipt.tier == "validation":
+            if receipt.tier == integration_tier:
                 receipts.append(receipt)
         baseline = next((item for item in reversed(receipts)
                          if item.candidate_snapshot_id == protocol.source_snapshot_id), None)
@@ -1637,20 +1638,22 @@ class V2OptimizationRuntime:
         if baseline is None or candidate is None:
             missing = []
             if baseline is None:
-                missing.append("baseline VALIDATION receipt")
+                missing.append(f"baseline {integration_tier.upper()} receipt")
             if candidate is None:
-                missing.append("champion VALIDATION receipt")
+                missing.append(f"champion {integration_tier.upper()} receipt")
             return {**incomplete, "reason": " and ".join(missing) + " unavailable"}
 
-        baseline_metric = self.trusted_evaluator.owner_validation_metric_summary(baseline)
-        candidate_metric = self.trusted_evaluator.owner_validation_metric_summary(candidate)
+        summarize = (self.trusted_evaluator.public_dev_metric_summary if integration_tier == "dev"
+                     else self.trusted_evaluator.owner_validation_metric_summary)
+        baseline_metric = summarize(baseline)
+        candidate_metric = summarize(candidate)
         if (baseline.tier_manifest_sha256 != candidate.tier_manifest_sha256
                 or baseline.case_count != candidate.case_count
                 or baseline.protocol_digest != candidate.protocol_digest
                 or baseline_metric["metric_id"] != candidate_metric["metric_id"]
                 or baseline_metric["direction"] != candidate_metric["direction"]
                 or baseline_metric["unit"] != candidate_metric["unit"]):
-            raise V2OptimizationError("baseline and champion VALIDATION receipts have different frozen scopes")
+            raise V2OptimizationError("baseline and champion integration receipts have different frozen scopes")
         absolute_delta = candidate_metric["value"] - baseline_metric["value"]
         directional_improvement = (
             absolute_delta if candidate_metric["direction"] == "MAXIMIZE" else -absolute_delta
@@ -1660,7 +1663,7 @@ class V2OptimizationRuntime:
             if baseline_metric["value"] != 0 else None
         )
         row = {
-            "tier": "VALIDATION",
+            "tier": integration_tier.upper(),
             "metric_id": candidate_metric["metric_id"],
             "metric_field": candidate_metric["metric_field"],
             "unit": candidate_metric["unit"],
@@ -1672,7 +1675,7 @@ class V2OptimizationRuntime:
         }
         return {
             "status": "VERIFIED",
-            "tier": "validation",
+            "tier": integration_tier,
             "protocol_digest": protocol.content_digest(),
             "tier_manifest_sha256": baseline.tier_manifest_sha256,
             "case_count": baseline.case_count,
@@ -1701,8 +1704,11 @@ class V2OptimizationRuntime:
         authority = EvaluatorProtocolAuthority(self.graph.conn)
         proposal, _ = authority.approved_protocol(spec.evaluation.approval_digest)
         source_snapshot_id = proposal.protocol.source_snapshot_id
+        integration_tier = spec.benchmark_integration_tier or "validation"
+        if integration_tier == "dev" and tuple(t.tier for t in proposal.protocol.tiers) != ("dev",):
+            raise V2OptimizationError("DEV integration requires a DEV-only approved protocol")
         job_ids = self.trusted_evaluator.enqueue_repeatability(
-            candidate_snapshot_id=source_snapshot_id, tier="validation",
+            candidate_snapshot_id=source_snapshot_id, tier=integration_tier,
         )
         for job_id in job_ids:
             job = self.queue.get_job(job_id)
@@ -1713,6 +1719,6 @@ class V2OptimizationRuntime:
                     f"baseline validation job is {job['state']}; result is indeterminate"
                 )
         receipt = self.trusted_evaluator.finalize_repeatability(job_ids)
-        if (receipt.tier != "validation" or receipt.candidate_snapshot_id != source_snapshot_id):
+        if (receipt.tier != integration_tier or receipt.candidate_snapshot_id != source_snapshot_id):
             raise V2OptimizationError("baseline VALIDATION receipt is outside its frozen source scope")
         return receipt

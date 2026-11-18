@@ -1662,3 +1662,23 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
     assert reloaded_proposal.proposal_digest == proposal.proposal_digest
     assert reloaded_receipt.receipt_digest == receipt.receipt_digest
     reopened.close()
+
+
+@pytest.mark.parametrize('tiers', [('dev','validation'), ('holdout','holdout'), ('dev','dev')])
+def test_integration_authority_rejects_nonvalidation_without_frozen_dev_policy(tiers, monkeypatch):
+    from types import SimpleNamespace
+    from bananloop.evaluator_verification import EvaluatorProtocolAuthority, EvaluatorVerificationError
+    conn=sqlite3.connect(':memory:')
+    conn.execute('PRAGMA user_version=5')
+    authority=EvaluatorProtocolAuthority(conn)
+    protocol=SimpleNamespace(protocol_id='test',version=1,tiers=(SimpleNamespace(tier='dev'),))
+    monkeypatch.setattr(authority,'approved_protocol',lambda _digest:(SimpleNamespace(protocol=protocol),None))
+    monkeypatch.setattr(authority,'require_frozen_reference',lambda **kwargs:None)
+    receipts=iter([SimpleNamespace(tier=tiers[0]),SimpleNamespace(tier=tiers[1])])
+    monkeypatch.setattr(authority,'require_run_receipt',lambda *args,**kwargs:next(receipts))
+    evidence=SimpleNamespace(approval_digest='a'*64,protocol_digest='b'*64,campaign_id='c',
+        baseline_run_receipt_digest='c'*64,candidate_run_receipt_digest='d'*64,
+        spec_hash='e'*64,source_snapshot_id='f'*40,candidate_snapshot_id='a'*40)
+    with pytest.raises(EvaluatorVerificationError,match='VALIDATION or explicitly approved DEV-only'):
+        authority._append_integration_evidence(evidence)
+    conn.close()

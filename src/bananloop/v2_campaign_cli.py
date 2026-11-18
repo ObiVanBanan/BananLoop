@@ -855,6 +855,8 @@ def _record_verified_optimization_pivot(*, repo: Path, state_root: Path,
     )
     payload = parent_spec.model_dump(mode="json")
     payload["mode"] = "OPTIMIZATION"
+    if benchmark_time_only and tuple(t.tier for t in proposal.protocol.tiers) == ("dev",):
+        payload["benchmark_integration_tier"] = "dev"
     payload["goal"] = (
         f"Optimize Researcher hypothesis {optimization_task.hypothesis_id}: "
         f"{optimization_task.hypothesis}"

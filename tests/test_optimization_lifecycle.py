@@ -434,3 +434,23 @@ def test_integration_leg_settles_real_sqlite_queue_and_projects_graph(tmp_path):
         assert graph.node["status"] == "COMPLETED"
     finally:
         queue.close()
+
+
+def test_dev_only_integration_uses_dev_receipts_without_relabeling():
+    graph, queue, integration, coordinator = _verification_coordinator()
+    original_spec = graph.campaign_spec
+    def dev_spec():
+        spec = original_spec()
+        spec.benchmark_integration_tier = 'dev'
+        return spec
+    graph.campaign_spec = dev_spec
+    graph._baseline_receipt.tier = 'dev'
+    graph._validation_receipt.tier = 'dev'
+    coordinator.trusted_evaluator.receipt = graph._validation_receipt
+    receipt = coordinator.verify_candidate(node_id='candidate-1',
+        baseline_run_receipt_digest=graph._baseline_receipt.receipt_digest,
+        executor=object(), worker_id='test-worker')
+    assert receipt.decision == 'PASS'
+    assert coordinator.trusted_evaluator.enqueued == [('b' * 40, 'dev')]
+    assert integration.enqueued == [(graph._baseline_receipt.receipt_digest,
+                                     graph._validation_receipt.receipt_digest)]

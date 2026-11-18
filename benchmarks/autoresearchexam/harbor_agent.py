@@ -135,6 +135,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         if config.get("local_public_dev_only") is True:
             if config.get("adapter_id") not in {
                 "act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1",
+                "sketched-newton-public-v1",
             }:
                 raise RuntimeError("local public DEV mode is not allowlisted for this adapter")
             return
@@ -159,6 +160,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             raise RuntimeError("benchmark_time_only must be a boolean")
         local_public_adapters = {
             "act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1",
+            "sketched-newton-public-v1",
         }
         if local_public_dev_only and (
                 adapter_id not in local_public_adapters or contract_probe_only):
@@ -168,9 +170,9 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             "task_version", "task_instruction_sha256", "model_call_limit", "timeout_seconds",
             "visible_path", "write_path", "public_dev_image", "public_dev_image_id",
         }
-        if not contract_probe_only and not local_public_dev_only:
+        if not contract_probe_only and (not local_public_dev_only or adapter_id == "sketched-newton-public-v1"):
             required |= {"mcp_contract_sha256", "mcp_contract_path"}
-        if local_public_dev_only:
+        if local_public_dev_only and adapter_id != "sketched-newton-public-v1":
             required |= {"public_task_root", "public_task_fixture_path",
                          "public_task_fixture_sha256", "public_task_contract_sha256",
                          "public_task_bundle_sha256"}
@@ -287,7 +289,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             if raw.get("status_probe_only") is not True or raw.get("model_call_limit") != 0:
                 raise RuntimeError("contract discovery requires a zero-call status-only probe")
             raw["mcp_contract_sha256"] = "0" * 64
-        elif local_public_dev_only:
+        elif local_public_dev_only and adapter_id != "sketched-newton-public-v1":
             spec = AREPublicTaskEvaluatorRunner.spec(adapter_id)
             task_root_arg = Path(raw["public_task_root"]).expanduser()
             if task_root_arg.is_symlink() or not task_root_arg.is_dir() or task_root_arg.name != raw["task_id"]:

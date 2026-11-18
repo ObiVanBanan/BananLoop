@@ -156,16 +156,18 @@ class OptimizationAttemptCoordinator:
                 "integration verification requires pinned source and candidate snapshots"
             )
 
+        spec = self.graph.campaign_spec()
+        integration_tier = getattr(spec, "benchmark_integration_tier", None) or "validation"
         baseline_receipt = self._require_receipt(
-            baseline_run_receipt_digest, payload, tier="validation",
+            baseline_run_receipt_digest, payload, tier=integration_tier,
             candidate_snapshot_id=source_snapshot_id,
         )
         candidate_validation = self._run_repeatability(
-            candidate_snapshot_id=candidate_snapshot_id, tier="validation",
+            candidate_snapshot_id=candidate_snapshot_id, tier=integration_tier,
             worker_id=worker_id,
         )
         candidate_validation = self._require_receipt(
-            candidate_validation.receipt_digest, payload, tier="validation",
+            candidate_validation.receipt_digest, payload, tier=integration_tier,
             candidate_snapshot_id=candidate_snapshot_id,
         )
         try:
