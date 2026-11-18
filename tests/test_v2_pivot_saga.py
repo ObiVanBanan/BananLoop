@@ -2343,3 +2343,19 @@ def test_activation_and_cancellation_share_one_way_control_cas(tmp_path):
     with pytest.raises(PivotSagaError, match="blocked by cancellation"):
         _saga(setup)._begin_activation(conn, idem, "f" * 64)
     conn.close()
+
+
+def test_full_auto_pivot_proposal_accepts_ready_parent_but_supervised_does_not(tmp_path):
+    for mode in ('FULL_AUTO', 'SUPERVISED'):
+        root = tmp_path / mode
+        root.mkdir()
+        setup = _setup(root, mode=mode)
+        with sqlite3.connect(setup['parent_db']) as db:
+            db.execute("UPDATE campaigns SET status='READY' WHERE id=1")
+        if mode == 'FULL_AUTO':
+            _saga(setup).record_pivot_proposal(setup['proposal'])
+            with sqlite3.connect(setup['parent_db']) as db:
+                assert db.execute('SELECT status FROM v2_pivot_proposals').fetchone() == ('PENDING',)
+        else:
+            with pytest.raises(PivotSagaError):
+                _saga(setup).record_pivot_proposal(setup['proposal'])

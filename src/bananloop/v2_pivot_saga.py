@@ -529,8 +529,11 @@ class V2PivotSaga:
             _create_parent_saga_schema(conn)
             conn.execute("BEGIN IMMEDIATE")
             campaign = conn.execute("SELECT status FROM campaigns WHERE id=1").fetchone()
-            if campaign is None or campaign["status"] != "PAUSED_NEEDS_INPUT":
-                raise PivotSagaError("v2 pivot proposal requires a parent paused for operator input")
+            permitted = {"PAUSED_NEEDS_INPUT"}
+            if parent_spec.autonomy.mode == "FULL_AUTO":
+                permitted.add("READY")
+            if campaign is None or campaign["status"] not in permitted:
+                raise PivotSagaError("v2 pivot proposal requires a ready Full Auto parent or a parent paused for operator input")
             old = conn.execute(
                 "SELECT digest,proposal_json,spec_hash FROM v2_pivot_proposals WHERE proposal_id=?",
                 (proposal.proposal_id,),
