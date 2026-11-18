@@ -362,6 +362,10 @@ def offline_preflight(*, catalogue_path: Path = CATALOGUE,
         access_declaration = None
         access_declaration_sha256 = None
         blockers.append(f"PREP_BLOCKED_SOURCE_ACCESS_DISCLOSURE: {exc}")
+    # Full intentionally binds a DEV-only fixture, while the current
+    # integration lifecycle requires VALIDATION receipts. Do not report this
+    # incompatible combination as ready for a live benchmark series.
+    blockers.append("PREP_BLOCKED_DEV_ONLY_INTEGRATION: Full Optimization requires validation receipts for Integration Verifier")
     implementation_gates = _implementation_gates()
     for gate, ready in implementation_gates.items():
         if not ready:

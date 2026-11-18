@@ -63,6 +63,7 @@ def test_preflight_reports_missing_content_pins_without_launching_anything(tmp_p
                                codex_version="0.169.0", image_inspector=lambda _: None,
                                runtime_root=runtime_root)
     assert report["status"] == "PREP_BLOCKED"
+    assert any("PREP_BLOCKED_DEV_ONLY_INTEGRATION" in item for item in report["blockers"])
     assert report["planned_distinct_tasks"] == 12
     assert report["arms"] == 24
     assert report["call_limit_policy"] == "OBSERVE_ONLY"
