@@ -156,6 +156,9 @@ def test_newton_scope_proof_checks_public_dev_without_revealing_inputs(tmp_path)
             proposal_digest='b'*64,source_job_id='job',source_node_id='node',source_output_digest='c'*64)
         review=_build_protocol_review_material(proposal,published_artifact_root=published,allowed_artifact_digests=allowed)
         assert review['tier_manifest_summaries'][0]['newton_public_dev_matches_registered_backend_scope'] is expected
+        inventory = review['evaluator_bundle_review']['newton_registered_backend_entry_check']
+        assert inventory['exact_entry_set_match'] is False
+        assert 'sketched_newton_runner.py' in inventory['missing_entries']
         serialized=json.dumps(review)
         assert DEV_CASE_ID not in serialized and 'SECRET_CASE_BYTES' not in serialized and 'secret-case' not in serialized
         assert 'newton_public_dev_matches_registered_backend_scope' not in review['tier_manifest_summaries'][1]
