@@ -65,7 +65,7 @@ def require_frozen_optimization_child(config: Mapping[str, Any]) -> Optimization
         # `None` as an unbounded series.
         if benchmark_time_only:
             if (spec.max_candidate_iterations is not None
-                    or spec.budget.deadline_seconds != 3600
+                    or not 1 <= spec.budget.deadline_seconds <= 3600
                     or spec.budget.max_agent_calls > 1000
                     or spec.budget.max_evaluator_calls > 1000
                     or spec.budget.max_experiments > 1000

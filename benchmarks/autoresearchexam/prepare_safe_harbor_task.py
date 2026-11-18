@@ -193,8 +193,9 @@ def prepare_overlay(source_root: Path, task_id: str, output: Path, *,
         if task_id not in {
             "act-tensor-sparse-panel-imputation-r2",
             "causalpfn-cate-pehe-ihdp-surfaceb", "hicard-latent-encoder",
+            "sketched-newton-cov-estimator",
         }:
-            raise OverlayError("local DEV-only overlay is allowlisted only for the three added CPU tasks")
+            raise OverlayError("local DEV-only overlay is not allowlisted for this task")
         transformed_text, removed = prepare_local_public_dev_task_toml(
             task_bytes.decode("utf-8"),
             expected_timeout_sec=REVIEWED_COLLECT_TIMEOUTS[task_id],
@@ -232,6 +233,7 @@ def prepare_overlay(source_root: Path, task_id: str, output: Path, *,
                         "act-tensor-sparse-panel-imputation-r2": "/app/solution",
                         "causalpfn-cate-pehe-ihdp-surfaceb": "/app/output",
                         "hicard-latent-encoder": "/app/output",
+                        "sketched-newton-cov-estimator": "/app/output",
                     }[task_id]
                     safe_compose = local_public_dev_compose(
                         compose_path.read_text(encoding="utf-8"),

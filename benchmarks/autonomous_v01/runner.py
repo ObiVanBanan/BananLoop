@@ -1356,7 +1356,6 @@ class BananLoopFullBackend:
 
         prepared_dir = arm_root / "harbor-prepared"
         jobs_dir = arm_root / "harbor-jobs"
-        jobs_dir.mkdir(mode=0o700)
         try:
             if adapter["adapter_id"] in {
                 "act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1",
