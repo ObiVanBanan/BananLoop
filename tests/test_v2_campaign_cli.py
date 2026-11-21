@@ -1389,3 +1389,10 @@ def test_benchmark_pivot_accepts_opaque_zip_bundle_before_hypothesis_selection(t
         visible_paths=('candidate.py',), write_paths=('candidate.py',),
         approval_digest='a'*64, deadline_epoch=time.time()+3600)
     assert result['status'] == 'NO_EXECUTABLE_RESEARCH_HYPOTHESIS'
+
+
+def test_chatgpt_failure_diagnostics_exclude_provider_content():
+    from bananloop.chatgpt_responses import ChatGPTPlanResponseError
+    assert _safe_failure_diagnostics(ChatGPTPlanResponseError('ChatGPT Responses admission failed (HTTP 429)'))[0]['message'] == 'admission HTTP 429'
+    assert _safe_failure_diagnostics(ChatGPTPlanResponseError('model did not produce strict JSON'))[0]['message'] == 'model did not produce strict JSON'
+    assert 'private-payload' not in str(_safe_failure_diagnostics(ChatGPTPlanResponseError('ChatGPT model request did not complete: private-payload')))
