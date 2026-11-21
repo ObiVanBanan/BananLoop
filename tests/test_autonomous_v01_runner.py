@@ -279,6 +279,11 @@ def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tm
             "dev_command": ["fake-dev", "--task", task_id],
             "config_builder_command": task["runtime_descriptor"]["config_builder_command"],
         }
+        if adapter["adapter_id"] == "carps-public-v1":
+            evidence = tmp_path / "carps-attestation.json"
+            evidence.write_text('{"schema":"public-evaluator-attestation-v1"}', encoding="utf-8")
+            descriptor["protocol_review_attestation_path"] = str(evidence)
+            descriptor["protocol_review_attestation_sha256"] = hashlib.sha256(evidence.read_bytes()).hexdigest()
         (runtime_root / f"{task_id}.json").write_text(json.dumps(descriptor), encoding="utf-8")
 
     fake_python = tmp_path / "fake-python"
@@ -286,6 +291,9 @@ def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tm
         "#!/usr/bin/env python3\nimport json, pathlib, sys\n"
         "args=sys.argv[1:]; goal=args[args.index('--goal')+1]\n"
         "binding=json.loads(goal.split('BANANLOOP_BENCHMARK_BINDING_V1:',1)[1].split('\\n',1)[0])\n"
+        "if binding['adapter_id']=='carps-public-v1':\n"
+        " attestation=args[args.index('--protocol-review-attestation')+1]\n"
+        " assert (pathlib.Path(args[args.index('--repo')+1])/attestation).is_file()\n"
         "state=pathlib.Path(args[args.index('--state-dir')+1]); state.mkdir(parents=True, exist_ok=True)\n"
         "registry=state/'roles.json'; registry.write_text('{}')\n"
         "deadline=float(args[args.index('--task-deadline-epoch')+1]); child='c-'+'a'*32\n"

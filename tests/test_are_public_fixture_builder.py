@@ -8,9 +8,12 @@ from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from bananloop.evaluator_fixture import EvaluatorFixtureV1
 from bananloop.evaluator_verification import EvaluatorProtocolIntentV1, _build_protocol_review_material
 from benchmarks.autoresearchexam.build_public_fixture import TASK_ID, TASK_VERSION, build_fixture
+from benchmarks.autoresearchexam.prepare_autonomous_task_job import require_embedded_mcp_contract
 
 
 def test_are_public_fixture_builder_pins_public_runtime_and_omits_private_sidecar(tmp_path):
@@ -63,6 +66,13 @@ def test_are_public_fixture_builder_pins_public_runtime_and_omits_private_sideca
     assert fixture.execution_backend_id == "autoresearchexam-public-v2"
     assert tuple(tier.tier for tier in fixture.tiers) == ("dev", "validation")
     bundle = base64.b64decode(fixture.evaluator_bundle_base64)
+    raw_contract = (benchmark / "public-mcp-contract-budgeted-imputation-mcar50.json").read_bytes()
+    require_embedded_mcp_contract(fixture.evaluator_bundle_base64, raw_contract)
+    with pytest.raises(ValueError, match="different MCP contracts"):
+        require_embedded_mcp_contract(
+            fixture.evaluator_bundle_base64,
+            raw_contract.replace(contract_digest.encode(), b"e" * 64),
+        )
     with zipfile.ZipFile(BytesIO(bundle)) as archive:
         assert set(archive.namelist()) == {
             "are-public-backend.json", "public_devkit.py", "task-devkit.py",

@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
+import io
 import json
 import math
 import sqlite3
 import time
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +25,20 @@ from .public_mcp_contract import validate_public_mcp_contract
 
 class PreparationError(ValueError):
     """The frozen child, evaluator, task contract, or Harbor scope disagrees."""
+
+
+def require_embedded_mcp_contract(bundle_base64: str, contract: bytes) -> None:
+    """Bind a ZIP evaluator fixture and its launch configuration to the same file."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(base64.b64decode(bundle_base64, validate=True))) as archive:
+            entries = [entry for entry in archive.infolist()
+                       if entry.filename == "public-mcp-contract.json"]
+            if len(entries) == 1 and entries[0].file_size == len(contract):
+                if archive.read(entries[0]) == contract:
+                    return
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        raise ValueError("evaluator fixture has an unreadable contract bundle") from exc
+    raise ValueError("evaluator fixture and Harbor configuration use different MCP contracts")
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -81,6 +98,7 @@ def prepare(*, repo: Path, state_dir: Path, campaign_id: str, role_registry: Pat
         task_sha256=task["task_sha256"],
         task_instruction_sha256=task["instruction_sha256"],
     )
+    require_embedded_mcp_contract(fixture.evaluator_bundle_base64, mcp_contract_path.read_bytes())
     if fixture.execution_backend_id is None:
         raise PreparationError("task evaluator fixture does not name an execution backend")
 
@@ -118,6 +136,8 @@ def prepare(*, repo: Path, state_dir: Path, campaign_id: str, role_registry: Pat
     protocol = proposal.protocol
     if protocol.execution_backend_id != fixture.execution_backend_id:
         raise PreparationError("the approved protocol backend differs from the fixture")
+    if adapter["adapter_id"] == "cpu-llm-public-v1" and protocol.repeatability_runs != 1:
+        raise PreparationError("CPU LLM DEV requires one protocol run over its pinned timing draws")
 
     from .optimization_runner import AREPublicEvaluatorRunner
     from .carps_runner import AREPublicCARPSEvaluatorRunner

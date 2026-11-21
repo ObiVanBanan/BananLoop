@@ -151,6 +151,18 @@ def validate_source_access_declaration(path: Path = SOURCE_ACCESS_DECLARATION) -
     return declaration
 
 
+def _read_protocol_review_attestation(descriptor: dict[str, Any]) -> bytes | None:
+    if "protocol_review_attestation_path" not in descriptor and "protocol_review_attestation_sha256" not in descriptor:
+        return None
+    path = Path(descriptor["protocol_review_attestation_path"]).expanduser()
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 4096:
+        raise ValueError("public protocol review attestation is missing, unsafe, or over 4 KiB")
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != descriptor["protocol_review_attestation_sha256"]:
+        raise ValueError("public protocol review attestation SHA differs from descriptor")
+    return raw
+
+
 def validate_task_runtime_descriptors(runtime_root: Path, tasks: list[dict[str, Any]]) -> list[str]:
     """Verify per-task source, fixture, overlay, and launch pins without running them."""
     from benchmarks.autoresearchexam.prepare_safe_harbor_task import validate_local_public_dev_overlay
@@ -165,6 +177,7 @@ def validate_task_runtime_descriptors(runtime_root: Path, tasks: list[dict[str, 
             continue
         try:
             descriptor = read_json(path)
+            _read_protocol_review_attestation(descriptor)
             adapter = task.get("adapter", {})
             if (descriptor.get("schema") != "bananloop-autonomous-v01-task-runtime-v1"
                     or descriptor.get("task_id") != task_id
@@ -212,11 +225,15 @@ def validate_task_runtime_descriptors(runtime_root: Path, tasks: list[dict[str, 
                 contract = read_json(contract_path)
                 if contract.get("contract_sha256") != descriptor.get("mcp_contract_sha256"):
                     raise ValueError("public MCP contract content digest differs")
+                from benchmarks.autoresearchexam.prepare_autonomous_task_job import require_embedded_mcp_contract
                 from benchmarks.autoresearchexam.public_mcp_contract import validate_public_mcp_contract
                 validate_public_mcp_contract(
                     contract, task_id=task_id, task_version=task["version"],
                     task_sha256=task["task_sha256"],
                     task_instruction_sha256=task["instruction_sha256"],
+                )
+                require_embedded_mcp_contract(
+                    read_json(fixture)["evaluator_bundle_base64"], contract_path.read_bytes(),
                 )
                 builder = descriptor.get("config_builder_command")
                 if (not isinstance(builder, list) or not builder
@@ -1210,7 +1227,15 @@ class BananLoopFullBackend:
                     (overlay_path / "task.toml").read_bytes()).hexdigest()):
             return terminal("FAILED_SAFE_OVERLAY_PIN")
         local_instruction = ".benchmark-task-instruction.md"
-        if (repo / local_instruction).exists():
+        local_attestation = ".benchmark-protocol-review-attestation.json"
+        overlay_files = [local_instruction]
+        try:
+            attestation = _read_protocol_review_attestation(runtime)
+        except (OSError, KeyError, TypeError, ValueError):
+            return terminal("FAILED_PROTOCOL_REVIEW_ATTESTATION_PIN")
+        if attestation is not None:
+            overlay_files.append(local_attestation)
+        if any((repo / name).exists() or (repo / name).is_symlink() for name in overlay_files):
             return terminal("FAILED_INSTRUCTION_PATH_COLLISION")
         candidate_file = repo / candidate_path
         if candidate_file.is_symlink() or not candidate_file.is_file():
@@ -1218,14 +1243,17 @@ class BananLoopFullBackend:
         candidate_before_overlay = hashlib.sha256(candidate_file.read_bytes()).hexdigest()
         shutil.copyfile(instruction_path, repo / local_instruction)
         (repo / local_instruction).chmod(0o444)
+        if attestation is not None:
+            (repo / local_attestation).write_bytes(attestation)
+            (repo / local_attestation).chmod(0o444)
         try:
-            subprocess.run(["git", "-C", str(repo), "add", "--", local_instruction],
+            subprocess.run(["git", "-C", str(repo), "add", "--", *overlay_files],
                            check=True, capture_output=True, timeout=15)
             subprocess.run([
                 "git", "-C", str(repo), "-c", "user.name=BananLoop Benchmark",
                 "-c", "user.email=benchmark@localhost", "-c", "commit.gpgsign=false",
                 "commit", "--no-verify", "--only", "-m", "Freeze public task instruction",
-                "--", local_instruction,
+                "--", *overlay_files,
             ], check=True, capture_output=True, timeout=30)
             overlay_commit = subprocess.check_output(
                 ["git", "-C", str(repo), "rev-parse", "--verify", "HEAD^{commit}"],
@@ -1241,6 +1269,8 @@ class BananLoopFullBackend:
                 "candidate_path": candidate_path,
                 "candidate_sha256": hashlib.sha256((repo / candidate_path).read_bytes()).hexdigest(),
             }
+            if attestation is not None:
+                source_overlay["protocol_review_attestation_sha256"] = hashlib.sha256(attestation).hexdigest()
             if source_overlay["candidate_sha256"] != candidate_before_overlay:
                 return terminal("FAILED_CANDIDATE_CHANGED_BY_INSTRUCTION_OVERLAY")
             (arm_root / "source-overlay.json").write_text(
@@ -1296,7 +1326,7 @@ class BananLoopFullBackend:
             + f" The frozen DEV metric is {adapter['metric_id']} (field {adapter['metric_field']}, "
             + f"{adapter['direction']}, {adapter['aggregation']}).")
         repeatability = adapter.get("repeatability_runs") or {
-            "cpudecoder-public-v1": 1, "sopcc-public-v1": 4,
+            "cpudecoder-public-v1": 1, "cpu-llm-public-v1": 1, "sopcc-public-v1": 4,
         }.get(adapter["adapter_id"])
         if repeatability is not None:
             goal += f" The pinned public protocol requires repeatability_runs={repeatability}."
@@ -1306,6 +1336,11 @@ class BananLoopFullBackend:
         if adapter["adapter_id"] == "carps-public-v1":
             goal += (" Set timeout_seconds=300 for the CARPS protocol. The eight Docker "
                      "evaluations share a 180-second panel budget, with remaining time for cleanup.")
+        if adapter["adapter_id"] == "cpu-llm-public-v1":
+            goal += (" Set timeout_seconds=1800 for CPU LLM DEV. One evaluator run includes "
+                     "both pinned timing draws, their median speedup and the 99% token-agreement "
+                     "check on each draw. Outer repeats compare result digests exactly, so "
+                     "the protocol must keep repeatability_runs=1 for this timing aggregate.")
         if adapter["adapter_id"] == "imputation-public-v2":
             evidence_path = ROOT / "benchmarks/autoresearchexam/imputation-public-dev-image-evidence.json"
             evidence = read_json(evidence_path)
@@ -1341,6 +1376,8 @@ class BananLoopFullBackend:
             "--task-deadline-epoch", str(deadline_epoch),
             "--approve-up-to-calls", "1000", "--timeout-seconds", "120",
         ]
+        if attestation is not None:
+            explore_command.extend(["--protocol-review-attestation", local_attestation])
         explore_status, explore_return = self._run_until_deadline(
             explore_command, cwd=self.initial_repo, deadline_epoch=deadline_epoch,
             stdout_path=arm_root / "bananloop-exploration.jsonl",
