@@ -98,6 +98,16 @@ _PUBLIC_OUTPUT_ALLOWLIST = {
 }
 
 
+_JSON_PUBLIC_DEV_ADAPTERS = {
+    "act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1",
+}
+_LOCAL_PUBLIC_DEV_ADAPTERS = _JSON_PUBLIC_DEV_ADAPTERS | {
+    "imputation-public-v2", "carps-public-v1", "cpudecoder-public-v1",
+    "cpu-llm-public-v1", "dctabeval-public-v1", "labelrisk-public-v1",
+    "shortest-ci-public-v1", "sketched-newton-public-v1", "sopcc-public-v1",
+}
+
+
 class AREBridgeOptions(AgentOptions):
     config_path: str = Field(description="Host-side frozen BananLoop task/campaign config JSON")
 
@@ -133,10 +143,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             raise RuntimeError("Harbor bridge requires a local nonsymlink config_path")
         config = json.loads(self.config_path.read_text(encoding="utf-8"))
         if config.get("local_public_dev_only") is True:
-            if config.get("adapter_id") not in {
-                "act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1",
-                "sketched-newton-public-v1",
-            }:
+            if config.get("adapter_id") not in _LOCAL_PUBLIC_DEV_ADAPTERS:
                 raise RuntimeError("local public DEV mode is not allowlisted for this adapter")
             return
         if not _MCP_CLIENT.is_file() or _MCP_CLIENT.is_symlink():
@@ -158,21 +165,18 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         benchmark_time_only = raw.get("benchmark_time_only", False)
         if not isinstance(benchmark_time_only, bool):
             raise RuntimeError("benchmark_time_only must be a boolean")
-        local_public_adapters = {
-            "act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1",
-            "sketched-newton-public-v1",
-        }
         if local_public_dev_only and (
-                adapter_id not in local_public_adapters or contract_probe_only):
+                adapter_id not in _LOCAL_PUBLIC_DEV_ADAPTERS or contract_probe_only):
             raise RuntimeError("local public DEV mode requires one allowlisted task adapter")
         required = {
             "repo", "state_dir", "campaign_id", "role_registry", "task_id",
             "task_version", "task_instruction_sha256", "model_call_limit", "timeout_seconds",
             "visible_path", "write_path", "public_dev_image", "public_dev_image_id",
         }
-        if not contract_probe_only and (not local_public_dev_only or adapter_id == "sketched-newton-public-v1"):
+        local_json_fixture = local_public_dev_only and adapter_id in _JSON_PUBLIC_DEV_ADAPTERS
+        if not contract_probe_only and not local_json_fixture:
             required |= {"mcp_contract_sha256", "mcp_contract_path"}
-        if local_public_dev_only and adapter_id != "sketched-newton-public-v1":
+        if local_json_fixture:
             required |= {"public_task_root", "public_task_fixture_path",
                          "public_task_fixture_sha256", "public_task_contract_sha256",
                          "public_task_bundle_sha256"}
@@ -289,7 +293,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             if raw.get("status_probe_only") is not True or raw.get("model_call_limit") != 0:
                 raise RuntimeError("contract discovery requires a zero-call status-only probe")
             raw["mcp_contract_sha256"] = "0" * 64
-        elif local_public_dev_only and adapter_id != "sketched-newton-public-v1":
+        elif local_json_fixture:
             spec = AREPublicTaskEvaluatorRunner.spec(adapter_id)
             task_root_arg = Path(raw["public_task_root"]).expanduser()
             if task_root_arg.is_symlink() or not task_root_arg.is_dir() or task_root_arg.name != raw["task_id"]:
@@ -545,6 +549,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         self, instruction: str, environment: BaseEnvironment, context: AgentContext,
     ) -> None:
         raw = self._load_config(instruction)
+        benchmark_time_only = raw.get("benchmark_time_only") is True
         output = PurePosixPath(self._public_output_path)
         check = await environment.exec(
             f"test -d {shlex.quote(output.parent.as_posix())} && "
@@ -577,9 +582,12 @@ class AREBananLoopOptimizationAgent(BaseAgent):
             }
             return
         try:
-            require_frozen_optimization_child(raw)
+            child = require_frozen_optimization_child(raw)
         except ValueError as exc:
             raise RuntimeError(f"Harbor BananLoop child is not ready: {exc}") from None
+        local_public_dev_only = raw.get("local_public_dev_only") is True
+        if local_public_dev_only != (child.benchmark_integration_tier == "dev"):
+            raise RuntimeError("Harbor DEV-only mode differs from the frozen child integration tier")
         loop = asyncio.get_running_loop()
         state_dir = Path(raw["state_dir"])
         state_dir.mkdir(parents=True, exist_ok=True)
@@ -604,10 +612,12 @@ class AREBananLoopOptimizationAgent(BaseAgent):
         if ledger_path.is_symlink():
             raise RuntimeError("public submission ledger path must not contain symlinks")
         ledger_path.parent.mkdir(parents=True, exist_ok=True)
-        if raw.get("local_public_dev_only") is True:
+        if local_public_dev_only:
+            started_epoch = time.time()
             grader = SimpleNamespace(
-                deadline_epoch=(raw["deadline_epoch"] if raw.get("benchmark_time_only") is True
-                                else time.time() + raw.get("time_limit_seconds", 3600)),
+                started_epoch=started_epoch,
+                deadline_epoch=(raw["deadline_epoch"] if benchmark_time_only
+                                else started_epoch + raw.get("time_limit_seconds", 3600)),
                 task_id=raw["task_id"], contract_sha256=raw["mcp_contract_sha256"],
                 repeatability_runs=raw["repeatability_runs"],
                 candidate_iterations_used=0, last_transport_failure_category=None,

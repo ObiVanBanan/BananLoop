@@ -24,7 +24,7 @@ def require_frozen_optimization_child(config: Mapping[str, Any]) -> Optimization
         raise ValueError("BananLoop campaign ID is malformed")
     try:
         benchmark_time_only = config.get("benchmark_time_only") is True
-        candidate_cap = config.get("max_candidate_iterations", 5)
+        candidate_cap = config.get("max_candidate_iterations", None if benchmark_time_only else 5)
         time_limit = config.get("time_limit_seconds", 3600)
         deadline_epoch = config.get("deadline_epoch")
         if benchmark_time_only:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -165,6 +166,16 @@ def test_frozen_child_binding_checks_mode_cap_and_budget(tmp_path):
     with sqlite3.connect(db) as conn:
         conn.execute("UPDATE campaigns SET spec_json=?", (json.dumps(spec),))
     with pytest.raises(ValueError, match="budget cannot fund"):
+        require_frozen_optimization_child(config)
+
+    spec["max_candidate_iterations"] = None
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE campaigns SET spec_json=?", (json.dumps(spec),))
+    config.pop("max_candidate_iterations")
+    config.update(benchmark_time_only=True, deadline_epoch=time.time() + 60)
+    assert require_frozen_optimization_child(config).max_candidate_iterations is None
+    config["max_candidate_iterations"] = 5
+    with pytest.raises(ValueError, match="must not impose a candidate iteration cap"):
         require_frozen_optimization_child(config)
 
 

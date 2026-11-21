@@ -12,9 +12,11 @@ from typing import Any
 
 from bananloop.contracts import OptimizationCampaignSpecV2, parse_campaign_spec_document
 from bananloop.evaluator_fixture import EvaluatorFixtureV1
+from bananloop.evaluator_verification import EvaluatorProtocolAuthority
 from bananloop.roles import RoleRegistryV1
 
 from .campaign_binding import require_frozen_optimization_child
+from .prepare_safe_harbor_task import validate_local_public_dev_overlay
 from .public_mcp_contract import validate_public_mcp_contract
 
 
@@ -68,11 +70,9 @@ def prepare(*, repo: Path, state_dir: Path, campaign_id: str, role_registry: Pat
             or hashlib.sha256(instruction_path.read_bytes()).hexdigest() != task["instruction_sha256"]
             or hashlib.sha256(task_path.read_bytes()).hexdigest() != task["task_sha256"]):
         raise PreparationError("source task differs from the frozen catalogue pins")
-    if overlay.is_symlink() or not overlay.is_dir() or (overlay / "task.toml").is_symlink():
-        raise PreparationError("safe Harbor overlay is missing or unsafe")
-    overlay_task = (overlay / "task.toml").read_bytes()
-    if b"grader" in overlay_task.lower():
-        raise PreparationError("Harbor overlay contains grader service references")
+    validate_local_public_dev_overlay(
+        source_task, overlay, task_id=task_id, public_output_path=adapter["public_output_path"],
+    )
 
     fixture = EvaluatorFixtureV1.load(fixture_path)
     fixture_digest = fixture.content_digest()
@@ -109,6 +109,15 @@ def prepare(*, repo: Path, state_dir: Path, campaign_id: str, role_registry: Pat
             or tuple(spec.autonomy.capability_policy.write_paths) != (adapter["candidate_path"],)
             or spec.evaluation.approval_digest is None):
         raise PreparationError("approved child, fixture, role registry, or candidate scope differs")
+    if spec.benchmark_integration_tier != "dev":
+        raise PreparationError("the child must bind an approved DEV-only protocol")
+    with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=10) as connection:
+        proposal, _ = EvaluatorProtocolAuthority(connection).approved_protocol(
+            spec.evaluation.approval_digest,
+        )
+    protocol = proposal.protocol
+    if protocol.execution_backend_id != fixture.execution_backend_id:
+        raise PreparationError("the approved protocol backend differs from the fixture")
 
     from .optimization_runner import AREPublicEvaluatorRunner
     from .carps_runner import AREPublicCARPSEvaluatorRunner
@@ -132,9 +141,12 @@ def prepare(*, repo: Path, state_dir: Path, campaign_id: str, role_registry: Pat
     }.get(adapter["adapter_id"])
     if cell_count is None:
         raise PreparationError("no existing public MCP Harbor adapter for this task")
-    repeatability = 4 if adapter["adapter_id"] == "sopcc-public-v1" else (
-        1 if adapter["adapter_id"] in {"cpudecoder-public-v1", "sketched-newton-public-v1"} else 2
-    )
+    validation_semantics = {
+        "cpudecoder-public-v1": AREPublicCPUDecoderEvaluatorRunner.validation_metric_semantics,
+        "cpu-llm-public-v1": AREPublicCPULLMEvaluatorRunner.validation_metric_semantics,
+        "labelrisk-public-v1": AREPublicLabelRiskEvaluatorRunner.validation_metric_semantics,
+        "shortest-ci-public-v1": AREPublicShortestCIEvaluatorRunner.validation_metric_semantics,
+    }
     output_dir.mkdir(parents=True, mode=0o700)
     jobs_dir.mkdir(parents=True, mode=0o700)
     config_path = output_dir / "bananloop.json"
@@ -155,9 +167,10 @@ def prepare(*, repo: Path, state_dir: Path, campaign_id: str, role_registry: Pat
         "public_dev_image": task["public_dev_image"],
         "public_dev_image_id": task["public_dev_image_id"],
         "public_dev_cell_count": cell_count,
-        "repeatability_runs": repeatability,
+        "repeatability_runs": protocol.repeatability_runs,
         "benchmark_time_only": True,
-        "local_public_dev_only": adapter["adapter_id"] == "sketched-newton-public-v1",
+        "local_public_dev_only": True,
+        "max_candidate_iterations": None,
         "technical_call_ceiling": 1000,
         "technical_step_ceiling": 1000,
         "deadline_epoch": float(deadline_epoch),
@@ -167,6 +180,8 @@ def prepare(*, repo: Path, state_dir: Path, campaign_id: str, role_registry: Pat
         "max_steps": 1000,
         "public_submission_ledger_path": str(submission_db),
     }
+    if adapter["adapter_id"] in validation_semantics:
+        bl_config["validation_metric_semantics"] = validation_semantics[adapter["adapter_id"]]
     if adapter["adapter_id"] == "carps-public-v1":
         bl_config["public_dev_timeout_seconds"] = 180
     harbor_config = {

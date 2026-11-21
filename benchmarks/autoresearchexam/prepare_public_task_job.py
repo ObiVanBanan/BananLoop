@@ -49,10 +49,11 @@ def prepare(*, repo: Path, state_dir: Path, campaign_id: str, role_registry: Pat
     spec = AREPublicTaskEvaluatorRunner.spec(adapter_id)
     if source_task.name != spec["task_id"] or not source_task.is_dir():
         raise PreparationError("public task root differs from selected adapter")
-    if overlay.is_symlink() or not overlay.is_dir() or not (overlay / "task.toml").is_file():
-        raise PreparationError("safe local-public-DEV overlay is missing")
-    if "grader" in (overlay / "task.toml").read_text(encoding="utf-8"):
-        raise PreparationError("local overlay still mentions grader services")
+    from .prepare_safe_harbor_task import validate_local_public_dev_overlay
+
+    validate_local_public_dev_overlay(
+        source_task, overlay, task_id=spec["task_id"], public_output_path=spec["output_path"],
+    )
     fixture = EvaluatorFixtureV1.load(fixture_path)
     bundle = base64.b64decode(fixture.evaluator_bundle_base64, validate=True)
     if fixture.execution_backend_id != f"autoresearchexam-{adapter_id}":

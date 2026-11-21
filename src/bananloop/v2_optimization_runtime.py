@@ -75,13 +75,14 @@ def _render_final_report_markdown(report: dict[str, Any]) -> str:
     """Render a public, owner-readable campaign summary beside the JSON report."""
     optimization = report.get("optimization_report", report)
     comparison = optimization.get("baseline_candidate_delta", {})
+    comparison_label = "DEV" if comparison.get("tier") == "dev" else "Validation"
     lines = [
         f"# BananLoop campaign {report.get('campaign_id', optimization.get('campaign_id', 'unknown'))}",
         "",
         f"- Status: `{report.get('status', optimization.get('status', 'UNKNOWN'))}`",
         f"- Goal: {optimization.get('goal', 'Not recorded.')}",
         "",
-        f"## {str(comparison.get('tier', 'validation')).upper()} baseline / candidate / delta",
+        f"## {comparison_label} baseline / candidate / delta",
         "",
     ]
     rows = comparison.get("comparison_table", []) if isinstance(comparison, dict) else []

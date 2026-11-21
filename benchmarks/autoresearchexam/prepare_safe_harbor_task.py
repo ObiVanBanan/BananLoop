@@ -16,7 +16,7 @@ import re
 import subprocess
 import tomllib
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 
@@ -144,6 +144,31 @@ def local_public_dev_compose(compose_text: str, *, expected_output: str) -> str:
     return result
 
 
+def validate_local_public_dev_overlay(
+    source: Path, overlay: Path, *, task_id: str, public_output_path: str,
+) -> None:
+    """Check that Harbor will load the exact DEV-only task and compose files."""
+    environment = overlay / "environment"
+    task_config = overlay / "task.toml"
+    compose = environment / "docker-compose.yaml"
+    if (overlay.is_symlink() or not overlay.is_dir() or environment.is_symlink()
+            or task_config.is_symlink() or compose.is_symlink()
+            or (environment / "are-grader-ctx").exists()
+            or (environment / "are-grader-ctx").is_symlink()):
+        raise OverlayError("DEV-only overlay files or environment are unsafe")
+    expected_task, _ = prepare_local_public_dev_task_toml(
+        (source / "task.toml").read_text(encoding="utf-8"),
+        expected_timeout_sec=REVIEWED_COLLECT_TIMEOUTS[task_id],
+    )
+    expected_compose = local_public_dev_compose(
+        (source / "environment/docker-compose.yaml").read_text(encoding="utf-8"),
+        expected_output=str(PurePosixPath(public_output_path).parent),
+    )
+    if (task_config.read_text(encoding="utf-8") != expected_task
+            or compose.read_text(encoding="utf-8") != expected_compose):
+        raise OverlayError("Harbor configuration differs from the exact DEV-only overlay")
+
+
 def prepare_overlay(source_root: Path, task_id: str, output: Path, *,
                     local_public_dev_only: bool = False) -> dict[str, Any]:
     source_root = source_root.expanduser().resolve()
@@ -190,12 +215,13 @@ def prepare_overlay(source_root: Path, task_id: str, output: Path, *,
     if config.get("task", {}).get("version") != task["version"]:
         raise OverlayError("source task version differs from its pinned version")
     if local_public_dev_only:
-        if task_id not in {
-            "act-tensor-sparse-panel-imputation-r2",
-            "causalpfn-cate-pehe-ihdp-surfaceb", "hicard-latent-encoder",
-            "sketched-newton-cov-estimator",
-        }:
-            raise OverlayError("local DEV-only overlay is not allowlisted for this task")
+        catalogue_path = ROOT / "benchmarks/autonomous_v01/task-catalogue.json"
+        if catalogue is None:
+            catalogue = json.loads(catalogue_path.read_text(encoding="utf-8"))
+        public_tasks = [item for item in catalogue["tasks"] if item["task_id"] == task_id]
+        if len(public_tasks) != 1 or catalogue["source_revision"] != revision:
+            raise OverlayError("local DEV-only overlay is not pinned in the benchmark catalogue")
+        expected_output = str(PurePosixPath(public_tasks[0]["adapter"]["public_output_path"]).parent)
         transformed_text, removed = prepare_local_public_dev_task_toml(
             task_bytes.decode("utf-8"),
             expected_timeout_sec=REVIEWED_COLLECT_TIMEOUTS[task_id],
@@ -229,12 +255,6 @@ def prepare_overlay(source_root: Path, task_id: str, output: Path, *,
                     compose_path = output / name / "docker-compose.yaml"
                     if compose_path.is_symlink() or not compose_path.is_file():
                         raise OverlayError("public task compose file is missing or unsafe")
-                    expected_output = {
-                        "act-tensor-sparse-panel-imputation-r2": "/app/solution",
-                        "causalpfn-cate-pehe-ihdp-surfaceb": "/app/output",
-                        "hicard-latent-encoder": "/app/output",
-                        "sketched-newton-cov-estimator": "/app/output",
-                    }[task_id]
                     safe_compose = local_public_dev_compose(
                         compose_path.read_text(encoding="utf-8"),
                         expected_output=expected_output,

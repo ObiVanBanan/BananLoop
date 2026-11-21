@@ -153,6 +153,8 @@ def validate_source_access_declaration(path: Path = SOURCE_ACCESS_DECLARATION) -
 
 def validate_task_runtime_descriptors(runtime_root: Path, tasks: list[dict[str, Any]]) -> list[str]:
     """Verify per-task source, fixture, overlay, and launch pins without running them."""
+    from benchmarks.autoresearchexam.prepare_safe_harbor_task import validate_local_public_dev_overlay
+
     blockers: list[str] = []
     root_unsafe = runtime_root.is_symlink() or not runtime_root.is_dir()
     for task in tasks:
@@ -192,6 +194,9 @@ def validate_task_runtime_descriptors(runtime_root: Path, tasks: list[dict[str, 
                     or hashlib.sha256(overlay_task.read_bytes()).hexdigest()
                     != descriptor.get("overlay_task_sha256")):
                 raise ValueError("safe Harbor overlay task.toml is missing or changed")
+            validate_local_public_dev_overlay(
+                source, overlay, task_id=task_id, public_output_path=adapter["public_output_path"],
+            )
             dev_command = descriptor.get("dev_command")
             if (not isinstance(dev_command, list) or not dev_command
                     or any(not isinstance(item, str) or not item for item in dev_command)):
@@ -362,10 +367,6 @@ def offline_preflight(*, catalogue_path: Path = CATALOGUE,
         access_declaration = None
         access_declaration_sha256 = None
         blockers.append(f"PREP_BLOCKED_SOURCE_ACCESS_DISCLOSURE: {exc}")
-    # Full intentionally binds a DEV-only fixture, while the current
-    # integration lifecycle requires VALIDATION receipts. Do not report this
-    # incompatible combination as ready for a live benchmark series.
-    blockers.append("PREP_BLOCKED_DEV_ONLY_INTEGRATION: Full Optimization requires validation receipts for Integration Verifier")
     implementation_gates = _implementation_gates()
     for gate, ready in implementation_gates.items():
         if not ready:
@@ -1291,7 +1292,16 @@ class BananLoopFullBackend:
         goal = ("BANANLOOP_BENCHMARK_BINDING_V1:" + json.dumps(
             binding, sort_keys=True, separators=(",", ":"),
         ) + "\nSolve the frozen AutoResearchExam task. Read the public instruction file "
-            + local_instruction + "; improve only the declared candidate and use the approved public evaluator.")
+            + local_instruction + "; improve only the declared candidate and use the approved public evaluator."
+            + f" The frozen DEV metric is {adapter['metric_id']} (field {adapter['metric_field']}, "
+            + f"{adapter['direction']}, {adapter['aggregation']}).")
+        repeatability = adapter.get("repeatability_runs") or {
+            "cpudecoder-public-v1": 1, "sopcc-public-v1": 4,
+        }.get(adapter["adapter_id"])
+        if repeatability is not None:
+            goal += f" The pinned public protocol requires repeatability_runs={repeatability}."
+        if adapter["adapter_id"] == "sopcc-public-v1":
+            goal += " The pinned SOPCC protocol requires timeout_seconds=3600."
         if adapter.get("adapter_id") == "sketched-newton-public-v1":
             goal += (" The pinned public DEV scorer requires timeout_seconds=1200 and "
                      "repeatability_runs=1; its score is task_score, MAXIMIZE, MEAN. "
