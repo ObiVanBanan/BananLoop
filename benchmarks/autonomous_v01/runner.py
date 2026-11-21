@@ -1300,6 +1300,21 @@ class BananLoopFullBackend:
         }.get(adapter["adapter_id"])
         if repeatability is not None:
             goal += f" The pinned public protocol requires repeatability_runs={repeatability}."
+        goal += (" The final comparison uses the same frozen public DEV scorer, task data and "
+                 "image for BananLoop Full and the archived Codex Direct candidates. "
+                 "Evidence is limited to public DEV.")
+        if adapter["adapter_id"] == "carps-public-v1":
+            goal += (" Set timeout_seconds=300 for the CARPS protocol. The eight Docker "
+                     "evaluations share a 180-second panel budget, with remaining time for cleanup.")
+        if adapter["adapter_id"] == "imputation-public-v2":
+            evidence_path = ROOT / "benchmarks/autoresearchexam/imputation-public-dev-image-evidence.json"
+            evidence = read_json(evidence_path)
+            if evidence["image_id"] != task["public_dev_image_id"]:
+                raise ValueError("imputation DEV image evidence does not match the catalogue")
+            goal += (" The local image audit compared every /app file byte-for-byte with the "
+                     "public environment/app build inputs. The runner uses only the six "
+                     "data/dev NPZ files and their manifest. The audit measured these hashes: "
+                     + json.dumps(evidence, sort_keys=True, separators=(",", ":")))
         if adapter["adapter_id"] == "sopcc-public-v1":
             goal += " The pinned SOPCC protocol requires timeout_seconds=3600."
         if adapter.get("adapter_id") == "sketched-newton-public-v1":
@@ -1445,7 +1460,7 @@ class BananLoopFullBackend:
             try:
                 bridge_receipt = inspect_harbor_result(
                     Path(harbor_config["jobs_dir"]) / harbor_config["job_name"],
-                    task_id=task_id, overlay_path=str(overlay_path),
+                    task_id=task_id, overlay_path=str(overlay_path), record_failed_run=True,
                 )
             except (OSError, ValueError, json.JSONDecodeError):
                 status = "HARBOR_RECEIPT_INVALID"
@@ -1471,6 +1486,8 @@ class BananLoopFullBackend:
                     status = "LIMIT_EXHAUSTED"
                 elif bridge_receipt.get("public_submission_unknown"):
                     status = "INTERRUPTED_UNKNOWN"
+                elif bridge_receipt.get("bananloop_status") == "RUN_FAILED":
+                    status = "OPTIMIZATION_FAILED"
         else:
             usage_unknown = True
             usage.record(arm_id, "bananloop_full_optimization", {

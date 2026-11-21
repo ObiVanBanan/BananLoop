@@ -1,0 +1,19 @@
+{
+  "copied_app_file_sha256": {
+    "cellrunner.py": "b0cbb50ff27673a828b5240d245944dba1448875b27e5f26852db55d7aec07f4",
+    "cellspec.py": "c26831d1a8be4313fbd0d567cb6d5d030f9cc636747653d722c256071e9915a8",
+    "data/dev/dev1.npz": "b4e302aa7c660421bae0eaf9fe01517da743e36f123a55216e2785c05a9eac32",
+    "data/dev/dev2.npz": "5703779dd19d9b4b844efe538a98db62311b9891b1db3e9820db4731a922f3fd",
+    "data/dev/dev3.npz": "4663e1df70f012d5bccec406968d11af57209f76b428eba2870c165dfa7a9af8",
+    "data/dev/dev4.npz": "5c659f19a9a33b6cf9da14676da5abad2303fe96557e8600acc2dc4f6c24afe9",
+    "data/dev/dev5.npz": "b45e0fc1b3d6b82ad9185c87b8e19ce9a03929fabb4de350197cf5ef95b49fd5",
+    "data/dev/dev6.npz": "60bbe95c208a0799563a9ab497f1ddffcbe2e8c848c580694347771119b0ac35",
+    "data/dev/manifest.json": "405288c073d3f14a7c010df3fcd1d6b0cd9dd793f822949cdf49441250c9dddb",
+    "devkit.py": "b779f0bb77562c0b43a19ab0a12b4917f101a51e67ff72343ad50058cdcba27c",
+    "output/impute.py": "4d5ff8734d84aa2f6c6e4fd148aad7fb54ae6f6fc13ae1bd8703c9138f5ff0ab"
+  },
+  "dockerfile_sha256": "db4287837f939b925e9ded958953713889f16044efb71ddc853e86aa802f3714",
+  "image_id": "sha256:5d2bac54769dc124be218efc1a1495210197a25652f6005ad327d9fa5bc8f9f4",
+  "public_dev_cells": 42,
+  "task_source_revision": "23c0d92e11af1dea821f972b5f0a739060958002"
+}

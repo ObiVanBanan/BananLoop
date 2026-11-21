@@ -290,7 +290,8 @@ def build_command(*, harbor_binary: str, harbor_config: Path) -> list[str]:
     return [harbor_binary, "run", "--config", harbor_config.as_posix(), "--disable-verification"]
 
 
-def inspect_harbor_result(job_dir: Path, *, task_id: str, overlay_path: str) -> dict[str, Any]:
+def inspect_harbor_result(job_dir: Path, *, task_id: str, overlay_path: str,
+                          record_failed_run: bool = False) -> dict[str, Any]:
     """Return a minimal completion receipt, rejecting errored/incomplete trials."""
     if job_dir.is_symlink() or not job_dir.is_dir():
         raise ValueError("Harbor job output directory is missing or unsafe")
@@ -321,11 +322,12 @@ def inspect_harbor_result(job_dir: Path, *, task_id: str, overlay_path: str) -> 
             or not isinstance(bananloop.get("status"), str)):
         raise ValueError("Harbor trial lacks the BananLoop bridge terminal status")
     status = bananloop["status"]
-    if status in {"RUN_FAILED", "FAILED", "ERROR", "CANCELLED"}:
+    if status in {"RUN_FAILED", "FAILED", "ERROR", "CANCELLED"} and not (
+            record_failed_run and status == "RUN_FAILED"):
         raise ValueError(f"BananLoop bridge reported terminal failure ({status})")
     if status not in {"ALL_NODES_COMPLETE", "STEP_LIMIT", "ITERATION_LIMIT",
                       "DEADLINE_EXCEEDED", "CONVERGED_REPEATED_EXPERIMENT", "COMPLETED",
-                      "LIMIT_EXHAUSTED"}:
+                      "LIMIT_EXHAUSTED", "RUN_FAILED"}:
         raise ValueError("BananLoop bridge returned an unrecognized terminal status")
     calls = bananloop.get("provider_call_attempts")
     if type(calls) is not int or calls < 0:
