@@ -1311,7 +1311,11 @@ class BananLoopFullBackend:
             evidence = read_json(evidence_path)
             if evidence["image_id"] != task["public_dev_image_id"]:
                 raise ValueError("imputation DEV image evidence does not match the catalogue")
-            goal += (" The local image audit compared every /app file byte-for-byte with the "
+            goal += (" Set timeout_seconds=1500 and repeatability_runs=1 for the public "
+                     "imputation aggregate. The 42 cells can each take up to 30 seconds. "
+                     "The Harbor callback passes the approved protocol timeout or the remaining "
+                     "campaign time, whichever is shorter, to the Docker DEV runner. "
+                     "The local image audit compared every /app file byte-for-byte with the "
                      "public environment/app build inputs. The runner uses only the six "
                      "data/dev NPZ files and their manifest. The audit measured these hashes: "
                      + json.dumps(evidence, sort_keys=True, separators=(",", ":")))

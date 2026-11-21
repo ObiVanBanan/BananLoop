@@ -753,7 +753,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                     candidate,
                     image=raw["public_dev_image"],
                     expected_image_id=raw["public_dev_image_id"],
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=min(timeout_seconds, protocol.timeout_seconds),
                     expected_cell_count=raw.get("public_dev_cell_count", 42),
                 )
 
