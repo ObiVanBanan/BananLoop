@@ -1403,6 +1403,7 @@ def test_protocol_proposal_and_approval_use_real_pinned_queue_workflow(tmp_path)
             "sha256": "f" * 64,
         }],
     }, sort_keys=True, separators=(",", ":")).encode()
+    attestation_bytes = attestation_bytes.ljust(2_340)
     attestation_sha = hashlib.sha256(attestation_bytes).hexdigest()
     for digest, content in (
         (bundle_sha, bundle_bytes), (manifest_sha, manifest_bytes),
@@ -1682,3 +1683,44 @@ def test_integration_authority_rejects_nonvalidation_without_frozen_dev_policy(t
     with pytest.raises(EvaluatorVerificationError,match='VALIDATION or explicitly approved DEV-only'):
         authority._append_integration_evidence(evidence)
     conn.close()
+
+
+def test_registered_are_json_bundle_review_pins_runner_and_scorer(tmp_path):
+    from bananloop.evaluator_verification import _project_are_json_review_bundle
+    from benchmarks.autoresearchexam.public_task_evaluator import AREPublicTaskEvaluatorRunner
+
+    adapter_id = "act-tensor-public-v1"
+    spec = AREPublicTaskEvaluatorRunner.spec(adapter_id)
+    task_sha = "a" * 64
+    instruction_sha = "b" * 64
+    dev_files = [
+        {"path": f"environment/app/data/dev/instance_{index:02d}.npz",
+         "sha256": "c" * 64, "size_bytes": 10}
+        for index in range(spec["count"])
+    ]
+    digest = AREPublicTaskEvaluatorRunner.task_contract_digest(
+        adapter_id=adapter_id, task_version="1.1.0", task_sha256=task_sha,
+        instruction_sha256=instruction_sha, dev_files=dev_files,
+    )
+    bundle = AREPublicTaskEvaluatorRunner.build_bundle(
+        adapter_id=adapter_id, task_id=spec["task_id"], task_version="1.1.0",
+        contract_sha256=digest, dev_image_id=spec["image_id"], task_sha256=task_sha,
+        instruction_sha256=instruction_sha, dev_files=dev_files,
+    )
+    backend = f"autoresearchexam-{adapter_id}"
+    root = tmp_path / "review"
+    _project_are_json_review_bundle(bundle, root, backend)
+    assert (root / "manifest.json").read_bytes() == bundle
+    manifest = json.loads(bundle)
+    for filename, field in (
+        ("public_task_runner.py", "public_task_dev_runner_sha256"),
+        ("public_task_dev.py", "public_task_dev_scorer_sha256"),
+    ):
+        assert hashlib.sha256((root / filename).read_bytes()).hexdigest() == manifest[field]
+
+    manifest["public_task_dev_scorer_sha256"] = "e" * 64
+    with pytest.raises(ValueError, match="does not match the frozen task and source"):
+        _project_are_json_review_bundle(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode(),
+            tmp_path / "tampered", backend,
+        )

@@ -544,6 +544,7 @@ def _stage_protocol_review_attestation(
 ) -> tuple[str, ...]:
     """Pin an owner-selected public benchmark attestation for verifier context."""
     from urllib.parse import urlparse
+    from .evaluator_verification import _MAX_PUBLIC_ATTESTATION_BYTES
 
     evidence_root = state_root / "rpdi05"
     published_root = evidence_root / "published"
@@ -558,8 +559,8 @@ def _stage_protocol_review_attestation(
         if supplied.is_symlink() or not source.is_relative_to(repo.resolve()) or not source.is_file():
             raise V2CampaignCLIError("protocol review attestation must be a regular file inside --repo")
         raw = source.read_bytes()
-        if len(raw) > 4096:
-            raise V2CampaignCLIError("protocol review attestation exceeds the 4 KiB bound")
+        if len(raw) > _MAX_PUBLIC_ATTESTATION_BYTES:
+            raise V2CampaignCLIError("protocol review attestation exceeds the review size bound")
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeError, json.JSONDecodeError):
