@@ -898,7 +898,8 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
         terminal_conn.close()
 
 
-def test_completed_pivot_child_finalizes_parent_from_frozen_approval_lineage(tmp_path):
+@pytest.mark.parametrize("full_auto", [False, True])
+def test_completed_pivot_child_finalizes_parent_from_frozen_approval_lineage(tmp_path, full_auto):
     from types import SimpleNamespace
 
     from bananloop.v2_optimization_cli import _mark_parent_campaign_complete
@@ -913,7 +914,7 @@ def test_completed_pivot_child_finalizes_parent_from_frozen_approval_lineage(tmp
     child_spec_hash = "2" * 64
     proposal_id = "pivot-" + "3" * 24
     proposal_digest = "4" * 64
-    decision_id = "owner-approval-1"
+    decision_id = f"auto:{proposal_digest}" if full_auto else "owner-approval-1"
     handoff_digest = "5" * 64
     protocol_approval = "6" * 64
     parent_db = parent_state / "campaign.sqlite3"
@@ -922,7 +923,7 @@ def test_completed_pivot_child_finalizes_parent_from_frozen_approval_lineage(tmp
         conn.executescript("""
             CREATE TABLE campaigns (
                 id INTEGER PRIMARY KEY, spec_hash TEXT NOT NULL, status TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL, spec_json TEXT NOT NULL
             );
             CREATE TABLE events (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT NOT NULL,
@@ -933,14 +934,25 @@ def test_completed_pivot_child_finalizes_parent_from_frozen_approval_lineage(tmp
                 decision TEXT NOT NULL, status TEXT NOT NULL
             );
         """)
-        conn.execute(
-            "INSERT INTO campaigns VALUES(1,?,'PAUSED_NEEDS_INPUT','now')",
-            (parent_spec_hash,),
-        )
-        conn.execute(
-            "INSERT INTO v2_pivot_decisions VALUES(?,?,?,?,?)",
-            (decision_id, proposal_id, proposal_digest, "approve", "APPROVED"),
-        )
+        mode = "FULL_AUTO" if full_auto else "SUPERVISED"
+        status = "READY" if full_auto else "PAUSED_NEEDS_INPUT"
+        conn.execute("INSERT INTO campaigns VALUES(1,?,?,'now',?)",
+                     (parent_spec_hash, status, json.dumps({"autonomy": {"mode": mode}})))
+        if full_auto:
+            conn.execute("""CREATE TABLE v2_pivot_sagas (
+                allocation_id TEXT, parent_campaign_id TEXT, parent_spec_hash TEXT,
+                child_id TEXT, child_spec_hash TEXT, state TEXT, decision_json TEXT, proposal_json TEXT
+            )""")
+            conn.execute("INSERT INTO v2_pivot_sagas VALUES(?,?,?,?,?,?,?,?)", (
+                "allocation-1", parent.campaign_id, parent_spec_hash, child_id, child_spec_hash, "ACTIVE",
+                json.dumps({"authorization": "FULL_AUTO_SCOPE", "approval": None, "decision_id": decision_id}),
+                json.dumps({"proposal_id": proposal_id, "digest": proposal_digest, "spec_hash": parent_spec_hash}),
+            ))
+        else:
+            conn.execute(
+                "INSERT INTO v2_pivot_decisions VALUES(?,?,?,?,?)",
+                (decision_id, proposal_id, proposal_digest, "approve", "APPROVED"),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -979,6 +991,7 @@ def test_completed_pivot_child_finalizes_parent_from_frozen_approval_lineage(tmp
             parent_spec_hash=parent_spec_hash,
             allocation_id="allocation-1",
             pivot_decision_id=decision_id,
+            approval_request_id=None if full_auto else decision_id,
             pivot_proposal_id=proposal_id,
             pivot_proposal_digest=proposal_digest,
             protocol_handoff_digest=handoff_digest,
@@ -986,6 +999,7 @@ def test_completed_pivot_child_finalizes_parent_from_frozen_approval_lineage(tmp
 
     class ChildSpec:
         parent = parent_ref
+        benchmark_integration_tier = "dev" if full_auto else None
 
         def approved_hash(self):
             return child_spec_hash

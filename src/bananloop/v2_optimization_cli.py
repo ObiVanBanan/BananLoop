@@ -166,7 +166,7 @@ def _mark_parent_campaign_complete(result: dict[str, Any], *,
                                    spec: OptimizationCampaignSpecV2,
                                    database: Path,
                                    registry: CampaignRegistry) -> dict[str, Any]:
-    """Finalize a supervised parent after its approved child fully completes."""
+    """Finalize the parent after its authorized child and evaluator handoff complete."""
     parent_ref = spec.parent
     if parent_ref is None or result.get("status") != "ALL_NODES_COMPLETE":
         return result
@@ -235,16 +235,43 @@ def _mark_parent_campaign_complete(result: dict[str, Any], *,
         ).fetchone()
         if campaign is None or campaign["spec_hash"] != parent_ref.parent_spec_hash:
             raise V2OptimizationCLIError("parent campaign spec changed before finalization")
-        if campaign["status"] not in {"PAUSED_NEEDS_INPUT", "GOAL_MET"}:
+        if (parent_ref.pivot_decision_id == f"auto:{parent_ref.pivot_proposal_digest}"
+                and spec.benchmark_integration_tier == "dev"
+                and parent_ref.approval_request_id is None):
+            parent_spec_json = conn.execute("SELECT spec_json FROM campaigns WHERE id=1").fetchone()[0]
+            if json.loads(parent_spec_json).get("autonomy", {}).get("mode") != "FULL_AUTO":
+                raise V2OptimizationCLIError("parent campaign does not authorize Full Auto")
+            authorization = conn.execute(
+                """SELECT decision_json,proposal_json FROM v2_pivot_sagas
+                   WHERE allocation_id=? AND parent_campaign_id=? AND parent_spec_hash=?
+                     AND child_id=? AND child_spec_hash=? AND state='ACTIVE'""",
+                (parent_ref.allocation_id, parent_ref.parent_campaign_id,
+                 parent_ref.parent_spec_hash, child_id, spec.approved_hash()),
+            ).fetchone()
+            if (authorization is None
+                    or json.loads(authorization["decision_json"]) != {
+                        "authorization": "FULL_AUTO_SCOPE", "approval": None,
+                        "decision_id": parent_ref.pivot_decision_id,
+                    }):
+                raise V2OptimizationCLIError("parent Full Auto authorization does not match frozen child lineage")
+            proposal = json.loads(authorization["proposal_json"])
+            if (proposal.get("proposal_id") != parent_ref.pivot_proposal_id
+                    or proposal.get("digest") != parent_ref.pivot_proposal_digest
+                    or proposal.get("spec_hash") != parent_ref.parent_spec_hash):
+                raise V2OptimizationCLIError("parent Full Auto proposal does not match frozen child lineage")
+            allowed_status = "READY"
+        else:
+            decision = conn.execute(
+                "SELECT proposal_id,digest,decision,status FROM v2_pivot_decisions WHERE request_id=?",
+                (parent_ref.pivot_decision_id,),
+            ).fetchone()
+            if (decision is None or decision["proposal_id"] != parent_ref.pivot_proposal_id
+                    or decision["digest"] != parent_ref.pivot_proposal_digest
+                    or decision["decision"] != "approve" or decision["status"] != "APPROVED"):
+                raise V2OptimizationCLIError("parent owner approval does not match frozen child lineage")
+            allowed_status = "PAUSED_NEEDS_INPUT"
+        if campaign["status"] not in {allowed_status, "GOAL_MET"}:
             raise V2OptimizationCLIError("parent campaign cannot enter GOAL_MET from its current state")
-        decision = conn.execute(
-            "SELECT proposal_id,digest,decision,status FROM v2_pivot_decisions WHERE request_id=?",
-            (parent_ref.pivot_decision_id,),
-        ).fetchone()
-        if (decision is None or decision["proposal_id"] != parent_ref.pivot_proposal_id
-                or decision["digest"] != parent_ref.pivot_proposal_digest
-                or decision["decision"] != "approve" or decision["status"] != "APPROVED"):
-            raise V2OptimizationCLIError("parent owner approval does not match frozen child lineage")
         if campaign["status"] != "GOAL_MET":
             now = utc_now()
             final_report["campaign_terminal_status"] = "GOAL_MET"

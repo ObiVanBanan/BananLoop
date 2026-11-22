@@ -1489,12 +1489,8 @@ class BananLoopFullBackend:
             stdout_path=arm_root / "bananloop-optimization.stdout",
             stderr_path=arm_root / "bananloop-optimization.stderr",
         )
-        final_artifact = CodexDirectBackend.snapshot_final_artifacts(
-            task=task, repo=repo, arm_root=arm_root,
-        )
         status = "TIMED_OUT" if harbor_status == "TIMED_OUT" else (
-            "COMPLETED" if harbor_status == "COMPLETED" and final_artifact["status"] == "CAPTURED"
-            else "FAILED")
+            "COMPLETED" if harbor_status == "COMPLETED" else "FAILED")
         bridge_receipt = None
         if harbor_status == "COMPLETED":
             from benchmarks.autoresearchexam.series_runner import inspect_harbor_result
@@ -1534,6 +1530,42 @@ class BananLoopFullBackend:
             usage.record(arm_id, "bananloop_full_optimization", {
                 "model_turns_observed": 0, "usage": None, "usage_unknown": True,
             })
+        artifact_repo = repo
+        if bridge_receipt and bridge_receipt.get("bananloop_status") == "ALL_NODES_COMPLETE":
+            from bananloop.v2_optimization_cli import _saved_completed_run_report
+
+            child_id = pivot["child_campaign_id"]
+            child_root = state_dir / "campaigns" / child_id
+            report = _saved_completed_run_report(child_root, child_id)
+            if report is None:
+                return terminal("VERIFIED_CANDIDATE_REPORT_MISSING", harbor_bridge_receipt=bridge_receipt)
+            champion = (report.get("champion") or {}).get("snapshot_id")
+            if (not isinstance(champion, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", champion)
+                    or report["baseline_candidate_delta"]["candidate_snapshot_id"] != champion):
+                return terminal("VERIFIED_CANDIDATE_ID_INVALID", harbor_bridge_receipt=bridge_receipt)
+            key = hashlib.sha256(champion.encode("ascii")).hexdigest()[:16]
+            artifact_repo = child_root / "s" / child_id / key
+            try:
+                if artifact_repo.is_symlink() or not artifact_repo.is_dir():
+                    raise ValueError("verified snapshot directory is missing or unsafe")
+                revision = subprocess.check_output(
+                    ["git", "-C", str(artifact_repo), "rev-parse", "--verify", "HEAD^{commit}"],
+                    stderr=subprocess.PIPE, text=True, timeout=15,
+                ).strip()
+                if revision != champion:
+                    raise ValueError("verified snapshot HEAD differs from the recorded champion")
+                if subprocess.check_output(
+                    ["git", "-C", str(artifact_repo), "status", "--porcelain", "--untracked-files=all"],
+                    stderr=subprocess.PIPE, timeout=15,
+                ).strip():
+                    raise ValueError("verified snapshot has uncommitted or untracked files")
+            except (OSError, ValueError, subprocess.SubprocessError):
+                return terminal("VERIFIED_CANDIDATE_SNAPSHOT_INVALID", harbor_bridge_receipt=bridge_receipt)
+        final_artifact = CodexDirectBackend.snapshot_final_artifacts(
+            task=task, repo=artifact_repo, arm_root=arm_root,
+        )
+        if status == "COMPLETED" and final_artifact["status"] != "CAPTURED":
+            status = "FAILED"
         return {"status": status, "exploration_status": explore_report.get("status"),
                 "model_turns_observed": observed_calls + optimization_calls,
                 "usage_unknown": usage_unknown,
