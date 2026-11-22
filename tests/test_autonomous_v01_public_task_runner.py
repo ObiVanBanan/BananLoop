@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,7 +13,7 @@ from benchmarks.autonomous_v01.public_task_runner import PublicTaskRunnerError, 
 IMAGE_ID = "sha256:" + "a" * 64
 
 
-def _fake_docker(tmp_path: Path, *, allow_run: bool = True) -> Path:
+def _fake_docker(tmp_path: Path, monkeypatch, *, allow_run: bool = True) -> Path:
     binary = tmp_path / "docker-fake"
     body = (
         "#!/usr/bin/env python3\n"
@@ -29,17 +31,25 @@ def _fake_docker(tmp_path: Path, *, allow_run: bool = True) -> Path:
     )
     binary.write_text(body, encoding="utf-8")
     binary.chmod(0o755)
+    real_popen = subprocess.Popen
+
+    def portable_popen(command, *args, **kwargs):
+        if isinstance(command, (list, tuple)) and command and str(command[0]) == str(binary):
+            command = [sys.executable, str(binary), *command[1:]]
+        return real_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", portable_popen)
     return binary
 
 
-def test_final_public_scorer_uses_same_metric_on_final_directory_without_harbor(tmp_path):
+def test_final_public_scorer_uses_same_metric_on_final_directory_without_harbor(tmp_path, monkeypatch):
     output = tmp_path / "final"
     output.mkdir()
     (output / "impute.py").write_text("def impute(panel, seed): return panel\n", encoding="utf-8")
     result = run_public_task_final(
         "act-tensor-sparse-panel-imputation-r2", output,
         image="local-task:1.1.0", expected_image_id=IMAGE_ID,
-        timeout_seconds=30, docker_binary=str(_fake_docker(tmp_path)),
+        timeout_seconds=30, docker_binary=str(_fake_docker(tmp_path, monkeypatch)),
     )
     assert result["status"] == "SCORED"
     assert result["metric_id"] == "imputation_r2"
@@ -48,19 +58,19 @@ def test_final_public_scorer_uses_same_metric_on_final_directory_without_harbor(
     assert len(result["artifact_directory_sha256"]) == 64
 
 
-def test_final_public_scorer_records_missing_output_without_running_container(tmp_path):
+def test_final_public_scorer_records_missing_output_without_running_container(tmp_path, monkeypatch):
     output = tmp_path / "empty"
     output.mkdir()
     result = run_public_task_final(
         "act-tensor-sparse-panel-imputation-r2", output,
         image="local-task:1.1.0", expected_image_id=IMAGE_ID,
-        timeout_seconds=30, docker_binary=str(_fake_docker(tmp_path, allow_run=False)),
+        timeout_seconds=30, docker_binary=str(_fake_docker(tmp_path, monkeypatch, allow_run=False)),
     )
     assert result["status"] == "MISSING_OR_INVALID_ENTRYPOINT"
     assert result["metric"] is None
 
 
-def test_final_public_scorer_rejects_symlinked_output(tmp_path):
+def test_final_public_scorer_rejects_symlinked_output(tmp_path, monkeypatch):
     output = tmp_path / "final"
     output.mkdir()
     target = tmp_path / "outside.py"
@@ -70,5 +80,5 @@ def test_final_public_scorer_rejects_symlinked_output(tmp_path):
         run_public_task_final(
             "act-tensor-sparse-panel-imputation-r2", output,
             image="local-task:1.1.0", expected_image_id=IMAGE_ID,
-            timeout_seconds=30, docker_binary=str(_fake_docker(tmp_path)),
+            timeout_seconds=30, docker_binary=str(_fake_docker(tmp_path, monkeypatch)),
         )

@@ -28,6 +28,21 @@ from benchmarks.autonomous_v01.runner import (
 )
 
 
+@pytest.fixture
+def fake_cli_dispatch(monkeypatch):
+    """Run Python fake executables via Python, independent of OS shebang handling."""
+    real_popen = subprocess.Popen
+    registered = set()
+
+    def portable_popen(command, *args, **kwargs):
+        if isinstance(command, (list, tuple)) and command and str(command[0]) in registered:
+            command = [sys.executable, str(command[0]), *command[1:]]
+        return real_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", portable_popen)
+    return lambda script: registered.add(str(script))
+
+
 def test_manifest_freezes_exact_curated_tasks_and_randomizes_only_arm_order():
     catalogue = json.loads(CATALOGUE.read_text(encoding="utf-8"))
     manifest = build_manifest(catalogue=catalogue, seed=91, model="pinned-model",
@@ -192,7 +207,7 @@ def test_fake_series_runs_24_isolated_arms_without_external_calls(tmp_path):
 
 
 @pytest.mark.parametrize("exploration_fails", [False, True])
-def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tmp_path, monkeypatch, exploration_fails):
+def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tmp_path, monkeypatch, fake_cli_dispatch, exploration_fails):
     """Exercise both production backend classes with subprocess-only fakes."""
     from bananloop.evaluator_fixture import EvaluatorFixtureV1
     from benchmarks.autoresearchexam import prepare_public_task_job
@@ -331,6 +346,8 @@ def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tm
         "(trial/'result.json').write_text(json.dumps({'id':'trial-001','finished_at':now,'task_id':{'path':cfg['overlay_path']},'agent_result':{'metadata':{'bananloop_are':{'task_id':cfg['task_id'],'status':'COMPLETED','provider_call_attempts':7,'usage':{'input_tokens':11,'output_tokens':13,'total_tokens':24}}}}}))\n",
         encoding="utf-8",
     ); fake_harbor.chmod(0o755)
+    for fake in (fake_python, fake_codex, fake_harbor):
+        fake_cli_dispatch(fake)
 
     # Public-task config preparation is replaced only at its filesystem edge;
     # the backend's real pivot authorizer and Harbor receipt validator remain active.
@@ -492,7 +509,7 @@ def test_codex_jsonl_marks_malformed_tail_as_unknown(tmp_path):
     assert usage["usage"] is None
 
 
-def test_codex_direct_backend_uses_fake_cli_and_enforces_deadline(tmp_path):
+def test_codex_direct_backend_uses_fake_cli_and_enforces_deadline(tmp_path, fake_cli_dispatch):
     initial = tmp_path / "initial"
     initial.mkdir()
     subprocess.run(["git", "init", "-q", str(initial)], check=True)
@@ -516,6 +533,7 @@ def test_codex_direct_backend_uses_fake_cli_and_enforces_deadline(tmp_path):
         "print(json.dumps({'type':'turn.completed','usage':{'input_tokens':7,'output_tokens':3}}),flush=True)\n",
         encoding="utf-8")
     fake_codex.chmod(0o755)
+    fake_cli_dispatch(fake_codex)
     backend = CodexDirectBackend(
         codex_binary=str(fake_codex), model="fake-model", reasoning="high",
         task_instruction=instruction, dev_command=["python", "fake_dev.py"],
