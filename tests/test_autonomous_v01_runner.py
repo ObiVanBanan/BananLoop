@@ -134,6 +134,20 @@ def test_benchmark_pivot_authorizer_binds_exact_frozen_scope_and_deadline():
     ) is False
 
 
+@pytest.mark.parametrize(
+    ("harbor_status", "expected"),
+    [
+        ("COMPLETED", "COMPLETED"),
+        ("FAILED", "FAILED"),
+        ("FAILED_TO_START", "FAILED"),
+        ("TIMED_OUT", "TIMED_OUT"),
+        ("TIMED_OUT_BEFORE_START", "TIMED_OUT"),
+    ],
+)
+def test_full_backend_preserves_harbor_timeout_classification(harbor_status, expected):
+    assert BananLoopFullBackend._harbor_terminal_status(harbor_status) == expected
+
+
 def test_usage_ledger_is_observational_and_does_not_enforce_a_call_cap(tmp_path):
     ledger = UsageLedger(tmp_path / "usage.sqlite3")
     for _ in range(260):

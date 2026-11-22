@@ -1093,6 +1093,13 @@ class BananLoopFullBackend:
                 return "TIMED_OUT", process.returncode
             return ("COMPLETED" if process.returncode == 0 else "FAILED", process.returncode)
 
+    @staticmethod
+    def _harbor_terminal_status(harbor_status: str) -> str:
+        """Preserve deadline failure semantics across every Harbor startup path."""
+        if harbor_status.startswith("TIMED_OUT"):
+            return "TIMED_OUT"
+        return "COMPLETED" if harbor_status == "COMPLETED" else "FAILED"
+
     def _runtime(self, task_id: str) -> dict[str, Any]:
         path = self.runtime_root / f"{task_id}.json"
         if path.is_symlink() or not path.is_file():
@@ -1472,6 +1479,11 @@ class BananLoopFullBackend:
             return terminal("TIMED_OUT_DURING_HARBOR_PREPARATION")
         except (OSError, ValueError, KeyError, TypeError) as exc:
             return terminal("CHILD_CONFIGURATION_FAILED", error_type=type(exc).__name__)
+        # Configuration preparation may consume the remaining parent budget.
+        # Recompute it now instead of reusing the value from before preparation.
+        remaining = deadline_epoch - time.time()
+        if remaining <= 0:
+            return terminal("TIMED_OUT_BEFORE_HARBOR")
         bl_config_path = Path(prepared["bananloop_config"])
         harbor_config_path = Path(prepared["harbor_config"])
         bl_config = json.loads(bl_config_path.read_text(encoding="utf-8"))
@@ -1489,8 +1501,7 @@ class BananLoopFullBackend:
             stdout_path=arm_root / "bananloop-optimization.stdout",
             stderr_path=arm_root / "bananloop-optimization.stderr",
         )
-        status = "TIMED_OUT" if harbor_status == "TIMED_OUT" else (
-            "COMPLETED" if harbor_status == "COMPLETED" else "FAILED")
+        status = self._harbor_terminal_status(harbor_status)
         bridge_receipt = None
         if harbor_status == "COMPLETED":
             from benchmarks.autoresearchexam.series_runner import inspect_harbor_result
