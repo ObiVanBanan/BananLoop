@@ -44,7 +44,8 @@ def _read_public_file(path: Path, *, root: Path, max_bytes: int) -> bytes:
     return raw
 
 
-def build_fixture(*, repo: Path, source_task: Path, out: Path) -> dict[str, object]:
+def build_fixture(*, repo: Path, source_task: Path, out: Path,
+                  mcp_contract_path: Path | None = None) -> dict[str, object]:
     repo = repo.expanduser()
     source_task = source_task.expanduser()
     if repo.is_symlink() or source_task.is_symlink():
@@ -59,11 +60,21 @@ def build_fixture(*, repo: Path, source_task: Path, out: Path) -> dict[str, obje
     tasks = [item for item in selection.get("tasks", []) if item.get("task_id") == TASK_ID]
     if len(tasks) != 1 or tasks[0].get("version") != TASK_VERSION:
         raise ValueError("imputation task is not uniquely pinned in task-selection.json")
-    contract_raw = _read_public_file(
-        repo / "benchmarks/autoresearchexam/public-mcp-contract-budgeted-imputation-mcar50.json",
-        root=repo, max_bytes=128_000,
-    )
+    if mcp_contract_path is None:
+        contract_path = repo / "benchmarks/autoresearchexam/public-mcp-contract-budgeted-imputation-mcar50.json"
+        contract_root = repo
+    else:
+        contract_path = mcp_contract_path.expanduser().absolute()
+        contract_root = contract_path.parent.resolve()
+    contract_raw = _read_public_file(contract_path, root=contract_root, max_bytes=128_000)
     contract = json.loads(contract_raw)
+    if mcp_contract_path is not None:
+        from .public_mcp_contract import validate_public_mcp_contract
+        validate_public_mcp_contract(
+            contract, task_id=TASK_ID, task_version=TASK_VERSION,
+            task_sha256=tasks[0]["task_sha256"],
+            task_instruction_sha256=tasks[0]["instruction_sha256"],
+        )
     contract_digest = contract.get("contract_sha256")
     if (not isinstance(contract_digest, str)
             or len(contract_digest) != 64
@@ -223,9 +234,11 @@ def main() -> int:
     parser.add_argument("--source-task", type=Path, required=True,
                         help="public budgeted-imputation-mcar50 task directory")
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--mcp-contract-path", type=Path)
     args = parser.parse_args()
     print(json.dumps(build_fixture(
         repo=args.repo, source_task=args.source_task, out=args.out,
+        mcp_contract_path=args.mcp_contract_path,
     ), indent=2, sort_keys=True))
     return 0
 

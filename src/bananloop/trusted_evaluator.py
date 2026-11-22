@@ -1170,7 +1170,10 @@ class TrustedEvaluatorAdapter:
             protocol_digest=protocol.content_digest(),
             candidate_snapshot_id=candidate_snapshot_id,
         )
-        if baseline.tier != "validation":
+        integration_tier = spec.benchmark_integration_tier or "validation"
+        if integration_tier == "dev" and tuple(t.tier for t in protocol.tiers) != ("dev",):
+            raise TrustedEvaluatorError("DEV integration requires a DEV-only approved protocol")
+        if baseline.tier != integration_tier:
             raise TrustedEvaluatorError(
                 "integration regression evidence requires VALIDATION; HOLDOUT cannot feed graph decisions"
             )

@@ -202,6 +202,15 @@ def test_cli_explore_is_a_separate_v2_route():
     )
 
 
+def test_cli_optimization_accepts_inherited_absolute_task_deadline():
+    args = parser().parse_args([
+        "v2", "optimize", "--campaign-id", "child-1", "--role-registry", "roles.json",
+        "--visible-path", "src/model.py", "--write-path", "src/model.py",
+        "--task-deadline-epoch", "1790000000.5",
+    ])
+    assert args.task_deadline_epoch == 1790000000.5
+
+
 def test_v2_explore_stages_owner_attestation_before_no_model_preflight(tmp_path):
     repo = _repo(tmp_path)
     attestation_path = repo / "public-attestation.json"
@@ -439,6 +448,83 @@ def test_v2_default_call_budget_preserves_exploration_and_funds_two_paired_epoch
     assert roles.role("optimizer").calls_per_instance == 2
     assert roles.role("integration_verifier").calls_per_instance == 2
     assert sum(role.calls_per_instance for role in roles.roles) == 7
+
+
+def test_benchmark_auto_pivot_is_explicit_and_limited_to_one_exact_write_path(tmp_path):
+    from bananloop.v2_campaign_cli import _build_spec
+
+    repo = _repo(tmp_path)
+    auto, _, _ = _build_spec(
+        repo, "Benchmark-only auto pivot", ("README.md",),
+        max_agent_calls=6, max_model_tokens=128, model="gpt-6-luna",
+        optimization_write_paths=("README.md",), benchmark_auto_pivot=True,
+    )
+    assert auto.autonomy.mode == "FULL_AUTO"
+    assert auto.autonomy.authorize_pivot(("README.md",)) == "AUTO_ALLOWED"
+    assert auto.autonomy.authorize_pivot(("pyproject.toml",)) == "DENIED"
+    assert auto.autonomy.scope.max_child_depth == 1
+    assert auto.autonomy.scope.max_child_campaigns == 1
+    assert "write_file" in auto.autonomy.capability_policy.tools
+    assert "README.md" in auto.autonomy.capability_policy.write_paths
+
+    supervised, _, _ = _build_spec(
+        repo, "Ordinary supervised campaign", ("README.md",),
+        max_agent_calls=6, max_model_tokens=128, model="gpt-6-luna",
+        optimization_write_paths=("README.md",),
+    )
+    assert supervised.autonomy.mode == "SUPERVISED"
+    assert supervised.autonomy.authorize_pivot(("README.md",)) == "APPROVAL_REQUIRED"
+
+
+def test_benchmark_auto_pivot_rejects_missing_or_protected_write_scope(tmp_path):
+    from bananloop.v2_campaign_cli import _build_spec
+
+    repo = _repo(tmp_path)
+    args = dict(max_agent_calls=6, max_model_tokens=128, model="gpt-6-luna",
+                benchmark_auto_pivot=True)
+    with pytest.raises(V2CampaignCLIError, match="exact Optimization write path"):
+        _build_spec(repo, "No path", ("README.md",), **args)
+    with pytest.raises(Exception):
+        _build_spec(repo, "Protected path", ("validation/data.py",),
+                    optimization_write_paths=("validation/data.py",), **args)
+
+
+def test_benchmark_time_only_spec_has_no_candidate_cap_and_uses_only_disclosed_ceiling(tmp_path):
+    from bananloop.v2_campaign_cli import _build_spec
+
+    repo = _repo(tmp_path)
+    spec, roles, _ = _build_spec(
+        repo, "Public task time-only benchmark", ("candidate.py",),
+        max_agent_calls=1000, max_model_tokens=128, model="gpt-6-luna",
+        max_evaluator_calls=1000, max_iterations=1000,
+        max_candidate_iterations=None, deadline_seconds=3600,
+        max_experiments=1000, optimization_write_paths=("candidate.py",),
+        evaluator_fixture_digest="a" * 64, benchmark_auto_pivot=True,
+        benchmark_time_only=True,
+    )
+
+    assert spec.max_candidate_iterations is None
+    assert spec.budget.deadline_seconds == 3600
+    assert spec.budget.max_experiments == spec.budget.max_attempts == 1000
+    assert spec.budget.max_agent_calls == spec.budget.max_evaluator_calls == 1000
+    assert roles.role("researcher").calls_per_instance > 1
+    assert roles.role("optimizer").calls_per_instance > 1
+    assert roles.role("integration_verifier").calls_per_instance > 1
+
+
+def test_time_only_mode_rejects_supervised_or_capped_campaign(tmp_path):
+    from bananloop.v2_campaign_cli import _build_spec
+
+    repo = _repo(tmp_path)
+    with pytest.raises(V2CampaignCLIError, match="time-only mode requires"):
+        _build_spec(
+            repo, "Invalid benchmark", ("candidate.py",),
+            max_agent_calls=1000, max_model_tokens=128, model="gpt-6-luna",
+            max_evaluator_calls=1000, max_iterations=1000,
+            max_candidate_iterations=None, max_experiments=1000,
+            optimization_write_paths=("candidate.py",),
+            evaluator_fixture_digest="a" * 64, benchmark_time_only=True,
+        )
 
 
 def test_v2_explicit_candidate_iteration_cap_is_frozen_and_funded(tmp_path):
@@ -812,7 +898,8 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
         terminal_conn.close()
 
 
-def test_completed_pivot_child_finalizes_parent_from_frozen_approval_lineage(tmp_path):
+@pytest.mark.parametrize("full_auto", [False, True])
+def test_completed_pivot_child_finalizes_parent_from_frozen_approval_lineage(tmp_path, full_auto):
     from types import SimpleNamespace
 
     from bananloop.v2_optimization_cli import _mark_parent_campaign_complete
@@ -827,7 +914,7 @@ def test_completed_pivot_child_finalizes_parent_from_frozen_approval_lineage(tmp
     child_spec_hash = "2" * 64
     proposal_id = "pivot-" + "3" * 24
     proposal_digest = "4" * 64
-    decision_id = "owner-approval-1"
+    decision_id = f"auto:{proposal_digest}" if full_auto else "owner-approval-1"
     handoff_digest = "5" * 64
     protocol_approval = "6" * 64
     parent_db = parent_state / "campaign.sqlite3"
@@ -836,7 +923,7 @@ def test_completed_pivot_child_finalizes_parent_from_frozen_approval_lineage(tmp
         conn.executescript("""
             CREATE TABLE campaigns (
                 id INTEGER PRIMARY KEY, spec_hash TEXT NOT NULL, status TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL, spec_json TEXT NOT NULL
             );
             CREATE TABLE events (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT NOT NULL,
@@ -847,14 +934,25 @@ def test_completed_pivot_child_finalizes_parent_from_frozen_approval_lineage(tmp
                 decision TEXT NOT NULL, status TEXT NOT NULL
             );
         """)
-        conn.execute(
-            "INSERT INTO campaigns VALUES(1,?,'PAUSED_NEEDS_INPUT','now')",
-            (parent_spec_hash,),
-        )
-        conn.execute(
-            "INSERT INTO v2_pivot_decisions VALUES(?,?,?,?,?)",
-            (decision_id, proposal_id, proposal_digest, "approve", "APPROVED"),
-        )
+        mode = "FULL_AUTO" if full_auto else "SUPERVISED"
+        status = "READY" if full_auto else "PAUSED_NEEDS_INPUT"
+        conn.execute("INSERT INTO campaigns VALUES(1,?,?,'now',?)",
+                     (parent_spec_hash, status, json.dumps({"autonomy": {"mode": mode}})))
+        if full_auto:
+            conn.execute("""CREATE TABLE v2_pivot_sagas (
+                allocation_id TEXT, parent_campaign_id TEXT, parent_spec_hash TEXT,
+                child_id TEXT, child_spec_hash TEXT, state TEXT, decision_json TEXT, proposal_json TEXT
+            )""")
+            conn.execute("INSERT INTO v2_pivot_sagas VALUES(?,?,?,?,?,?,?,?)", (
+                "allocation-1", parent.campaign_id, parent_spec_hash, child_id, child_spec_hash, "ACTIVE",
+                json.dumps({"authorization": "FULL_AUTO_SCOPE", "approval": None, "decision_id": decision_id}),
+                json.dumps({"proposal_id": proposal_id, "digest": proposal_digest, "spec_hash": parent_spec_hash}),
+            ))
+        else:
+            conn.execute(
+                "INSERT INTO v2_pivot_decisions VALUES(?,?,?,?,?)",
+                (decision_id, proposal_id, proposal_digest, "approve", "APPROVED"),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -893,6 +991,7 @@ def test_completed_pivot_child_finalizes_parent_from_frozen_approval_lineage(tmp
             parent_spec_hash=parent_spec_hash,
             allocation_id="allocation-1",
             pivot_decision_id=decision_id,
+            approval_request_id=None if full_auto else decision_id,
             pivot_proposal_id=proposal_id,
             pivot_proposal_digest=proposal_digest,
             protocol_handoff_digest=handoff_digest,
@@ -900,6 +999,7 @@ def test_completed_pivot_child_finalizes_parent_from_frozen_approval_lineage(tmp
 
     class ChildSpec:
         parent = parent_ref
+        benchmark_integration_tier = "dev" if full_auto else None
 
         def approved_hash(self):
             return child_spec_hash
@@ -1233,3 +1333,80 @@ def test_active_campaign_deadline_is_persisted_once_and_tamper_evident(tmp_path)
             state, campaign_id="c-deadline", spec_hash="a" * 64,
             time_limit_seconds=3600,
         )
+
+
+def test_benchmark_arm_absolute_deadline_is_inherited_without_reset(tmp_path):
+    deadline = __import__("time").time() + 1800
+    state = tmp_path / "inherited-state"
+    state.mkdir()
+    actual = _campaign_deadline(
+        state, campaign_id="c-inherited", spec_hash="b" * 64,
+        time_limit_seconds=1800, inherited_deadline_epoch=deadline,
+    )
+    record = json.loads((state / "campaign-run-deadline.json").read_text())
+    assert actual == deadline
+    assert record["started_epoch"] == deadline - 1800
+    assert _campaign_deadline(
+        state, campaign_id="c-inherited", spec_hash="b" * 64,
+        time_limit_seconds=1800, inherited_deadline_epoch=deadline,
+    ) == deadline
+    with pytest.raises(V2CampaignCLIError, match="deadline record is invalid"):
+        _campaign_deadline(
+            state, campaign_id="c-inherited", spec_hash="b" * 64,
+            time_limit_seconds=1800, inherited_deadline_epoch=deadline - 10,
+        )
+
+
+def test_benchmark_pivot_accepts_opaque_zip_bundle_before_hypothesis_selection(tmp_path, monkeypatch):
+    import base64
+    import hashlib
+    import io
+    import zipfile
+    import time
+    from types import SimpleNamespace
+    import bananloop.v2_campaign_cli as cli
+    import bananloop.evaluator_verification as verification
+    from bananloop.evaluator_fixture import EvaluatorFixtureV1
+
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w') as archive:
+        archive.writestr('evaluate.py', '# public evaluator\n')
+    bundle = stream.getvalue()
+    fixture = EvaluatorFixtureV1.model_validate({
+        'evaluator_bundle_base64': base64.b64encode(bundle).decode(),
+        'execution_backend_id': 'autoresearchexam-sketched-newton-v1',
+        'entrypoint': ['python3', '{evaluator}/evaluate.py'],
+        'tiers': [{'tier': 'dev', 'cases': [{'case_id': 'dev', 'input_base64': 'ZGV2'}]}],
+    })
+    (tmp_path / 'trusted-evaluator-fixture.json').write_bytes(fixture.canonical_bytes())
+    binding = dict(deadline_seconds=3600, evaluator_fixture_sha256=fixture.content_digest(),
+                   evaluator_bundle_sha256=hashlib.sha256(bundle).hexdigest(),
+                   execution_backend_id=fixture.execution_backend_id,
+                   permissions={'read': ['candidate.py'], 'write': ['candidate.py']},
+                   candidate_path='candidate.py', adapter_id='sketched-newton-public-v1',
+                   metric_field='task_score', metric_direction='MAXIMIZE', model='fake')
+    spec = SimpleNamespace(autonomy=SimpleNamespace(mode='FULL_AUTO',
+        capability_policy=SimpleNamespace(network_access=False, read_paths=('candidate.py',)),
+        scope=SimpleNamespace(allowed_paths=('candidate.py',), max_child_depth=1, max_child_campaigns=1)),
+        max_candidate_iterations=None, budget=SimpleNamespace(max_experiments=1000, max_attempts=1000,
+        deadline_seconds=3600), goal='fake', evaluator_fixture_digest=fixture.content_digest())
+    protocol = SimpleNamespace(evaluator_bundle_sha256=binding['evaluator_bundle_sha256'],
+                               metric_field='task_score', direction='MAXIMIZE')
+    monkeypatch.setattr(cli, '_read_benchmark_binding', lambda goal: binding)
+    monkeypatch.setattr(verification, 'EvaluatorProtocolAuthority', lambda conn:
+        SimpleNamespace(approved_protocol=lambda digest: (SimpleNamespace(protocol=protocol), None)))
+    monkeypatch.setattr(cli, '_selected_optimization_task', lambda **kwargs: None)
+    result = cli._record_verified_optimization_pivot(
+        repo=tmp_path, state_root=tmp_path, registry_root=tmp_path, campaign_id='fake', parent_spec=spec,
+        graph=SimpleNamespace(conn=None), queue=None,
+        roles=SimpleNamespace(role=lambda name: SimpleNamespace(model='fake')),
+        visible_paths=('candidate.py',), write_paths=('candidate.py',),
+        approval_digest='a'*64, deadline_epoch=time.time()+3600)
+    assert result['status'] == 'NO_EXECUTABLE_RESEARCH_HYPOTHESIS'
+
+
+def test_chatgpt_failure_diagnostics_exclude_provider_content():
+    from bananloop.chatgpt_responses import ChatGPTPlanResponseError
+    assert _safe_failure_diagnostics(ChatGPTPlanResponseError('ChatGPT Responses admission failed (HTTP 429)'))[0]['message'] == 'admission HTTP 429'
+    assert _safe_failure_diagnostics(ChatGPTPlanResponseError('model did not produce strict JSON'))[0]['message'] == 'model did not produce strict JSON'
+    assert 'private-payload' not in str(_safe_failure_diagnostics(ChatGPTPlanResponseError('ChatGPT model request did not complete: private-payload')))

@@ -1,0 +1,23 @@
+{
+  "agents": [
+    {
+      "import_path": "benchmarks.autoresearchexam.harbor_agent:AREBananLoopOptimizationAgent",
+      "kwargs": {
+        "config_path": "/home/sonik/bananloop-benchmark-env/runs/sketched-newton-new-campaign-20261114-004/harbor-prepared/bananloop.json"
+      },
+      "override_timeout_sec": 3600
+    }
+  ],
+  "job_name": "are-newton-b3a4557627e9",
+  "jobs_dir": "/home/sonik/bananloop-benchmark-env/runs/sketched-newton-new-campaign-20261114-004/harbor-jobs",
+  "n_attempts": 1,
+  "n_concurrent_trials": 1,
+  "retry": {
+    "max_retries": 0
+  },
+  "tasks": [
+    {
+      "path": "/home/sonik/bananloop-benchmark-env/safe-overlays/are-v1.1-sketched-newton-cov-estimator"
+    }
+  ]
+}

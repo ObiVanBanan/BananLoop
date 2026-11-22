@@ -383,3 +383,15 @@ def test_optimizer_model_bridge_rejects_changed_role_or_unapproved_path():
         invoke(request, object(), adapter="legacy", provider="openai", model="x",
                model_version="v", prompt_digest="a" * 64, max_model_tokens=10)
 
+
+
+def test_final_report_labels_dev_comparison_without_claiming_validation():
+    from bananloop.v2_optimization_runtime import _render_final_report_markdown
+    report = {'campaign_id': 'dev-campaign', 'optimization_report': {
+        'baseline_candidate_delta': {'status':'VERIFIED','tier':'dev','comparison_table':[{
+            'tier':'DEV','metric_id':'task_score','baseline':-0.5,'candidate':-0.2,
+            'delta':0.3,'directional_improvement':0.3}]}}}
+    text = _render_final_report_markdown(report)
+    assert '## DEV baseline / candidate / delta' in text
+    assert '| DEV | task_score |' in text
+    assert 'Validation baseline' not in text

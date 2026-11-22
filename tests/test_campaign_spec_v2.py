@@ -383,3 +383,14 @@ def test_populated_v4_database_reads_legacy_evaluator_binding_without_rewrite(tm
         assert after == before
     finally:
         reopened.close()
+
+
+def test_dev_integration_policy_is_explicit_hash_bound_and_full_auto_only():
+    legacy = parse_campaign_spec_document(optimization_spec())
+    absent = parse_campaign_spec_document(optimization_spec(benchmark_integration_tier=None))
+    assert legacy.approved_hash() == absent.approved_hash()
+    assert 'benchmark_integration_tier' not in legacy.model_dump(mode='json')
+    with pytest.raises(ValueError, match='fixture-pinned Full Auto'):
+        parse_campaign_spec_document(optimization_spec(benchmark_integration_tier='dev', evaluator_fixture_digest=SHA))
+    with pytest.raises(ValueError):
+        parse_campaign_spec_document(optimization_spec(benchmark_integration_tier='holdout'))

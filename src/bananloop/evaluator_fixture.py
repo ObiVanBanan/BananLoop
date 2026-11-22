@@ -82,17 +82,18 @@ class EvaluatorFixtureV1(BaseModel):
         default=None, pattern=r"^[a-z0-9][a-z0-9._:-]{0,119}$",
     )
     entrypoint: tuple[str, ...] = Field(min_length=1, max_length=64)
-    tiers: tuple[EvaluatorFixtureTierV1, ...] = Field(min_length=2, max_length=3)
+    tiers: tuple[EvaluatorFixtureTierV1, ...] = Field(min_length=1, max_length=3)
 
     @field_validator("tiers")
     @classmethod
     def all_tiers(cls, values: tuple[EvaluatorFixtureTierV1, ...]):
         names = tuple(item.tier for item in values)
         if names not in {
+            ("dev",),
             ("dev", "holdout", "validation"),
             ("dev", "validation"),
         }:
-            raise ValueError("fixture tiers must be ordered dev, validation, with optional holdout")
+            raise ValueError("fixture tiers must be public DEV only, or ordered dev, validation with optional holdout")
         return values
 
     @model_validator(mode="after")

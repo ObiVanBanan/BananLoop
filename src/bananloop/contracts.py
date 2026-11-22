@@ -959,6 +959,8 @@ class _CampaignSpecV2Base(BaseModel):
             data.pop("evaluator_fixture_digest", None)
         if data.get("max_candidate_iterations") is None:
             data.pop("max_candidate_iterations", None)
+        if data.get("benchmark_integration_tier") is None:
+            data.pop("benchmark_integration_tier", None)
         return data
 
     def approved_hash(self) -> str:
@@ -1019,6 +1021,15 @@ class OptimizationCampaignSpecV2(_CampaignSpecV2Base):
     mode: Literal["OPTIMIZATION"]
     evaluation: FrozenEvaluatorRefV2
     optimization_task: OptimizationTaskV2 | None = None
+    # Explicitly scoped diagnostic policy; absence retains VALIDATION semantics.
+    benchmark_integration_tier: Literal["dev"] | None = None
+
+    @model_validator(mode="after")
+    def validate_benchmark_integration_tier(self):
+        if self.benchmark_integration_tier == "dev" and (
+                self.autonomy.mode != "FULL_AUTO" or self.evaluator_fixture_digest is None):
+            raise ValueError("DEV integration requires a fixture-pinned Full Auto campaign")
+        return self
 
 
 CampaignSpecV2 = Annotated[

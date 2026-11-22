@@ -826,8 +826,8 @@ class V2ResearchRuntime:
         Existing budget reservations remain the authority for stopping work.
         """
         if (isinstance(max_iterations, bool) or not isinstance(max_iterations, int)
-                or not 1 <= max_iterations <= 100):
-            raise V2RuntimeError("max_iterations must be an integer from 1 to 100")
+                or not 1 <= max_iterations <= 1000):
+            raise V2RuntimeError("max_iterations must be an integer from 1 to 1000")
         self.plan()  # Validate the persisted Full spec and pinned roles before any graph mutation.
         completed: list[dict[str, Any]] = []
         pending = self._pending_human_decision()

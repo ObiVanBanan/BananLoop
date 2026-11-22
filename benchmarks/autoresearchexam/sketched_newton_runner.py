@@ -43,6 +43,9 @@ VALIDATION_METRIC_SEMANTICS = "public_are.validation_score=higher_is_better_task
 _RUNTIME_FILES = {
     "sketched_newton_runner.py": Path(__file__),
     "public_sketched_newton_dev.py": Path(newton_dev.__file__),
+    # The independent reviewer can inspect how Codex Direct reaches the same
+    # public DEV scorer; the bundle digest pins this evidence to the protocol.
+    "public_dev_cli.py": Path(__file__).with_name("public_dev_cli.py"),
     "public_devkit.py": Path(__file__).with_name("public_devkit.py"),
     "optimization_runner.py": Path(__file__).with_name("optimization_runner.py"),
     "public_grader.py": Path(__file__).with_name("public_grader.py"),

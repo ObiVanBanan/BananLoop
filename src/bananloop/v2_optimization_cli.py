@@ -166,7 +166,7 @@ def _mark_parent_campaign_complete(result: dict[str, Any], *,
                                    spec: OptimizationCampaignSpecV2,
                                    database: Path,
                                    registry: CampaignRegistry) -> dict[str, Any]:
-    """Finalize a supervised parent after its approved child fully completes."""
+    """Finalize the parent after its authorized child and evaluator handoff complete."""
     parent_ref = spec.parent
     if parent_ref is None or result.get("status") != "ALL_NODES_COMPLETE":
         return result
@@ -235,16 +235,43 @@ def _mark_parent_campaign_complete(result: dict[str, Any], *,
         ).fetchone()
         if campaign is None or campaign["spec_hash"] != parent_ref.parent_spec_hash:
             raise V2OptimizationCLIError("parent campaign spec changed before finalization")
-        if campaign["status"] not in {"PAUSED_NEEDS_INPUT", "GOAL_MET"}:
+        if (parent_ref.pivot_decision_id == f"auto:{parent_ref.pivot_proposal_digest}"
+                and spec.benchmark_integration_tier == "dev"
+                and parent_ref.approval_request_id is None):
+            parent_spec_json = conn.execute("SELECT spec_json FROM campaigns WHERE id=1").fetchone()[0]
+            if json.loads(parent_spec_json).get("autonomy", {}).get("mode") != "FULL_AUTO":
+                raise V2OptimizationCLIError("parent campaign does not authorize Full Auto")
+            authorization = conn.execute(
+                """SELECT decision_json,proposal_json FROM v2_pivot_sagas
+                   WHERE allocation_id=? AND parent_campaign_id=? AND parent_spec_hash=?
+                     AND child_id=? AND child_spec_hash=? AND state='ACTIVE'""",
+                (parent_ref.allocation_id, parent_ref.parent_campaign_id,
+                 parent_ref.parent_spec_hash, child_id, spec.approved_hash()),
+            ).fetchone()
+            if (authorization is None
+                    or json.loads(authorization["decision_json"]) != {
+                        "authorization": "FULL_AUTO_SCOPE", "approval": None,
+                        "decision_id": parent_ref.pivot_decision_id,
+                    }):
+                raise V2OptimizationCLIError("parent Full Auto authorization does not match frozen child lineage")
+            proposal = json.loads(authorization["proposal_json"])
+            if (proposal.get("proposal_id") != parent_ref.pivot_proposal_id
+                    or proposal.get("digest") != parent_ref.pivot_proposal_digest
+                    or proposal.get("spec_hash") != parent_ref.parent_spec_hash):
+                raise V2OptimizationCLIError("parent Full Auto proposal does not match frozen child lineage")
+            allowed_status = "READY"
+        else:
+            decision = conn.execute(
+                "SELECT proposal_id,digest,decision,status FROM v2_pivot_decisions WHERE request_id=?",
+                (parent_ref.pivot_decision_id,),
+            ).fetchone()
+            if (decision is None or decision["proposal_id"] != parent_ref.pivot_proposal_id
+                    or decision["digest"] != parent_ref.pivot_proposal_digest
+                    or decision["decision"] != "approve" or decision["status"] != "APPROVED"):
+                raise V2OptimizationCLIError("parent owner approval does not match frozen child lineage")
+            allowed_status = "PAUSED_NEEDS_INPUT"
+        if campaign["status"] not in {allowed_status, "GOAL_MET"}:
             raise V2OptimizationCLIError("parent campaign cannot enter GOAL_MET from its current state")
-        decision = conn.execute(
-            "SELECT proposal_id,digest,decision,status FROM v2_pivot_decisions WHERE request_id=?",
-            (parent_ref.pivot_decision_id,),
-        ).fetchone()
-        if (decision is None or decision["proposal_id"] != parent_ref.pivot_proposal_id
-                or decision["digest"] != parent_ref.pivot_proposal_digest
-                or decision["decision"] != "approve" or decision["status"] != "APPROVED"):
-            raise V2OptimizationCLIError("parent owner approval does not match frozen child lineage")
         if campaign["status"] != "GOAL_MET":
             now = utc_now()
             final_report["campaign_terminal_status"] = "GOAL_MET"
@@ -457,9 +484,13 @@ def run_v2_optimize(args: Namespace, *,
     Provider request allowance is shared by optimizer and integration verifier.
     Trusted evaluation runs in Core and does not spend model requests.
     """
+    benchmark_time_only = getattr(args, "benchmark_time_only", False)
+    if not isinstance(benchmark_time_only, bool):
+        raise V2OptimizationCLIError("benchmark_time_only must be a boolean")
+    execution_ceiling = 1000 if benchmark_time_only else 100
     if (isinstance(args.approve_up_to_calls, bool)
-            or not 0 <= args.approve_up_to_calls <= 100
-            or isinstance(args.max_steps, bool) or not 1 <= args.max_steps <= 100
+            or not 0 <= args.approve_up_to_calls <= execution_ceiling
+            or isinstance(args.max_steps, bool) or not 1 <= args.max_steps <= execution_ceiling
             or isinstance(args.timeout_seconds, bool) or not 1 <= args.timeout_seconds <= 300):
         raise V2OptimizationCLIError("call, step, or timeout bounds are invalid")
     task_deadline_epoch = getattr(args, "task_deadline_epoch", None)
@@ -501,6 +532,15 @@ def run_v2_optimize(args: Namespace, *,
         spec = graph.campaign_spec()
         if not isinstance(spec, OptimizationCampaignSpecV2):
             raise V2OptimizationCLIError("campaign is not an approved v2 Optimization child")
+        if benchmark_time_only and (
+                spec.autonomy.mode != "FULL_AUTO"
+                or spec.max_candidate_iterations is not None
+                or spec.budget.max_agent_calls > 1000
+                or spec.budget.max_evaluator_calls > 1000):
+            raise V2OptimizationCLIError(
+                "time-only execution requires a benchmark Full Auto child without an iteration cap "
+                "and with disclosed technical budgets at or below 1000"
+            )
         if spec.source_repo != str(repo):
             raise V2OptimizationCLIError("campaign source repository does not match --repo")
         try:
@@ -562,7 +602,8 @@ def run_v2_optimize(args: Namespace, *,
                 # repeating evaluator work after a report-writing failure.
                 result = runtime.run_campaign(
                     visible_paths=visible_paths, write_paths=write_paths,
-                    max_steps=args.max_steps, worker_id="v2-optimization-cli-recovery",
+                    max_steps=args.max_steps, benchmark_time_only=benchmark_time_only,
+                    worker_id="v2-optimization-cli-recovery",
                 )
                 campaign_call_count = len(saved_report.get("provider_calls", []))
                 final_report_path = result.get("final_report_path")
@@ -711,8 +752,17 @@ def run_v2_optimize(args: Namespace, *,
                 visible_paths=visible_paths, write_paths=write_paths,
                 model_reply=bounded_optimizer,
                 integration_verifier_executor=verifier_executor,
-                max_steps=args.max_steps, worker_id="v2-optimization-cli",
+                max_steps=args.max_steps, benchmark_time_only=benchmark_time_only,
+                worker_id="v2-optimization-cli",
             )
+            if benchmark_time_only and (
+                result.get("status") in {"STEP_LIMIT", "BUDGET_EXHAUSTED"}
+                or spent >= execution_ceiling
+            ):
+                result["technical_limit_status"] = result.get("status")
+                result["status"] = "LIMIT_EXHAUSTED"
+                result["technical_call_ceiling"] = execution_ceiling
+                result["technical_step_ceiling"] = args.max_steps
             result.update({
                 "mode": "OPTIMIZATION", "profile": "FULL",
                 "role_registry_digest": role_registry.digest(),
@@ -731,9 +781,11 @@ def run_v2_optimize(args: Namespace, *,
             return result
         except _CallAllowanceReached as exc:
             report = {
-                "status": "OWNER_APPROVAL_REQUIRED", "mode": "OPTIMIZATION",
+                "status": "LIMIT_EXHAUSTED" if benchmark_time_only else "OWNER_APPROVAL_REQUIRED",
+                "mode": "OPTIMIZATION",
                 "campaign_id": args.campaign_id, "provider_call_attempts": spent,
                 "failure_type": type(exc).__name__, "usage": "UNKNOWN",
+                "technical_call_ceiling": 1000 if benchmark_time_only else None,
                 "automatic_replay": False,
                 "request_history": {
                     name: list(getattr(provider, "request_history", []))
