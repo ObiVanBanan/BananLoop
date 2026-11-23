@@ -90,7 +90,8 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
                 max_evaluator_calls: int = 16,
                 max_iterations: int = 2,
                 optimization_write_paths: tuple[str, ...] = (),
-                evaluator_fixture_digest: str | None = None):
+                evaluator_fixture_digest: str | None = None,
+                max_stalled_iterations: int | None = None):
     if max_agent_calls < 4:
         raise V2CampaignCLIError("--max-agent-calls must be at least 4 to fund the four pinned v2 roles")
     if not set(optimization_write_paths) <= set(paths):
@@ -179,6 +180,10 @@ def _build_spec(repo: Path, goal: str, paths: tuple[str, ...], *,
         },
         "role_registry_digest": roles.digest(), "evaluation": None,
         "evaluator_fixture_digest": evaluator_fixture_digest,
+        "exploration_supervision": (
+            {"max_stalled_iterations": max_stalled_iterations}
+            if max_stalled_iterations is not None else None
+        ),
     })
     return spec, roles, policy
 
@@ -704,6 +709,9 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             fixture = EvaluatorFixtureV1.load(fixture_path_arg)
         except ValueError as exc:
             raise V2CampaignCLIError(f"--evaluator-fixture is invalid: {exc}") from exc
+    stall_limit = getattr(args, "supervisor_stall_limit", None)
+    if stall_limit is not None and (type(stall_limit) is not int or not 2 <= stall_limit <= 100):
+        raise V2CampaignCLIError("--supervisor-stall-limit must be an integer from 2 to 100")
     spec, roles, _policy = _build_spec(
         repo, goal, paths, max_agent_calls=args.max_agent_calls,
         max_model_tokens=args.max_model_tokens, model=args.model,
@@ -711,6 +719,7 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
         max_iterations=args.max_iterations,
         optimization_write_paths=write_paths,
         evaluator_fixture_digest=fixture.content_digest() if fixture else None,
+        max_stalled_iterations=stall_limit,
     )
     runtime_paths = RuntimePaths.for_repo(
         repo, Path(args.state_dir).expanduser() if args.state_dir else None,
@@ -780,6 +789,14 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
             state_root=state_root, role_registry=roles,
             trusted_artifact_digests=((fixture.content_digest(),) if fixture else ()),
         )
+        supervision = runtime.supervision()
+        if supervision is not None and runtime.plan().reason == "SUPERVISOR_STALLED":
+            return {
+                "status": "SUPERVISOR_STALLED", "mode": "EXPLORATION",
+                "profile": "FULL", "campaign_id": entry.campaign_id,
+                "spec_hash": spec.approved_hash(), "state_dir": str(state_root),
+                "supervision": supervision, "live_model_called": False,
+            }
         if args.approve_up_to_calls == 0:
             return {
                 "status": "READY_FOR_OWNER_APPROVAL", "mode": "EXPLORATION",
@@ -788,6 +805,7 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
                 "read_paths": list(paths), "state_dir": str(state_root),
                 "role_registry_path": str(roles_path),
                 "live_model_called": False,
+                **({"supervision": supervision} if supervision is not None else {}),
             }
 
         auth = ChatGPTPlanAuth()
@@ -864,7 +882,10 @@ def run_v2_explore(args: Any) -> dict[str, Any]:
                 graph=graph, queue=queue, campaign_id=entry.campaign_id,
                 published_root=state_root / "rpdi05" / "published", auth=auth,
                 model=args.model, timeout_seconds=args.timeout_seconds,
-                remaining_calls=max(0, args.approve_up_to_calls - verifier_calls - researcher_calls),
+                remaining_calls=(
+                    0 if result["status"] == "SUPERVISOR_STALLED"
+                    else max(0, args.approve_up_to_calls - verifier_calls - researcher_calls)
+                ),
                 call_observer=lambda receipt: observe_call("independent_verifier", receipt),
             )
             result["protocol_reviews"] = reviews_after["reviews"]

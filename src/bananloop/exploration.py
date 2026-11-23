@@ -158,7 +158,8 @@ class EvidenceOnlyAttemptAdapter:
             raise EvidenceAdapterError("trusted artifact allowlist must contain unique SHA-256 digests")
         self.trusted_artifact_digests = tuple(sorted(trusted_artifact_digests))
 
-    def enqueue(self, *, node_id: str, visible_paths: tuple[str, ...] | list[str]) -> dict[str, Any]:
+    def enqueue(self, *, node_id: str, visible_paths: tuple[str, ...] | list[str],
+                supervisor_guidance: str | None = None) -> dict[str, Any]:
         spec = self.graph.campaign_spec()
         if not isinstance(spec, ExplorationCampaignSpecV2):
             raise EvidenceAdapterError("v2 Optimization remains unsupported until its evaluator adapter is approved")
@@ -258,13 +259,16 @@ class EvidenceOnlyAttemptAdapter:
         if not isinstance(node_hypothesis, str) or not node_hypothesis.strip():
             node_hypothesis = None
         try:
+            public_task = node_hypothesis or spec.goal
+            if supervisor_guidance:
+                public_task = supervisor_guidance + "\n\n" + public_task
             context_fields = {
                     "node_id": {"value": node_id, "classification": "PUBLIC_NODE",
                                 "source_ref": f"graph://nodes/{node_id}"},
                     "node_phase": {"value": target_node["phase"], "classification": "PUBLIC_NODE",
                                    "source_ref": f"graph://nodes/{node_id}"},
                     "public_task": {
-                        "value": (node_hypothesis or spec.goal)[:4000],
+                        "value": public_task[:4000],
                         "classification": "PUBLIC_NODE" if node_hypothesis else "PUBLIC_SPEC",
                         "source_ref": f"graph://nodes/{node_id}" if node_hypothesis
                                       else "campaign://spec/goal",
