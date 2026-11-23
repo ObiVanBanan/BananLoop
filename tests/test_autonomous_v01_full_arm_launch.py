@@ -108,7 +108,10 @@ def test_runs_single_worker_and_cleans_only_derived_exact_projects(tmp_path, mon
     def fake_run(command, *, cwd, arm_root, deadline):
         assert "full_arm_worker" in command[2]
         assert cwd == checkout
+        assert not (arm_root / "harbor-jobs").exists()
         assert json.loads((arm_root / "worker-input.json").read_text())["config"]["backend_kwargs"]["jobs_root"] == str(arm_root / "harbor-jobs")
+        # Simulate prepare_autonomous_task_job, which creates its own root.
+        (arm_root / "harbor-jobs").mkdir(mode=0o700)
         receipt = {"status": "DONE", "arm_id": "pair-4-bananloop_full", "task_id": "task-4",
             "manifest_sha256": manifest["manifest_sha256"], "deadline_epoch": deadline.epoch,
         "usage": {"known": True}, "final_artifact": {"status": "EMPTY", "files": []}}
@@ -143,6 +146,7 @@ def test_unclear_trial_inventory_marks_unknown_and_does_not_cleanup(tmp_path, mo
     candidate = tmp_path / "candidate.py"
     candidate.write_text("survives timeout\n")
     def timed_out(_command, *, arm_root, deadline, **_kwargs):
+        (arm_root / "harbor-jobs").mkdir(mode=0o700)
         (arm_root / "harbor-jobs" / "partial").mkdir()
         return {"status": "TIMED_OUT", "returncode": -15, "deadline_epoch": deadline.epoch}
     monkeypatch.setattr("benchmarks.autonomous_v01.arm_watchdog.run_arm_command", timed_out)

@@ -129,7 +129,6 @@ def launch_full_arm(*, manifest_path: Path, preflight_path: Path,
         raise ValueError("arm directory already exists; replay is fail closed")
     root.mkdir(parents=True, mode=0o700)
     jobs_root = root / "harbor-jobs"
-    jobs_root.mkdir(mode=0o700)
     # Bind Harbor's writes to an isolated directory whose contents can be
     # associated with this one arm after the worker exits.
     config = json.loads(json.dumps(backend_config))
@@ -179,15 +178,27 @@ def launch_full_arm(*, manifest_path: Path, preflight_path: Path,
     # authorizes no Docker calls; partial cleanup receipts remain visible.
     from .harbor_trial_projects import identify_trial_compose_projects
     from .harbor_cleanup import cleanup_compose_project
-    inventory = identify_trial_compose_projects(jobs_root)
+    # The preparation helper owns creation of jobs_root. A missing root is a
+    # clean no-op only when the supervised worker never started; otherwise
+    # its absence cannot establish that Harbor had no side effects.
+    if (not jobs_root.exists() and worker.get("status") in
+            {"FAILED_TO_START", "TIMED_OUT_BEFORE_START"}):
+        inventory = {"status": "KNOWN", "projects": [], "configs_seen": 0,
+                     "inventory_complete": True, "error": None}
+    else:
+        inventory = identify_trial_compose_projects(jobs_root)
     cleanup: list[dict[str, Any]] = []
-    if inventory.get("status") == "KNOWN" and inventory.get("projects") and inventory.get("configs_seen", 0) > 0:
+    no_harbor_started = (not jobs_root.exists() and worker.get("status") in
+                         {"FAILED_TO_START", "TIMED_OUT_BEFORE_START"})
+    if no_harbor_started:
+        cleanup = []
+    elif inventory.get("status") == "KNOWN" and inventory.get("projects") and inventory.get("configs_seen", 0) > 0:
         cleanup = [{"project": project, **cleanup_compose_project(project)}
                    for project in inventory["projects"]]
     else:
         cleanup = [{"status": "UNKNOWN", "error": inventory.get("error", "trial project inventory incomplete")}]
-    cleanup_ok = (inventory.get("inventory_complete") is True and bool(cleanup)
-                  and all(item.get("status") == "CLEANED" for item in cleanup))
+    cleanup_ok = (no_harbor_started or (inventory.get("inventory_complete") is True and bool(cleanup)
+                  and all(item.get("status") == "CLEANED" for item in cleanup)))
     if not cleanup_ok:
         result["status"] = "INTERRUPTED_UNKNOWN"
         result["usage_unknown"] = True
