@@ -11,9 +11,18 @@ from bananloop.v2_optimization_runtime import (
     OptimizationCandidateProposalV1,
     V2OptimizationCandidateAdapter,
     V2OptimizationError,
+    _candidate_iteration_limit_reached,
     _safe_path,
     make_optimizer_invoke,
 )
+
+
+@pytest.mark.parametrize(("limit", "iteration", "reached"), [
+    (None, 1, False), (None, 3, False),
+    (1, 1, True), (2, 1, False), (2, 2, True),
+])
+def test_candidate_iteration_limit_none_means_no_iteration_cap(limit, iteration, reached):
+    assert _candidate_iteration_limit_reached(limit, iteration) is reached
 
 
 @pytest.mark.parametrize("path", [

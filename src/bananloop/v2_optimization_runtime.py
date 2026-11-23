@@ -194,6 +194,10 @@ def _canonical(value: Any) -> str:
                       ensure_ascii=False, allow_nan=False)
 
 
+def _candidate_iteration_limit_reached(limit: int | None, iteration: int) -> bool:
+    return limit is not None and iteration >= limit
+
+
 def _safe_path(value: str) -> str:
     if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
         raise V2OptimizationError("candidate paths must be nonempty POSIX relative paths")
@@ -1097,8 +1101,7 @@ class V2OptimizationRuntime:
         iteration = candidate_payload.get("candidate_iteration")
         if isinstance(iteration, bool) or not isinstance(iteration, int) or iteration < 1:
             raise V2OptimizationError("candidate iteration index is invalid")
-        if (spec.max_candidate_iterations is None
-                or iteration >= spec.max_candidate_iterations):
+        if _candidate_iteration_limit_reached(spec.max_candidate_iterations, iteration):
             return None
 
         ledger = BudgetLedger(self.queue.path)

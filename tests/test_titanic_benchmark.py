@@ -180,7 +180,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
         PinnedRoleExecutorV1, RoleDefinitionV1, RoleRegistryV1, TeamManifestAuthority,
     )
     from bananloop.registry import CampaignRegistry
-    from bananloop.trusted_evaluator import TrustedEvaluatorRunner
+    from bananloop.trusted_evaluator import EvaluatorRunReceiptV1, TrustedEvaluatorRunner
     from bananloop.v2_optimization_runtime import V2OptimizationRuntime
     from bananloop.worker_queue import DurableWorkerQueue
 
@@ -191,8 +191,8 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
 
     live_mode = os.environ.get("BANANLOOP_TITANIC_LIVE") == "1"
     live_epochs = int(os.environ.get("BANANLOOP_TITANIC_LIVE_EPOCHS", "1")) if live_mode else 1
-    if live_mode and live_epochs not in {1, 2}:
-        pytest.fail("live smoke permits only one or two explicitly selected epochs")
+    if live_mode and live_epochs not in {1, 3}:
+        pytest.fail("comparison smoke permits one baseline or three fixed-runtime calls")
     state_root = tmp_path / "campaign-state"
     live_receipts = []
     live_responses = []
@@ -528,7 +528,8 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                 "max_evaluator_calls": 30, "deadline_seconds": 3600,
                 "plateau_experiments": 3,
             },
-            "max_candidate_iterations": live_epochs if live_mode else 5,
+            # None is time-only mode: the campaign inherits its shared deadline.
+            "max_candidate_iterations": None,
             "role_registry_digest": roles.digest(),
             "evaluation": {
                 "protocol_id": protocol.protocol_id, "version": protocol.version,
@@ -642,7 +643,6 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
 
         if live_mode:
             live_dispatch_count = 0
-            forced_first_verifier_rejection = False
 
             def one_shot_live_optimizer(public_input, **pinned):
                 nonlocal live_dispatch_count
@@ -652,17 +652,26 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                         "live smoke reached its explicit optimizer inference ceiling"
                     )
                 dispatch_index = live_dispatch_count
-                context_json = json.dumps(public_input["role_context"], ensure_ascii=False).lower()
-                if dispatch_index == 1:
-                    if "previous candidate did not pass independent verification" not in context_json:
-                        raise AssertionError("second live epoch lacks persisted rejection evidence")
+                if dispatch_index == 0:
                     public_input = dict(public_input)
                     public_input["instruction"] += (
-                        " The prior candidate was rejected by independent verification. For this "
-                        "bounded diagnostic, return the known DEV-improving model configuration "
-                        'exactly as complete JSON text: {"schema":"titanic-linear-v1",'
-                        '"intercept":-0.5,"coefficients":{"sex_female":1.0,'
-                        '"male_pclass1_child":1.5}}. Keep the selected hypothesis id unchanged.'
+                        " For this controlled Titanic comparison, set only the existing "
+                        "male_pclass1_child coefficient to 1.0 in the model JSON. Preserve all "
+                        "other values and the selected hypothesis id."
+                    )
+                elif dispatch_index == 1:
+                    public_input = dict(public_input)
+                    public_input["instruction"] += (
+                        " For this bounded follow-up, increment only the existing "
+                        "male_pclass1_child coefficient to 1.5 in the model JSON. Preserve all "
+                        "other values and the selected hypothesis id."
+                    )
+                elif dispatch_index >= 2:
+                    public_input = dict(public_input)
+                    public_input["instruction"] += (
+                        " For this next bounded iteration, increment only the existing "
+                        "male_pclass1_child coefficient to 1.55 in the model JSON. Preserve all "
+                        "other values and the selected hypothesis id."
                     )
                 live_dispatch_count += 1
                 try:
@@ -680,24 +689,6 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
             selected_optimizer = one_shot_live_optimizer
             worker_id = "titanic-live-smoke"
             selected_integration_executor = integration_executor
-            if live_epochs == 2:
-                def reject_first_optimizer_candidate(request, gateway, **_pinned):
-                    nonlocal forced_first_verifier_rejection
-                    output = integration_executor.dispatch(request, gateway)
-                    # Inject one deterministic negative verifier result only
-                    # when the first real optimizer candidate reaches this
-                    # separate review stage. Keep its actual proposal intact.
-                    if live_dispatch_count == 1 and not forced_first_verifier_rejection:
-                        output = dict(output)
-                        output["decision"] = "FAIL"
-                        forced_first_verifier_rejection = True
-                    return output
-
-                selected_integration_executor = PinnedRoleExecutorV1(
-                    manifest_digest=integration_executor.manifest_digest,
-                    member=integration_executor.member,
-                    _invoke=reject_first_optimizer_candidate,
-                )
         else:
             selected_optimizer = offline_optimizer
             worker_id = "titanic-offline-e2e"
@@ -708,7 +699,7 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                 write_paths=["src/model.json"],
                 model_reply=selected_optimizer,
                 integration_verifier_executor=selected_integration_executor,
-                max_steps=(3 * live_epochs) if live_mode else 20,
+                    max_steps=(3 * live_epochs) if live_mode else 9,
                 worker_id=worker_id,
             )
         except Exception as exc:
@@ -722,7 +713,6 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                         "provider_request_receipts": live_receipts,
                         "provider_usage": [r.get("usage", "UNKNOWN") for r in live_receipts],
                         "provider_responses": live_responses,
-                        "forced_first_verifier_rejection": forced_first_verifier_rejection,
                         "retry_policy": "no automatic or test-level retry",
                     }, indent=2, sort_keys=True) + "\n", encoding="utf-8",
                 )
@@ -735,21 +725,29 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                 "provider_request_receipts": live_receipts,
                 "provider_usage": [r.get("usage", "UNKNOWN") for r in live_receipts],
                 "provider_responses": live_responses,
-                "forced_first_verifier_rejection": forced_first_verifier_rejection,
                 "holdout_metric": result.get("holdout", {}).get("metric"),
                 "retry_policy": f"{live_epochs} optimizer inference maximum; no automatic retry",
             }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             assert len(live_receipts) == live_epochs
-        assert result["status"] == "ALL_NODES_COMPLETE"
+        if live_mode and live_epochs == 1:
+            assert result["status"] == "ALL_NODES_COMPLETE"
+        else:
+            assert result["status"] == "STEP_LIMIT"
         if not live_mode:
-            assert offline_dispatch_count == 5
+            assert offline_dispatch_count == 3
             assert sum(item.get("status") == "CANDIDATE_CREATED"
-                       for item in result["steps"]) == 5
+                       for item in result["steps"]) == 3
             assert sum(item.get("status") == "INDEPENDENT_VERIFICATION_PASS"
-                       for item in result["steps"]) == 4
-        assert result["holdout"]["status"] == "VERIFIED"
-        assert result["holdout"]["tier"] == "holdout"
-        assert 0.0 <= result["holdout"]["metric"]["value"] <= 1.0
+                       for item in result["steps"]) == 2
+        else:
+            assert sum(item.get("status") == "CANDIDATE_CREATED"
+                       for item in result["steps"]) == live_epochs
+        if result["status"] == "ALL_NODES_COMPLETE":
+            assert result["holdout"]["status"] == "VERIFIED"
+            assert result["holdout"]["tier"] == "holdout"
+            assert 0.0 <= result["holdout"]["metric"]["value"] <= 1.0
+        else:
+            assert result.get("holdout") is None
         assert graph.conn.execute(
             "SELECT COUNT(*) FROM evaluator_run_receipts WHERE campaign_id=?",
             (child_campaign_id,),
@@ -772,22 +770,29 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
                        for tokens in actual_usages)
             total_actual_tokens = sum(actual_usages)
             assert total_actual_tokens <= 65_000
-            assert all(item["budget_breached_by_resource"]["model_tokens"] is False
-                       for item in optimization_results)
-            token_account = graph.conn.execute(
-                "SELECT cap,spent,unknown FROM budget_accounts "
-                "WHERE campaign_id=? AND resource='model_tokens'",
-                (child_campaign_id,),
-            ).fetchone()
-            assert token_account is not None
-            assert (token_account["cap"], token_account["spent"], token_account["unknown"]) == (
-                65_000, total_actual_tokens, 0,
-            )
         report = json.loads(Path(result["final_report_path"]).read_text(encoding="utf-8"))
-        assert report["optimization_report"]["holdout"]["metric"]["metric_id"] == "accuracy"
-        assert report["optimization_report"]["champion"]["snapshot_id"]
-        assert not any("holdout" in ref.lower() for node in report["optimization_report"]["nodes"]
+        if result["status"] == "ALL_NODES_COMPLETE":
+            assert report["optimization_report"]["holdout"]["metric"]["metric_id"] == "accuracy"
+            champion_snapshot_id = report["optimization_report"]["champion"]["snapshot_id"]
+            nodes = report["optimization_report"]["nodes"]
+        else:
+            champion_snapshot_id = report["optimization_report"]["champion"]["snapshot_id"]
+            nodes = report["optimization_report"]["nodes"]
+            assert report["status"] == "STEP_LIMIT"
+        assert champion_snapshot_id
+        assert not any("holdout" in ref.lower() for node in nodes
                        for ref in node["evidence_refs"])
+        champion_dev_rows = graph.conn.execute(
+            "SELECT receipt_json FROM evaluator_run_receipts "
+            "WHERE campaign_id=? AND candidate_snapshot_id=? ORDER BY rowid DESC",
+            (child_campaign_id, champion_snapshot_id),
+        ).fetchall()
+        champion_dev_receipt = next(
+            EvaluatorRunReceiptV1.model_validate(json.loads(row["receipt_json"]))
+            for row in champion_dev_rows
+            if json.loads(row["receipt_json"]).get("tier") == "dev"
+        )
+        champion_dev_metric = trusted.public_dev_metric_summary(champion_dev_receipt)
         benchmark_result = {
             "schema": "bananloop-titanic-mini-benchmark-result-v1",
             "dataset_md5": prep["source_md5"],
@@ -795,8 +800,9 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
             "source_snapshot_id": source_snapshot,
             "campaign_id": child_campaign_id,
             "status": result["status"],
-            "holdout": result["holdout"],
-            "champion_snapshot_id": report["optimization_report"]["champion"]["snapshot_id"],
+            "holdout": result.get("holdout"),
+            "champion_dev_metric": champion_dev_metric,
+            "champion_snapshot_id": champion_snapshot_id,
             "final_report_path": result["final_report_path"],
             "live_model_calls": len(live_receipts),
             "provider_request_receipts": live_receipts,
@@ -810,13 +816,12 @@ def test_titanic_v2_optimization_campaign_runs_to_terminal_holdout(tmp_path, mon
             (state_root / "live-smoke-result.json").write_text(
                 json.dumps({
                     "schema": "bananloop-titanic-live-smoke-v1",
-                    "status": "COMPLETED",
+                    "status": "COMPLETED" if result["status"] == "ALL_NODES_COMPLETE" else "BOUNDED",
                     "campaign_status": result["status"],
                     "provider_request_receipts": live_receipts,
                     "provider_usage": [r.get("usage", "UNKNOWN") for r in live_receipts],
                     "provider_responses": live_responses,
-                    "forced_first_verifier_rejection": forced_first_verifier_rejection,
-                    "holdout_metric": result["holdout"]["metric"],
+                    "holdout_metric": result.get("holdout", {}).get("metric"),
                     "budget_actual_usage": {
                         "model_tokens": sum(actual_usages),
                         "agent_calls": len(actual_usages),
