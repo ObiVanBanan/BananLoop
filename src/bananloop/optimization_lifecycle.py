@@ -6,12 +6,16 @@ from typing import Any
 
 from .graph_store import MutateGraph, TransitionNodePhase, TransitionNodeStatus
 from .trusted_evaluator import EvaluatorRunReceiptV1
-from .evaluator_verification import IntegrationVerifierReceiptV1
+from .evaluator_verification import IntegrationVerifierReceiptV1, _safe_failure_detail
 from .champion_promotion import ChampionPromotionError, ChampionPromotionService
 
 
 class OptimizationLifecycleError(RuntimeError):
     """A candidate cannot safely advance through the Optimization lifecycle."""
+
+    def __init__(self, message: str, *, failure_detail: str | None = None):
+        super().__init__(message)
+        self.failure_detail = failure_detail
 
 
 class OptimizationAttemptCoordinator:
@@ -199,7 +203,8 @@ class OptimizationAttemptCoordinator:
             raise
         except Exception as exc:
             raise OptimizationLifecycleError(
-                "integration verifier dispatch or durable receipt recovery failed"
+                "integration verifier dispatch or durable receipt recovery failed",
+                failure_detail=_safe_failure_detail(exc),
             ) from exc
 
         if (receipt.source_snapshot_id != source_snapshot_id

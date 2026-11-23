@@ -804,9 +804,10 @@ def run_v2_optimize(args: Namespace, *,
             report = {
                 "status": "RUN_FAILED", "mode": "OPTIMIZATION", "profile": "FULL",
                 "campaign_id": args.campaign_id, "failure_type": type(exc).__name__,
-                "failure_detail": str(exc)[:500] if isinstance(
-                    exc, (V2OptimizationError, TrustedEvaluatorError)
-                ) else None,
+                "failure_detail": (getattr(exc, "failure_detail", None)
+                                   or (str(exc)[:500] if isinstance(
+                                       exc, (V2OptimizationError, TrustedEvaluatorError)
+                                   ) else None)),
                 "provider_call_attempts": spent, "usage": "UNKNOWN",
                 "live_model_called": spent > 0, "automatic_replay": False,
                 "request_history": {

@@ -37,6 +37,18 @@ _MAX_VERIFIER_CONTEXT_CHARS = 180_000
 _MAX_INLINE_REVIEW_DATA_CHARS = 16_000
 _MAX_PUBLIC_ATTESTATION_BYTES = 4_096
 _PROTECTED_AUDIT_PATHS = {".git", "validation", "holdout", "secret", "secrets", "credentials"}
+
+
+def _safe_failure_detail(exc: BaseException) -> str:
+    """Bound and redact post-dispatch exception details before durable logging."""
+    kind = type(exc).__name__
+    message = str(exc)
+    message = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1<redacted>", message)
+    message = re.sub(r"(?i)(api[_-]?key|token|password|secret)(\s*[:=]\s*)[^\s,;]+",
+                     r"\1\2<redacted>", message)
+    message = re.sub(r"(?<![A-Za-z0-9])[A-Za-z0-9_+/=-]{32,}(?![A-Za-z0-9])", "<redacted>", message)
+    message = re.sub(r"[\r\n\t]+", " ", message)
+    return f"{kind}: {message[:240]}"[:280]
 _ARE_JSON_REVIEW_BACKENDS = frozenset({
     "autoresearchexam-act-tensor-public-v1",
     "autoresearchexam-causalpfn-public-v1",
@@ -1958,9 +1970,9 @@ class IntegrationVerificationAdapter:
                 actual_amount=1, actual_usage=actual_usage,
                 receipt_digest=queue_receipt, result_payload=payload,
             )
-        except Exception:
+        except Exception as exc:
             try:
-                self.queue.cancel(verifier_job_id, reason="integration verifier failed after dispatch")
+                self.queue.cancel(verifier_job_id, reason=("integration verifier failed after dispatch; " + _safe_failure_detail(exc)))
             except Exception:
                 pass
             raise
