@@ -96,6 +96,7 @@ INTEGRATION_VERIFIER_INSTRUCTIONS = (
     "strings, never an object/map of names to booleans. Use only these exact names: "
     "candidate_identity, protocol_identity, evaluation_receipt, budget_receipt, "
     "artifact_integrity, regression_policy. A PASS requires all six names in that array. "
+    "Omit diagnostics or return a JSON array of strings, never a single string. "
     "Review only the supplied public evidence summary. If any supplied Core check failed, "
     "or evidence is insufficient, return FAIL and explain why. Never invent evidence or scores."
 )

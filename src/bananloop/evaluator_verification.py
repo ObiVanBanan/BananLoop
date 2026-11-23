@@ -15,7 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator, model_validator
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -42,7 +42,16 @@ _PROTECTED_AUDIT_PATHS = {".git", "validation", "holdout", "secret", "secrets", 
 def _safe_failure_detail(exc: BaseException) -> str:
     """Bound and redact post-dispatch exception details before durable logging."""
     kind = type(exc).__name__
-    message = str(exc)
+    if isinstance(exc, ValidationError):
+        # Pydantic's default rendering includes raw, untrusted field values.
+        issues = exc.errors(include_input=False, include_context=False, include_url=False)
+        message = f"{exc.title}: " + ", ".join(
+            issue["type"] if issue["type"] == "extra_forbidden"
+            else f"{'.'.join(map(str, issue['loc']))} ({issue['type']})"
+            for issue in issues[:5]
+        )
+    else:
+        message = str(exc)
     message = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1<redacted>", message)
     message = re.sub(r"(?i)(api[_-]?key|token|password|secret)(\s*[:=]\s*)[^\s,;]+",
                      r"\1\2<redacted>", message)
@@ -1953,6 +1962,10 @@ class IntegrationVerificationAdapter:
             self.queue.mark_dispatched(verifier_job_id, worker_id, fence)
             raw_output = executor.dispatch(dict(lease["request"]), None)
             model_tokens = _reported_model_tokens(executor)
+            # The transport has returned a lone diagnostic in place of the
+            # optional array. Canonicalize prose before validating the decision.
+            if isinstance(raw_output, dict) and isinstance(raw_output.get("diagnostics"), str):
+                raw_output = {**raw_output, "diagnostics": [raw_output["diagnostics"]]}
             output = IntegrationVerifierOutputV1.model_validate(raw_output)
             request = lease["request"]
             if (output.candidate_snapshot_id != request.get("candidate_snapshot_id")

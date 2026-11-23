@@ -16,6 +16,7 @@ from bananloop.chatgpt_responses import (
     INSTRUCTIONS, INTEGRATION_VERIFIER_INSTRUCTIONS, PROTOCOL_VERIFIER_INSTRUCTIONS,
 )
 from bananloop.evaluator_verification import (
+    _safe_failure_detail,
     EvaluatorProtocolAuthority,
     EvaluatorProtocolDraftV1,
     EvaluatorProtocolV1,
@@ -214,11 +215,29 @@ def build_full_optimization_runtime(
 def test_integration_verifier_prompt_matches_strict_check_array_contract():
     assert "JSON array of check-name strings" in INTEGRATION_VERIFIER_INSTRUCTIONS
     assert "never an object/map of names to booleans" in INTEGRATION_VERIFIER_INSTRUCTIONS
+    assert "diagnostics or return a JSON array of strings" in INTEGRATION_VERIFIER_INSTRUCTIONS
     for name in (
         "candidate_identity", "protocol_identity", "evaluation_receipt",
         "budget_receipt", "artifact_integrity", "regression_policy",
     ):
         assert name in INTEGRATION_VERIFIER_INSTRUCTIONS
+
+
+def test_integration_verifier_validation_diagnostics_omit_response_values():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError) as raised:
+        IntegrationVerifierOutputV1.model_validate({
+            "candidate_snapshot_id": "a" * 40,
+            "protocol_digest": "b" * 64,
+            "decision": "private decision text",
+            "checks": ["candidate_identity"],
+            "private extra field": "private value",
+        })
+    detail = _safe_failure_detail(raised.value)
+    assert "ValidationError: IntegrationVerifierOutputV1" in detail
+    assert "decision (literal_error)" in detail
+    assert "private" not in detail
 
 
 def test_protocol_verifier_prompt_matches_strict_output_schema():
@@ -531,6 +550,7 @@ def test_core_integration_evidence_digest_binds_every_deterministic_check():
     [
         (0.8, "PASS", "PASS", "CONSOLIDATION", "COMPLETED", "VERIFIED_RESULT"),
         (0.5, "PASS", "FAIL", "OPTIMIZATION", "PENDING", "REGRESSION_FAILED"),
+        (0.5, "FAIL", "FAIL", "OPTIMIZATION", "PENDING", "REGRESSION_FAILED"),
         (0.8, "FAIL", "FAIL", "OPTIMIZATION", "PENDING", "REGRESSION_FAILED"),
     ],
 )
@@ -685,7 +705,7 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(
         last_usage = {"total_tokens": 59}
 
         def dispatch(self, request, _gateway, **_pinned):
-            return IntegrationVerifierOutputV1(
+            response = IntegrationVerifierOutputV1(
                 candidate_snapshot_id=request["candidate_snapshot_id"],
                 protocol_digest=request["protocol_digest"], decision=reviewer_decision,
                 checks=(
@@ -693,6 +713,9 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(
                     "budget_receipt", "artifact_integrity", "regression_policy",
                 ),
             ).model_dump(mode="json")
+            if reviewer_decision == "FAIL":
+                response["diagnostics"] = "One or more Core checks failed."
+            return response
 
     transport = IntegrationTransport()
     executor = PinnedRoleExecutorV1.from_manifest(
@@ -761,6 +784,10 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(
         assert queue.get_job(job_ids[0])["state"] == "COMPLETED"
         integration_result = queue.get_result(job_ids[0])["response"]
         assert integration_result["actual_usage"]["model_tokens"] == 59
+        if reviewer_decision == "FAIL":
+            assert integration_result["result"]["diagnostics"] == [
+                "One or more Core checks failed."
+            ]
         assert [event["event_type"] for event in queue.events(job_ids[0])] == [
             "JOB_ENQUEUED", "JOB_LEASED", "JOB_DISPATCHED", "JOB_COMPLETED",
         ]
