@@ -27,9 +27,19 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 ROOT = Path(__file__).resolve().parents[2]
+if not __package__ and str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from benchmarks.autonomous_v01.arm_watchdog import (
+    ARM_SECONDS,
+    ArmDeadline,
+    inherited_arm_deadline,
+    run_arm_command,
+    terminate_arm_process as _terminate_arm_process,
+)
+
 CATALOGUE = Path(__file__).with_name("task-catalogue.json")
 SOURCE_ACCESS_DECLARATION = Path(__file__).with_name("source-access-declaration.json")
-ARM_SECONDS = 3600
 HARBOR_BINARY = Path("/home/sonik/bananloop-benchmark-env/harbor-venv/bin/harbor")
 EXPECTED_TASK_COUNT = 12
 TASK_IDS = (
@@ -84,7 +94,7 @@ def inspect_docker_image(image: str, docker_binary: str = "docker") -> str | Non
     if result.returncode != 0:
         return None
     value = result.stdout.strip()
-    return value if len(value) == 71 and value.startswith("sha256:") else None
+    return value if re.fullmatch(r"sha256:[0-9a-f]{64}", value) else None
 
 
 def inspect_harbor(binary: Path = HARBOR_BINARY) -> str | None:
@@ -407,8 +417,12 @@ def offline_preflight(*, catalogue_path: Path = CATALOGUE,
         image, image_id = item.get("public_dev_image"), item.get("public_dev_image_id")
         if not image or not image_id:
             blockers.append(f"{item.get('task_id')}: public DEV image has not been content-pinned")
-        elif image_inspector is not None and image_inspector(image) != image_id:
-            blockers.append(f"{item.get('task_id')}: local public DEV image ID differs from catalogue pin")
+        else:
+            observed = image_inspector(image) if image_inspector is not None else None
+            if not isinstance(observed, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", observed):
+                blockers.append(f"{item.get('task_id')}: local public DEV image ID could not be verified")
+            elif observed != image_id:
+                blockers.append(f"{item.get('task_id')}: local public DEV image ID differs from catalogue pin")
     if codex_auth_status != "Logged in using ChatGPT":
         blockers.append("Codex Direct subscription authentication has not been verified")
     if not codex_version:
@@ -588,7 +602,7 @@ class ArmBackend(Protocol):
             deadline_epoch: float, usage: UsageLedger) -> dict[str, Any]: ...
 
 
-def _atomic_json(path: Path, value: dict[str, Any]) -> None:
+def _atomic_json(path: Path, value: dict[str, Any], *, replace: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + "\n"
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -599,62 +613,167 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
+        if replace:
+            os.replace(temporary, path)
+        else:
+            os.link(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
 
 
 def run_fake_series(tasks: list[dict[str, Any]], root: Path,
-                    backend_factory: Callable[[str], ArmBackend]) -> dict[str, Any]:
-    """Run 24 isolated injected fake arms; no real backend is imported or launched."""
-    if len(tasks) != EXPECTED_TASK_COUNT or len({t.get("task_id") for t in tasks}) != EXPECTED_TASK_COUNT:
+                    backend_factory: Callable[[str], ArmBackend] | None = None,
+                    *, catalogue_sha256: str | None = None,
+                    resume: bool = False) -> dict[str, Any]:
+    """Run the frozen 24-arm dry run, optionally substituting an offline backend."""
+    if len(tasks) != EXPECTED_TASK_COUNT or {t.get("task_id") for t in tasks} != set(TASK_IDS):
         raise ValueError("offline acceptance run requires exactly 12 distinct tasks")
-    if root.exists() or root.is_symlink():
-        raise ValueError("offline fake-series state root must be new")
-    root.mkdir(parents=True, mode=0o700)
-    usage = UsageLedger(root / "observed-usage.sqlite3")
-    runs = []
+    if backend_factory is None and os.name != "posix":
+        raise ValueError("offline command-arm supervision requires POSIX")
+    if resume and backend_factory is not None:
+        raise ValueError("resume requires the built-in offline command worker")
+
+    systems = ("bananloop_full", "codex_direct")
+    arms = []
     for task in tasks:
-        for system in task.get("arm_order", ("bananloop_full", "codex_direct")):
-            if system not in {"bananloop_full", "codex_direct"}:
-                raise ValueError("manifest contains unknown system")
-            arm_id = f"{task['task_id']}--{system}"
-            arm_root = root / arm_id
-            arm_root.mkdir(mode=0o700)
-            deadline = time.time() + ARM_SECONDS
-            backend = backend_factory(system)
-            try:
-                result = backend.run(arm_id, task, arm_root, deadline, usage)
-            except Exception as exc:
-                result = {"status": "BACKEND_EXCEPTION",
-                          "failure_type": type(exc).__name__,
-                          "detail": str(exc)[:300]}
-            record = {"arm_id": arm_id, "task_id": task["task_id"], "system": system,
-                      "deadline_epoch": deadline, "result": result}
-            _atomic_json(arm_root / "result.json", record)
-            runs.append(record)
-    report = {"status": "OFFLINE_FAKE_COMPLETE", "runs": runs,
-              "usage": usage.summary(), "model_calls": 0,
-              "harbor_evaluations": 0, "ai_judge_calls": 0}
-    _atomic_json(root / "summary.json", report)
+        order = task.get("arm_order", systems)
+        if not isinstance(order, (tuple, list)) or tuple(order) not in (systems, systems[::-1]):
+            raise ValueError("each task must schedule both systems exactly once")
+        for system in order:
+            arms.append((f"{task['task_id']}--{system}", task, system))
+
+    if resume:
+        if root.is_symlink() or not root.is_dir():
+            raise ValueError("resume requires an existing nonsymlink dry-run directory")
+    else:
+        if root.exists() or root.is_symlink():
+            raise ValueError("offline fake-series state root must be new")
+        root.mkdir(parents=True, mode=0o700)
     manifest = {
         "schema": "bananloop-autonomous-v01-fake-manifest-v1",
         "kind": "OFFLINE_FAKE_ONLY",
         "seconds_per_arm": ARM_SECONDS,
-        "task_ids": sorted(t["task_id"] for t in tasks),
-        "arm_ids": sorted(record["arm_id"] for record in runs),
-        "manifest_sha256": None,
+        "task_ids": sorted(TASK_IDS),
+        "arm_ids": sorted(arm_id for arm_id, _, _ in arms),
+        "arm_order": [arm_id for arm_id, _, _ in arms],
+        **({"catalogue_sha256": catalogue_sha256} if catalogue_sha256 is not None else {}),
     }
-    manifest["manifest_sha256"] = canonical_sha(
-        {key: value for key, value in manifest.items() if key != "manifest_sha256"}
-    )
-    archive_series_results(manifest=manifest, run_records=runs, result_root=root,
-                           archive_root=root / "final-archive")
+    manifest["manifest_sha256"] = canonical_sha(manifest)
+    if backend_factory is not None:
+        return _complete_fake_series(root, arms, manifest, backend_factory, resume=False)
+
+    import fcntl
+
+    lock_path = root / ".dry-run.lock"
+    if lock_path.is_symlink():
+        raise ValueError("dry-run lock must be a nonsymlink file")
+    with lock_path.open("rb" if resume else "xb") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ValueError("dry-run directory is already locked by another launcher") from exc
+        return _complete_fake_series(root, arms, manifest, backend_factory, resume=resume)
+
+
+def _complete_fake_series(root: Path, arms: list[tuple[str, dict[str, Any], str]],
+                          manifest: dict[str, Any],
+                          backend_factory: Callable[[str], ArmBackend] | None,
+                          *, resume: bool) -> dict[str, Any]:
+    manifest_path = root / "experiment-manifest.json"
+    archive = root / "final-archive"
+    if resume:
+        if read_json(manifest_path) != manifest:
+            raise ValueError("existing dry-run manifest differs from the requested inputs")
+        if archive.exists() or archive.is_symlink():
+            raise ValueError("dry-run series is already archived")
+    else:
+        _atomic_json(manifest_path, manifest)
+
+    usage = UsageLedger(root / "observed-usage.sqlite3")
+    runs = []
+    for arm_id, task, system in arms:
+        arm_root = root / arm_id
+        result_path = arm_root / "result.json"
+        identity = {"arm_id": arm_id, "task_id": task["task_id"], "system": system}
+        if resume and (arm_root.exists() or arm_root.is_symlink()):
+            if arm_root.is_symlink() or not arm_root.is_dir():
+                raise ValueError(f"unsafe existing dry-run arm: {arm_id}")
+            if result_path.exists() or result_path.is_symlink():
+                record = read_json(result_path)
+                if (any(record.get(key) != value for key, value in identity.items())
+                        or not isinstance(record.get("result"), dict)
+                        or not isinstance(record["result"].get("status"), str)):
+                    raise ValueError(f"invalid saved dry-run result: {arm_id}")
+            else:
+                start_path = arm_root / "started.json"
+                started = read_json(start_path) if start_path.exists() or start_path.is_symlink() else {}
+                if started and any(started.get(key) != value for key, value in identity.items()):
+                    raise ValueError(f"invalid saved dry-run start: {arm_id}")
+                record = {
+                    **identity, "deadline_epoch": started.get("deadline_epoch"),
+                    "result": {"status": "INTERRUPTED_UNKNOWN", "usage_unknown": True,
+                               "final_artifact": {"status": "UNKNOWN", "files": []}},
+                }
+                _atomic_json(result_path, record)
+        else:
+            arm_root.mkdir(mode=0o700)
+            deadline = ArmDeadline.start()
+            if backend_factory is None:
+                _atomic_json(arm_root / "started.json", {**identity, "deadline_epoch": deadline.epoch})
+            try:
+                if backend_factory is None:
+                    result = _run_offline_command_arm(arm_id, task, arm_root, deadline)
+                else:
+                    result = backend_factory(system).run(arm_id, task, arm_root, deadline.epoch, usage)
+            except Exception as exc:
+                result = {"status": "BACKEND_EXCEPTION",
+                          "failure_type": type(exc).__name__,
+                          "detail": str(exc)[:300]}
+            record = {**identity, "deadline_epoch": deadline.epoch, "result": result}
+            _atomic_json(result_path, record)
+        runs.append(record)
+    arm_statuses = [record["result"].get("status") for record in runs]
+    clean_success = all(status in {"COMPLETED", "FAKE_COMPLETE"} for status in arm_statuses)
+    report = {"status": ("OFFLINE_FAKE_COMPLETE" if clean_success else
+                         "OFFLINE_FAKE_COMPLETED_WITH_NON_SUCCESS_ARMS"), "runs": runs,
+              "usage": usage.summary(), "model_calls": 0,
+              "harbor_evaluations": 0, "ai_judge_calls": 0}
+    _atomic_json(root / "summary.json", report)
+    with tempfile.TemporaryDirectory(prefix=".dry-archive-", dir=root) as staging:
+        staged_archive = Path(staging) / "archive"
+        archive_series_results(manifest=manifest, run_records=runs, result_root=root,
+                               archive_root=staged_archive, usage_summary=report["usage"])
+        staged_archive.rename(archive)
     return report
 
 
+def _run_offline_command_arm(arm_id: str, task: dict[str, Any], arm_root: Path,
+                             deadline: ArmDeadline) -> dict[str, Any]:
+    """Exercise the real watchdog and artifact recovery with a synthetic worker."""
+    workspace_root = arm_root.parent / ".workspaces"
+    if workspace_root.is_symlink():
+        raise ValueError("dry-run workspace root is a symlink")
+    repo = workspace_root / arm_id
+    candidate_path = task["adapter"]["candidate_path"]
+    output = Path(candidate_path)
+    if not output.parts or output.is_absolute() or ".." in output.parts or "\\" in candidate_path:
+        raise ValueError("dry-run candidate path must stay inside its workspace")
+    repo.mkdir(parents=True, mode=0o700)
+    command = [
+        sys.executable, "-I", "-S", "-c",
+        "from pathlib import Path; import sys; path = Path(sys.argv[1]); "
+        "path.parent.mkdir(parents=True, exist_ok=True); "
+        "path.write_text(sys.argv[2], encoding='utf-8')",
+        str(output), f"# Offline fake worker output for {arm_id}\n",
+    ]
+    status = run_arm_command(command, cwd=repo, arm_root=arm_root, deadline=deadline)
+    artifact = CodexDirectBackend.snapshot_final_artifacts(task=task, repo=repo, arm_root=arm_root)
+    return {**status, "final_artifact": artifact}
+
+
 def archive_series_results(*, manifest: dict[str, Any], run_records: list[dict[str, Any]],
-                           result_root: Path, archive_root: Path) -> dict[str, Any]:
+                           result_root: Path, archive_root: Path,
+                           usage_summary: dict[str, Any] | None = None) -> dict[str, Any]:
     """Freeze all terminal arm records and artifacts into a hash-indexed archive.
 
     This function is intentionally agnostic to model/evaluator execution. It
@@ -751,6 +870,8 @@ def archive_series_results(*, manifest: dict[str, Any], run_records: list[dict[s
             ),
             "ai_judge_calls": 0,
         }
+        if usage_summary is not None:
+            summary["usage"] = usage_summary
         _atomic_json(archive_root / "summary.json", summary)
         files = sorted(path for path in archive_root.rglob("*") if path.is_file())
         index = {
@@ -820,7 +941,9 @@ class CodexDirectBackend:
 
     def run(self, arm_id: str, task: dict[str, Any], arm_root: Path,
             deadline_epoch: float, usage: UsageLedger) -> dict[str, Any]:
-        deadline_monotonic = time.monotonic() + max(0.0, deadline_epoch - time.time())
+        inherited = inherited_arm_deadline(deadline_epoch)
+        deadline_monotonic = (inherited.monotonic if inherited is not None else
+                              time.monotonic() + max(0.0, deadline_epoch - time.time()))
         remaining = lambda: deadline_monotonic - time.monotonic()
         # Keep mutable worktrees beside, not inside, the immutable result root:
         # archive_series_results intentionally refuses .git metadata. Only the
@@ -917,32 +1040,18 @@ class CodexDirectBackend:
         with log.open("wb") as stdout_file, stderr.open("wb") as stderr_file:
             process = subprocess.Popen(command, cwd=repo, stdin=subprocess.PIPE,
                                        stdout=stdout_file, stderr=stderr_file, env=env,
-                                       start_new_session=(os.name != "nt"))
+                                       start_new_session=(os.name != "nt" and inherited is None))
             try:
-                process.communicate(prompt.encode("utf-8"),
-                                    timeout=max(0.1, remaining()))
+                available = remaining()
+                if available <= 0:
+                    raise subprocess.TimeoutExpired(command, 0)
+                process.communicate(prompt.encode("utf-8"), timeout=available)
+                if remaining() <= 0:
+                    raise subprocess.TimeoutExpired(command, available)
                 status = "COMPLETED" if process.returncode == 0 else "FAILED"
             except subprocess.TimeoutExpired:
                 status = "TIMED_OUT"
-                if os.name != "nt":
-                    import signal
-                    try:
-                        os.killpg(process.pid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
-                else:
-                    process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    if os.name != "nt":
-                        try:
-                            os.killpg(process.pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-                    else:
-                        process.kill()
-                    process.wait()
+                _terminate_arm_process(process, own_group=inherited is None)
         observed = parse_codex_jsonl_usage(log)
         usage.record(arm_id, "codex_direct", observed)
         final_artifact = self.snapshot_final_artifacts(task=task, repo=repo, arm_root=arm_root)
@@ -1047,49 +1156,37 @@ class BananLoopFullBackend:
         if not re.fullmatch(r"[0-9a-f]{64}", manifest_sha256):
             raise ValueError("BananLoop Full backend requires the frozen series manifest SHA")
 
-    @staticmethod
-    def _kill_process(process: subprocess.Popen[Any]) -> None:
-        if process.poll() is not None:
-            return
-        if os.name != "nt":
-            import signal
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-        else:
-            process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
+    _kill_process = staticmethod(_terminate_arm_process)
 
     def _run_until_deadline(self, command: list[str], *, cwd: Path,
                             deadline_epoch: float, stdout_path: Path,
-                            stderr_path: Path) -> tuple[str, int | None]:
-        remaining = deadline_epoch - time.time()
+                            stderr_path: Path,
+                            deadline_monotonic: float | None = None) -> tuple[str, int | None]:
+        # Convert the externally serialized epoch deadline once.  Polling a
+        # wall clock here could extend or shorten the arm if the clock moves.
+        inherited = inherited_arm_deadline(deadline_epoch)
+        if deadline_monotonic is None:
+            deadline_monotonic = (inherited.monotonic if inherited is not None else
+                                  time.monotonic() + max(0.0, deadline_epoch - time.time()))
+        remaining = deadline_monotonic - time.monotonic()
         if remaining <= 0:
             return "TIMED_OUT_BEFORE_START", None
         with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
             try:
                 process = subprocess.Popen(command, cwd=cwd, stdout=stdout, stderr=stderr,
-                                           start_new_session=(os.name != "nt"))
+                                           start_new_session=(os.name != "nt" and inherited is None))
             except OSError:
                 return "FAILED_TO_START", None
             while process.poll() is None:
-                if time.time() >= deadline_epoch:
+                remaining = deadline_monotonic - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(0.1, remaining))
+            if time.monotonic() >= deadline_monotonic:
+                if inherited is None:
                     self._kill_process(process)
-                    return "TIMED_OUT", process.returncode
-                time.sleep(min(0.1, max(0.01, deadline_epoch - time.time())))
-            if time.time() >= deadline_epoch:
+                else:
+                    _terminate_arm_process(process, own_group=False)
                 return "TIMED_OUT", process.returncode
             return ("COMPLETED" if process.returncode == 0 else "FAILED", process.returncode)
 
@@ -1137,6 +1234,20 @@ class BananLoopFullBackend:
 
     def run(self, arm_id: str, task: dict[str, Any], arm_root: Path,
             deadline_epoch: float, usage: UsageLedger) -> dict[str, Any]:
+        # The epoch remains in receipts and child CLI contracts, while this
+        # single monotonic deadline governs all local stages and subprocesses.
+        inherited = inherited_arm_deadline(deadline_epoch)
+        deadline_monotonic = (inherited.monotonic if inherited is not None else
+                              time.monotonic() + max(0.0, deadline_epoch - time.time()))
+        def remaining_time() -> float:
+            return deadline_monotonic - time.monotonic()
+
+        def stage_timeout(maximum: float) -> float:
+            remaining = remaining_time()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired("BananLoop Full setup", maximum)
+            return min(maximum, remaining)
+
         task_id = task.get("task_id")
         runtime = self._runtime(task_id)
         adapter = task.get("adapter", {})
@@ -1178,7 +1289,7 @@ class BananLoopFullBackend:
                     **({"source_overlay": source_overlay} if source_overlay else {}),
                     **({"evaluator_scope": evaluator_scope} if evaluator_scope else {}), **extra}
 
-        remaining = deadline_epoch - time.time()
+        remaining = remaining_time()
         if remaining <= 0:
             return terminal("TIMED_OUT_BEFORE_CLONE")
         try:
@@ -1189,7 +1300,7 @@ class BananLoopFullBackend:
             return terminal("TIMED_OUT_DURING_CLONE")
         if clone.returncode != 0:
             return terminal("FAILED_TO_CLONE_INITIAL_REPOSITORY")
-        remaining = deadline_epoch - time.time()
+        remaining = remaining_time()
         if remaining <= 0:
             return terminal("TIMED_OUT_BEFORE_CHECKOUT")
         try:
@@ -1248,16 +1359,16 @@ class BananLoopFullBackend:
             (repo / local_attestation).chmod(0o444)
         try:
             subprocess.run(["git", "-C", str(repo), "add", "--", *overlay_files],
-                           check=True, capture_output=True, timeout=15)
+                           check=True, capture_output=True, timeout=stage_timeout(15))
             subprocess.run([
                 "git", "-C", str(repo), "-c", "user.name=BananLoop Benchmark",
                 "-c", "user.email=benchmark@localhost", "-c", "commit.gpgsign=false",
                 "commit", "--no-verify", "--only", "-m", "Freeze public task instruction",
                 "--", *overlay_files,
-            ], check=True, capture_output=True, timeout=30)
+            ], check=True, capture_output=True, timeout=stage_timeout(30))
             overlay_commit = subprocess.check_output(
                 ["git", "-C", str(repo), "rev-parse", "--verify", "HEAD^{commit}"],
-                stderr=subprocess.PIPE, text=True, timeout=15,
+                stderr=subprocess.PIPE, text=True, timeout=stage_timeout(15),
             ).strip().lower()
             if not re.fullmatch(r"[0-9a-f]{40}", overlay_commit):
                 raise ValueError("Git returned an invalid instruction-overlay commit")
@@ -1276,6 +1387,10 @@ class BananLoopFullBackend:
             (arm_root / "source-overlay.json").write_text(
                 json.dumps(source_overlay, sort_keys=True, indent=2) + "\n", encoding="utf-8",
             )
+        except subprocess.TimeoutExpired:
+            if remaining_time() <= 0:
+                return terminal("TIMED_OUT_DURING_INSTRUCTION_OVERLAY")
+            return terminal("FAILED_TO_FREEZE_TASK_INSTRUCTION_OVERLAY")
         except (OSError, ValueError, subprocess.SubprocessError):
             return terminal("FAILED_TO_FREEZE_TASK_INSTRUCTION_OVERLAY")
 
@@ -1317,7 +1432,7 @@ class BananLoopFullBackend:
             "metric_direction": adapter["direction"], "model": self.model,
             "permissions": {"read": sorted([candidate_path, local_instruction]),
                             "write": [candidate_path], "network_access": False},
-            "deadline_seconds": max(1, min(3600, int(deadline_epoch-time.time()))),
+            "deadline_seconds": max(1, min(3600, int(remaining_time()))),
         }
         goal = ("BANANLOOP_BENCHMARK_BINDING_V1:" + json.dumps(
             binding, sort_keys=True, separators=(",", ":"),
@@ -1362,7 +1477,7 @@ class BananLoopFullBackend:
                      "The bundle includes the Codex Direct public_dev_cli.py and Full backend "
                      "source, so the reviewer can inspect their shared DEV scoring path. "
                      "This is a public DEV diagnostic and does not claim independent holdout.")
-        remaining_seconds = max(1, min(3600, int(deadline_epoch-time.time())))
+        remaining_seconds = max(1, min(3600, int(remaining_time())))
         explore_command = [
             self.python_binary, "-m", "bananloop.cli", "v2", "explore",
             "--repo", str(repo), "--state-dir", str(state_dir), "--goal", goal,
@@ -1380,6 +1495,7 @@ class BananLoopFullBackend:
             explore_command.extend(["--protocol-review-attestation", local_attestation])
         explore_status, explore_return = self._run_until_deadline(
             explore_command, cwd=self.initial_repo, deadline_epoch=deadline_epoch,
+            deadline_monotonic=deadline_monotonic,
             stdout_path=arm_root / "bananloop-exploration.jsonl",
             stderr_path=arm_root / "bananloop-exploration.stderr",
         )
@@ -1417,12 +1533,13 @@ class BananLoopFullBackend:
             return terminal(explore_report.get("status", "NO_OPTIMIZATION_CHILD"),
                             exploration_status=explore_report.get("status"))
         pivot = pivots[0]
-        if not authorize_benchmark_pivot(
-                binding=binding, pivot=pivot, arm_deadline_epoch=deadline_epoch):
-            return terminal("BENCHMARK_PIVOT_SCOPE_MISMATCH")
-        remaining = deadline_epoch - time.time()
+        remaining = remaining_time()
         if remaining <= 0:
             return terminal("TIMED_OUT_DURING_PIVOT")
+        if not authorize_benchmark_pivot(
+                binding=binding, pivot=pivot, arm_deadline_epoch=deadline_epoch,
+                now_epoch=deadline_epoch - remaining):
+            return terminal("BENCHMARK_PIVOT_SCOPE_MISMATCH")
 
         prepared_dir = arm_root / "harbor-prepared"
         jobs_dir = arm_root / "harbor-jobs"
@@ -1430,14 +1547,16 @@ class BananLoopFullBackend:
             if adapter["adapter_id"] in {
                 "act-tensor-public-v1", "causalpfn-public-v1", "hicard-public-v1",
             }:
-                from benchmarks.autoresearchexam.prepare_public_task_job import prepare as prepare_public_job
-                prepared = prepare_public_job(
-                    repo=repo, state_dir=state_dir, campaign_id=pivot["child_campaign_id"],
-                    role_registry=Path(pivot["role_registry_path"]), source_task=source_task,
-                    fixture_path=fixture_path, overlay=overlay_path, jobs_dir=jobs_dir,
-                    output_dir=prepared_dir, adapter_id=adapter["adapter_id"],
-                    deadline_epoch=deadline_epoch,
-                )
+                prepare_command = [
+                    self.python_binary, "-m", "benchmarks.autoresearchexam.prepare_public_task_job",
+                    "--repo", str(repo), "--state-dir", str(state_dir),
+                    "--campaign-id", pivot["child_campaign_id"],
+                    "--role-registry", pivot["role_registry_path"],
+                    "--source-task", str(source_task), "--fixture", str(fixture_path),
+                    "--overlay", str(overlay_path), "--jobs-dir", str(jobs_dir),
+                    "--output-dir", str(prepared_dir), "--adapter-id", adapter["adapter_id"],
+                    "--deadline-epoch", str(deadline_epoch),
+                ]
             else:
                 template = runtime.get("config_builder_command")
                 if (not isinstance(template, list) or not template
@@ -1457,39 +1576,47 @@ class BananLoopFullBackend:
                     "public_dev_image_id": task["public_dev_image_id"],
                     "deadline_epoch": str(deadline_epoch),
                 }
-                remaining = deadline_epoch - time.time()
-                if remaining <= 0:
-                    return terminal("TIMED_OUT_BEFORE_HARBOR_PREPARATION")
-                prepare_result = subprocess.run(
-                    self._fill(template, replacements), cwd=self.initial_repo,
-                    capture_output=True, text=True,
-                    timeout=min(30, remaining),
-                )
-                if prepare_result.returncode != 0:
-                    raise ValueError("frozen child configuration builder failed")
-                prepared = json.loads(prepare_result.stdout)
-        except subprocess.TimeoutExpired:
-            return terminal("TIMED_OUT_DURING_HARBOR_PREPARATION")
-        except (OSError, ValueError, KeyError, TypeError) as exc:
+                prepare_command = self._fill(template, replacements)
+            prepare_stdout = arm_root / "harbor-preparation.stdout"
+            prepare_status, prepare_return = self._run_until_deadline(
+                prepare_command, cwd=self.initial_repo,
+                deadline_epoch=deadline_epoch, deadline_monotonic=deadline_monotonic,
+                stdout_path=prepare_stdout, stderr_path=arm_root / "harbor-preparation.stderr",
+            )
+            if prepare_status.startswith("TIMED_OUT"):
+                return terminal("TIMED_OUT_DURING_HARBOR_PREPARATION",
+                                preparation_returncode=prepare_return)
+            if prepare_status != "COMPLETED":
+                raise ValueError("frozen child configuration builder failed")
+            prepared = read_json(prepare_stdout)
+            remaining = remaining_time()
+            if remaining <= 0:
+                return terminal("TIMED_OUT_DURING_HARBOR_PREPARATION")
+            bl_config_path = Path(prepared["bananloop_config"])
+            harbor_config_path = Path(prepared["harbor_config"])
+            if (prepared_dir.is_symlink() or bl_config_path == harbor_config_path
+                    or any(path.parent.resolve() != prepared_dir.resolve()
+                           for path in (bl_config_path, harbor_config_path))):
+                raise ValueError("child configuration escaped the preparation directory")
+            bl_config = read_json(bl_config_path)
+            harbor_config = read_json(harbor_config_path)
+            bl_config["deadline_epoch"] = deadline_epoch
+            bl_config["time_limit_seconds"] = max(1, min(3600, int(remaining)))
+            bl_config["repo"] = str(repo)
+            bl_config["state_dir"] = str(state_dir)
+            harbor_config["agents"][0]["override_timeout_sec"] = max(1, int(remaining))
+            _atomic_json(bl_config_path, bl_config)
+            _atomic_json(harbor_config_path, harbor_config)
+        except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
             return terminal("CHILD_CONFIGURATION_FAILED", error_type=type(exc).__name__)
-        bl_config_path = Path(prepared["bananloop_config"])
-        harbor_config_path = Path(prepared["harbor_config"])
-        bl_config = json.loads(bl_config_path.read_text(encoding="utf-8"))
-        bl_config["deadline_epoch"] = deadline_epoch
-        bl_config["time_limit_seconds"] = max(1, min(3600, int(remaining)))
-        bl_config["repo"] = str(repo)
-        bl_config["state_dir"] = str(state_dir)
-        bl_config_path.write_text(json.dumps(bl_config, sort_keys=True, indent=2) + "\n")
-        harbor_config = json.loads(harbor_config_path.read_text(encoding="utf-8"))
-        harbor_config["agents"][0]["override_timeout_sec"] = max(1, int(remaining))
-        harbor_config_path.write_text(json.dumps(harbor_config, sort_keys=True, indent=2) + "\n")
         harbor_status, harbor_return = self._run_until_deadline(
             [str(self.harbor_binary), "run", "--config", str(harbor_config_path), "--disable-verification"],
             cwd=self.initial_repo, deadline_epoch=deadline_epoch,
+            deadline_monotonic=deadline_monotonic,
             stdout_path=arm_root / "bananloop-optimization.stdout",
             stderr_path=arm_root / "bananloop-optimization.stderr",
         )
-        status = "TIMED_OUT" if harbor_status == "TIMED_OUT" else (
+        status = "TIMED_OUT" if harbor_status.startswith("TIMED_OUT") else (
             "COMPLETED" if harbor_status == "COMPLETED" else "FAILED")
         bridge_receipt = None
         if harbor_status == "COMPLETED":
@@ -1581,9 +1708,35 @@ class BananLoopFullBackend:
                 "harbor_bridge_receipt": bridge_receipt}
 
 
+def _prepare_series_manifest(*, catalogue: dict[str, Any], seed: int, model: str,
+                             reasoning: str, codex_version: str,
+                             candidate_source_sha: str | None) -> dict[str, Any]:
+    """Freeze the proposed arms without running or authorizing any backend."""
+    from bananloop.contracts import FeatureFlagsV2
+
+    if candidate_source_sha is not None and not re.fullmatch(r"[0-9a-f]{40}", candidate_source_sha):
+        raise ValueError("candidate source SHA must be a full lowercase Git SHA-1")
+    manifest = build_manifest(
+        catalogue=catalogue, seed=seed, model=model, reasoning=reasoning,
+        codex_version=codex_version, full_feature_flags=FeatureFlagsV2().model_dump(mode="json"),
+    )
+    manifest.pop("manifest_sha256")
+    manifest.update(
+        kind="ARE_PREPARATION_ONLY", launch_authorized=False,
+        candidate_source_sha=candidate_source_sha,
+        launch_requirements={
+            "candidate_source_sha": "VERIFIED",
+            "preflight_status": "READY_NON_RPDI_DIAGNOSTIC",
+            "owner_approval": "REQUIRED",
+        },
+    )
+    manifest["manifest_sha256"] = canonical_sha(manifest)
+    return manifest
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("preflight",))
+    parser.add_argument("command", choices=("preflight", "dry-run", "prepare"))
     parser.add_argument("--catalogue", type=Path, default=CATALOGUE)
     parser.add_argument("--codex-auth-status")
     parser.add_argument("--codex-version")
@@ -1594,13 +1747,54 @@ def main() -> int:
         "/home/sonik/bananloop-benchmark-env/autonomous-v01-task-runtime-v1",
     )))
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--resume", action="store_true", help="continue an unarchived dry run")
+    parser.add_argument("--seed", type=int, help="freeze the paired arm order for prepare")
+    parser.add_argument("--model", help="model pin for prepare")
+    parser.add_argument("--reasoning", help="reasoning pin for prepare")
+    parser.add_argument("--candidate-source-sha", help="proposed exact candidate checkout for prepare")
     args = parser.parse_args()
+    if args.command == "prepare":
+        if args.resume:
+            parser.error("--resume is only supported by dry-run")
+        if (args.out is None or args.seed is None
+                or not all(value and value.strip() for value in (args.model, args.reasoning, args.codex_version))):
+            parser.error("prepare requires --out, --seed, --model, --reasoning, and --codex-version")
+        try:
+            manifest = _prepare_series_manifest(
+                catalogue=read_json(args.catalogue), seed=args.seed, model=args.model,
+                reasoning=args.reasoning, codex_version=args.codex_version,
+                candidate_source_sha=args.candidate_source_sha,
+            )
+            _atomic_json(args.out, manifest, replace=False)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        print(json.dumps(manifest, indent=2, sort_keys=True))
+        return 0
+    if args.command == "dry-run":
+        if args.out is None:
+            parser.error("dry-run requires --out with a new series directory")
+        try:
+            catalogue = read_json(args.catalogue)
+            validate_catalogue(catalogue)
+            report = run_fake_series(
+                catalogue["tasks"], args.out, catalogue_sha256=catalogue["catalogue_sha256"],
+                resume=args.resume,
+            )
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+    if args.resume:
+        parser.error("--resume is only supported by dry-run")
     auth_status = args.codex_auth_status
     if auth_status is None:
         try:
             auth = subprocess.run(["codex", "login", "status"], capture_output=True,
                                   text=True, timeout=10, check=False)
-            auth_status = (auth.stdout or auth.stderr).strip() if auth.returncode == 0 else None
+            lines = [line.strip() for line in (auth.stdout or auth.stderr).splitlines()]
+            messages = [line for line in lines if line and not line.startswith("WARNING:")]
+            if auth.returncode == 0 and messages == ["Logged in using ChatGPT"]:
+                auth_status = messages[0]
         except (OSError, subprocess.TimeoutExpired):
             auth_status = None
     codex_version = args.codex_version

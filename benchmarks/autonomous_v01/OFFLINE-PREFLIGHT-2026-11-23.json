@@ -1,0 +1,82 @@
+{
+  "ai_judge_started": false,
+  "arm_deadline_seconds": 3600,
+  "arms": 24,
+  "blockers": [
+    "budgeted-imputation-mcar50: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe",
+    "carps-star-discrepancy-subset-select: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe",
+    "cpu-decoder-graph-executor: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe",
+    "cpu-llm-decode-throughput: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe",
+    "dctabeval-aeac-pooled-cat-statistics: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe",
+    "label-efficient-risk-estimator: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe",
+    "shortest-valid-ci-l2-ece: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe",
+    "sketched-newton-cov-estimator: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe",
+    "sopcc-online-chance-constrained-policy: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe"
+  ],
+  "call_limit_policy": "OBSERVE_ONLY",
+  "capacity": {
+    "available_memory_mb": 23390,
+    "conservative_arm_slots": 1,
+    "cpu_bound_arm_slots": 1,
+    "currently_memory_bound_arm_slots": 1,
+    "disk_free_bytes": 920356077568,
+    "logical_cpus": 12,
+    "minimum_series_wall_hours_at_one_slot": 24,
+    "per_task_requested_cpus": 8,
+    "per_task_requested_memory_mb": 14336,
+    "total_memory_mb": 32011
+  },
+  "catalogue_file_sha256": "5cf6f01b44eacb992c534acb81048f7e788b2aed3a271893298dcdd5d1ebd98a",
+  "catalogue_sha256": "b27bc81a5d335923846e21674a968dba7bd4e77508f3f0e25145686622dbf17b",
+  "codex_auth_status": "Logged in using ChatGPT",
+  "codex_version": "codex-cli 0.171.0",
+  "eligible_task_ids": [
+    "act-tensor-sparse-panel-imputation-r2",
+    "budgeted-imputation-mcar50",
+    "carps-star-discrepancy-subset-select",
+    "causalpfn-cate-pehe-ihdp-surfaceb",
+    "cpu-decoder-graph-executor",
+    "cpu-llm-decode-throughput",
+    "dctabeval-aeac-pooled-cat-statistics",
+    "hicard-latent-encoder",
+    "label-efficient-risk-estimator",
+    "shortest-valid-ci-l2-ece",
+    "sketched-newton-cov-estimator",
+    "sopcc-online-chance-constrained-policy"
+  ],
+  "harbor_binary": "/home/sonik/bananloop-benchmark-env/harbor-venv/bin/harbor",
+  "harbor_started": false,
+  "harbor_version": "0.25.0",
+  "implementation_gates": {
+    "24_arm_result_archiver": true,
+    "bananloop_full_backend": true,
+    "benchmark_bound_pivot_authorizer": true,
+    "codex_direct_backend": true,
+    "codex_final_artifact_export": true,
+    "inherited_deadline_public_grader": true
+  },
+  "integrity_note": "Local are-grader-ctx source snippets for the three new tasks were inspected during offline contract research. Owner accepted continued use for an internal non-RPDI-14 diagnostic with disclosure; no blind/independent holdout claim is permitted.",
+  "live_models_started": false,
+  "operator_private_source_exposure": {
+    "accepted_for_internal_diagnostic": true,
+    "affected_task_ids": [
+      "act-tensor-sparse-panel-imputation-r2",
+      "causalpfn-cate-pehe-ihdp-surfaceb",
+      "hicard-latent-encoder"
+    ],
+    "disclosure_path": "benchmarks/autonomous_v01/source-access-declaration.json",
+    "disclosure_sha256": "4e37162f863412ee42a04dfddf1d2b7cfb41a266ab058a474fbb97df534bdca9",
+    "disclosure_valid": true,
+    "pristine_blind_or_independent_holdout_claim_allowed": false
+  },
+  "planned_distinct_tasks": 12,
+  "schema": "bananloop-autonomous-v01-preflight-v1",
+  "source_access_affected_task_ids": [
+    "act-tensor-sparse-panel-imputation-r2",
+    "causalpfn-cate-pehe-ihdp-surfaceb",
+    "hicard-latent-encoder"
+  ],
+  "source_access_declaration_sha256": "4e37162f863412ee42a04dfddf1d2b7cfb41a266ab058a474fbb97df534bdca9",
+  "status": "PREP_BLOCKED",
+  "task_runtime_root": "/home/sonik/bananloop-benchmark-env/autonomous-v01-task-runtime-v1"
+}

@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +27,20 @@ from benchmarks.autonomous_v01.runner import (
     parse_codex_jsonl_usage,
     run_fake_series,
 )
+import benchmarks.autonomous_v01.runner as autonomous_runner
+
+
+def _dispatch_fake_executables_through_python(monkeypatch, *paths):
+    """Run generated Python children through the current interpreter on every platform."""
+    fake_paths = {str(path) for path in paths}
+    original_popen = subprocess.Popen
+
+    def portable_popen(command, *args, **kwargs):
+        if isinstance(command, (list, tuple)) and command and str(command[0]) in fake_paths:
+            command = [sys.executable, *command]
+        return original_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", portable_popen)
 
 
 def test_manifest_freezes_exact_curated_tasks_and_randomizes_only_arm_order():
@@ -71,7 +86,7 @@ def test_preflight_reports_missing_content_pins_without_launching_anything(tmp_p
     assert report["ai_judge_started"] is False
     for task_id in ("act-tensor-sparse-panel-imputation-r2",
                     "causalpfn-cate-pehe-ihdp-surfaceb", "hicard-latent-encoder"):
-        assert any(task_id in item and "local public DEV image ID differs" in item
+        assert any(task_id in item and "local public DEV image ID could not be verified" in item
                    for item in report["blockers"])
     assert sum("task runtime descriptor is missing" in item
                for item in report["blockers"]) == 12
@@ -90,6 +105,39 @@ def test_preflight_reports_missing_content_pins_without_launching_anything(tmp_p
     assert report["implementation_gates"]["24_arm_result_archiver"] is True
     assert report["capacity"]["per_task_requested_cpus"] == 8
     assert report["capacity"]["per_task_requested_memory_mb"] == 14336
+
+
+def test_preflight_requires_observed_image_ids_for_ready(monkeypatch, tmp_path):
+    catalogue = json.loads(CATALOGUE.read_text(encoding="utf-8"))
+    exact_ids = {task["public_dev_image"]: task["public_dev_image_id"]
+                 for task in catalogue["tasks"]}
+    monkeypatch.setattr(autonomous_runner, "validate_task_runtime_descriptors",
+                        lambda _root, _tasks: [])
+    monkeypatch.setattr(autonomous_runner, "_implementation_gates",
+                        lambda: {"all": True})
+
+    def preflight(inspector):
+        return offline_preflight(
+            codex_auth_status="Logged in using ChatGPT",
+            codex_version="0.169.0", harbor_version="harbor-test",
+            image_inspector=inspector, runtime_root=tmp_path,
+        )
+
+    missing_inspector = preflight(None)
+    assert missing_inspector["status"] == "PREP_BLOCKED"
+    assert any("local public DEV image ID could not be verified" in item
+               for item in missing_inspector["blockers"])
+
+    exact = preflight(lambda image: exact_ids[image])
+    assert exact["status"] == "READY_NON_RPDI_DIAGNOSTIC"
+    assert exact["blockers"] == []
+
+    wrong = preflight(lambda image: "sha256:" + "0" * 64)
+    assert wrong["status"] == "PREP_BLOCKED"
+    assert any("local public DEV image ID differs from catalogue pin" in item
+               for item in wrong["blockers"])
+    assert not any("local public DEV image ID could not be verified" in item
+                   for item in wrong["blockers"])
 
 
 def test_benchmark_pivot_authorizer_binds_exact_frozen_scope_and_deadline():
@@ -191,11 +239,37 @@ def test_fake_series_runs_24_isolated_arms_without_external_calls(tmp_path):
     assert all(len(item["sha256"]) == 64 for item in index["files"])
 
 
-@pytest.mark.parametrize("exploration_fails", [False, True])
-def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tmp_path, monkeypatch, exploration_fails):
+@pytest.mark.parametrize("arm_status", ["FAILED", "INTERRUPTED_UNKNOWN"])
+def test_fake_series_marks_non_success_arm_outcomes_and_archives_them(tmp_path, arm_status):
+    tasks = [{"task_id": task_id, "arm_order": ["bananloop_full", "codex_direct"]}
+             for task_id in TASK_IDS]
+
+    class FakeBackend:
+        def run(self, arm_id, task, arm_root, deadline_epoch, usage):
+            (arm_root / "outcome.txt").write_text(arm_id, encoding="utf-8")
+            status = arm_status if arm_id.endswith("--codex_direct") else "FAKE_COMPLETE"
+            return {"status": status}
+
+    report = run_fake_series(tasks, tmp_path / "series", lambda _: FakeBackend())
+    assert report["status"] == "OFFLINE_FAKE_COMPLETED_WITH_NON_SUCCESS_ARMS"
+    assert len(report["runs"]) == 24
+    failing = [run for run in report["runs"] if run["arm_id"].endswith("--codex_direct")]
+    assert len(failing) == len(TASK_IDS)
+    assert all(run["result"]["status"] == arm_status for run in failing)
+
+    archive = tmp_path / "series" / "final-archive"
+    index = json.loads((archive / "SHA256SUMS.json").read_text(encoding="utf-8"))
+    archived_paths = {item["path"] for item in index["files"]}
+    for run in report["runs"]:
+        assert f"{run['arm_id']}/result.json" in archived_paths
+        archived_record = json.loads((archive / run["arm_id"] / "result.json").read_text())
+        assert archived_record == run
+
+
+@pytest.mark.parametrize("scenario", ["success", "exploration_failure", "prepare_timeout", "prepare_corrupt"])
+def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tmp_path, monkeypatch, scenario):
     """Exercise both production backend classes with subprocess-only fakes."""
     from bananloop.evaluator_fixture import EvaluatorFixtureV1
-    from benchmarks.autoresearchexam import prepare_public_task_job
 
     catalogue = json.loads(CATALOGUE.read_text(encoding="utf-8"))
     tasks = [json.loads(json.dumps(item)) for item in catalogue["tasks"]]
@@ -289,7 +363,17 @@ def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tm
     fake_python = tmp_path / "fake-python"
     fake_python.write_text(
         "#!/usr/bin/env python3\nimport json, pathlib, sys\n"
-        "args=sys.argv[1:]; goal=args[args.index('--goal')+1]\n"
+        "args=sys.argv[1:]\n"
+        "if args[:2]==['-m','benchmarks.autoresearchexam.prepare_public_task_job']:\n"
+        " opts=dict(zip(args[2::2],args[3::2])); task=pathlib.Path(opts['--source-task']).name\n"
+        " assert opts['--adapter-id'].endswith('-public-v1')\n"
+        " import runpy\n"
+        " builder=pathlib.Path(opts['--overlay']).parent.parent/('builder-'+task+'.py')\n"
+        " sys.argv=[str(builder),opts['--output-dir'],opts['--jobs-dir'],task,"
+        + repr({task["task_id"]: task["adapter"]["candidate_path"] for task in tasks})
+        + "[task],opts['--repo'],opts['--state-dir'],opts['--deadline-epoch'],opts['--overlay']]\n"
+        " runpy.run_path(str(builder),run_name='__main__'); sys.exit(0)\n"
+        "goal=args[args.index('--goal')+1]\n"
         "binding=json.loads(goal.split('BANANLOOP_BENCHMARK_BINDING_V1:',1)[1].split('\\n',1)[0])\n"
         "if binding['adapter_id']=='carps-public-v1':\n"
         " attestation=args[args.index('--protocol-review-attestation')+1]\n"
@@ -306,7 +390,7 @@ def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tm
         "print(json.dumps({'status':'BENCHMARK_AUTO_CHILD_CREATED','usage':{'input_tokens':0,'output_tokens':0},'request_history':[],'optimization_pivot':[pivot]}))\n",
         encoding="utf-8",
     ); fake_python.chmod(0o755)
-    if exploration_fails:
+    if scenario == "exploration_failure":
         fake_python.write_text(
             "#!/usr/bin/env python3\nimport json,sys\n"
             "print(json.dumps({'status':'RUN_FAILED','failure_type':'V2CampaignCLIError',"
@@ -331,26 +415,7 @@ def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tm
         "(trial/'result.json').write_text(json.dumps({'id':'trial-001','finished_at':now,'task_id':{'path':cfg['overlay_path']},'agent_result':{'metadata':{'bananloop_are':{'task_id':cfg['task_id'],'status':'COMPLETED','provider_call_attempts':7,'usage':{'input_tokens':11,'output_tokens':13,'total_tokens':24}}}}}))\n",
         encoding="utf-8",
     ); fake_harbor.chmod(0o755)
-
-    # Public-task config preparation is replaced only at its filesystem edge;
-    # the backend's real pivot authorizer and Harbor receipt validator remain active.
-    def fake_public_prepare(**kwargs):
-        out, jobs = kwargs["output_dir"], kwargs["jobs_dir"]
-        out.mkdir(parents=True, exist_ok=True)
-        bl, harbor = out / "bananloop.json", out / "harbor.json"
-        task_id = kwargs["source_task"].name
-        adapter = kwargs["adapter_id"]
-        # Resolve exact task record from frozen closure.
-        task = next(item for item in tasks if item["task_id"] == task_id)
-        bl.write_text(json.dumps({"repo": str(kwargs["repo"]), "state_dir": str(kwargs["state_dir"]),
-                                  "candidate_path": task["adapter"]["candidate_path"]}))
-        harbor.write_text(json.dumps({"jobs_dir": str(jobs), "job_name": "job-" + task_id,
-                                      "task_id": task_id, "overlay_path": str(kwargs["overlay"]),
-                                      "candidate_path": task["adapter"]["candidate_path"],
-                                      "repo": str(kwargs["repo"]), "bananloop_config": str(bl), "agents": [{}]}))
-        return {"bananloop_config": str(bl), "harbor_config": str(harbor)}
-
-    monkeypatch.setattr(prepare_public_task_job, "prepare", fake_public_prepare)
+    _dispatch_fake_executables_through_python(monkeypatch, fake_python, fake_codex, fake_harbor)
 
     instruction = tmp_path / "codex-instruction.md"
     instruction.write_text("Write any candidate.\n", encoding="utf-8")
@@ -370,10 +435,28 @@ def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tm
                                   initial_repo=baseline, base_sha=base_sha,
                                   runtime_root=runtime_root)
 
+    stage_deadlines = {}
+    original_supervisor = BananLoopFullBackend._run_until_deadline
+
+    def record_shared_deadline(self, command, **kwargs):
+        arm_id = kwargs["stdout_path"].parent.name
+        stage_deadlines.setdefault(arm_id, []).append(kwargs["deadline_monotonic"])
+        if (scenario == "prepare_timeout" and arm_id.startswith("act-tensor-")
+                and kwargs["stdout_path"].name == "harbor-preparation.stdout"):
+            kwargs["stdout_path"].write_text('{"partial":', encoding="utf-8")
+            return "TIMED_OUT", None
+        status = original_supervisor(self, command, **kwargs)
+        if (scenario == "prepare_corrupt" and arm_id.startswith("act-tensor-")
+                and kwargs["stdout_path"].name == "harbor-preparation.stdout"):
+            prepared = json.loads(kwargs["stdout_path"].read_text())
+            Path(prepared["harbor_config"]).write_text('{"agents":', encoding="utf-8")
+        return status
+
+    monkeypatch.setattr(BananLoopFullBackend, "_run_until_deadline", record_shared_deadline)
     report = run_fake_series(tasks, root, backend_factory)
     assert len(report["runs"]) == 24
     assert report["model_calls"] == report["harbor_evaluations"] == report["ai_judge_calls"] == 0
-    if exploration_fails:
+    if scenario == "exploration_failure":
         full = [item for item in report["runs"] if item["system"] == "bananloop_full"]
         assert len(full) == 12
         assert all(item["result"]["status"] == "EXPLORATION_FAILED" for item in full)
@@ -382,12 +465,31 @@ def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tm
         assert report["usage"]["by_source"]["bananloop_full_exploration"]["input_tokens"] == 12 * 123
         assert report["usage"]["unknown_usage_events"] == 0
         return
+    if scenario in {"prepare_timeout", "prepare_corrupt"}:
+        expected = ("TIMED_OUT_DURING_HARBOR_PREPARATION" if scenario == "prepare_timeout"
+                    else "CHILD_CONFIGURATION_FAILED")
+        failed, = [item for item in report["runs"] if item["result"]["status"] == expected]
+        arm_id = failed["arm_id"]
+        assert failed["task_id"] == "act-tensor-sparse-panel-imputation-r2"
+        assert len(stage_deadlines[arm_id]) == 2
+        assert len(set(stage_deadlines[arm_id])) == 1
+        archived = root / "final-archive" / arm_id
+        if scenario == "prepare_timeout":
+            assert (archived / "harbor-preparation.stdout").read_text() == '{"partial":'
+        else:
+            assert failed["result"]["error_type"] == "JSONDecodeError"
+        assert failed["result"]["final_artifact"]["status"] == "CAPTURED"
+        assert not (archived / "bananloop-optimization.stdout").exists()
+        return
     assert report["usage"]["model_turns_observed"] == 96
     assert report["usage"]["by_source"]["bananloop_full_optimization"]["model_turns_observed"] == 84
     assert all(item["result"]["status"] == "COMPLETED" for item in report["runs"]), [(item["arm_id"], item["result"]) for item in report["runs"] if item["result"]["status"] != "COMPLETED"]
     full = [item for item in report["runs"] if item["system"] == "bananloop_full"]
     direct = [item for item in report["runs"] if item["system"] == "codex_direct"]
     assert len(full) == len(direct) == 12
+    # Every Full arm supervises Exploration, config preparation, and Harbor.
+    assert all(len(stage_deadlines[item["arm_id"]]) == 3 for item in full)
+    assert all(len(set(stage_deadlines[item["arm_id"]])) == 1 for item in full)
     assert all(item["result"].get("child_campaign_id") == "c-" + "a" * 32 for item in full)
     assert all(item["result"]["evaluator_scope"]["policy"] == "PUBLIC_DEV_ONLY_DURING_ARM"
                and item["result"]["evaluator_scope"]["included_tiers"] == ["dev"]
@@ -492,7 +594,7 @@ def test_codex_jsonl_marks_malformed_tail_as_unknown(tmp_path):
     assert usage["usage"] is None
 
 
-def test_codex_direct_backend_uses_fake_cli_and_enforces_deadline(tmp_path):
+def test_codex_direct_backend_uses_fake_cli_and_enforces_deadline(tmp_path, monkeypatch):
     initial = tmp_path / "initial"
     initial.mkdir()
     subprocess.run(["git", "init", "-q", str(initial)], check=True)
@@ -512,10 +614,11 @@ def test_codex_direct_backend_uses_fake_cli_and_enforces_deadline(tmp_path):
         "prompt=sys.stdin.read()\n"
         "os.makedirs('benchmarks/fake',exist_ok=True)\n"
         "open('benchmarks/fake/solution.py','w').write('final candidate')\n"
-        "if 'sleep past deadline' in prompt: time.sleep(5)\n"
+        "if 'sleep past deadline' in prompt: time.sleep(30)\n"
         "print(json.dumps({'type':'turn.completed','usage':{'input_tokens':7,'output_tokens':3}}),flush=True)\n",
         encoding="utf-8")
     fake_codex.chmod(0o755)
+    _dispatch_fake_executables_through_python(monkeypatch, fake_codex)
     backend = CodexDirectBackend(
         codex_binary=str(fake_codex), model="fake-model", reasoning="high",
         task_instruction=instruction, dev_command=["python", "fake_dev.py"],
@@ -544,8 +647,9 @@ def test_codex_direct_backend_uses_fake_cli_and_enforces_deadline(tmp_path):
     (instruction).write_text("sleep past deadline", encoding="utf-8")
     timeout_root = tmp_path / "timeout"
     timeout_root.mkdir()
+    # Leave time for Git and Python startup on Windows CI before testing the worker timeout.
     timed_out = backend.run("arm-timeout", task, timeout_root,
-                            time.time() + 0.5, usage)
+                            time.time() + 5, usage)
     assert timed_out["status"] == "TIMED_OUT"
     assert timed_out["model_turns_observed"] == 0
     assert timed_out["final_artifact"]["status"] == "CAPTURED"
@@ -556,6 +660,45 @@ def test_codex_direct_backend_uses_fake_cli_and_enforces_deadline(tmp_path):
     assert missing["status"] == "MISSING_OUTPUT"
 
 
+def test_full_backend_deadline_polling_uses_inherited_monotonic_deadline(tmp_path, monkeypatch):
+    backend = object.__new__(BananLoopFullBackend)
+    stdout, stderr = tmp_path / "out", tmp_path / "err"
+    deadline = time.monotonic() + 0.15
+    # Once the outer supervisor has translated the epoch, a wall-clock jump
+    # must not affect the child stop decision.
+    monkeypatch.setattr(autonomous_runner.time, "time", lambda: 0.0)
+    status, _ = backend._run_until_deadline(
+        [sys.executable, "-c", "import time; time.sleep(5)"], cwd=tmp_path,
+        deadline_epoch=9999999999, deadline_monotonic=deadline,
+        stdout_path=stdout, stderr_path=stderr,
+    )
+    assert status == "TIMED_OUT"
+
+
+def test_full_backend_preserves_partial_stage_logs_and_does_not_reset_deadline(tmp_path):
+    backend = object.__new__(BananLoopFullBackend)
+    deadline = time.monotonic() + 0.35
+    prepare_out, prepare_err = tmp_path / "prepare.out", tmp_path / "prepare.err"
+    status, code = backend._run_until_deadline(
+        [sys.executable, "-c", "import sys,time; print('prepared-prefix',flush=True); time.sleep(.10)"],
+        cwd=tmp_path, deadline_epoch=time.time() + 10, deadline_monotonic=deadline,
+        stdout_path=prepare_out, stderr_path=prepare_err,
+    )
+    assert (status, code) == ("COMPLETED", 0)
+    assert prepare_out.read_text().strip() == "prepared-prefix"
+
+    harbor_out, harbor_err = tmp_path / "harbor.out", tmp_path / "harbor.err"
+    status, _ = backend._run_until_deadline(
+        [sys.executable, "-c", "import sys,time; print('partial-output',flush=True); print('partial-error',file=sys.stderr,flush=True); time.sleep(5)"],
+        cwd=tmp_path, deadline_epoch=time.time() + 10, deadline_monotonic=deadline,
+        stdout_path=harbor_out, stderr_path=harbor_err,
+    )
+    assert status == "TIMED_OUT"
+    assert harbor_out.read_text().strip() == "partial-output"
+    assert harbor_err.read_text().strip() == "partial-error"
+    assert time.monotonic() >= deadline
+
+
 def test_all_catalogue_candidates_exist_in_repository():
     from benchmarks.autonomous_v01.runner import ROOT
     tasks = json.loads(CATALOGUE.read_text())["tasks"]
@@ -564,3 +707,82 @@ def test_all_catalogue_candidates_exist_in_repository():
         candidate = ROOT / task["adapter"]["candidate_path"]
         assert candidate.is_file() and not candidate.is_symlink(), task["task_id"]
         compile(candidate.read_bytes(), str(candidate), "exec")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="process groups are POSIX-specific")
+def test_full_backend_kills_process_group_after_term_leader_exits(monkeypatch):
+    """A terminated group leader can exit while its grandchild keeps running."""
+    import signal
+
+    class ExitedLeader:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            # SIGTERM was enough for the leader; this says nothing about its
+            # descendants, which are still members of the process group.
+            return 0
+
+    sent_signals = []
+    monkeypatch.setattr(autonomous_runner.os, "killpg",
+                        lambda pid, sig: sent_signals.append((pid, sig)))
+
+    BananLoopFullBackend._kill_process(ExitedLeader())
+
+    assert sent_signals == [(4242, signal.SIGTERM), (4242, signal.SIGKILL)]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="process groups are POSIX-specific")
+def test_full_backend_closes_inherited_pipe_when_term_ignoring_child_remains():
+    """The child keeps the leader's stdout pipe open until the group is killed."""
+    import select
+    import signal
+
+    child_code = (
+        "import signal,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "print('CHILD_READY', flush=True); "
+        "time.sleep(60)"
+    )
+    leader_code = (
+        "import subprocess,sys,time; "
+        "subprocess.Popen([sys.executable, '-c', " + repr(child_code) + "]); "
+        "time.sleep(60)"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", leader_code],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=False,
+        start_new_session=True,
+    )
+    try:
+        ready, _, _ = select.select([process.stdout], [], [], 5)
+        assert ready, "child did not become ready within five seconds"
+        assert process.stdout.readline() == b"CHILD_READY\n"
+
+        BananLoopFullBackend._kill_process(process)
+
+        # EOF means both the leader and its inherited-pipe child have closed
+        # the only pipe descriptor; checking the stream itself avoids relying
+        # on platform-specific process table state for an orphaned child.
+        readable, _, _ = select.select([process.stdout], [], [], 5)
+        assert readable, "stdout remained open after process-group cleanup"
+        assert os.read(process.stdout.fileno(), 1) == b""
+        assert process.poll() is not None
+    finally:
+        # The group ID is this Popen's PID because it started a new session.
+        # Restrict emergency cleanup to that group, and always reap the leader.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        if process.stdout is not None:
+            process.stdout.close()

@@ -51,6 +51,28 @@ def test_replay_scores_recorded_outputs_with_unknown_cost(tmp_path):
     assert all(row["resource_usage"]["cost_status"] == "UNKNOWN" for row in results)
 
 
+def test_empty_replay_artifact_is_scored_as_wrong_not_success(tmp_path):
+    root = tmp_path / "demo"
+    prepare_demo(root)
+    answers = {
+        "demo-00": {}, "demo-01": {"selected": "first"},
+        "demo-02": {"result": 9}, "demo-03": {"result": 2},
+        "demo-04": {"decision": "PASS"}, "demo-05": {"decision": "REJECT"},
+        "demo-06": {"decision": "ACCEPT"}, "demo-07": {"decision": "REJECT"},
+    }
+    responses = root / "responses.json"
+    responses.write_text(json.dumps({"schema_version": 1, "responses": answers}))
+
+    summary = _run(root, adapter="replay", responses_path=responses)
+
+    row = json.loads((root / "results" / "results.json").read_text())["results"][0]
+    assert row["case_id"] == "demo-00"
+    assert row["status"] == "COMPLETED"
+    assert row["artifact_sha256"]
+    assert row["metric_results"][0]["value"] == 0
+    assert summary["roles"]["researcher"]["accuracy"] == 0.5
+
+
 @pytest.mark.parametrize("mutator", [
     lambda doc: doc["cases"][0].update(split="HOLDOUT"),
     lambda doc: doc["cases"][0].update(role_id="proposer"),
@@ -83,6 +105,45 @@ def test_oracle_tampering_fails_before_execution(tmp_path):
         _run(root)
 
 
+def test_invalid_evaluator_contract_fails_before_agent_or_success_result(tmp_path, monkeypatch):
+    root = tmp_path / "demo"
+    prepare_demo(root)
+    oracle_path = root / "oracle.dev.json"
+    oracle = json.loads(oracle_path.read_text())
+    oracle["cases"]["demo-00"] = {"checks": [{
+        "type": "exec", "metric_id": "evaluator_crash", "path": ["answer"],
+    }]}
+    oracle_path.write_text(json.dumps(oracle))
+    cases_path = root / "cases.dev.json"
+    cases = json.loads(cases_path.read_text())
+    for case in cases["cases"]:
+        case["evaluator_binding"]["sha256"] = digest(oracle)
+    cases_path.write_text(json.dumps(cases))
+    monkeypatch.setattr("bananloop.agent_benchmark._fixture_reply",
+                        lambda _case: pytest.fail("agent invoked after evaluator contract failure"))
+
+    with pytest.raises(BenchmarkError, match="invalid offline evaluator contract"):
+        _run(root)
+
+    assert not (root / "results").exists()
+
+
+@pytest.mark.parametrize("error", [RuntimeError, KeyboardInterrupt])
+def test_evaluator_failure_or_interrupt_does_not_publish_success(tmp_path, monkeypatch, error):
+    root = tmp_path / "demo"
+    prepare_demo(root)
+
+    def interrupt_scoring(_oracle, _answer):
+        raise error("interrupted offline scoring")
+
+    monkeypatch.setattr("bananloop.agent_benchmark.score_oracle", interrupt_scoring)
+    with pytest.raises(error, match="interrupted offline scoring"):
+        _run(root)
+
+    assert not (root / "results" / "results.json").exists()
+    assert not (root / "results" / "summary.json").exists()
+
+
 def test_registry_and_team_binding_mismatch_is_rejected(tmp_path):
     root = tmp_path / "demo"
     prepare_demo(root)
@@ -107,8 +168,11 @@ def test_runner_does_not_overwrite_artifact_directory(tmp_path):
     root = tmp_path / "demo"
     prepare_demo(root)
     _run(root)
+    results_path = root / "results" / "results.json"
+    before = results_path.read_bytes()
     with pytest.raises(BenchmarkError, match="already exists"):
         _run(root)
+    assert results_path.read_bytes() == before
 
 
 def test_public_input_and_oracle_are_separate_files(tmp_path):

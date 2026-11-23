@@ -799,6 +799,8 @@ def run_v2_optimize(args: Namespace, *,
         except Exception as exc:
             # The worker queue preserves dispatched outcomes. The CLI returns a
             # typed summary and never retries a provider request after uncertainty.
+            from .provider_diagnostics import safe_chatgpt_failure_diagnostics
+
             report = {
                 "status": "RUN_FAILED", "mode": "OPTIMIZATION", "profile": "FULL",
                 "campaign_id": args.campaign_id, "failure_type": type(exc).__name__,
@@ -812,6 +814,9 @@ def run_v2_optimize(args: Namespace, *,
                     for name, provider in providers.items()
                 },
             }
+            diagnostics = safe_chatgpt_failure_diagnostics(exc)
+            if diagnostics:
+                report["failure_diagnostics"] = diagnostics
             report["report_path"] = _write_cli_report(
                 state_root, report, campaign_id=args.campaign_id,
             )

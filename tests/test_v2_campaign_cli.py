@@ -837,6 +837,40 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
     finally:
         conn.close()
 
+    class ErrorOptimizer(MockOptimizer):
+        def __call__(self, *_args, **_kwargs):
+            from bananloop.chatgpt_responses import ChatGPTPlanResponseError
+
+            receipt = {
+                "request_id": "resp_fake_plan_error", "status": "FAILED",
+                "dispatched": True, "usage": "UNKNOWN",
+            }
+            self.request_history.append(receipt)
+            self.call_observer(receipt)
+            raise ChatGPTPlanResponseError(
+                "ChatGPT model request did not complete: PRIVATE_PROVIDER_PAYLOAD",
+            )
+
+    failed = run_v2_optimize(Namespace(
+        repo=str(repo), state_dir=str(state_dir), campaign_id=entry.campaign_id,
+        role_registry=str(role_path), visible_path=["data/train.csv", "src/model.json"],
+        write_path=["src/model.json"], approve_up_to_calls=1, max_steps=1,
+        timeout_seconds=60,
+    ), optimizer_factory=ErrorOptimizer, verifier_factory=MockVerifier)
+    assert failed["status"] == "RUN_FAILED"
+    assert failed["failure_type"] == "ChatGPTPlanResponseError"
+    assert failed["failure_diagnostics"] == [{
+        "location": [], "type": "chatgpt_response",
+        "message": "provider failure, details withheld",
+    }]
+    assert "PRIVATE_PROVIDER_PAYLOAD" not in json.dumps(failed)
+    failed_report = json.loads(Path(failed["report_path"]).read_text(encoding="utf-8"))
+    assert failed_report["failure_diagnostics"] == failed["failure_diagnostics"]
+    assert failed_report["request_history"]["optimizer"][0]["request_id"] == "resp_fake_plan_error"
+    assert "PRIVATE_PROVIDER_PAYLOAD" not in json.dumps(failed_report)
+    assert failed["provider_call_attempts"] == 1
+    assert failed["automatic_replay"] is False
+
     # Simulate a process/reporting failure after the runtime durably completed
     # the graph. Recovery must finalize from the saved trusted evidence without
     # reconstructing provider clients or dispatching another request.
@@ -846,7 +880,10 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
         "baseline_candidate_delta": {"status": "VERIFIED"},
         "integration_evidence": [{"decision": "PASS"}],
         "holdout": {"status": "VERIFIED"},
-        "provider_calls": [{"request_id": "previous-live-call"}],
+        "provider_calls": [
+            {"request_id": "previous-live-call"},
+            {"request_id": "resp_fake_plan_error"},
+        ],
     }
     reports_dir = state_root / "reports"
     reports_dir.mkdir(exist_ok=True)
@@ -884,13 +921,13 @@ def test_v2_optimization_cli_preflight_uses_frozen_spec_without_provider_auth(tm
     assert recovered["status"] == "ALL_NODES_COMPLETE"
     assert recovered["recovery_mode"] == "FINALIZATION_ONLY"
     assert recovered["provider_call_attempts"] == 0
-    assert recovered["campaign_provider_call_count"] == 1
+    assert recovered["campaign_provider_call_count"] == 2
     assert recovered["live_model_called"] is False
     assert recovered["campaign_terminal_status"] == "GOAL_MET"
     assert Path(recovered["recovery_report_path"]).is_file()
     recovery_json = json.loads(Path(recovered["recovery_report_path"]).read_text(encoding="utf-8"))
     assert recovery_json["recovery_report_path"] == recovered["recovery_report_path"]
-    assert recovery_json["campaign_provider_call_count"] == 1
+    assert recovery_json["campaign_provider_call_count"] == 2
     terminal_conn = __import__("sqlite3").connect(state_root / "campaign.sqlite3")
     try:
         assert terminal_conn.execute("SELECT status FROM campaigns WHERE id=1").fetchone()[0] == "GOAL_MET"

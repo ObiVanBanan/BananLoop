@@ -1,0 +1,303 @@
+{
+  "ai_judge_started": false,
+  "arm_deadline_seconds": 3600,
+  "arms": 24,
+  "blockers": [
+    "budgeted-imputation-mcar50: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe",
+    "carps-star-discrepancy-subset-select: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe",
+    "cpu-decoder-graph-executor: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe",
+    "cpu-llm-decode-throughput: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe",
+    "dctabeval-aeac-pooled-cat-statistics: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe",
+    "label-efficient-risk-estimator: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe",
+    "shortest-valid-ci-l2-ece: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe",
+    "sketched-newton-cov-estimator: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe",
+    "sopcc-online-chance-constrained-policy: invalid task runtime descriptor: DEV-only overlay files or environment are unsafe",
+    "budgeted-imputation-mcar50: local public DEV image ID differs from catalogue pin",
+    "carps-star-discrepancy-subset-select: local public DEV image ID differs from catalogue pin",
+    "cpu-decoder-graph-executor: local public DEV image ID differs from catalogue pin",
+    "cpu-llm-decode-throughput: local public DEV image ID differs from catalogue pin",
+    "dctabeval-aeac-pooled-cat-statistics: local public DEV image ID differs from catalogue pin",
+    "label-efficient-risk-estimator: local public DEV image ID differs from catalogue pin",
+    "shortest-valid-ci-l2-ece: local public DEV image ID differs from catalogue pin",
+    "sketched-newton-cov-estimator: local public DEV image ID differs from catalogue pin",
+    "sopcc-online-chance-constrained-policy: local public DEV image ID differs from catalogue pin",
+    "act-tensor-sparse-panel-imputation-r2: local public DEV image ID differs from catalogue pin",
+    "causalpfn-cate-pehe-ihdp-surfaceb: local public DEV image ID differs from catalogue pin",
+    "hicard-latent-encoder: local public DEV image ID differs from catalogue pin",
+    "Codex Direct subscription authentication has not been verified"
+  ],
+  "call_limit_policy": "OBSERVE_ONLY",
+  "capacity": {
+    "available_memory_mb": 22654,
+    "conservative_arm_slots": 1,
+    "cpu_bound_arm_slots": 1,
+    "currently_memory_bound_arm_slots": 1,
+    "disk_free_bytes": 16454696960,
+    "logical_cpus": 12,
+    "minimum_series_wall_hours_at_one_slot": 24,
+    "per_task_requested_cpus": 8,
+    "per_task_requested_memory_mb": 14336,
+    "total_memory_mb": 32011
+  },
+  "catalogue_file_sha256": "5cf6f01b44eacb992c534acb81048f7e788b2aed3a271893298dcdd5d1ebd98a",
+  "catalogue_sha256": "b27bc81a5d335923846e21674a968dba7bd4e77508f3f0e25145686622dbf17b",
+  "ci": {
+    "pytest_jobs": [
+      {
+        "conclusion": "failure",
+        "name": "pytest (ubuntu-latest, 3.12)",
+        "status": "completed",
+        "url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/45000766669/job/137141600046"
+      },
+      {
+        "conclusion": "failure",
+        "name": "pytest (ubuntu-latest, 3.13)",
+        "status": "completed",
+        "url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/45000766669/job/137141600356"
+      },
+      {
+        "conclusion": "failure",
+        "name": "pytest (ubuntu-latest, 3.11)",
+        "status": "completed",
+        "url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/45000766669/job/137141600371"
+      },
+      {
+        "conclusion": "failure",
+        "name": "pytest (windows-latest, 3.12)",
+        "status": "completed",
+        "url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/45000766669/job/137141600478"
+      }
+    ],
+    "workflow_runs": [
+      {
+        "conclusion": "success",
+        "name": "dashboard-browser",
+        "status": "completed",
+        "url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/45000766496"
+      },
+      {
+        "conclusion": "failure",
+        "name": "tests",
+        "status": "completed",
+        "url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/45000766669"
+      }
+    ]
+  },
+  "codex_auth_status": "WARNING: proceeding, even though we could not create PATH aliases: Read-only file system (os error 30)\nLogged in using ChatGPT",
+  "codex_version": "codex-cli 0.171.0",
+  "eligible_task_ids": [
+    "act-tensor-sparse-panel-imputation-r2",
+    "budgeted-imputation-mcar50",
+    "carps-star-discrepancy-subset-select",
+    "causalpfn-cate-pehe-ihdp-surfaceb",
+    "cpu-decoder-graph-executor",
+    "cpu-llm-decode-throughput",
+    "dctabeval-aeac-pooled-cat-statistics",
+    "hicard-latent-encoder",
+    "label-efficient-risk-estimator",
+    "shortest-valid-ci-l2-ece",
+    "sketched-newton-cov-estimator",
+    "sopcc-online-chance-constrained-policy"
+  ],
+  "environment_observations": {
+    "image_inspection": {
+      "probes": [
+        {
+          "expected_image_id": "sha256:5d2bac54769dc124be218efc1a1495210197a25652f6005ad327d9fa5bc8f9f4",
+          "image": "bananloop-are-public-devkit-probe:2026-11-12",
+          "image_match": "unknown_permission_denied",
+          "probe_returncode": 1,
+          "probe_stderr": "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+          "task_id": "budgeted-imputation-mcar50"
+        },
+        {
+          "expected_image_id": "sha256:59f83ddb37abcc1a284c673a02a8b811aea94e06e99ffc40f745921a13b5e2e2",
+          "image": "bananloop-are-carps-public-dev:1.1.0",
+          "image_match": "unknown_permission_denied",
+          "probe_returncode": 1,
+          "probe_stderr": "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+          "task_id": "carps-star-discrepancy-subset-select"
+        },
+        {
+          "expected_image_id": "sha256:dd54ec300f39cb3bb9766592fcde5e92fce7b09df64364a21551cb8eb04757f7",
+          "image": "bananloop-are-cpudecoder-public-dev:1.1.0",
+          "image_match": "unknown_permission_denied",
+          "probe_returncode": 1,
+          "probe_stderr": "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+          "task_id": "cpu-decoder-graph-executor"
+        },
+        {
+          "expected_image_id": "sha256:682b01ecc8b472b9cf422bf2732d6f30a08c9a6fbc7d75703a5e4b7028c02ddd",
+          "image": "bananloop-are-cpullm-public-dev:1.1.0",
+          "image_match": "unknown_permission_denied",
+          "probe_returncode": 1,
+          "probe_stderr": "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+          "task_id": "cpu-llm-decode-throughput"
+        },
+        {
+          "expected_image_id": "sha256:7c4cefdf35f1455fb2817780d50360401d257709ec8f72f392e67c069e977e68",
+          "image": "bananloop-are-dctabeval-public-dev:2026-11-13",
+          "image_match": "unknown_permission_denied",
+          "probe_returncode": 1,
+          "probe_stderr": "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+          "task_id": "dctabeval-aeac-pooled-cat-statistics"
+        },
+        {
+          "expected_image_id": "sha256:14d2cd7c8f7b36314841805af2784620b406757f92ddc7603b8fcef2057c19e1",
+          "image": "bananloop-are-labelrisk-public-dev:1.1.0",
+          "image_match": "unknown_permission_denied",
+          "probe_returncode": 1,
+          "probe_stderr": "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+          "task_id": "label-efficient-risk-estimator"
+        },
+        {
+          "expected_image_id": "sha256:926252b1f9c047d96fac104aebbcd9128739d23c22a7bb3a7de9ddb1f9682fe7",
+          "image": "bananloop-are-shortest-ci-public-dev:1.1.0",
+          "image_match": "unknown_permission_denied",
+          "probe_returncode": 1,
+          "probe_stderr": "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+          "task_id": "shortest-valid-ci-l2-ece"
+        },
+        {
+          "expected_image_id": "sha256:50b2c2cf5ae3009161edcd000c6485d1f0c99445cb8de86d3c410552aab750c8",
+          "image": "bananloop-are-newton-public-dev:1.1.0",
+          "image_match": "unknown_permission_denied",
+          "probe_returncode": 1,
+          "probe_stderr": "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+          "task_id": "sketched-newton-cov-estimator"
+        },
+        {
+          "expected_image_id": "sha256:5fc63eccd0a3448db1dd9240c3fe7ecb4cef02511bafc77e2c91f294c3d82b8e",
+          "image": "bananloop-are-sopcc-public-dev:2026-11-12",
+          "image_match": "unknown_permission_denied",
+          "probe_returncode": 1,
+          "probe_stderr": "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+          "task_id": "sopcc-online-chance-constrained-policy"
+        },
+        {
+          "expected_image_id": "sha256:f8609c86115e4f304fc0c9e1e9d176693d3c11e53f7986a07d3bdbece23d6875",
+          "image": "bananloop-v01-act-tensor-sparse-panel-imputation-r2:1.1.0",
+          "image_match": "unknown_permission_denied",
+          "probe_returncode": 1,
+          "probe_stderr": "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+          "task_id": "act-tensor-sparse-panel-imputation-r2"
+        },
+        {
+          "expected_image_id": "sha256:3b043696a33b787b0e05f960a7c180e47378016c0c7c0e72ec2cf658af795bac",
+          "image": "bananloop-v01-causalpfn-cate-pehe-ihdp-surfaceb:1.1.0",
+          "image_match": "unknown_permission_denied",
+          "probe_returncode": 1,
+          "probe_stderr": "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+          "task_id": "causalpfn-cate-pehe-ihdp-surfaceb"
+        },
+        {
+          "expected_image_id": "sha256:4ac7196375b04b6804f2b9ccf0059a64fdfc0e1fb0058ee5d7275dbdb0e6198a",
+          "image": "bananloop-v01-hicard-latent-encoder:1.1.0",
+          "image_match": "unknown_permission_denied",
+          "probe_returncode": 1,
+          "probe_stderr": "permission denied while trying to connect to the docker API at unix:///var/run/docker.sock",
+          "task_id": "hicard-latent-encoder"
+        }
+      ],
+      "status": "permission_denied_to_docker_socket_for_all_12; actual local IDs therefore unknown, not proven missing",
+      "task_count": 12
+    },
+    "interpretation": "PREP_BLOCKED is correct. The Full backend, benchmark-bound pivot authorizer, inherited-deadline grader, direct backend, artifact exporter and archiver gates all pass at both commits. Main environment blockers are 9 unsafe overlays (their environment path is a symlink and each has are-grader-ctx) and Docker socket permission, which the runner currently reports indistinguishably as image-ID mismatch. Auth probe contains a warning plus Logged in, causing exact-string preflight auth check to block.",
+    "local_tool_probes": {
+      "codex_login_status": "WARNING: proceeding, even though we could not create PATH aliases: Read-only file system (os error 30)\nLogged in using ChatGPT",
+      "codex_version": "codex-cli 0.171.0",
+      "harbor_version": "0.25.0"
+    },
+    "runtime_descriptors": {
+      "catalogue_pins_validated_by_runner": true,
+      "catalogue_task_count": 12,
+      "runner_error": "DEV-only overlay files or environment are unsafe",
+      "unsafe_overlay_count": 9,
+      "unsafe_overlays": [
+        {
+          "are_grader_ctx_present": true,
+          "environment_symlink": true,
+          "task_id": "budgeted-imputation-mcar50"
+        },
+        {
+          "are_grader_ctx_present": true,
+          "environment_symlink": true,
+          "task_id": "carps-star-discrepancy-subset-select"
+        },
+        {
+          "are_grader_ctx_present": true,
+          "environment_symlink": true,
+          "task_id": "cpu-decoder-graph-executor"
+        },
+        {
+          "are_grader_ctx_present": true,
+          "environment_symlink": true,
+          "task_id": "cpu-llm-decode-throughput"
+        },
+        {
+          "are_grader_ctx_present": true,
+          "environment_symlink": true,
+          "task_id": "dctabeval-aeac-pooled-cat-statistics"
+        },
+        {
+          "are_grader_ctx_present": true,
+          "environment_symlink": true,
+          "task_id": "label-efficient-risk-estimator"
+        },
+        {
+          "are_grader_ctx_present": true,
+          "environment_symlink": true,
+          "task_id": "shortest-valid-ci-l2-ece"
+        },
+        {
+          "are_grader_ctx_present": true,
+          "environment_symlink": true,
+          "task_id": "sketched-newton-cov-estimator"
+        },
+        {
+          "are_grader_ctx_present": true,
+          "environment_symlink": true,
+          "task_id": "sopcc-online-chance-constrained-policy"
+        }
+      ]
+    }
+  },
+  "harbor_binary": "/home/sonik/bananloop-benchmark-env/harbor-venv/bin/harbor",
+  "harbor_started": false,
+  "harbor_version": "0.25.0",
+  "implementation_gates": {
+    "24_arm_result_archiver": true,
+    "bananloop_full_backend": true,
+    "benchmark_bound_pivot_authorizer": true,
+    "codex_direct_backend": true,
+    "codex_final_artifact_export": true,
+    "inherited_deadline_public_grader": true
+  },
+  "integrity_note": "Local are-grader-ctx source snippets for the three new tasks were inspected during offline contract research. Owner accepted continued use for an internal non-RPDI-14 diagnostic with disclosure; no blind/independent holdout claim is permitted.",
+  "live_models_started": false,
+  "observed_date": "2026-11-22",
+  "operator_private_source_exposure": {
+    "accepted_for_internal_diagnostic": true,
+    "affected_task_ids": [
+      "act-tensor-sparse-panel-imputation-r2",
+      "causalpfn-cate-pehe-ihdp-surfaceb",
+      "hicard-latent-encoder"
+    ],
+    "disclosure_path": "benchmarks/autonomous_v01/source-access-declaration.json",
+    "disclosure_sha256": "4e37162f863412ee42a04dfddf1d2b7cfb41a266ab058a474fbb97df534bdca9",
+    "disclosure_valid": true,
+    "pristine_blind_or_independent_holdout_claim_allowed": false
+  },
+  "planned_distinct_tasks": 12,
+  "raw_runner_report_sha256": "2ede5eb49dcf32c0343eeeff5590d8a620721101d242d56387cd56212fd8c388",
+  "schema": "bananloop-autonomous-v01-preflight-v1",
+  "source_access_affected_task_ids": [
+    "act-tensor-sparse-panel-imputation-r2",
+    "causalpfn-cate-pehe-ihdp-surfaceb",
+    "hicard-latent-encoder"
+  ],
+  "source_access_declaration_sha256": "4e37162f863412ee42a04dfddf1d2b7cfb41a266ab058a474fbb97df534bdca9",
+  "source_commit_sha": "be24a260615179f9437859e87fe8a8b2b5b12377",
+  "status": "PREP_BLOCKED",
+  "task_runtime_root": "/home/sonik/bananloop-benchmark-env/autonomous-v01-task-runtime-v1"
+}

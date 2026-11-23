@@ -1191,26 +1191,10 @@ def _protocol_review_terminal_status(
 
 def _safe_failure_diagnostics(exc: Exception) -> list[dict[str, Any]]:
     """Return schema locations/messages without copying untrusted response values."""
-    from .chatgpt_responses import ChatGPTPlanResponseError
-    if isinstance(exc, ChatGPTPlanResponseError):
-        # Do not persist provider bodies or model output. Only an exact HTTP
-        # status or a fixed local parser category is safe to report.
-        message = str(exc)
-        status = re.fullmatch(r"ChatGPT Responses admission failed \(HTTP ([1-5][0-9]{2})\)", message)
-        fixed = {
-            "model did not produce strict JSON", "model response must be a JSON object",
-            "ChatGPT stream closed without response.completed", "ChatGPT request exceeded its deadline",
-            "ChatGPT SSE stream ended mid-event", "ChatGPT SSE stream exceeds byte ceiling",
-            "oversized ChatGPT SSE line", "invalid ChatGPT SSE event JSON",
-            "unexpected ChatGPT SSE payload", "invalid ChatGPT SSE framing",
-            "ChatGPT terminal response is malformed", "ChatGPT terminal response is not completed",
-            "ChatGPT response has no bounded text output", "non-text response delta",
-            "ChatGPT model output exceeds byte ceiling",
-        }
-        category = f"admission HTTP {status.group(1)}" if status else (
-            message if message in fixed else "provider failure, details withheld"
-        )
-        return [{"location": [], "type": "chatgpt_response", "message": category}]
+    from .provider_diagnostics import safe_chatgpt_failure_diagnostics
+    provider_diagnostics = safe_chatgpt_failure_diagnostics(exc)
+    if provider_diagnostics:
+        return provider_diagnostics
     if isinstance(exc, V2RuntimeError):
         # V2RuntimeError messages are fixed Core contract failures; they never
         # interpolate model-authored text, source contents, or provider bodies.

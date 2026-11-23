@@ -1,0 +1,141 @@
+{
+  "acceptance_status": "PREP_BLOCKED",
+  "reviewed_source_commit": "be24a260615179f9437859e87fe8a8b2b5b12377",
+  "archived_harness_commit": "ada1f18b7e468bffcba1ed6265a7b99a73d4e481",
+  "archive_path": "/home/sonik/bananloop-benchmark-env/runs/autonomous-v01-p2-prepared-i4fjpx2i/final-archive",
+  "runtime_descriptor_root": "/home/sonik/bananloop-benchmark-env/runs/autonomous-v01-p2-prepared-i4fjpx2i/final-archive/control/runtime-descriptors",
+  "validated_descriptors": 12,
+  "descriptor_errors": [],
+  "task_evidence": [
+    {
+      "task_id": "act-tensor-sparse-panel-imputation-r2",
+      "task_sha256": "81d2a54cf10d0729ad9f38b52a0d02e167b9141f38453245899493629273ba55",
+      "instruction_sha256": "0c9ee2521673e86c5306355a9d028571c07cd083110014b919dc0bbc6451996b",
+      "candidate_path": "benchmarks/autoresearchexam/solutions/act_tensor/impute.py",
+      "metric": {
+        "metric_id": "imputation_r2",
+        "direction": "MAXIMIZE",
+        "aggregation": "MEAN"
+      },
+      "catalogue_dev_image_id": "sha256:f8609c86115e4f304fc0c9e1e9d176693d3c11e53f7986a07d3bdbece23d6875",
+      "local_image_id": "UNKNOWN_PERMISSION_DENIED",
+      "runtime_descriptor_fixture_sha256": "4a4904ce9a80bf3dfb1bd3768d72fb08219a3005c514bd20adbe3f3da1799f01",
+      "runtime_descriptor_overlay_task_sha256": "d2365c402910240f8e47d3afaaabcf0327256288fd48c76af0f0e19115a4e575",
+      "archived_result_sha256": "c9e4f7d664570759cbc51812529422ffe94c656039257521747f0c7fe1684c2f",
+      "archived_full_status": "EXPLORATION_FAILED",
+      "archived_final_public_dev": {
+        "candidate_sha256": "de698c7fe955613e2297088a7258ddbd0b99bf32d4f2febfe402b94659345861",
+        "receipt": {
+          "dev_cells": 8,
+          "dev_score": -0.000438181838185947,
+          "status": "GRADED",
+          "task_id": "act-tensor-sparse-panel-imputation-r2"
+        },
+        "scored_after_all_12_full_arms": true,
+        "status": "GRADED"
+      },
+      "fresh_bad_candidate_test": "BLOCKED_DOCKER_SOCKET_PERMISSION_DENIED",
+      "public_source_verification": {
+        "status": "MATCHED",
+        "revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+        "files": {
+          "instruction.md": {
+            "sha256": "0c9ee2521673e86c5306355a9d028571c07cd083110014b919dc0bbc6451996b",
+            "url": "https://github.com/bespokelabsai/AutoResearchExam/blob/23c0d92e11af1dea821f972b5f0a739060958002/act-tensor-sparse-panel-imputation-r2/instruction.md"
+          },
+          "task.toml": {
+            "sha256": "81d2a54cf10d0729ad9f38b52a0d02e167b9141f38453245899493629273ba55",
+            "url": "https://github.com/bespokelabsai/AutoResearchExam/blob/23c0d92e11af1dea821f972b5f0a739060958002/act-tensor-sparse-panel-imputation-r2/task.toml"
+          }
+        }
+      }
+    },
+    {
+      "task_id": "causalpfn-cate-pehe-ihdp-surfaceb",
+      "task_sha256": "b85cb56673be920d7a027f8925080a158fbbf0578ec8bf4c6763603267605c7c",
+      "instruction_sha256": "282f76f0102ca6647fbfd4ffff0eb3c6a6ae3c5cca535c057ba04adc5226c921",
+      "candidate_path": "benchmarks/autoresearchexam/solutions/causalpfn/estimator.py",
+      "metric": {
+        "metric_id": "mean_pehe",
+        "direction": "MINIMIZE",
+        "aggregation": "MEAN"
+      },
+      "catalogue_dev_image_id": "sha256:3b043696a33b787b0e05f960a7c180e47378016c0c7c0e72ec2cf658af795bac",
+      "local_image_id": "UNKNOWN_PERMISSION_DENIED",
+      "runtime_descriptor_fixture_sha256": "698b5850c132e3960acbd5446203964759226244f443732c1d513f2b28e3f548",
+      "runtime_descriptor_overlay_task_sha256": "a8734a89a865196878187096e3f0da25d2c2deb2a0fcc1f1090aa39eaf66c1e4",
+      "archived_result_sha256": "2a0a1f43fcf75adc17f56a90daebdf728f315a5415a0622fe0910e89bcbafe6b",
+      "archived_full_status": "EXPLORATION_FAILED",
+      "archived_final_public_dev": {
+        "candidate_sha256": "2d3860a204e45446e2f4e02017566967d652f80209ad4d533a5504bf5cb4478d",
+        "receipt": {
+          "dev_cells": 100,
+          "dev_score": 4.130251584660836,
+          "status": "GRADED",
+          "task_id": "causalpfn-cate-pehe-ihdp-surfaceb"
+        },
+        "scored_after_all_12_full_arms": true,
+        "status": "GRADED"
+      },
+      "fresh_bad_candidate_test": "BLOCKED_DOCKER_SOCKET_PERMISSION_DENIED",
+      "public_source_verification": {
+        "status": "MATCHED",
+        "revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+        "files": {
+          "instruction.md": {
+            "sha256": "282f76f0102ca6647fbfd4ffff0eb3c6a6ae3c5cca535c057ba04adc5226c921",
+            "url": "https://github.com/bespokelabsai/AutoResearchExam/blob/23c0d92e11af1dea821f972b5f0a739060958002/causalpfn-cate-pehe-ihdp-surfaceb/instruction.md"
+          },
+          "task.toml": {
+            "sha256": "b85cb56673be920d7a027f8925080a158fbbf0578ec8bf4c6763603267605c7c",
+            "url": "https://github.com/bespokelabsai/AutoResearchExam/blob/23c0d92e11af1dea821f972b5f0a739060958002/causalpfn-cate-pehe-ihdp-surfaceb/task.toml"
+          }
+        }
+      }
+    },
+    {
+      "task_id": "hicard-latent-encoder",
+      "task_sha256": "dd09dd774a8c64664119f34e663f7ca8bc9d3c25306596342ae876274c84c0b3",
+      "instruction_sha256": "26f263ab432d30044de3d5a031a8dde0d2a5c24172855090ac8fa5d2789f5e08",
+      "candidate_path": "benchmarks/autoresearchexam/solutions/hicard/encoder.py",
+      "metric": {
+        "metric_id": "onehot_mse_reduction_pct",
+        "direction": "MAXIMIZE",
+        "aggregation": "MEAN"
+      },
+      "catalogue_dev_image_id": "sha256:4ac7196375b04b6804f2b9ccf0059a64fdfc0e1fb0058ee5d7275dbdb0e6198a",
+      "local_image_id": "UNKNOWN_PERMISSION_DENIED",
+      "runtime_descriptor_fixture_sha256": "e3554ae80fe3572065f824caa3a096268b3180f868d5c504667287d6525d0bc2",
+      "runtime_descriptor_overlay_task_sha256": "2f423a73e4b70599967f8829c9f55b0324c33abb4c4350799308d0cc22f5511d",
+      "archived_result_sha256": "04c766e121fab9310767c95672f2c53df823a9382b7a07990096751a3010c248",
+      "archived_full_status": "EXPLORATION_FAILED",
+      "archived_final_public_dev": {
+        "candidate_sha256": "884260a07e00aec3fb05c07e53ff837780fecdba8805c690f9be5b3d363c30a2",
+        "receipt": {
+          "dev_cells": 24,
+          "dev_score": -4.481569170868128,
+          "status": "GRADED",
+          "task_id": "hicard-latent-encoder"
+        },
+        "scored_after_all_12_full_arms": true,
+        "status": "GRADED"
+      },
+      "fresh_bad_candidate_test": "BLOCKED_DOCKER_SOCKET_PERMISSION_DENIED",
+      "public_source_verification": {
+        "status": "MATCHED",
+        "revision": "23c0d92e11af1dea821f972b5f0a739060958002",
+        "files": {
+          "instruction.md": {
+            "sha256": "26f263ab432d30044de3d5a031a8dde0d2a5c24172855090ac8fa5d2789f5e08",
+            "url": "https://github.com/bespokelabsai/AutoResearchExam/blob/23c0d92e11af1dea821f972b5f0a739060958002/hicard-latent-encoder/instruction.md"
+          },
+          "task.toml": {
+            "sha256": "dd09dd774a8c64664119f34e663f7ca8bc9d3c25306596342ae876274c84c0b3",
+            "url": "https://github.com/bespokelabsai/AutoResearchExam/blob/23c0d92e11af1dea821f972b5f0a739060958002/hicard-latent-encoder/task.toml"
+          }
+        }
+      }
+    }
+  ],
+  "fresh_provider_or_grader_calls": 0
+}
