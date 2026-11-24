@@ -14,6 +14,7 @@ import json
 import math
 import tempfile
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -354,7 +355,7 @@ class AREPublicCARPSEvaluatorRunner(AREPublicEvaluatorRunner):
             result, sort_keys=True, separators=(",", ":"),
             ensure_ascii=False, allow_nan=False,
         ).encode("utf-8")
-        return execution.model_copy(update={
-            "private_result_bytes": raw,
-            "result_digest": hashlib.sha256(raw).hexdigest(),
-        })
+        return replace(
+            execution, private_result_bytes=raw,
+            result_digest=hashlib.sha256(raw).hexdigest(),
+        )
