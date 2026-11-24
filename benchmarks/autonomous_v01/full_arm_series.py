@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,11 @@ def run_full_series(*, manifest_path: Path, preflight_path: Path,
         raise ValueError("manifest SHA differs from the explicit pin")
     if manifest.get("model") != model:
         raise ValueError("series model differs from its manifest")
+    checkout = candidate_checkout.resolve(strict=True)
+    python_paths = [str(checkout)]
+    python_paths.extend(path for path in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+                         if path and path != str(checkout))
+    os.environ["PYTHONPATH"] = os.pathsep.join(python_paths)
     if series_root.exists() and not (series_root / "series.json").is_file():
         raise ValueError("existing series root has no resumable series receipt")
     series_root.mkdir(parents=True, exist_ok=True)
@@ -89,7 +95,7 @@ def run_full_series(*, manifest_path: Path, preflight_path: Path,
         }
         result = launch_full_arm(
             manifest_path=manifest_path, preflight_path=preflight_path,
-            candidate_checkout=candidate_checkout,
+            candidate_checkout=checkout,
             expected_manifest_sha256=expected_manifest_sha256,
             task_id=task_id, candidate_source_sha=candidate_source_sha,
             arm_id=arm_id, backend_config={"backend_kwargs": kwargs}, arm_root=arm_root,
