@@ -71,3 +71,23 @@ Harbor lifecycle не сохраняет идентификатор создан
 Нужна привязка Harbor lifecycle к уникальному идентификатору arm
 и проверка его очистки. Docker socket в этой среде возвращает EPERM.
 Тесты public DEV и watchdog прошли, 23 passed.
+
+## Full launcher verification · 24 Nov 2026
+
+The production single Full arm launcher now uses the parent watchdog. It
+preserves the worker's captured artifact and checks cleanup of the exact
+Compose projects derived from the Harbor trial config. For a single completed
+trial without retries, matching terminal job and trial records establish the
+project inventory. Incomplete inventory keeps the overall cleanup status
+UNKNOWN, even when removal succeeds for all identified projects.
+
+At `272182f`, 124 tests passed across the watchdog, launcher, cleanup,
+project identification, runner, and campaign CLI. The CARPS diagnostic on
+`2093475` ended with a terminal Harbor trial and cleanup CLEANED. That run
+exercised a candidate evaluator timeout while Harbor returned normally.
+
+Docker Engine 29.8.2 was available during this check. In a separate synthetic
+probe, the watchdog killed the worker and cleanup removed the remaining
+labeled Docker container object. The object was already stopped when checked.
+Proof of container cleanup after the parent watchdog interrupts an active
+Harbor trial remains open, as does 24-arm paired production acceptance.
