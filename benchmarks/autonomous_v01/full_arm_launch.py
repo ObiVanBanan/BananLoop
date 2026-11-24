@@ -228,6 +228,7 @@ def launch_full_arm(*, manifest_path: Path, preflight_path: Path,
     # A known config inventory authorizes cleanup of those exact projects;
     # it does not establish a whole-host Docker inventory.
     cleanup_ok = (no_harbor_started or (inventory.get("status") == "KNOWN"
+                  and inventory.get("inventory_complete") is True
                   and inventory.get("projects") and len(cleanup) == len(inventory["projects"])
                   and all(item.get("status") == "CLEANED" for item in cleanup)))
     if not cleanup_ok:

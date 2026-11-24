@@ -137,8 +137,10 @@ def test_runs_single_worker_and_cleans_only_derived_exact_projects(tmp_path, mon
         expected_manifest_sha256=manifest["manifest_sha256"], task_id="task-4", candidate_source_sha=sha,
         arm_id="pair-4-bananloop_full", backend_config=config_for(root, checkout, sha), arm_root=root, candidate_path=candidate)
     assert record["gate"]["authorization"] == "NOT_ESTABLISHED"
-    assert record["result"]["status"] == "DONE"
-    assert record["cleanup_status"] == "CLEANED"  # exact derived projects were cleaned
+    assert record["result"]["status"] == "INTERRUPTED_UNKNOWN"
+    assert record["result"]["worker_status"] == "DONE"
+    assert record["cleanup_status"] == "UNKNOWN"
+    assert all(item["status"] == "CLEANED" for item in record["cleanup"])
     assert record["result"]["final_artifact"]["status"] == "CAPTURED"
     assert record["result"]["final_artifact"]["files"][0]["sha256"] == "worker-sha"
     assert removed == ["trial-x__agent", "trial-x__env"]
