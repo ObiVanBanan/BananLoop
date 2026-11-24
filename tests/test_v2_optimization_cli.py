@@ -2,11 +2,51 @@ from __future__ import annotations
 
 from bananloop.trusted_evaluator import TrustedEvaluatorError, TrustedPublicEvaluatorFailure
 from bananloop.v2_optimization_cli import (
-    _initial_optimization_task_nodes, _public_evaluator_failure_detail,
+    _aggregate_successful_request_usage, _initial_optimization_task_nodes,
+    _public_evaluator_failure_detail,
 )
 from bananloop.v2_optimization_runtime import (
     _candidate_node_id, _iteration_schedule_command_id,
 )
+
+
+def test_successful_request_usage_aggregates_complete_dispatched_history():
+    history = {
+        "optimizer": [{
+            "request_id": None, "status": "COMPLETED", "dispatched": True,
+            "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+        }],
+        "integration_verifier": [{
+            "request_id": "resp-2", "status": "COMPLETED", "dispatched": True,
+            "usage": {"input_tokens": 20, "output_tokens": 6, "total_tokens": 26},
+        }],
+    }
+
+    assert _aggregate_successful_request_usage(history, spent=2) == {
+        "input_tokens": 30, "output_tokens": 10, "total_tokens": 40,
+    }
+
+
+def test_successful_request_usage_fails_closed_for_incomplete_or_cached_history():
+    complete = {
+        "optimizer": [{
+            "status": "COMPLETED", "dispatched": True,
+            "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+        }],
+    }
+    partial = {"optimizer": [{
+        "status": "COMPLETED", "dispatched": True,
+        "usage": {"input_tokens": 10, "output_tokens": 4},
+    }]}
+    cached = {"optimizer": [{
+        "status": "CACHED", "dispatched": True,
+        "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+    }]}
+
+    assert _aggregate_successful_request_usage(complete, spent=2) == "UNKNOWN"
+    assert _aggregate_successful_request_usage(partial, spent=1) == "UNKNOWN"
+    assert _aggregate_successful_request_usage(cached, spent=1) == "UNKNOWN"
+    assert _aggregate_successful_request_usage({"optimizer": []}, spent=0) == "UNKNOWN"
 
 
 def test_resume_task_detection_ignores_completed_candidate_nodes():

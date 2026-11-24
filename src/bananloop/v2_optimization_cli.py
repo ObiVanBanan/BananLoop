@@ -43,6 +43,36 @@ class _CallAllowanceReached(V2OptimizationCLIError):
     pass
 
 
+def _aggregate_successful_request_usage(
+    request_history: dict[str, list[dict[str, Any]]], *, spent: int,
+) -> dict[str, int] | str:
+    """Aggregate only a complete set of dispatched requests with full receipts."""
+    if isinstance(spent, bool) or not isinstance(spent, int) or spent < 0:
+        return "UNKNOWN"
+    if not isinstance(request_history, dict) or any(
+        not isinstance(history, list) for history in request_history.values()
+    ):
+        return "UNKNOWN"
+    records = [item for history in request_history.values() for item in history]
+    if (len(records) != spent or not records
+            or any(not isinstance(item, dict) or item.get("dispatched") is not True
+                   for item in records)):
+        return "UNKNOWN"
+    totals = {key: 0 for key in ("input_tokens", "output_tokens", "total_tokens")}
+    for record in records:
+        if record.get("status") != "COMPLETED":
+            return "UNKNOWN"
+        usage = record.get("usage")
+        if not isinstance(usage, dict):
+            return "UNKNOWN"
+        for key in totals:
+            value = usage.get(key)
+            if type(value) is not int or value < 0:
+                return "UNKNOWN"
+            totals[key] += value
+    return totals
+
+
 def _public_evaluator_failure_detail(exc: BaseException) -> str | None:
     """Return only a Core-allowlisted public evaluator code from an exception chain."""
     seen: set[int] = set()
@@ -791,6 +821,9 @@ def run_v2_optimize(args: Namespace, *,
                 },
                 "automatic_replay": False,
             })
+            result["usage"] = _aggregate_successful_request_usage(
+                result["request_history"], spent=spent,
+            )
             result = _close_completed_child_allocation(
                 result, spec=spec, database=database, registry=registry,
             )
