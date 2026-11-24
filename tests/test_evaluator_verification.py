@@ -1329,6 +1329,7 @@ print(json.dumps({
         if verifier_unknown:
             from bananloop.champion_promotion import ChampionPromotionService
             from bananloop.optimization_lifecycle import OptimizationLifecycleError
+            from benchmarks.autonomous_v01.runner import _verified_champion_from_state
 
             dispatches = []
 
@@ -1375,6 +1376,8 @@ print(json.dumps({
             ).current()
             assert champion["snapshot_id"] == proposed["candidate_snapshot_id"]
             assert champion["revision"] == verified["champion"]["revision"]
+            assert _verified_champion_from_state(state_root, campaign_id) == champion["snapshot_id"]
+            assert _verified_champion_from_state(state_root, "different-campaign") is None
             restarted_queue.close()
             restarted_graph.close()
             return
