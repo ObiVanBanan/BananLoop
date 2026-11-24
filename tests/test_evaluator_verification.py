@@ -1277,6 +1277,17 @@ print(json.dumps({
         )
         assert rejected["status"] == "INDEPENDENT_VERIFICATION_FAIL"
         assert rejected["champion"] is None
+        core, = graph.conn.execute(
+            "SELECT e.evidence_json FROM evaluator_integration_evidence e "
+            "JOIN evaluator_integration_receipts r ON r.core_evidence_digest=e.evidence_digest "
+            "WHERE r.receipt_digest=?", (rejected["integration_receipt_digest"],),
+        ).fetchone()
+        assert json.loads(core)["decision"] == "FAIL"
+        assert json.loads(core)["check_results"]["regression_policy"] is False
+        champion = graph.conn.execute(
+            "SELECT snapshot_id, revision FROM champion_state",
+        ).fetchone()
+        assert tuple(champion) == (proposed["candidate_snapshot_id"], verified["champion"]["revision"])
 
         # Reopen the durable graph and queue after the rejected attempt. The
         # next role context must still carry the persisted failure evidence.

@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -1130,6 +1131,30 @@ class CodexDirectBackend:
                 "files": files, "violations": violations, "total_bytes": total_bytes}
 
 
+def _verified_champion_from_state(child_root: Path, child_id: str) -> str | None:
+    """Read a durable promotion linked to its exact PASS receipt."""
+    database = child_root / "campaign.sqlite3"
+    if not database.is_file() or database.is_symlink():
+        return None
+    try:
+        with closing(sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True, timeout=1)) as conn:
+            row = conn.execute(
+                """SELECT state.snapshot_id FROM champion_state state
+                   JOIN champion_promotion_history history
+                     ON history.campaign_id=state.campaign_id AND history.revision=state.revision
+                    AND history.promoted_snapshot_id=state.snapshot_id
+                   JOIN evaluator_integration_receipts receipt
+                     ON receipt.receipt_digest=history.integration_receipt_digest
+                    AND receipt.campaign_id=state.campaign_id
+                    AND receipt.candidate_snapshot_id=state.snapshot_id AND receipt.decision='PASS'
+                   WHERE state.id=1 AND state.campaign_id=?""",
+                (child_id,),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    return row[0] if row else None
+
+
 class BananLoopFullBackend:
     """Run the native v2 Exploration -> auto-pivot -> Harbor Optimization path.
 
@@ -1663,11 +1688,13 @@ class BananLoopFullBackend:
                 "model_turns_observed": 0, "usage": None, "usage_unknown": True,
             })
         artifact_repo = repo
-        if bridge_receipt and bridge_receipt.get("bananloop_status") == "ALL_NODES_COMPLETE":
+        child_id = pivot["child_campaign_id"]
+        child_root = state_dir / "campaigns" / child_id
+        completed_child = bool(bridge_receipt and bridge_receipt.get("bananloop_status") == "ALL_NODES_COMPLETE")
+        champion = None
+        if completed_child:
             from bananloop.v2_optimization_cli import _saved_completed_run_report
 
-            child_id = pivot["child_campaign_id"]
-            child_root = state_dir / "campaigns" / child_id
             report = _saved_completed_run_report(child_root, child_id)
             if report is None:
                 return terminal("VERIFIED_CANDIDATE_REPORT_MISSING", harbor_bridge_receipt=bridge_receipt)
@@ -1675,24 +1702,32 @@ class BananLoopFullBackend:
             if (not isinstance(champion, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", champion)
                     or report["baseline_candidate_delta"]["candidate_snapshot_id"] != champion):
                 return terminal("VERIFIED_CANDIDATE_ID_INVALID", harbor_bridge_receipt=bridge_receipt)
+        elif status in {"TIMED_OUT", "OPTIMIZATION_FAILED", "INTERRUPTED_UNKNOWN", "LIMIT_EXHAUSTED"}:
+            champion = _verified_champion_from_state(child_root, child_id)
+        if isinstance(champion, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", champion):
             key = hashlib.sha256(champion.encode("ascii")).hexdigest()[:16]
-            artifact_repo = child_root / "s" / child_id / key
+            snapshot = child_root / "s" / child_id / key
             try:
-                if artifact_repo.is_symlink() or not artifact_repo.is_dir():
+                if (snapshot.is_symlink() or not snapshot.is_dir()
+                        or child_root.is_symlink()
+                        or snapshot.resolve() != child_root.resolve() / "s" / child_id / key):
                     raise ValueError("verified snapshot directory is missing or unsafe")
                 revision = subprocess.check_output(
-                    ["git", "-C", str(artifact_repo), "rev-parse", "--verify", "HEAD^{commit}"],
+                    ["git", "-C", str(snapshot), "rev-parse", "--verify", "HEAD^{commit}"],
                     stderr=subprocess.PIPE, text=True, timeout=15,
                 ).strip()
                 if revision != champion:
                     raise ValueError("verified snapshot HEAD differs from the recorded champion")
                 if subprocess.check_output(
-                    ["git", "-C", str(artifact_repo), "status", "--porcelain", "--untracked-files=all"],
+                    ["git", "-C", str(snapshot), "status", "--porcelain", "--untracked-files=all"],
                     stderr=subprocess.PIPE, timeout=15,
                 ).strip():
                     raise ValueError("verified snapshot has uncommitted or untracked files")
             except (OSError, ValueError, subprocess.SubprocessError):
-                return terminal("VERIFIED_CANDIDATE_SNAPSHOT_INVALID", harbor_bridge_receipt=bridge_receipt)
+                if completed_child:
+                    return terminal("VERIFIED_CANDIDATE_SNAPSHOT_INVALID", harbor_bridge_receipt=bridge_receipt)
+            else:
+                artifact_repo = snapshot
         final_artifact = CodexDirectBackend.snapshot_final_artifacts(
             task=task, repo=artifact_repo, arm_root=arm_root,
         )
@@ -1710,6 +1745,7 @@ class BananLoopFullBackend:
                     "bananloop": hashlib.sha256(bl_config_path.read_bytes()).hexdigest(),
                     "harbor": hashlib.sha256(harbor_config_path.read_bytes()).hexdigest(),
                 }, "final_artifact": final_artifact,
+                "final_artifact_source": "VERIFIED_CHAMPION" if artifact_repo != repo else "BASELINE",
                 "harbor_bridge_receipt": bridge_receipt}
 
 
