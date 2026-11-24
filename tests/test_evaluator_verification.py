@@ -999,6 +999,9 @@ print(json.dumps({
             "approval_digest": approval.approval_digest,
         },
         "parent": None,
+        # Bound the approved task lineage while leaving room for the
+        # initial candidate, one regression, and its recovery.
+        "max_candidate_iterations": 4,
     })
     spec_hash = spec.approved_hash()
 
@@ -1160,7 +1163,10 @@ print(json.dumps({
             changes=(AddNode(
                 type="AddNode", node_id="v2-runtime-proposal", phase="OPTIMIZATION",
                 payload={"source_snapshot_id": source_snapshot_id,
+                         "hypothesis_id": "ranker-hypothesis",
                          "hypothesis": "Improve the deterministic ranker.",
+                         "owner_approved_task": True,
+                         "candidate_iteration": 1,
                          "scheduler": {"priority": 5}},
             ),),
         ))
@@ -1210,26 +1216,15 @@ print(json.dumps({
         assert verified["status"] == "INDEPENDENT_VERIFICATION_PASS"
         assert verified["champion"]["snapshot_id"] == proposed["candidate_snapshot_id"]
 
-        graph.mutate(MutateGraph(
-            command_id="add-v2-runtime-regression", idempotency_key="add-v2-runtime-regression",
-            expected_graph_revision=graph.graph_revision(),
-            changes=(AddNode(
-                type="AddNode", node_id="v2-runtime-regression", phase="OPTIMIZATION",
-                payload={"source_snapshot_id": source_snapshot_id,
-                         "hypothesis": "Try an intentionally regressing implementation.",
-                         "scheduler": {"priority": 10}},
-            ),),
-        ))
-
         def regressing_reply(_public_input, **_pinned):
             return {
-                "hypothesis_id": "regressing-hypothesis",
+                "hypothesis_id": "ranker-hypothesis",
                 "rationale": "This candidate is deliberately worse for the rejection test.",
                 "changes": {"src/app.py": "regression candidate\n"},
             }
 
         regressing = runtime.run_one(
-            visible_paths=["src/app.py"], hypothesis_id="regressing-hypothesis",
+            visible_paths=["src/app.py"],
             model_reply=regressing_reply, worker_id="v2-regression-optimizer",
         )
         assert regressing["status"] == "CANDIDATE_CREATED"
