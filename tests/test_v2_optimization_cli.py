@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from bananloop.v2_optimization_cli import _initial_optimization_task_nodes
+from bananloop.trusted_evaluator import TrustedEvaluatorError, TrustedPublicEvaluatorFailure
+from bananloop.v2_optimization_cli import (
+    _initial_optimization_task_nodes, _public_evaluator_failure_detail,
+)
 from bananloop.v2_optimization_runtime import (
     _candidate_node_id, _iteration_schedule_command_id,
 )
@@ -56,6 +59,21 @@ def test_failure_site_reports_wrapped_project_exception():
             raise RuntimeError("details withheld") from None
     except RuntimeError as exc:
         assert safe_failure_site(exc) == "benchmarks.synthetic:fail:2"
+
+
+def test_public_evaluator_failure_code_survives_suppressed_wrapper_only_if_allowlisted():
+    try:
+        try:
+            raise TrustedPublicEvaluatorFailure("PUBLIC_DEV_CANDIDATE_TIMEOUT")
+        except TrustedEvaluatorError:
+            raise TrustedEvaluatorError("generic failure") from None
+    except TrustedEvaluatorError as raised:
+        assert _public_evaluator_failure_detail(raised) == "PUBLIC_DEV_CANDIDATE_TIMEOUT"
+
+    try:
+        raise TrustedEvaluatorError("generic failure")
+    except TrustedEvaluatorError as raised:
+        assert _public_evaluator_failure_detail(raised) is None
 
 
 def test_nested_candidate_node_ids_stay_within_graph_schema_limit():

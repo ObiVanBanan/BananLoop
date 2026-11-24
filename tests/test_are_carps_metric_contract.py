@@ -4,9 +4,9 @@ import pytest
 
 from benchmarks.autoresearchexam import carps_runner
 from benchmarks.autoresearchexam.carps_runner import AREPublicCARPSEvaluatorRunner
-from benchmarks.autoresearchexam.optimization_runner import PublicEvaluatorFailure
 from benchmarks.autoresearchexam import public_carps_dev
 from benchmarks.autoresearchexam.public_carps_dev import PublicCARPSCandidateTimeout
+from bananloop.trusted_evaluator import TrustedPublicEvaluatorFailure
 
 
 def test_carps_protocol_negates_the_raw_public_discrepancy_once(monkeypatch):
@@ -44,7 +44,7 @@ def test_carps_candidate_timeout_failure_surfaces_as_fixed_cli_detail(monkeypatc
         },
     )
 
-    with pytest.raises(PublicEvaluatorFailure) as raised:
+    with pytest.raises(TrustedPublicEvaluatorFailure) as raised:
         runner._evaluate_public_dev(b"candidate", timeout_seconds=60)
 
     assert raised.value.failure_detail == "PUBLIC_DEV_CANDIDATE_TIMEOUT"

@@ -26,7 +26,9 @@ from .roles import (
     PinnedRoleExecutorV1, RoleContractError, RoleRegistryV1, TeamFactoryV1,
     TeamManifestAuthority, TeamRequestV1,
 )
-from .trusted_evaluator import TrustedEvaluatorAdapter, TrustedEvaluatorError
+from .trusted_evaluator import (
+    TrustedEvaluatorAdapter, TrustedEvaluatorError, TrustedPublicEvaluatorFailure,
+)
 from .v2_optimization_runtime import (
     V2OptimizationError, V2OptimizationRuntime, _atomic_write_report,
     _render_final_report_markdown, _safe_path,
@@ -39,6 +41,20 @@ class V2OptimizationCLIError(ValueError):
 
 class _CallAllowanceReached(V2OptimizationCLIError):
     pass
+
+
+def _public_evaluator_failure_detail(exc: BaseException) -> str | None:
+    """Return only a Core-allowlisted public evaluator code from an exception chain."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, TrustedPublicEvaluatorFailure):
+            detail = getattr(current, "failure_detail", None)
+            if detail in TrustedPublicEvaluatorFailure.ALLOWED_FAILURE_DETAILS:
+                return detail
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def _task_request_timeout(deadline_epoch: float | None, ceiling: int,
@@ -804,7 +820,8 @@ def run_v2_optimize(args: Namespace, *,
             report = {
                 "status": "RUN_FAILED", "mode": "OPTIMIZATION", "profile": "FULL",
                 "campaign_id": args.campaign_id, "failure_type": type(exc).__name__,
-                "failure_detail": (getattr(exc, "failure_detail", None)
+                "failure_detail": (_public_evaluator_failure_detail(exc)
+                                   or getattr(exc, "failure_detail", None)
                                    or (str(exc)[:500] if isinstance(
                                        exc, (V2OptimizationError, TrustedEvaluatorError)
                                    ) else None)),

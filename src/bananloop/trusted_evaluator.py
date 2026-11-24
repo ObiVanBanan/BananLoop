@@ -54,6 +54,18 @@ class TrustedEvaluatorError(RuntimeError):
     """Trusted evaluator input, execution, or result failed closed."""
 
 
+class TrustedPublicEvaluatorFailure(TrustedEvaluatorError):
+    """A fixed public evaluator failure code safe for owner-facing diagnostics."""
+
+    ALLOWED_FAILURE_DETAILS = frozenset({"PUBLIC_DEV_CANDIDATE_TIMEOUT"})
+
+    def __init__(self, failure_detail: str):
+        if failure_detail not in self.ALLOWED_FAILURE_DETAILS:
+            raise ValueError("public evaluator failure detail is not allowlisted")
+        super().__init__("public evaluator failed")
+        self.failure_detail = failure_detail
+
+
 class EvaluatorBudgetProofV1(BaseModel):
     """Core-validated durable evaluator queue settlement used by a run receipt."""
 
