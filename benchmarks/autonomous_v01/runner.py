@@ -1644,7 +1644,9 @@ class BananLoopFullBackend:
                                              for key in ("input_tokens", "output_tokens"))),
                 })
                 usage_unknown = usage_unknown or raw_calls == "UNKNOWN" or not isinstance(raw_usage, dict)
-                if bridge_receipt.get("model_calls") == 1000 or bridge_receipt.get("bananloop_status") in {
+                if bridge_receipt.get("bananloop_status") == "DEADLINE_EXCEEDED":
+                    status = "TIMED_OUT"
+                elif bridge_receipt.get("model_calls") == 1000 or bridge_receipt.get("bananloop_status") in {
                     "LIMIT_EXHAUSTED", "STEP_LIMIT", "ITERATION_LIMIT",
                 }:
                     status = "LIMIT_EXHAUSTED"

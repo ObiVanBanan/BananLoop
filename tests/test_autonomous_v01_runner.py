@@ -266,7 +266,7 @@ def test_fake_series_marks_non_success_arm_outcomes_and_archives_them(tmp_path, 
         assert archived_record == run
 
 
-@pytest.mark.parametrize("scenario", ["success", "exploration_failure", "prepare_timeout", "prepare_corrupt"])
+@pytest.mark.parametrize("scenario", ["success", "exploration_failure", "prepare_timeout", "prepare_corrupt", "child_deadline"])
 def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tmp_path, monkeypatch, scenario):
     """Exercise both production backend classes with subprocess-only fakes."""
     from bananloop.evaluator_fixture import EvaluatorFixtureV1
@@ -436,6 +436,19 @@ def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tm
                                   runtime_root=runtime_root)
 
     stage_deadlines = {}
+    if scenario == "child_deadline":
+        from benchmarks.autoresearchexam import series_runner
+
+        inspect_receipt = series_runner.inspect_harbor_result
+
+        def report_child_deadline(*args, **kwargs):
+            receipt = inspect_receipt(*args, **kwargs)
+            if kwargs["task_id"] == "act-tensor-sparse-panel-imputation-r2":
+                receipt["bananloop_status"] = "DEADLINE_EXCEEDED"
+            return receipt
+
+        monkeypatch.setattr(series_runner, "inspect_harbor_result", report_child_deadline)
+
     original_supervisor = BananLoopFullBackend._run_until_deadline
 
     def record_shared_deadline(self, command, **kwargs):
@@ -480,6 +493,15 @@ def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tm
             assert failed["result"]["error_type"] == "JSONDecodeError"
         assert failed["result"]["final_artifact"]["status"] == "CAPTURED"
         assert not (archived / "bananloop-optimization.stdout").exists()
+        return
+    if scenario == "child_deadline":
+        failed, = [item for item in report["runs"] if item["result"]["status"] == "TIMED_OUT"]
+        result = failed["result"]
+        assert failed["task_id"] == "act-tensor-sparse-panel-imputation-r2"
+        assert result["optimization_returncode"] == 0
+        assert result["harbor_bridge_receipt"]["bananloop_status"] == "DEADLINE_EXCEEDED"
+        assert result["final_artifact"]["status"] == "CAPTURED"
+        assert (root / "final-archive" / failed["arm_id"] / "bananloop-optimization.stdout").is_file()
         return
     assert report["usage"]["model_turns_observed"] == 96
     assert report["usage"]["by_source"]["bananloop_full_optimization"]["model_turns_observed"] == 84

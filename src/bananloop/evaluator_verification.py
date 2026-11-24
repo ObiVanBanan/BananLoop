@@ -40,24 +40,32 @@ _PROTECTED_AUDIT_PATHS = {".git", "validation", "holdout", "secret", "secrets", 
 
 
 def _safe_failure_detail(exc: BaseException) -> str:
-    """Bound and redact post-dispatch exception details before durable logging."""
+    """Use fixed schema diagnostics or a project code location without raw values."""
+    from .provider_diagnostics import safe_failure_site
+
     kind = type(exc).__name__
-    if isinstance(exc, ValidationError):
-        # Pydantic's default rendering includes raw, untrusted field values.
+    schemas = {
+        "IntegrationVerifierOutputV1": IntegrationVerifierOutputV1,
+        "ProtocolVerifierOutputV1": ProtocolVerifierOutputV1,
+    }
+    if isinstance(exc, ValidationError) and exc.title in schemas:
+        fields = schemas[exc.title].model_fields
         issues = exc.errors(include_input=False, include_context=False, include_url=False)
-        message = f"{exc.title}: " + ", ".join(
-            issue["type"] if issue["type"] == "extra_forbidden"
-            else f"{'.'.join(map(str, issue['loc']))} ({issue['type']})"
-            for issue in issues[:5]
-        )
-    else:
-        message = str(exc)
-    message = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1<redacted>", message)
-    message = re.sub(r"(?i)(api[_-]?key|token|password|secret)(\s*[:=]\s*)[^\s,;]+",
-                     r"\1\2<redacted>", message)
-    message = re.sub(r"(?<![A-Za-z0-9])[A-Za-z0-9_+/=-]{32,}(?![A-Za-z0-9])", "<redacted>", message)
-    message = re.sub(r"[\r\n\t]+", " ", message)
-    return f"{kind}: {message[:240]}"[:280]
+        details = []
+        for issue in issues[:5]:
+            location = issue["loc"]
+            field = location[0] if location and location[0] in fields else None
+            error_type = issue["type"]
+            if error_type not in {"literal_error", "extra_forbidden", "missing",
+                                  "string_type", "list_type", "tuple_type", "value_error",
+                                  "string_pattern_mismatch", "string_too_short", "string_too_long"}:
+                error_type = "schema_error"
+            details.append(f"{field} ({error_type})" if field else error_type)
+        return f"{kind}: {exc.title}: {', '.join(details)}"[:280]
+    site = safe_failure_site(exc)
+    return f"{kind} at {site}"[:280] if site else kind
+
+
 _ARE_JSON_REVIEW_BACKENDS = frozenset({
     "autoresearchexam-act-tensor-public-v1",
     "autoresearchexam-causalpfn-public-v1",
@@ -1958,9 +1966,12 @@ class IntegrationVerificationAdapter:
             raise EvaluatorVerificationError("integration verifier evidence is stale or cross-bound")
         lease = self.queue.claim(verifier_job_id, worker_id, lease_seconds=lease_seconds)
         fence = int(lease["fence"])
+        stage = "dispatch bookkeeping"
         try:
             self.queue.mark_dispatched(verifier_job_id, worker_id, fence)
+            stage = "provider call"
             raw_output = executor.dispatch(dict(lease["request"]), None)
+            stage = "response validation"
             model_tokens = _reported_model_tokens(executor)
             # The transport has returned a lone diagnostic in place of the
             # optional array. Canonicalize prose before validating the decision.
@@ -1978,6 +1989,7 @@ class IntegrationVerificationAdapter:
             actual_usage: dict[str, int | None] = {"agent_calls": 1}
             if "model_tokens" in lease["resource_bounds"]:
                 actual_usage["model_tokens"] = model_tokens
+            stage = "result persistence"
             self.queue.complete(
                 verifier_job_id, worker_id, fence, output_digest=output_digest,
                 actual_amount=1, actual_usage=actual_usage,
@@ -1985,7 +1997,7 @@ class IntegrationVerificationAdapter:
             )
         except Exception as exc:
             try:
-                self.queue.cancel(verifier_job_id, reason=("integration verifier failed after dispatch; " + _safe_failure_detail(exc)))
+                self.queue.cancel(verifier_job_id, reason=f"integration verifier {stage} failed; {_safe_failure_detail(exc)}")
             except Exception:
                 pass
             raise

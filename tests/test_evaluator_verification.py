@@ -240,6 +240,11 @@ def test_integration_verifier_validation_diagnostics_omit_response_values():
     assert "private" not in detail
 
 
+def test_verifier_transport_failure_diagnostics_omit_arbitrary_provider_text():
+    error = RuntimeError("remote response included user@example.invalid and pin 1234")
+    assert _safe_failure_detail(error) == "RuntimeError"
+
+
 def test_protocol_verifier_prompt_matches_strict_output_schema():
     assert "no markdown, prose outside JSON, nulls, or extra keys" in PROTOCOL_VERIFIER_INSTRUCTIONS
     assert "The exact keys are schema_version, proposal_digest, decision, checks, rationale, and public_diagnostics" in PROTOCOL_VERIFIER_INSTRUCTIONS
@@ -821,9 +826,13 @@ def test_real_integration_adapter_queue_receipt_graph_transition_and_replay(
 
 
 
-@pytest.mark.parametrize("real_isolation", [False, True], ids=["test-runner", "real-bwrap"])
+@pytest.mark.parametrize(
+    ("real_isolation", "verifier_unknown"),
+    [(False, False), (True, False), (False, True)],
+    ids=["test-runner", "real-bwrap", "verifier-unknown"],
+)
 def test_optimization_lifecycle_integrates_durable_evaluator_and_verification_queues(
-    tmp_path, monkeypatch, real_isolation,
+    tmp_path, monkeypatch, real_isolation, verifier_unknown,
 ):
     repo = tmp_path / "source-repo"
     repo.mkdir()
@@ -1306,6 +1315,59 @@ print(json.dumps({
         assert runtime.run_one(
             visible_paths=["src/app.py"], worker_id="v2-recovery-evaluator",
         )["status"] == "DEV_EVALUATED"
+        if verifier_unknown:
+            from bananloop.champion_promotion import ChampionPromotionService
+            from bananloop.optimization_lifecycle import OptimizationLifecycleError
+
+            dispatches = []
+
+            def failed_dispatch(_executor, request, *_args, **_kwargs):
+                dispatches.append(request["candidate_snapshot_id"])
+                raise RuntimeError("sensitive response with pin 1234")
+
+            monkeypatch.setattr(type(executor), "dispatch", failed_dispatch)
+            run_verification = {
+                "visible_paths": ["src/app.py"], "integration_verifier_executor": executor,
+                "worker_id": "v2-unknown-verifier",
+            }
+            with pytest.raises(OptimizationLifecycleError, match="durable receipt recovery failed"):
+                runtime.run_one(**run_verification)
+            unknown, = [
+                event for event in restarted_queue.events_after(0, limit=1000)
+                if event["event_type"] == "JOB_UNKNOWN"
+            ]
+            job_id = unknown["job_id"]
+            assert "provider call failed; RuntimeError" in unknown["payload"]["reason"]
+            assert "1234" not in unknown["payload"]["reason"]
+            assert restarted_queue.get_job(job_id)["state"] == "UNKNOWN"
+            reservations = restarted_queue.conn.execute(
+                "SELECT r.state, r.actual FROM budget_reservations r "
+                "JOIN worker_job_reservations j ON r.reservation_id=j.reservation_id "
+                "WHERE j.job_id=?", (job_id,),
+            ).fetchall()
+            assert reservations and all(tuple(row) == ("UNKNOWN", None) for row in reservations)
+            assert restarted_graph.conn.execute(
+                "SELECT COUNT(*) FROM evaluator_integration_receipts WHERE verifier_job_id=?",
+                (job_id,),
+            ).fetchone()[0] == 0
+
+            runtime.pause(reason="offline recovery test")
+            assert runtime.run_one(**run_verification)["status"] == "PAUSED"
+            runtime.resume()
+            with pytest.raises(OptimizationLifecycleError, match="UNKNOWN.*indeterminate"):
+                runtime.run_one(**run_verification)
+            assert dispatches == [revised["candidate_snapshot_id"]]
+            runtime.stop(reason="offline terminal stop test")
+            assert runtime.run_one(**run_verification)["status"] == "STOP_REQUESTED"
+            champion = ChampionPromotionService(
+                restarted_graph.conn, restarted_graph.evaluator_protocols,
+            ).current()
+            assert champion["snapshot_id"] == proposed["candidate_snapshot_id"]
+            assert champion["revision"] == verified["champion"]["revision"]
+            restarted_queue.close()
+            restarted_graph.close()
+            return
+
         recovered = runtime.run_one(
             visible_paths=["src/app.py"], integration_verifier_executor=executor,
             worker_id="v2-recovery-verifier",
