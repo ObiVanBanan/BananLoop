@@ -93,14 +93,23 @@ def run_full_series(*, manifest_path: Path, preflight_path: Path,
             "manifest_sha256": expected_manifest_sha256, "model": model,
             "python_binary": str(python_binary), "harbor_binary": str(harbor_binary),
         }
-        result = launch_full_arm(
-            manifest_path=manifest_path, preflight_path=preflight_path,
-            candidate_checkout=checkout,
-            expected_manifest_sha256=expected_manifest_sha256,
-            task_id=task_id, candidate_source_sha=candidate_source_sha,
-            arm_id=arm_id, backend_config={"backend_kwargs": kwargs}, arm_root=arm_root,
-            candidate_path=candidate_checkout / descriptor["candidate_path"],
-        )
+        try:
+            result = launch_full_arm(
+                manifest_path=manifest_path, preflight_path=preflight_path,
+                candidate_checkout=checkout,
+                expected_manifest_sha256=expected_manifest_sha256,
+                task_id=task_id, candidate_source_sha=candidate_source_sha,
+                arm_id=arm_id, backend_config={"backend_kwargs": kwargs}, arm_root=arm_root,
+                candidate_path=candidate_checkout / descriptor["candidate_path"],
+            )
+        except KeyboardInterrupt:
+            receipt["arms"].append({
+                "task_id": task_id, "arm_id": arm_id, "status": "UNKNOWN",
+                "reason": "INTERRUPTED", "arm_root": str(arm_root),
+            })
+            receipt["status"] = "STOPPED_UNKNOWN"
+            _atomic_json(receipt_path, receipt)
+            raise
         outcome = result.get("result", {}).get("status")
         arm_record = {"task_id": task_id, "arm_id": arm_id,
                       "status": "COMPLETED" if outcome != "INTERRUPTED_UNKNOWN"

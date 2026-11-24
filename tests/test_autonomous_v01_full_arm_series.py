@@ -43,12 +43,15 @@ def test_series_runs_in_order_and_persists_each_result(tmp_path, monkeypatch):
     assert len(json.loads((tmp_path / "series" / "series.json").read_text())["arms"]) == 12
 
 
-def test_series_stops_and_never_replays_unknown_arm(tmp_path, monkeypatch):
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_series_stops_and_never_replays_unknown_arm(tmp_path, monkeypatch, interrupt):
     manifest, runtime = _inputs(tmp_path)
     calls = []
 
     def launch(**kwargs):
         calls.append(kwargs["task_id"])
+        if interrupt:
+            raise KeyboardInterrupt
         return {"result": {"status": "INTERRUPTED_UNKNOWN"}, "cleanup_status": "UNKNOWN"}
 
     monkeypatch.setattr(series, "launch_full_arm", launch)
@@ -59,7 +62,13 @@ def test_series_stops_and_never_replays_unknown_arm(tmp_path, monkeypatch):
         series_root=tmp_path / "series", python_binary=tmp_path / "python",
         harbor_binary=tmp_path / "harbor",
     )
-    receipt = series.run_full_series(**arguments)
+    if interrupt:
+        with pytest.raises(KeyboardInterrupt):
+            series.run_full_series(**arguments)
+        receipt = json.loads((arguments["series_root"] / "series.json").read_text())
+        assert receipt["arms"][0]["reason"] == "INTERRUPTED"
+    else:
+        receipt = series.run_full_series(**arguments)
     assert receipt["status"] == "STOPPED_UNKNOWN"
     assert calls == ["task-0"]
     again = series.run_full_series(**arguments)
