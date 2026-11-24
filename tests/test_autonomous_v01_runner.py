@@ -141,7 +141,12 @@ def test_preflight_requires_observed_image_ids_for_ready(monkeypatch, tmp_path):
 
 
 def test_benchmark_pivot_authorizer_binds_exact_frozen_scope_and_deadline():
-    binding = {"candidate_path": "src/candidate.py", "manifest_sha256": "a" * 64}
+    binding = {
+        "candidate_path": "src/candidate.py",
+        "manifest_sha256": "a" * 64,
+        "task_id": "frozen-task",
+        "evaluator_bundle_sha256": "b" * 64,
+    }
     deadline = 5000.0
     pivot = {
         "status": "BENCHMARK_AUTO_CHILD_CREATED",
@@ -165,6 +170,17 @@ def test_benchmark_pivot_authorizer_binds_exact_frozen_scope_and_deadline():
     assert authorize_benchmark_pivot(
         binding=binding, pivot=pivot, arm_deadline_epoch=deadline, now_epoch=deadline,
     ) is False
+    for key, replacement in (
+        ("task_id", "different-task"),
+        ("evaluator_bundle_sha256", "c" * 64),
+        ("candidate_path", "src/other.py"),
+    ):
+        changed_binding = {**binding, key: replacement}
+        changed = {**pivot, "benchmark_binding": changed_binding,
+                   "benchmark_binding_sha256": canonical_sha(changed_binding)}
+        assert authorize_benchmark_pivot(
+            binding=binding, pivot=changed, arm_deadline_epoch=deadline, now_epoch=4999,
+        ) is False
 
 
 def test_usage_ledger_is_observational_and_does_not_enforce_a_call_cap(tmp_path):
@@ -445,6 +461,7 @@ def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tm
             receipt = inspect_receipt(*args, **kwargs)
             if kwargs["task_id"] == "act-tensor-sparse-panel-imputation-r2":
                 receipt["bananloop_status"] = "DEADLINE_EXCEEDED"
+                receipt["token_usage"]["output_tokens"] = "UNKNOWN"
             return receipt
 
         monkeypatch.setattr(series_runner, "inspect_harbor_result", report_child_deadline)
@@ -500,6 +517,8 @@ def test_fake_24_arm_series_uses_real_backend_wiring_and_archives_all_outputs(tm
         assert failed["task_id"] == "act-tensor-sparse-panel-imputation-r2"
         assert result["optimization_returncode"] == 0
         assert result["harbor_bridge_receipt"]["bananloop_status"] == "DEADLINE_EXCEEDED"
+        assert result["usage_unknown"] is True
+        assert report["usage"]["unknown_usage_events"] == 1
         assert result["final_artifact"]["status"] == "CAPTURED"
         assert (root / "final-archive" / failed["arm_id"] / "bananloop-optimization.stdout").is_file()
         return

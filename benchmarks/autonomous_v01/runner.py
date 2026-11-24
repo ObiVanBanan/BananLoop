@@ -1636,14 +1636,17 @@ class BananLoopFullBackend:
                 raw_calls = bridge_receipt.get("model_calls")
                 optimization_calls = raw_calls if isinstance(raw_calls, int) and not isinstance(raw_calls, bool) else 0
                 raw_usage = bridge_receipt.get("token_usage")
+                optimization_usage_unknown = (
+                    raw_calls == "UNKNOWN" or not isinstance(raw_usage, dict)
+                    or any(type(raw_usage.get(key)) is not int
+                           for key in ("input_tokens", "output_tokens"))
+                )
                 usage.record(arm_id, "bananloop_full_optimization", {
                     "model_turns_observed": optimization_calls,
                     "usage": raw_usage if isinstance(raw_usage, dict) else None,
-                    "usage_unknown": (raw_calls == "UNKNOWN" or not isinstance(raw_usage, dict)
-                                      or any(not isinstance(raw_usage.get(key), int)
-                                             for key in ("input_tokens", "output_tokens"))),
+                    "usage_unknown": optimization_usage_unknown,
                 })
-                usage_unknown = usage_unknown or raw_calls == "UNKNOWN" or not isinstance(raw_usage, dict)
+                usage_unknown = usage_unknown or optimization_usage_unknown
                 if bridge_receipt.get("bananloop_status") == "DEADLINE_EXCEEDED":
                     status = "TIMED_OUT"
                 elif bridge_receipt.get("model_calls") == 1000 or bridge_receipt.get("bananloop_status") in {
