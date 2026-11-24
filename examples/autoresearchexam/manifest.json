@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "protocol_id": "autoresearchexam-v1.1-luna-cpu-pilot",
+  "protocol_state": "preflight_only_blocked",
+  "upstream": {
+    "repository": "https://github.com/bespokelabsai/AutoResearchExam",
+    "commit": "23c0d92e11af1dea821f972b5f0a739060958002",
+    "task_instructions": {
+      "carps-star-discrepancy-subset-select": {
+        "path": "carps-star-discrepancy-subset-select/instruction.md",
+        "git_blob_sha": "83960625fccf0d0287a88a9a4def0828d242f136"
+      },
+      "budgeted-imputation-mcar50": {
+        "path": "budgeted-imputation-mcar50/instruction.md",
+        "git_blob_sha": "f84ec423ac8078a03282890c7b000594230f982e"
+      },
+      "label-efficient-risk-estimator": {
+        "path": "label-efficient-risk-estimator/instruction.md",
+        "git_blob_sha": "b1bef81331df5879fe215a4885d24b503144bdae"
+      }
+    }
+  },
+  "integration_base": {
+    "repository": "ObiVanBanan/BananLoop",
+    "commit": null,
+    "status": "not_selected",
+    "reason": "Candidate changes are in unmerged draft PRs; no clean integration SHA is approved for the pilot."
+  },
+  "comparison": {
+    "control": "ordinary iterative Codex",
+    "treatment": "Codex supervised by BananLoop",
+    "model": "gpt-6-luna",
+    "reasoning_effort": "medium if supported; otherwise stop without substitution",
+    "primary_success_rule": "Treatment wins at least 2 of 3 independent task HOLDOUTs and actual treatment USD cost is no greater than control per task and in total.",
+    "control_may_iterate_on_dev": true,
+    "validation_feedback_to_agents": false,
+    "holdout_feedback_to_agents": false,
+    "freeze_both_arms_before_holdout": true,
+    "concurrent_arms": 1
+  },
+  "limits": {
+    "model_calls_per_arm_all_roles": 12,
+    "candidate_implementations_per_arm": 4,
+    "dev_evaluations_per_arm": 8,
+    "validation_evaluations_per_arm": 2,
+    "holdout_evaluations_per_arm": 1,
+    "campaign_wall_seconds_per_arm": 2400,
+    "input_tokens_per_arm": 800000,
+    "output_tokens_per_arm": 100000,
+    "shared_external_spend_cap_usd": 3.0,
+    "target_host": {
+      "os": "Windows",
+      "cpu_count": 2,
+      "ram_gib": 8,
+      "free_disk_gib": 32,
+      "pilot_peak_disk_gib": 24,
+      "gpu": false
+    }
+  },
+  "tasks": [
+    {
+      "id": "carps-star-discrepancy-subset-select",
+      "short_id": "carps",
+      "official_api": "/app/output/select_subset.py:select(points, k, seed, time_budget_s)",
+      "metric": "mean exact star discrepancy",
+      "direction": "minimize",
+      "invalid_or_timeout": "worst score",
+      "split_counts": {"dev": 5, "validation": 1, "holdout": 2},
+      "case_ids": null,
+      "source_hashes": null,
+      "scorer_sha256": null,
+      "seed_manifest_sha256": null
+    },
+    {
+      "id": "budgeted-imputation-mcar50",
+      "short_id": "imputation",
+      "official_api": "/app/output/impute.py:impute(X_train, X_eval, seed)",
+      "metric": "mean feature-wise masked-cell R2 using the pinned official formula",
+      "direction": "maximize",
+      "per_call_timeout_seconds": 30,
+      "invalid_or_timeout": "worst score",
+      "split_counts": {"dev": 4, "validation": 1, "holdout": 1},
+      "case_ids": null,
+      "source_hashes": null,
+      "scorer_sha256": null,
+      "seed_manifest_sha256": null
+    },
+    {
+      "id": "label-efficient-risk-estimator",
+      "short_id": "risk-estimator",
+      "official_api": "/app/output/estimator.py:Estimator.next_index/observe/estimate",
+      "metric": "median ratio of squared-error medians against pinned random reference",
+      "direction": "minimize",
+      "label_budgets": [50, 200],
+      "seed_repetitions": {"dev": 64, "validation": 64, "holdout": 128},
+      "split_counts": {"dev": 8, "validation": 2, "holdout": 2},
+      "case_ids": null,
+      "source_hashes": null,
+      "scorer_sha256": null,
+      "seed_manifest_sha256": null
+    }
+  ],
+  "gates": [
+    {
+      "id": "clean_integration_base",
+      "status": "BLOCKED",
+      "reason": "No agreed clean integration SHA is selected while required candidate PRs remain unmerged.",
+      "evidence": ["docs/reviews/core-readiness-audit.md"]
+    },
+    {
+      "id": "task_cases_scorer_and_dataset_hashes",
+      "status": "BLOCKED",
+      "reason": "Task case IDs, exact dataset revisions, seed manifests, and scorer/package hashes are not frozen.",
+      "evidence": ["docs/reviews/issue64-preflight-report.md"]
+    },
+    {
+      "id": "data_rights_and_privacy",
+      "status": "BLOCKED",
+      "reason": "File-level source lineage, applicable terms, attribution, and privacy review are incomplete for all three tasks.",
+      "evidence": ["docs/reviews/issue64-preflight-report.md"]
+    },
+    {
+      "id": "agent_evaluator_and_proxy_isolation",
+      "status": "BLOCKED",
+      "reason": "No tested hostile-code boundary separates the research agent, evaluator data/process/storage, and model proxy.",
+      "evidence": ["docs/reviews/issue64-preflight-report.md"]
+    },
+    {
+      "id": "target_windows_sandbox_preflight",
+      "status": "BLOCKED",
+      "reason": "Only partial inert-container evidence exists; the target runner, evaluator split, aggregate disk limit, and negative leak/egress tests are unverified.",
+      "evidence": ["docs/reviews/issue64-preflight-report.md"]
+    },
+    {
+      "id": "provider_usd_admission_and_settlement",
+      "status": "BLOCKED",
+      "reason": "Token receipts do not prove the shared 3 USD cap or actual treatment cost less than or equal to control per task and in total.",
+      "evidence": ["docs/reviews/issue64-preflight-report.md"]
+    },
+    {
+      "id": "luna_and_codex_cli_support",
+      "status": "UNKNOWN",
+      "reason": "Exact provider/model identity, medium reasoning support, and billing attribution have not been verified for this pilot account.",
+      "evidence": []
+    }
+  ],
+  "execution": {
+    "runner_implemented": false,
+    "candidate_code_executed": false,
+    "model_calls_made": 0,
+    "paid_arms_started": 0,
+    "holdout_scored": false
+  }
+}
