@@ -43,6 +43,20 @@ class V2OptimizationError(RuntimeError):
     """A v2 candidate cannot safely be proposed, executed, or published."""
 
 
+def _candidate_node_id(parent_node_id: str, job_id: str) -> str:
+    """Build a stable candidate node ID within the graph's 200 character cap."""
+    suffix = f"-candidate-{job_id.removeprefix('opt-')[:12]}"
+    return f"{parent_node_id[:200 - len(suffix)]}{suffix}"
+
+
+def _iteration_schedule_command_id(candidate_node_id: str, receipt_digest: str) -> str:
+    """Build a compact, deterministic mutation key from the full schedule identity."""
+    identity = hashlib.sha256(
+        f"{candidate_node_id}\0{receipt_digest}".encode("utf-8")
+    ).hexdigest()
+    return f"schedule-optimization-iteration:{identity}"
+
+
 def _format_report_metric(metric: dict[str, Any] | None) -> str:
     if not isinstance(metric, dict) or metric.get("value") is None:
         return "UNKNOWN"
@@ -834,7 +848,7 @@ class V2OptimizationCandidateAdapter:
             raise V2OptimizationError("candidate repository HEAD differs from its durable result")
 
         node_id = result["node_id"]
-        child_id = f"{node_id}-candidate-{job_id.removeprefix('opt-')[:12]}"
+        child_id = _candidate_node_id(node_id, job_id)
         key = f"publish-optimization:{job_id}:{durable['output_digest']}"
         replay = self.graph.command_response(key)
         if replay is not None:
@@ -1168,9 +1182,17 @@ class V2OptimizationRuntime:
         }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         next_iteration = iteration + 1
         next_node_id = f"optimization-task-{task_payload['hypothesis_id']}-iteration-{next_iteration}"
-        command_id = f"schedule-optimization-iteration:{candidate_node_id}:{receipt.receipt_digest}"
-        replay = self.graph.command_response(command_id)
-        if replay is not None:
+        legacy_command_id = (
+            f"schedule-optimization-iteration:{candidate_node_id}:{receipt.receipt_digest}"
+        )
+        # Successful pre-bounded schedules used the full candidate ID and receipt.
+        # Keep their replay lookup so retries do not create a second iteration.
+        if self.graph.command_response(legacy_command_id) is not None:
+            return {"status": "SCHEDULED", "node_id": next_node_id, "replayed": True}
+        command_id = _iteration_schedule_command_id(
+            candidate_node_id, receipt.receipt_digest,
+        )
+        if self.graph.command_response(command_id) is not None:
             return {"status": "SCHEDULED", "node_id": next_node_id, "replayed": True}
         self.graph.mutate(MutateGraph(
             command_id=command_id, idempotency_key=command_id,
