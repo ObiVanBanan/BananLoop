@@ -7,7 +7,102 @@
 `.offline-evidence/` в этой копии. Производственных модельных вызовов, новых
 live smoke, публикаций и изменений канбана не было.
 
-## BL-040 · Приёмка открыта
+## Повтор BL-040 · Успешная Optimization на полной DEV fixture
+
+Оба прогона подготовлены на `ca46e9dd6917b657dcd5ef33ea648954ed5b95a8`.
+Использованы штатные Core, SQLite, конфигуратор, Harbor 0.25.0 и проверка
+публичной DEV fixture. Подставлены только модельные ответы и измерение.
+Integration verifier получил текущие digest и snapshot и вернул 97 корректных PASS.
+DEV fixture сохранила закреплённый агрегированный кейс, а fake scorer вернул
+все поля идентичности 24 настроек с 32 повторениями. В протоколе выбрано
+10 повторных запусков на snapshot в разрешённом диапазоне.
+
+В прямом прогоне `success-direct/arm/` получены `ALL_NODES_COMPLETE` и
+`COMPLETED`. Scheduler израсходовал 980 из 1000 evaluator calls.
+Оставшихся 20 недостаточно для резервирования 30 на следующий шаг.
+Дедлайн, технический лимит шагов и бюджет модели не были превышены.
+Отчёт подтвердил DEV baseline 0,7 и Champion 0,5.
+Champion `42b7a4fae8731f5f9f8ba8921316623490c2d686`, revision 97.
+Манифест `d915cb113196943814ee8d980df40e9e5fddbc1bb01b5d68d97c3a54b5c91d6b`.
+SHA-256 итогового `interval.py`
+`5cc3120a2950c5aafc3d4f0893ca5e4ec734b9c6d4239efdad34d76486ea59b0`
+сверен с Git snapshot. В Docker по двум идентифицированным проектам
+пусто. Детали и точный путь к отчёту в
+`.offline-evidence/success-direct/arm/acceptance-check.json`.
+
+### Штатный launcher
+
+**BL-040 проходит офлайн-приёмку.** Запуск `success-launcher/arm/`
+прошёл свежий bound preflight и `GATE_PASSED`. Watchdog, worker и Harbor
+trial завершились, Optimization вернула `ALL_NODES_COMPLETE`. Launcher
+сохранил `CAPTURED` из квитанции worker и записал `CLEANED` для обоих
+Compose-проектов. Read-only проверка Docker подтвердила отсутствие
+контейнеров этих проектов. Git snapshot
+`daac7d7378f853f2e42ad4a73b1026f24775a0b0`, revision 97, совпал с
+архивным `interval.py`. SHA-256 артефакта одинаков в обоих прогонах.
+Дедлайны `1795544077.6633992` и `1795544223.0244079` соответственно
+совпали внутри каждой пары watchdog → Exploration → Optimization.
+Оба прогона имели диагностический бюджет времени 1800 секунд.
+
+Оба preparation-манифеста имеют один канонический digest
+`d915cb113196943814ee8d980df40e9e5fddbc1bb01b5d68d97c3a54b5c91d6b`.
+Файлы `.offline-evidence/manifest-success-direct.json` и
+`.offline-evidence/manifest-success-launcher.json` сериализованы
+по-разному. Квитанция launcher — `success-launcher/arm/result.json`,
+сверка — `success-launcher/arm/acceptance-check.json`. Bound preflight —
+`.offline-evidence/preflight-success-launcher.json`,
+SHA-256 `0d398c0244c770a5cbe6c28bc2bd89906e5ef635041ee0bafd17acd9d8f07aa9`.
+
+В обоих прогонах Core учёл 194 вызова Optimization и 5820 синтетических
+токенов. Bridge подтвердил 194 вызова, но поле суммарных токенов оставил
+`UNKNOWN`: успешный CLI-результат передаёт историю вызовов без агрегата
+`usage`, который читает Harbor. Расход в итоговой квитанции сохранён
+как выдал launcher. Live gate по-прежнему закрыт, квитанция preflight
+содержит `authorization=NOT_ESTABLISHED`.
+
+Сценарии находятся в `.offline-evidence/one_success_worker.py` и
+`.offline-evidence/launch_success.py`, replay — в
+`.offline-evidence/fake-success/sitecustomize.py`. Каждый запуск
+использовал Python из `harbor-venv` и
+`PYTHONPATH="$PWD/.offline-evidence/fake-success:$PWD/src:$PWD"`.
+`check-success.py` сверяет обе терминальные квитанции с SQLite,
+SHA-256 артефакта и инвентарём Docker.
+
+### Шесть отказов preflight
+
+Причина была в локальных descriptor из первого прогона. Они связывали
+устаревшие evaluator bundles с отдельными MCP-контрактами. Извлечение
+старых контрактов из ZIP устранило расхождение байтов, но сами контракты
+не соответствовали текущей канонической схеме.
+
+| Задача | Прежний digest | Точный дефект старого контракта | Digest принятой пары |
+| --- | --- | --- | --- |
+| Imputation | `c561ab7b950f` | Расширенная запись предыдущего smoke с лишними полями, инструментами с `_meta` и другим `probe_scope` | `d8bac3004bd6` |
+| CARPS | `bb1a77e3a6bf` | Неканонический `discovered_tools/0/inputSchema/properties/note/default` | `01aaf13d39b5` |
+| CPU decoder | `34f757eab9ef` | Тот же путь `note/default` | `670d56af2a07` |
+| Labelrisk | `c0c16eb8da66` | Тот же путь `note/default` | `65a605455d65` |
+| Sketched Newton | `98d0b7b30f7f` | Тот же путь `note/default` | `4e2559fa007be` |
+| SOPCC | `091af29b9835` | Тот же путь `note/default` | `2683da2f64ac` |
+
+Для каждой задачи переключён весь descriptor на согласованную пару
+fixture и контракта из сохранённого `bl044-safe-20261123/runtime`.
+Локальная копия находится в `.offline-evidence/runtime-launch-success/`.
+Использованы существующие публичные файлы. Контракты проверены по точным
+task и instruction SHA, SHA обоих файлов и байтовому совпадению
+контракта внутри ZIP. Все шесть отказов ушли. Свежий штатный preflight
+в исходных проверках вернул `READY_NON_RPDI_DIAGNOSTIC`, blockers пуст.
+Полные digest, JSON-пути отличий и пути к обеим версиям перечислены в
+`.offline-evidence/contract-audit.json`.
+
+Повторная read-only проверка Imputation показала, что `arm/result.json`
+по-прежнему отсутствует, а вложенный Harbor job имеет
+`finished_at=null`, `updated_at=2026-11-24T14:20:08.387456Z`.
+Архив не менялся.
+
+В этом повторе профильная команда из раздела «Воспроизведение» дала
+**319 passed за 42,91 с.** Лог — `.offline-evidence/pytest-followup.log`.
+
+## BL-040 · Первый диагностический проход
 
 Прямой Full-worker под штатным watchdog из чистой рабочей области прошёл
 `v2 explore`, независимое `APPROVE`, `BENCHMARK_AUTO_CHILD_CREATED`, сборку
@@ -42,7 +137,7 @@ digest `9d6b27ed7bb6afbb31d7bfaa8338c4625e567de68a3f8dfb083daae06d431003`.
   digest. `test_supervised_pivot_keeps_explicit_approval_requirement_and_receipt`
   подтверждает обязательность HIL в обычной Supervised-кампании.
 
-**Live gate закрыт.** Штатный launcher остановился до dispatch. Исходный
+**Первый preflight.** Штатный launcher остановился до dispatch. Исходный
 глобальный runtime preflight отклонил девять старых DEV-overlay. После
 подключения safe-overlay и извлечения закреплённых публичных контрактов из
 неизменённых fixture в локальные копии descriptor остались шесть
@@ -51,8 +146,8 @@ digest `9d6b27ed7bb6afbb31d7bfaa8338c4625e567de68a3f8dfb083daae06d431003`.
 `launcher-bound.log`. Для диагностики единственной shortest-CI задачи
 использован отдельный прямой worker под watchdog. Успешный
 `ALL_NODES_COMPLETE` есть в историческом shortest-CI archive на
-`ada1f18`, принятие текущей версии требует собственного успешного
-прогона через launcher. Проверка BL-042 принята по условиям задания.
+`ada1f18`, следующий раздел фиксирует повтор текущей
+версии через launcher. Проверка BL-042 принята по условиям задания.
 BL-043 отложена.
 
 ## BL-049 · Офлайн-проверки выполнены, карточка открыта
