@@ -1157,11 +1157,16 @@ print(json.dumps({
             "SELECT COUNT(*) FROM evaluator_integration_receipts"
         ).fetchone()[0] == 1
 
+        # Keep the approved proposal at the graph's maximum node ID size. The
+        # legacy iteration key appended to its candidate ID and receipt digest
+        # would exceed Graph's 200 character command key limit.
+        proposal_node_id = "v2-runtime-proposal-" + "x" * (200 - len("v2-runtime-proposal-"))
+        assert len(proposal_node_id) == 200
         graph.mutate(MutateGraph(
             command_id="add-v2-runtime-proposal", idempotency_key="add-v2-runtime-proposal",
             expected_graph_revision=graph.graph_revision(),
             changes=(AddNode(
-                type="AddNode", node_id="v2-runtime-proposal", phase="OPTIMIZATION",
+                type="AddNode", node_id=proposal_node_id, phase="OPTIMIZATION",
                 payload={"source_snapshot_id": source_snapshot_id,
                          "hypothesis_id": "ranker-hypothesis",
                          "hypothesis": "Improve the deterministic ranker.",
@@ -1215,6 +1220,32 @@ print(json.dumps({
         )
         assert verified["status"] == "INDEPENDENT_VERIFICATION_PASS"
         assert verified["champion"]["snapshot_id"] == proposed["candidate_snapshot_id"]
+        legacy_schedule_key = (
+            f"schedule-optimization-iteration:{proposed['candidate_node_id']}:"
+            f"{verified['integration_receipt_digest']}"
+        )
+        assert len(legacy_schedule_key) > 200
+        schedule_identity = hashlib.sha256(
+            f"{proposed['candidate_node_id']}\0{verified['integration_receipt_digest']}".encode()
+        ).hexdigest()
+        compact_schedule_key = f"schedule-optimization-iteration:{schedule_identity}"
+        assert len(compact_schedule_key) <= 200
+        schedule_response = graph.command_response(compact_schedule_key)
+        assert schedule_response is not None
+        assert graph.command_response(legacy_schedule_key) is None
+        schedule_event = graph.conn.execute(
+            "SELECT payload_json FROM events WHERE seq=?",
+            (schedule_response["event_cursor"],),
+        ).fetchone()
+        assert schedule_event is not None
+        scheduled_additions = [
+            change["node_id"] for change in json.loads(schedule_event[0])["changes"]
+            if change.get("type") == "AddNode"
+        ]
+        assert len(scheduled_additions) == 1
+        scheduled_node_id = scheduled_additions[0]
+        assert any(node["node_id"] == scheduled_node_id for node in
+                   graph.scheduling_snapshot()["nodes"])
 
         def regressing_reply(_public_input, **_pinned):
             return {
