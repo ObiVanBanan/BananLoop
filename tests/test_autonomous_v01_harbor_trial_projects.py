@@ -177,3 +177,37 @@ def test_unrelated_top_level_files_are_ignored_but_do_not_complete_inventory(tmp
 
     assert result["status"] == "KNOWN"
     assert result["inventory_complete"] is False
+
+
+def test_terminal_single_trial_accounts_for_inventory(tmp_path):
+    root = tmp_path / "jobs"
+    job = root / "job"
+    trial = job / "trial-1"
+    trial.mkdir(parents=True)
+    task = tmp_path / "task"
+    (task / "environment").mkdir(parents=True)
+    (task / "environment" / "docker-compose.yaml").write_text("services: {}")
+    (job / "config.json").write_text(json.dumps({
+        "job_name": job.name, "jobs_dir": str(root),
+        "tasks": [{"path": str(task)}], "verifier": {"disable": True},
+    }))
+    (trial / "config.json").write_text(json.dumps({
+        "trial_name": trial.name, "trials_dir": str(job), "task": {"path": str(task)},
+    }))
+    (trial / "result.json").write_text(json.dumps({
+        "trial_name": trial.name, "finished_at": "2026-11-24T13:46:06Z",
+    }))
+    result = {
+        "finished_at": "2026-11-24T13:46:07Z", "n_total_trials": 1,
+        "stats": dict.fromkeys((
+            "n_retries", "n_running_trials", "n_pending_trials",
+            "n_cancelled_trials", "n_errored_trials",
+        ), 0) | {"n_completed_trials": 1},
+    }
+    path = job / "result.json"
+    path.write_text(json.dumps(result))
+    assert identify_trial_compose_projects(root)["inventory_complete"] is True
+
+    result["stats"]["n_retries"] = 1
+    path.write_text(json.dumps(result))
+    assert identify_trial_compose_projects(root)["inventory_complete"] is False

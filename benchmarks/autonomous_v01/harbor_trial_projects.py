@@ -110,13 +110,13 @@ def _projects(config: dict[str, Any], *, parent_proves_docker: bool = False,
     return projects
 
 
-def _read_config(dir_fd: int) -> dict[str, Any]:
+def _read_config(dir_fd: int, name: str = "config.json") -> dict[str, Any]:
     """Read one config.json from an already pinned directory descriptor."""
-    cfg_info = os.stat("config.json", dir_fd=dir_fd, follow_symlinks=False)
+    cfg_info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
     if stat.S_ISLNK(cfg_info.st_mode) or not stat.S_ISREG(cfg_info.st_mode):
         raise ValueError("config is not a regular file")
     before = (cfg_info.st_dev, cfg_info.st_ino, cfg_info.st_size, cfg_info.st_mtime_ns)
-    fd = os.open("config.json", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
+    fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
     try:
         opened_info = os.fstat(fd)
         opened = (opened_info.st_dev, opened_info.st_ino, opened_info.st_size,
@@ -127,7 +127,7 @@ def _read_config(dir_fd: int) -> dict[str, Any]:
             raw = stream.read(2_000_001)
     finally:
         os.close(fd)
-    after_info = os.stat("config.json", dir_fd=dir_fd, follow_symlinks=False)
+    after_info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
     after = (after_info.st_dev, after_info.st_ino, after_info.st_size, after_info.st_mtime_ns)
     if before != after or len(raw) > 2_000_000:
         raise ValueError("config changed during read or exceeds size limit")
@@ -135,6 +135,15 @@ def _read_config(dir_fd: int) -> dict[str, Any]:
     if not isinstance(config, dict):
         raise ValueError("config must be a JSON object")
     return config
+
+
+def _terminal_result(dir_fd: int) -> dict[str, Any]:
+    try:
+        result = _read_config(dir_fd, "result.json")
+    except (ValueError, OSError):
+        return {}
+    finished = result.get("finished_at")
+    return result if isinstance(finished, str) and finished.strip() else {}
 
 
 def identify_trial_compose_projects(jobs_root: str | Path) -> dict[str, object]:
@@ -145,8 +154,8 @@ def identify_trial_compose_projects(jobs_root: str | Path) -> dict[str, object]:
     also provide a trial config directly at the job directory.
     Symlinked roots, job directories, configs, malformed/incomplete JSON, and
     files changing while read produce UNKNOWN and no project authorization.
-    A successful scan has ``inventory_complete=False`` because configs cannot
-    establish that Docker has no projects absent from the scanned tree.
+    Configs alone do not establish completeness. A terminal single-trial
+    job with no retries can account for every trial in this arm.
     """
     root = Path(jobs_root)
     root_fd: int | None = None
@@ -161,12 +170,15 @@ def identify_trial_compose_projects(jobs_root: str | Path) -> dict[str, object]:
             raise ValueError("jobs_root changed before open")
         found: set[str] = set()
         configs_seen = 0
+        job_count = 0
+        proven_trials = 0
         for entry_name in sorted(os.listdir(root_fd)):
             info = os.stat(entry_name, dir_fd=root_fd, follow_symlinks=False)
             if stat.S_ISLNK(info.st_mode):
                 raise ValueError("symlink in jobs_root")
             if not stat.S_ISDIR(info.st_mode):
                 continue
+            job_count += 1
             # Pin the job directory so replacing it with a symlink between
             # lstat and config open cannot redirect the read outside root.
             job_fd = os.open(entry_name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
@@ -177,6 +189,7 @@ def identify_trial_compose_projects(jobs_root: str | Path) -> dict[str, object]:
                     raise ValueError("job directory changed before open")
                 try:
                     job_config = _read_config(job_fd)
+                    job_result = _terminal_result(job_fd)
                 except FileNotFoundError:
                     raise ValueError("job config missing")
             finally:
@@ -185,6 +198,15 @@ def identify_trial_compose_projects(jobs_root: str | Path) -> dict[str, object]:
                 found.update(_projects(job_config))
                 configs_seen += 1
                 continue
+            stats = job_result.get("stats")
+            terminal_single_trial = (
+                job_result.get("n_total_trials") == 1
+                and isinstance(stats, dict)
+                and all(stats.get(key) == value for key, value in {
+                    "n_completed_trials": 1, "n_retries": 0, "n_running_trials": 0,
+                    "n_pending_trials": 0, "n_cancelled_trials": 0, "n_errored_trials": 0,
+                }.items())
+            )
             if job_config.get("job_name") != entry_name:
                 raise ValueError("job config does not match its directory")
             job_fd = os.open(entry_name, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
@@ -209,6 +231,7 @@ def identify_trial_compose_projects(jobs_root: str | Path) -> dict[str, object]:
                         if (opened.st_dev, opened.st_ino) != (trial_info.st_dev, trial_info.st_ino):
                             raise ValueError("trial directory changed before open")
                         trial_config = _read_config(trial_fd)
+                        trial_result = _terminal_result(trial_fd)
                     finally:
                         os.close(trial_fd)
                     if trial_config.get("trial_name") != trial_name:
@@ -235,12 +258,15 @@ def identify_trial_compose_projects(jobs_root: str | Path) -> dict[str, object]:
                     found.update(_projects(trial_config, parent_proves_docker=docker_proved,
                                            parent_disables_verification=verification_disabled))
                     configs_seen += 1
+                    if (terminal_single_trial and docker_proved and verification_disabled
+                            and trial_result.get("trial_name") == trial_name):
+                        proven_trials += 1
             finally:
                 os.close(job_fd)
         if configs_seen == 0:
             raise ValueError("no trial configs found")
         return {"status": "KNOWN", "projects": sorted(found), "configs_seen": configs_seen,
-                "inventory_complete": False}
+                "inventory_complete": job_count == configs_seen == proven_trials == 1}
     except Exception as exc:
         return {"status": "UNKNOWN", "projects": [], "configs_seen": 0,
                 "inventory_complete": False, "error": str(exc) or type(exc).__name__}
