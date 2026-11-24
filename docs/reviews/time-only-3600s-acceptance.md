@@ -91,3 +91,16 @@ probe, the watchdog killed the worker and cleanup removed the remaining
 labeled Docker container object. The object was already stopped when checked.
 Proof of container cleanup after the parent watchdog interrupts an active
 Harbor trial remains open, as does 24-arm paired production acceptance.
+
+### Real Harbor timeout without model calls
+
+An isolated Harbor 0.25.0 trial used the built-in Oracle agent to run a
+sleep script inside Docker. Verification was disabled. The BananLoop parent
+watchdog interrupted Harbor after 55 seconds and recorded `TIMED_OUT` with
+return code `-9`. The resulting job and trial configs identified exactly
+`task__v2ake6q__agent` and `task__v2ake6q__env`. Production cleanup removed
+two containers from the environment project and verified that both identified
+projects had no containers left. The incomplete Harbor inventory still does
+not prove overall cleanup beyond these projects.
+
+Receipt: `/tmp/bl042-harbor-probe-l62lcgzj/retry/probe.json`.
