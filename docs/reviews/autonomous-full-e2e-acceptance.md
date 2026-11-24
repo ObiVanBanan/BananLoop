@@ -251,3 +251,13 @@ PYTHONPATH=src:. /home/sonik/bananloop-benchmark-env/harbor-venv/bin/python -m p
 именем прогона и preparation-манифестом для точного SHA. Скрипт сохраняет
 вход, watchdog, worker receipt и инвентарь в отдельной папке. Replay
 отключает HTTPS модели, ответы и оценка детерминированы локально.
+
+## Offline verification of Optimization token accounting
+
+The production launcher replay on `cb0d32b` finished with
+`ALL_NODES_COMPLETE` and cleanup `CLEANED`. The Harbor bridge reported
+194 Optimization calls and 3880 input plus 1940 output tokens (5820 total).
+Those counts match the saved Core provider calls. The arm separately
+recorded 40 input and 20 output tokens for Exploration, with no unknown
+usage events. These are synthetic replay tokens. The output is in
+`.offline-evidence/success-usage-launcher/arm/result.json`.
