@@ -26,3 +26,16 @@ def safe_chatgpt_failure_diagnostics(exc: Exception) -> list[dict[str, object]]:
         message if message in fixed else "provider failure, details withheld"
     )
     return [{"location": [], "type": "chatgpt_response", "message": category}]
+
+
+def safe_failure_site(exc: Exception) -> str | None:
+    """Return the innermost project frame without exception text or local values."""
+    site = None
+    traceback = exc.__traceback__
+    while traceback is not None:
+        module = traceback.tb_frame.f_globals.get("__name__", "")
+        if isinstance(module, str) and module.startswith(("bananloop.", "benchmarks.")):
+            function = traceback.tb_frame.f_code.co_name
+            site = f"{module}:{function}:{traceback.tb_lineno}"
+        traceback = traceback.tb_next
+    return site

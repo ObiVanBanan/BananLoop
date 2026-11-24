@@ -26,3 +26,16 @@ def test_resume_task_detection_ignores_completed_candidate_nodes():
 
     assert _initial_optimization_task_nodes([root, candidate]) == [root]
 
+
+
+def test_failure_site_excludes_exception_message():
+    from bananloop.provider_diagnostics import safe_failure_site
+
+    namespace = {"__name__": "bananloop.synthetic"}
+    exec("def fail():\n    raise AttributeError('private value')", namespace)
+    try:
+        namespace["fail"]()
+    except AttributeError as exc:
+        assert safe_failure_site(exc) == "bananloop.synthetic:fail:2"
+    else:
+        raise AssertionError("fixture did not raise")
