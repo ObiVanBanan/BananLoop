@@ -31,11 +31,16 @@ def safe_chatgpt_failure_diagnostics(exc: Exception) -> list[dict[str, object]]:
 def safe_failure_site(exc: Exception) -> str | None:
     """Return the innermost project frame without exception text or local values."""
     site = None
-    traceback = exc.__traceback__
-    while traceback is not None:
-        module = traceback.tb_frame.f_globals.get("__name__", "")
-        if isinstance(module, str) and module.startswith(("bananloop.", "benchmarks.")):
-            function = traceback.tb_frame.f_code.co_name
-            site = f"{module}:{function}:{traceback.tb_lineno}"
-        traceback = traceback.tb_next
+    cause: BaseException | None = exc
+    for _ in range(5):
+        if cause is None:
+            break
+        traceback = cause.__traceback__
+        while traceback is not None:
+            module = traceback.tb_frame.f_globals.get("__name__", "")
+            if isinstance(module, str) and module.startswith(("bananloop.", "benchmarks.")):
+                function = traceback.tb_frame.f_code.co_name
+                site = f"{module}:{function}:{traceback.tb_lineno}"
+            traceback = traceback.tb_next
+        cause = cause.__cause__ or cause.__context__
     return site

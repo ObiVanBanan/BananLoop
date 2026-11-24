@@ -39,3 +39,17 @@ def test_failure_site_excludes_exception_message():
         assert safe_failure_site(exc) == "bananloop.synthetic:fail:2"
     else:
         raise AssertionError("fixture did not raise")
+
+
+def test_failure_site_reports_wrapped_project_exception():
+    from bananloop.provider_diagnostics import safe_failure_site
+
+    namespace = {"__name__": "benchmarks.synthetic"}
+    exec("def fail():\n    raise ValueError('private value')", namespace)
+    try:
+        try:
+            namespace["fail"]()
+        except ValueError:
+            raise RuntimeError("details withheld") from None
+    except RuntimeError as exc:
+        assert safe_failure_site(exc) == "benchmarks.synthetic:fail:2"

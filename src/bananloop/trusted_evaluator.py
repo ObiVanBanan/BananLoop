@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .contracts import EvaluationResult, ProtocolManifest
 from .evaluator_verification import EvaluatorProtocolV1
+from .provider_diagnostics import safe_failure_site
 
 try:  # resource is POSIX-only; the execution backend itself is Linux-only.
     import resource as _resource
@@ -923,11 +924,15 @@ class TrustedEvaluatorAdapter:
                 receipt_digest=receipt_digest, actual_amount=1,
                 actual_usage=actual_usage, result_payload=result_payload,
             )
-        except Exception:
+        except Exception as exc:
             # A failure after dispatch is an unknown evaluator spend and must
             # retain its reservation for authoritative reconciliation.
             try:
-                self.queue.cancel(job_id, reason="trusted evaluator failed after dispatch")
+                reason = "trusted evaluator execution failed"
+                site = safe_failure_site(exc)
+                if site is not None:
+                    reason += f" at {site}"
+                self.queue.cancel(job_id, reason=reason)
             except Exception:
                 pass
             raise
