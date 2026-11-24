@@ -47,9 +47,9 @@ def run_full_series(*, manifest_path: Path, preflight_path: Path,
     if manifest.get("model") != model:
         raise ValueError("series model differs from its manifest")
     checkout = candidate_checkout.resolve(strict=True)
-    python_paths = [str(checkout)]
+    python_paths = [str(checkout / "src"), str(checkout)]
     python_paths.extend(path for path in os.environ.get("PYTHONPATH", "").split(os.pathsep)
-                         if path and path != str(checkout))
+                         if path and path not in {str(checkout), str(checkout / "src")})
     os.environ["PYTHONPATH"] = os.pathsep.join(python_paths)
     if series_root.exists() and not (series_root / "series.json").is_file():
         raise ValueError("existing series root has no resumable series receipt")
