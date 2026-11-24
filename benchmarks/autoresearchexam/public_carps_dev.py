@@ -64,6 +64,10 @@ class PublicCARPSEvaluatorError(RuntimeError):
     """Public CARPS DEV evaluation failed without a trusted aggregate."""
 
 
+class PublicCARPSCandidateTimeout(PublicCARPSEvaluatorError):
+    """A candidate exceeded the fixed per-cloud wall-time cap."""
+
+
 _CONTAINER_RUNNER = r'''import importlib.util, json, math, sys, time
 import numpy as np
 
@@ -338,7 +342,7 @@ def _run_bounded_docker(
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise PublicCARPSEvaluatorError("candidate execution exceeded the per-cloud runtime cap")
+                raise PublicCARPSCandidateTimeout("candidate execution exceeded the per-cloud runtime cap")
             readable, _, _ = select.select([fd], [], [], min(remaining, 0.2))
             if readable:
                 chunk = os.read(fd, min(65536, _MAX_STDOUT_BYTES + 1 - len(output)))
@@ -454,6 +458,8 @@ def evaluate_carps_public_dev(
             if not math.isfinite(metric):
                 return {"status": "FAILED", "failure": "PUBLIC_DEV_INVALID_METRIC"}
             metrics.append(metric)
+    except PublicCARPSCandidateTimeout:
+        return {"status": "FAILED", "failure": "PUBLIC_DEV_CANDIDATE_TIMEOUT"}
     except PublicCARPSEvaluatorError:
         return {"status": "FAILED", "failure": "PUBLIC_DEV_CANDIDATE_OR_PANEL_ERROR"}
 

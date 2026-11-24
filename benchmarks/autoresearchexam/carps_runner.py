@@ -21,7 +21,7 @@ from typing import Any, Mapping
 from bananloop.evaluator_verification import EvaluatorProtocolV1
 from bananloop.trusted_evaluator import EvaluatorExecutionV1, TrustedEvaluatorError
 
-from .optimization_runner import AREPublicEvaluatorRunner
+from .optimization_runner import AREPublicEvaluatorRunner, PublicEvaluatorFailure
 from .public_carps_dev import (
     EXAMPLE_CLOUD_SHA256,
     EXAMPLES_MANIFEST_SHA256,
@@ -174,6 +174,9 @@ class AREPublicCARPSEvaluatorRunner(AREPublicEvaluatorRunner):
             expected_image_id=self.dev_image_id,
             total_timeout_seconds=budget,
         )
+        if (isinstance(response, Mapping) and response.get("status") == "FAILED"
+                and response.get("failure") == "PUBLIC_DEV_CANDIDATE_TIMEOUT"):
+            raise PublicEvaluatorFailure("PUBLIC_DEV_CANDIDATE_TIMEOUT")
         if response.get("status") != "GRADED" or response.get("panel_count") != 8:
             raise PublicCARPSEvaluatorError("CARPS public example panel did not produce a complete score")
         score = response.get("mean_exact_linf_star_discrepancy")

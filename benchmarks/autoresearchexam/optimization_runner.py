@@ -25,6 +25,18 @@ from bananloop.trusted_evaluator import (
 from .public_grader import PublicAREGrader, PublicGraderError
 
 
+class PublicEvaluatorFailure(TrustedEvaluatorError):
+    """A fixed, allowlisted public evaluator failure safe to report in CLI output."""
+
+    ALLOWED_FAILURE_DETAILS = {"PUBLIC_DEV_CANDIDATE_TIMEOUT"}
+
+    def __init__(self, failure_detail: str):
+        if failure_detail not in self.ALLOWED_FAILURE_DETAILS:
+            raise ValueError("public evaluator failure detail is not allowlisted")
+        super().__init__("public evaluator failed")
+        self.failure_detail = failure_detail
+
+
 class AREPublicEvaluatorRunner:
     """Dispatch public DEV in a networkless container and VALIDATION through MCP."""
 
@@ -165,6 +177,8 @@ class AREPublicEvaluatorRunner:
                 response = self.evaluate_dev(
                     candidate, min(3600, remaining - 25),
                 )
+            except PublicEvaluatorFailure:
+                raise
             except Exception:
                 raise TrustedEvaluatorError("public ARE DEV evaluation failed; details withheld") from None
             if not isinstance(response, Mapping) or response.get("status") != "GRADED":
