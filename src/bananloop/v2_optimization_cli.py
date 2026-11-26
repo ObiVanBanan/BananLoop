@@ -123,6 +123,47 @@ def _attach_request_usage(report: dict[str, Any], *, spent: int) -> None:
     report["usage"] = summary["known_usage"] if summary["complete"] else "UNKNOWN"
 
 
+def _recover_failed_dev_comparison(runtime: V2OptimizationRuntime) -> dict[str, Any]:
+    """Recover a verified public DEV comparison from the last durable promotion.
+
+    This does not schedule an evaluator, replay a model request, or complete
+    the campaign. In particular a timed-out verifier stays UNKNOWN.
+    """
+    from .champion_promotion import ChampionPromotionService
+
+    incomplete = {"status": "INCOMPLETE", "tier": "dev", "comparison_table": []}
+    try:
+        spec = runtime.graph.campaign_spec()
+        if spec.benchmark_integration_tier != "dev":
+            return {**incomplete, "reason": "not a public DEV campaign"}
+        authority = EvaluatorProtocolAuthority(runtime.graph.conn)
+        champion = ChampionPromotionService(runtime.graph.conn, authority).current()
+        row = runtime.graph.conn.execute(
+            "SELECT integration_receipt_digest FROM champion_promotion_history "
+            "WHERE campaign_id=? AND revision=? AND promoted_snapshot_id=?",
+            (runtime.campaign_id, champion["revision"], champion["snapshot_id"]),
+        ).fetchone()
+        if row is None:
+            return {**incomplete, "reason": "no durable Champion promotion"}
+        proposal, _ = authority.approved_protocol(spec.evaluation.approval_digest)
+        authority.require_integration_decision(
+            row[0], decision="PASS", campaign_id=runtime.campaign_id,
+            approval_digest=spec.evaluation.approval_digest,
+            spec_hash=spec.approved_hash(),
+            source_snapshot_id=proposal.protocol.source_snapshot_id,
+            protocol_digest=proposal.protocol.content_digest(),
+            candidate_snapshot_id=champion["snapshot_id"],
+        )
+        comparison = runtime._build_baseline_candidate_delta(champion)
+        return {**comparison, "source": "DURABLE_PRE_FAILURE_CHAMPION",
+                "campaign_completed": False, "champion_revision": champion["revision"]}
+    except Exception as exc:
+        # Keep the original run failure visible even if recovery fails.
+        from .provider_diagnostics import safe_failure_site
+        return {**incomplete, "reason": "durable comparison recovery failed",
+                "error_type": type(exc).__name__, "failure_site": safe_failure_site(exc)}
+
+
 def _public_evaluator_failure_detail(exc: BaseException) -> str | None:
     """Return only a Core-allowlisted public evaluator code from an exception chain."""
     seen: set[int] = set()
@@ -920,6 +961,8 @@ def run_v2_optimize(args: Namespace, *,
             diagnostics = safe_chatgpt_failure_diagnostics(exc)
             if diagnostics:
                 report["failure_diagnostics"] = diagnostics
+            if benchmark_time_only and spec.benchmark_integration_tier == "dev":
+                report["baseline_candidate_delta"] = _recover_failed_dev_comparison(runtime)
             _attach_request_usage(report, spent=spent)
             report["report_path"] = _write_cli_report(
                 state_root, report, campaign_id=args.campaign_id,
