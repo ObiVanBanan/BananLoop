@@ -40,11 +40,15 @@ class CampaignApplication:
             if self.requested_campaign_id is None:
                 campaign_id = "state-" + hashlib.sha256(str(paths.root).encode("utf-8")).hexdigest()[:32]
             else:
-                _, selected = CampaignRegistry(self.repo, paths).resolve(
+                state_root, selected = CampaignRegistry(self.repo, paths).resolve(
                     self.requested_campaign_id, activate=False,
                 )
                 if selected != self.requested_campaign_id:
                     raise RegistryError("requested campaign identity changed")
+                # A supplied state-dir is the project registry root. Once a
+                # managed campaign is selected, schema checks and operations
+                # must use that campaign's resolved SQLite state directory.
+                paths = RuntimePaths.for_repo(self.repo, state_root)
                 campaign_id = selected
         else:
             state_root, selected = CampaignRegistry(self.repo).resolve(

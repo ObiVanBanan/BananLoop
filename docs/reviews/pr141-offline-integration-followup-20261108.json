@@ -1,0 +1,23 @@
+{
+  "schema": "bananloop-pr141-offline-integration-followup-v1",
+  "date": "2026-11-08",
+  "code_revision": "a492d0181a36f451f67db29fccc40c9ede558c16",
+  "command": "HOME=/tmp/bananloop-pr141-acceptance-home .venv/bin/python -m pytest -o addopts= -q tests/test_rpdi13_integrated_acceptance.py::test_exploration_research_handoff_child_agrees_through_api_and_cli tests/test_v2_research_runtime.py::test_campaign_pause_and_resume_survive_runtime_restart tests/test_v2_research_runtime.py::test_completed_research_job_is_projected_after_runtime_restart_without_redelivery",
+  "result": "PASSED",
+  "pytest_summary": "4 passed in 2.90s",
+  "external_model_inferences": 0,
+  "external_network_requests": 0,
+  "checks": {
+    "exploration_to_approved_optimization_child": true,
+    "evaluator_and_independent_verification": true,
+    "api_cli_read_model_agreement": true,
+    "real_bubblewrap_isolation_variant": true,
+    "pause_resume_after_queue_restart": true,
+    "completed_job_recovery_without_redelivery": true
+  },
+  "scope_limitations": [
+    "Model replies in the integrated fixture are deterministic, not live.",
+    "Multiple live LLM epochs are not established.",
+    "Windows Python 3.12 full-suite rerun is still in progress."
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "allocated_agent_calls": 2,
+  "allocated_model_tokens": 4096,
+  "campaign_id": "c-5216f6fc68b2b3b921f7806dd4c09340",
+  "manifest_digest": "a5108c4302bdeff83404af74aa444da3664b916e35e0b4c2c63e28135ced6ea8",
+  "members": [
+    {
+      "instance_id": "agent-5a0a7acc4400f2af97df3a5e",
+      "role": {
+        "adapter": "codex",
+        "calls_per_instance": 1,
+        "capability_policy": {
+          "backend": "ISOLATED",
+          "network_access": false,
+          "policy_version": 1,
+          "read_paths": [],
+          "tools": [],
+          "write_paths": []
+        },
+        "context_fields": [
+          "campaign_goal",
+          "public_task"
+        ],
+        "context_policy_digest": "2a29370959bac2cc229cfe74a2a29dce266b3b98aba17264fc5f590e3854ba4d",
+        "model": "gpt-6-luna",
+        "model_version": "siwc-responses-v1",
+        "prompt_digest": "d43a2062f949993f35a9f9887a80ca0bddabbb8b582d52ab56537d53318558a6",
+        "provider": "openai",
+        "role_id": "independent_verifier",
+        "specialization_id": null,
+        "tokens_per_instance": 2048
+      }
+    },
+    {
+      "instance_id": "agent-3cebe57a86d4cf18475ed836",
+      "role": {
+        "adapter": "codex",
+        "calls_per_instance": 1,
+        "capability_policy": {
+          "backend": "LOCAL",
+          "network_access": false,
+          "policy_version": 1,
+          "read_paths": [
+            "README.md"
+          ],
+          "tools": [
+            "commit_candidate",
+            "list_files",
+            "read_file",
+            "write_artifact"
+          ],
+          "write_paths": [
+            "**"
+          ]
+        },
+        "context_fields": [
+          "budget_remaining",
+          "campaign_goal",
+          "dev_summary",
+          "evidence_refs",
+          "node_id",
+          "node_phase",
+          "public_task"
+        ],
+        "context_policy_digest": "564db123a9ae26d348cff1b8a843e58e4fc25830dfe188cc8f36fe3807a169e5",
+        "model": "gpt-6-luna",
+        "model_version": "siwc-responses-v1",
+        "prompt_digest": "44cb70a3b531c1942bda3fd5ab52470c94f0e86af98597fccf083cb90e3ec81a",
+        "provider": "openai",
+        "role_id": "researcher",
+        "specialization_id": null,
+        "tokens_per_instance": 2048
+      }
+    }
+  ],
+  "registry_digest": "98fdb4fbea61bc6caba7f817a0057d9b42badbc4f3dc6c3ed86dcba79c1d7a58",
+  "registry_id": "bananloop-v2-owner-researcher",
+  "spec_hash": "bf24d9b364739999ace8152995ea8cce4ed0271f1eb95224d6173ae790fe8080"
+}

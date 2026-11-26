@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "mode": "CODEX_SUBSCRIPTION_NONQUALIFYING_DIAGNOSTIC",
+  "suite_sha256": "d96ffed24acb815d8f5bbcaa22a5107f243085ee9d8d967d62952d117b2a34ed",
+  "registry_sha256": "98fdb4fbea61bc6caba7f817a0057d9b42badbc4f3dc6c3ed86dcba79c1d7a58",
+  "team_manifest_sha256": "a5108c4302bdeff83404af74aa444da3664b916e35e0b4c2c63e28135ced6ea8",
+  "max_cases": 1,
+  "max_observed_input_tokens": 60000,
+  "max_observed_output_tokens": 6000,
+  "max_wall_seconds_per_call": 120,
+  "acknowledge_subscription_usage_unverified": true,
+  "acknowledge_token_caps_observational": true
+}

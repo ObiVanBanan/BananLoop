@@ -535,6 +535,21 @@ def test_vector_complete_can_preserve_unmetered_provider_usage_as_unknown(tmp_pa
     assert snapshot["model_tokens"]["unknown"] == 500
     assert snapshot["model_tokens"]["reserved"] == 0
     ledger.close()
+    reconciled = queue.reconcile_completed_usage(
+        "job-provider-usage", actual_usage={"model_tokens": 41},
+        provider_receipt_digest="d" * 64, output_digest=digest,
+    )
+    assert reconciled["actual_usage"] == {"agent_calls": 1, "model_tokens": 41}
+    assert reconciled["usage_reconciliations"] == {"model_tokens": "d" * 64}
+    assert queue.reconcile_completed_usage(
+        "job-provider-usage", actual_usage={"model_tokens": 41},
+        provider_receipt_digest="d" * 64, output_digest=digest,
+    ) == reconciled
+    ledger = BudgetLedger(path)
+    snapshot = ledger.snapshot("root")
+    assert snapshot["model_tokens"]["spent"] == 41
+    assert snapshot["model_tokens"]["unknown"] == 0
+    ledger.close()
     queue.close()
 
 

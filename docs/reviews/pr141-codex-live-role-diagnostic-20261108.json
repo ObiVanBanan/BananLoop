@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "acceptance": "PR #141 Codex CLI live researcher diagnostic",
+  "worktree_head": "a7e93aae719bf3a7c5fbeb5f9c53380357c47063",
+  "worktree_changes_committed": true,
+  "runner_source_sha256": "a4ed414a3ff9706accc3f7ae93eb63dda4bd60426d5ccad7447be973c1556b26",
+  "status": "COMPLETED_DIAGNOSTIC",
+  "case_count": 1,
+  "attempted_cases": 1,
+  "completed_cases": 1,
+  "role": "researcher",
+  "model": "gpt-6-luna",
+  "provider": "openai_via_codex_subscription",
+  "openai_api_key_used": false,
+  "tools_enabled": false,
+  "reply_validated_against": "ResearcherReplyV1",
+  "runner_retry_attempts": 0,
+  "observed_usage": {
+    "input_tokens": 14054,
+    "output_tokens": 482,
+    "meter_source": "UNSIGNED_CODEX_CLI_EVENT"
+  },
+  "actual_provider_cost_usd": null,
+  "upstream_billing_verified": false,
+  "private_oracle_attached": false,
+  "empirical_experiment_run": false,
+  "release_eligible": false,
+  "rpdi14_independent_benchmark": false,
+  "suite_sha256": "d96ffed24acb815d8f5bbcaa22a5107f243085ee9d8d967d62952d117b2a34ed",
+  "registry_sha256": "98fdb4fbea61bc6caba7f817a0057d9b42badbc4f3dc6c3ed86dcba79c1d7a58",
+  "team_manifest_sha256": "a5108c4302bdeff83404af74aa444da3664b916e35e0b4c2c63e28135ced6ea8",
+  "usage_ledger_sha256": "1fa4d28516329b6b7b4f8802e6ed8c54dc1717a6fd5dd94f6fcf287423016cfb",
+  "response_file_sha256": "d6da9999f356d60b91437def6043a23e624144bd420f965c8564b50e90f24f07",
+  "previous_unmetered_attempts": [
+    {
+      "status": "UNKNOWN_SETTLEMENT_STOP",
+      "known_input_tokens": 0,
+      "known_output_tokens": 0,
+      "failure": "Codex app-server initialization hit read-only filesystem"
+    },
+    {
+      "status": "UNKNOWN_SETTLEMENT_STOP",
+      "known_input_tokens": 0,
+      "known_output_tokens": 0,
+      "failure": "workspace routing discovery failed; Codex CLI emitted reconnect errors"
+    }
+  ],
+  "offline_tests": {
+    "file": "tests/test_live_sealed_benchmark.py",
+    "passed": 14,
+    "failed": 0
+  },
+  "artifacts_dir": "benchmarks/live_role_diagnostic/pr141-codex-luna-20261108"
+}

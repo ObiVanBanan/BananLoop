@@ -557,11 +557,17 @@ def test_observability_is_campaign_scoped_and_reconciles_budget(api, tmp_path):
         queue.enqueue(job_id="obs-other-1", enqueue_key="obs-other-1", campaign_id=second_id,
                       action_id="obs-other-action", resource="agent_calls", upper_bound=1,
                       request={"private_prompt": "other campaign"})
-        queue.conn.executemany(
-            "INSERT INTO worker_events(job_id,event_type,fence,payload_json,created_at) "
-            "VALUES('obs-other-1','JOB_ENQUEUED',0,'{}','2026-01-01T00:00:00Z')",
-            [()] * 10001,
-        )
+        queue.conn.execute("BEGIN IMMEDIATE")
+        try:
+            queue.conn.executemany(
+                "INSERT INTO worker_events(job_id,event_type,fence,payload_json,created_at) "
+                "VALUES('obs-other-1','JOB_ENQUEUED',0,'{}','2026-01-01T00:00:00Z')",
+                [()] * 10001,
+            )
+            queue.conn.commit()
+        except Exception:
+            queue.conn.rollback()
+            raise
         campaign_worker_cursor = queue.conn.execute(
             "SELECT MAX(e.event_id) FROM worker_events e JOIN worker_jobs j ON j.job_id=e.job_id "
             "WHERE j.campaign_id=?", (campaign_id,),
@@ -607,11 +613,20 @@ def test_observability_is_campaign_scoped_and_reconciles_budget(api, tmp_path):
 
     queue = registry.worker_queue()
     try:
-        queue.conn.executemany(
-            "INSERT INTO worker_events(job_id,event_type,fence,payload_json,created_at) "
-            "VALUES('obs-ready-1','FUTURE_EVENT',0,'{}','2026-01-02T00:00:00Z')",
-            [()] * 10001,
-        )
+        # Keep this synthetic high-watermark fixture in one transaction. The
+        # queue connection is autocommit, so an unwrapped executemany performs
+        # 10,001 durable commits and makes the offline suite needlessly slow.
+        queue.conn.execute("BEGIN IMMEDIATE")
+        try:
+            queue.conn.executemany(
+                "INSERT INTO worker_events(job_id,event_type,fence,payload_json,created_at) "
+                "VALUES('obs-ready-1','FUTURE_EVENT',0,'{}','2026-01-02T00:00:00Z')",
+                [()] * 10001,
+            )
+            queue.conn.commit()
+        except Exception:
+            queue.conn.rollback()
+            raise
         campaign_cursor_after_unknown_events = queue.conn.execute(
             "SELECT MAX(e.event_id) FROM worker_events e JOIN worker_jobs j ON j.job_id=e.job_id "
             "WHERE j.campaign_id=?", (campaign_id,),

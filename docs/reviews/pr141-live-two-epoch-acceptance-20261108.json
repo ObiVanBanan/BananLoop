@@ -1,0 +1,59 @@
+{
+  "schema": "bananloop-live-two-epoch-optimization-acceptance-v1",
+  "date": "2026-11-08",
+  "code_tree_sha": "f5f47bb77a29a4494ee4bc1353338ab825acc5f1",
+  "campaign_id": "c-22222222222222222222222222222222",
+  "status": "ALL_NODES_COMPLETE",
+  "test": {
+    "command": "BANANLOOP_TITANIC_LIVE=1 BANANLOOP_TITANIC_LIVE_EPOCHS=2 .venv/bin/python -m pytest -o addopts= -q -ra tests/test_titanic_benchmark.py::test_titanic_v2_optimization_campaign_runs_to_terminal_holdout",
+    "result": "1 passed in 21.17s",
+    "live_model_inferences": 2,
+    "automatic_retries": 0,
+    "forced_first_independent_verifier_rejection": true,
+    "second_epoch_rejection_memory_assertion": "previous candidate did not pass independent verification"
+  },
+  "provider": {
+    "auth_route": "Sign in with ChatGPT",
+    "model": "gpt-6-luna",
+    "separately_billed_api_key_used": false,
+    "monetary_cost": "UNKNOWN",
+    "requests": [
+      {
+        "response_id": "resp_02db40c8cb53db8a016af06eef23a887d2a15f3fdf6881bee5",
+        "input_tokens": 13741,
+        "output_tokens": 355,
+        "total_tokens": 14096,
+        "reasoning_tokens": 161
+      },
+      {
+        "response_id": "resp_0364c432d79874bc016af06ef8a70087d2bbbea76eb7b2e94e",
+        "input_tokens": 13873,
+        "output_tokens": 323,
+        "total_tokens": 14196,
+        "reasoning_tokens": 154
+      }
+    ]
+  },
+  "budget": {
+    "resource": "model_tokens",
+    "cap": 65000,
+    "spent": 28292,
+    "unknown": 0,
+    "breached": false
+  },
+  "holdout": {
+    "status": "VERIFIED",
+    "case_count": 196,
+    "repeatability_runs": 2,
+    "metric": "accuracy",
+    "value": 0.7806122448979592,
+    "stretch_target": 0.95,
+    "stretch_target_met": false
+  },
+  "limitations": [
+    "Parent campaign approvals and integration-verifier response were deterministic fixtures.",
+    "The first rejection was deliberately injected after the real model proposal to test persisted memory handoff.",
+    "This run does not prove fully autonomous live Exploration-to-Optimization.",
+    "Subscription monetary cost is unavailable."
+  ]
+}

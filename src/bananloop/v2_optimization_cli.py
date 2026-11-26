@@ -1,6 +1,7 @@
 """Owner-facing execution of an already-approved v2 Optimization child."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
@@ -11,19 +12,23 @@ from typing import Any, Callable
 
 from .chatgpt_plan import ChatGPTPlanAuth, SIWCError
 from .chatgpt_responses import ChatGPTPlanIntegrationVerifier, ChatGPTPlanOptimizer
+from .budget_ledger import BudgetLedger
 from .contracts import OptimizationCampaignSpecV2, RuntimePaths, utc_now
 from .evaluator_verification import (
     EvaluatorVerificationError, EvaluatorProtocolAuthority,
     IntegrationVerificationAdapter,
 )
-from .graph_store import GraphRepository
+from .graph_store import AddNode, GraphRepository, MutateGraph
 from .registry import CampaignRegistry, RegistryError
 from .roles import (
     PinnedRoleExecutorV1, RoleContractError, RoleRegistryV1, TeamFactoryV1,
     TeamManifestAuthority, TeamRequestV1,
 )
-from .trusted_evaluator import TrustedEvaluatorAdapter
-from .v2_optimization_runtime import V2OptimizationError, V2OptimizationRuntime, _safe_path
+from .trusted_evaluator import TrustedEvaluatorAdapter, TrustedEvaluatorError
+from .v2_optimization_runtime import (
+    V2OptimizationError, V2OptimizationRuntime, _atomic_write_report,
+    _render_final_report_markdown, _safe_path,
+)
 
 
 class V2OptimizationCLIError(ValueError):
@@ -52,10 +57,14 @@ def _record_provider_call(database: Path, receipt: dict[str, Any]) -> None:
         conn.close()
 
 
-def _write_cli_report(state_root: Path, report: dict[str, Any], *, campaign_id: str) -> str:
+def _write_cli_report(state_root: Path, report: dict[str, Any], *, campaign_id: str,
+                      suffix: str | None = None) -> str:
     reports = state_root / "reports"
     reports.mkdir(parents=True, exist_ok=True)
-    target = reports / f"v2-optimization-cli-{campaign_id}.json"
+    label = f"v2-optimization-cli-{campaign_id}"
+    if suffix:
+        label += f"-{suffix}"
+    target = reports / f"{label}.json"
     payload = (json.dumps(report, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode()
     descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=reports)
     try:
@@ -70,12 +79,290 @@ def _write_cli_report(state_root: Path, report: dict[str, Any], *, campaign_id: 
     return str(target)
 
 
+def _mark_optimization_complete(database: Path, spec: OptimizationCampaignSpecV2,
+                                report: dict[str, Any]) -> None:
+    """Record terminal campaign state only after the scheduler reports completion."""
+    from .lock import CampaignLock
+
+    if report.get("status") != "ALL_NODES_COMPLETE":
+        raise V2OptimizationCLIError("only a fully completed optimization can become terminal")
+    report_digest = hashlib.sha256(json.dumps(
+        report, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+    lock = CampaignLock(database.parent / "campaign.lock")
+    lock.acquire()
+    conn = None
+    try:
+        conn = sqlite3.connect(database, timeout=30, isolation_level=None)
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT spec_hash,status FROM campaigns WHERE id=1").fetchone()
+        if row is None or row[0] != spec.approved_hash():
+            raise V2OptimizationCLIError("campaign identity changed before terminal recording")
+        if row[1] == "GOAL_MET":
+            conn.commit()
+            return
+        if row[1] not in {"READY", "RUNNING"}:
+            raise V2OptimizationCLIError("campaign cannot enter GOAL_MET from its current state")
+        now = utc_now()
+        conn.execute("UPDATE campaigns SET status='GOAL_MET',updated_at=? WHERE id=1", (now,))
+        conn.execute(
+            "INSERT INTO events(event_type,payload_json,created_at) VALUES(?,?,?)",
+            ("V2_CAMPAIGN_TERMINAL", json.dumps({
+                "campaign_id": report.get("campaign_id"),
+                "spec_hash": spec.approved_hash(), "status": "GOAL_MET",
+                "scheduler_status": report["status"], "report_digest": report_digest,
+            }, sort_keys=True, separators=(",", ":")), now),
+        )
+        conn.commit()
+    except Exception:
+        if conn is not None and conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        if conn is not None:
+            conn.close()
+        lock.release()
+
+
+def _close_completed_child_allocation(result: dict[str, Any], *,
+                                      spec: OptimizationCampaignSpecV2,
+                                      database: Path, registry: CampaignRegistry) -> dict[str, Any]:
+    if result.get("status") != "ALL_NODES_COMPLETE":
+        return result
+    _mark_optimization_complete(database, spec, result)
+    allocation_closed = False
+    if spec.parent is not None:
+        settlement_ledger = BudgetLedger(registry.path)
+        try:
+            settlement_ledger.close_child(
+                spec.parent.allocation_id, terminal_status="GOAL_MET",
+            )
+        finally:
+            settlement_ledger.close()
+        allocation_closed = True
+        result = _mark_parent_campaign_complete(
+            result, spec=spec, database=database, registry=registry,
+        )
+    result["campaign_terminal_status"] = "GOAL_MET"
+    result["child_allocation_closed"] = allocation_closed
+    return result
+
+
+def _mark_parent_campaign_complete(result: dict[str, Any], *,
+                                   spec: OptimizationCampaignSpecV2,
+                                   database: Path,
+                                   registry: CampaignRegistry) -> dict[str, Any]:
+    """Finalize a supervised parent after its approved child fully completes."""
+    parent_ref = spec.parent
+    if parent_ref is None or result.get("status") != "ALL_NODES_COMPLETE":
+        return result
+    if not (parent_ref.parent_spec_hash and parent_ref.pivot_decision_id
+            and parent_ref.pivot_proposal_id and parent_ref.pivot_proposal_digest
+            and parent_ref.protocol_handoff_digest):
+        result["parent_campaign_terminal_status"] = "NOT_FINALIZED_MISSING_PIVOT_LINEAGE"
+        return result
+    child_id = result.get("campaign_id")
+    if not isinstance(child_id, str) or not child_id:
+        raise V2OptimizationCLIError("completed optimization result lacks its campaign identity")
+
+    parent_state, resolved_id = registry.resolve_readonly(parent_ref.parent_campaign_id)
+    if resolved_id != parent_ref.parent_campaign_id:
+        raise V2OptimizationCLIError("resolved parent campaign identity does not match child lineage")
+    parent_db = parent_state / "campaign.sqlite3"
+    report_path = parent_state / "reports" / f"v2-final-{parent_ref.parent_campaign_id}.json"
+    if (not parent_db.is_file() or parent_db.is_symlink()
+            or not report_path.is_file() or report_path.is_symlink()):
+        raise V2OptimizationCLIError("completed child has no safe parent database and final report")
+    try:
+        final_report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise V2OptimizationCLIError("parent final report is unreadable") from None
+    if (not isinstance(final_report, dict)
+            or final_report.get("campaign_id") != parent_ref.parent_campaign_id
+            or final_report.get("optimization_campaign_id") != child_id
+            or final_report.get("status") != "ALL_NODES_COMPLETE"):
+        raise V2OptimizationCLIError("parent final report does not prove this completed optimization")
+
+    if not database.is_file() or database.is_symlink():
+        raise V2OptimizationCLIError("completed child database is missing or unsafe")
+    child_conn = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)
+    child_conn.row_factory = sqlite3.Row
+    try:
+        child = child_conn.execute(
+            "SELECT spec_hash,status FROM campaigns WHERE id=1",
+        ).fetchone()
+        handoff = child_conn.execute(
+            "SELECT handoff_digest,child_spec_hash,approval_digest "
+            "FROM evaluator_protocol_handoffs WHERE parent_campaign_id=? AND child_campaign_id=?",
+            (parent_ref.parent_campaign_id, child_id),
+        ).fetchone()
+    finally:
+        child_conn.close()
+    exploration = final_report.get("exploration_report")
+    review = exploration.get("protocol_review", {}) if isinstance(exploration, dict) else {}
+    if (child is None or child["spec_hash"] != spec.approved_hash()
+            or child["status"] != "GOAL_MET"
+            or handoff is None or handoff["handoff_digest"] != parent_ref.protocol_handoff_digest
+            or handoff["child_spec_hash"] != spec.approved_hash()
+            or handoff["approval_digest"] != review.get("approval_digest")):
+        raise V2OptimizationCLIError("parent protocol handoff does not match the completed child")
+
+    from .lock import CampaignLock
+
+    lock = CampaignLock(parent_db.parent / "campaign.lock")
+    lock.acquire()
+    conn = None
+    try:
+        conn = sqlite3.connect(parent_db, timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN IMMEDIATE")
+        campaign = conn.execute(
+            "SELECT spec_hash,status FROM campaigns WHERE id=1",
+        ).fetchone()
+        if campaign is None or campaign["spec_hash"] != parent_ref.parent_spec_hash:
+            raise V2OptimizationCLIError("parent campaign spec changed before finalization")
+        if campaign["status"] not in {"PAUSED_NEEDS_INPUT", "GOAL_MET"}:
+            raise V2OptimizationCLIError("parent campaign cannot enter GOAL_MET from its current state")
+        decision = conn.execute(
+            "SELECT proposal_id,digest,decision,status FROM v2_pivot_decisions WHERE request_id=?",
+            (parent_ref.pivot_decision_id,),
+        ).fetchone()
+        if (decision is None or decision["proposal_id"] != parent_ref.pivot_proposal_id
+                or decision["digest"] != parent_ref.pivot_proposal_digest
+                or decision["decision"] != "approve" or decision["status"] != "APPROVED"):
+            raise V2OptimizationCLIError("parent owner approval does not match frozen child lineage")
+        if campaign["status"] != "GOAL_MET":
+            now = utc_now()
+            final_report["campaign_terminal_status"] = "GOAL_MET"
+            final_report["terminalized_at"] = now
+            digest = hashlib.sha256(json.dumps(
+                final_report, sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, allow_nan=False,
+            ).encode("utf-8")).hexdigest()
+            conn.execute(
+                "UPDATE campaigns SET status='GOAL_MET',updated_at=? WHERE id=1", (now,),
+            )
+            conn.execute(
+                "INSERT INTO events(event_type,payload_json,created_at) VALUES(?,?,?)",
+                ("V2_CAMPAIGN_TERMINAL", json.dumps({
+                    "campaign_id": parent_ref.parent_campaign_id,
+                    "spec_hash": parent_ref.parent_spec_hash,
+                    "status": "GOAL_MET", "scheduler_status": "ALL_NODES_COMPLETE",
+                    "child_campaign_id": child_id, "report_digest": digest,
+                }, sort_keys=True, separators=(",", ":")), now),
+            )
+        else:
+            terminal_event = conn.execute(
+                "SELECT created_at FROM events WHERE event_type='V2_CAMPAIGN_TERMINAL' "
+                "ORDER BY seq DESC LIMIT 1",
+            ).fetchone()
+            final_report["campaign_terminal_status"] = "GOAL_MET"
+            final_report.setdefault(
+                "terminalized_at", terminal_event["created_at"] if terminal_event else utc_now(),
+            )
+        conn.commit()
+    except Exception:
+        if conn is not None and conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        if conn is not None:
+            conn.close()
+        lock.release()
+
+    raw = (json.dumps(final_report, sort_keys=True, indent=2,
+                      ensure_ascii=False) + "\n").encode("utf-8")
+    _atomic_write_report(report_path, raw)
+    _atomic_write_report(
+        report_path.with_suffix(".md"),
+        _render_final_report_markdown(final_report).encode("utf-8"),
+    )
+    result["parent_campaign_terminal_status"] = "GOAL_MET"
+    result["final_report_path"] = str(report_path)
+    result["final_report_markdown_path"] = str(report_path.with_suffix(".md"))
+    return result
+
+
+def _saved_completed_run_report(state_root: Path, campaign_id: str) -> dict[str, Any] | None:
+    path = state_root / "reports" / f"v2-optimization-{campaign_id}.json"
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    verification_pass = (isinstance(report, dict) and any(
+        item.get("status") == "INDEPENDENT_VERIFICATION_PASS"
+        for item in report.get("verification", []) if isinstance(item, dict)
+    ))
+    integration_pass = (isinstance(report, dict) and any(
+        item.get("decision") == "PASS"
+        for item in report.get("integration_evidence", []) if isinstance(item, dict)
+    ))
+    if (not isinstance(report, dict) or report.get("campaign_id") != campaign_id
+            or report.get("status") != "ALL_NODES_COMPLETE"
+            or not isinstance(report.get("baseline_candidate_delta"), dict)
+            or report["baseline_candidate_delta"].get("status") != "VERIFIED"
+            or not (verification_pass or integration_pass)
+            or not isinstance(report.get("holdout"), dict)
+            or report["holdout"].get("status") != "VERIFIED"):
+        return None
+    return report
+
+
 def _role_transport(role: Any, role_id: str) -> None:
     if (role.role_id != role_id or role.adapter != "codex" or role.provider != "openai"
             or not role.model.strip()):
         raise V2OptimizationCLIError(
             f"pinned {role_id} must use the official OpenAI Codex transport",
         )
+
+
+def _ensure_researcher_selected_task(graph: GraphRepository,
+                                    spec: OptimizationCampaignSpecV2) -> None:
+    """Seed the child graph from the Researcher task frozen by owner approval."""
+    task = spec.optimization_task
+    if task is None:
+        return  # Backward-compatible for existing hand-created Optimization specs.
+    authority = EvaluatorProtocolAuthority(graph.conn)
+    proposal, _receipt = authority.approved_protocol(spec.evaluation.approval_digest)
+    if task.source_snapshot_id != proposal.protocol.source_snapshot_id:
+        raise V2OptimizationCLIError(
+            "approved Researcher task is pinned to a different Optimization source snapshot",
+        )
+    node_id = f"optimization-task-{task.hypothesis_id}"
+    nodes = graph.scheduling_snapshot()["nodes"]
+    existing = [node for node in nodes if node["phase"] == "OPTIMIZATION"]
+    if existing:
+        if len(existing) != 1:
+            raise V2OptimizationCLIError("approved child has multiple initial Optimization tasks")
+        payload = existing[0]["payload"]
+        if (existing[0]["node_id"] != node_id
+                or payload.get("hypothesis_id") != task.hypothesis_id
+                or payload.get("hypothesis") != task.hypothesis
+                or payload.get("source_snapshot_id") != task.source_snapshot_id):
+            raise V2OptimizationCLIError(
+                "child Optimization node differs from its owner-approved Researcher task",
+            )
+        return
+    graph.mutate(MutateGraph(
+        command_id=f"seed-approved-optimization-task-{task.hypothesis_id}",
+        idempotency_key=f"seed-approved-optimization-task-{task.hypothesis_id}",
+        expected_graph_revision=graph.graph_revision(),
+        changes=(AddNode(
+            type="AddNode", node_id=node_id, phase="OPTIMIZATION",
+            payload={
+                "source_snapshot_id": task.source_snapshot_id,
+                "hypothesis_id": task.hypothesis_id,
+                "hypothesis": task.hypothesis,
+                "evidence_refs": list(task.evidence_refs),
+                "research_source": {
+                    "campaign_id": task.source_campaign_id,
+                    "node_id": task.source_node_id,
+                    "job_id": task.source_job_id,
+                    "portfolio_sha256": task.source_artifact_sha256,
+                },
+            },
+        ),),
+    ))
 
 
 def _safe_paths(visible_paths: list[str], write_paths: list[str]) -> tuple[list[str], list[str]]:
@@ -167,6 +454,49 @@ def run_v2_optimize(args: Namespace, *,
         )
         plan = runtime.plan()
         if args.approve_up_to_calls == 0:
+            saved_report = _saved_completed_run_report(state_root, args.campaign_id)
+            if plan.reason == "ALL_NODES_COMPLETE" and saved_report is not None:
+                # A completed graph with durable verification/HOLDOUT evidence
+                # can recover terminal state without auth, model calls, or
+                # repeating evaluator work after a report-writing failure.
+                result = runtime.run_campaign(
+                    visible_paths=visible_paths, write_paths=write_paths,
+                    max_steps=args.max_steps, worker_id="v2-optimization-cli-recovery",
+                )
+                campaign_call_count = len(saved_report.get("provider_calls", []))
+                final_report_path = result.get("final_report_path")
+                if isinstance(final_report_path, str):
+                    try:
+                        final_report = json.loads(Path(final_report_path).read_text(encoding="utf-8"))
+                        if isinstance(final_report, dict):
+                            campaign_call_count = len(final_report.get("provider_calls", []))
+                    except (OSError, ValueError):
+                        pass
+                result.update({
+                    "mode": "OPTIMIZATION", "profile": "FULL",
+                    "role_registry_digest": role_registry.digest(),
+                    "live_model_called": False, "provider_call_attempts": 0,
+                    "request_history": {"optimizer": [], "integration_verifier": []},
+                    "automatic_replay": False,
+                    "recovery_mode": "FINALIZATION_ONLY",
+                    "campaign_provider_call_count": campaign_call_count,
+                    "optimization_child_provider_call_count": len(saved_report.get("provider_calls", [])),
+                    "recovered_report_path": str(
+                        state_root / "reports" / f"v2-optimization-{args.campaign_id}.json"
+                    ),
+                })
+                result = _close_completed_child_allocation(
+                    result, spec=spec, database=database, registry=registry,
+                )
+                result["recovery_report_path"] = str(
+                    state_root / "reports" /
+                    f"v2-optimization-cli-{args.campaign_id}-recovery.json"
+                )
+                result["state_dir"] = str(state_root)
+                _write_cli_report(
+                    state_root, result, campaign_id=args.campaign_id, suffix="recovery",
+                )
+                return result
             return {
                 "status": "READY_FOR_OWNER_APPROVAL", "mode": "OPTIMIZATION",
                 "profile": "FULL", "campaign_id": args.campaign_id,
@@ -176,6 +506,8 @@ def run_v2_optimize(args: Namespace, *,
                 "live_model_called": False,
             }
 
+        _ensure_researcher_selected_task(graph, spec)
+        plan = runtime.plan()
         try:
             auth = ChatGPTPlanAuth()
             if not auth.status()["connected"]:
@@ -245,11 +577,19 @@ def run_v2_optimize(args: Namespace, *,
 
         def bounded_optimizer(public_input: dict[str, Any], **pin: Any) -> dict[str, Any]:
             consume_approval()
-            return optimizer(public_input, **pin)
+            result = optimizer(public_input, **pin)
+            bounded_optimizer.last_usage = getattr(optimizer, "last_usage", None)
+            return result
+
+        bounded_optimizer.last_usage = None
 
         def bounded_verifier(request: dict[str, Any], gateway: Any, **pin: Any) -> dict[str, Any]:
             consume_approval()
-            return verifier._dispatch_verifier(request, gateway, **pin)
+            result = verifier._dispatch_verifier(request, gateway, **pin)
+            bounded_verifier.last_usage = getattr(verifier, "last_usage", None)
+            return result
+
+        bounded_verifier.last_usage = None
 
         verifier_executor = PinnedRoleExecutorV1.from_manifest(
             manifest, verifier_members[0].instance_id, bounded_verifier,
@@ -274,6 +614,9 @@ def run_v2_optimize(args: Namespace, *,
                 },
                 "automatic_replay": False,
             })
+            result = _close_completed_child_allocation(
+                result, spec=spec, database=database, registry=registry,
+            )
             return result
         except _CallAllowanceReached as exc:
             report = {
@@ -296,7 +639,9 @@ def run_v2_optimize(args: Namespace, *,
             report = {
                 "status": "RUN_FAILED", "mode": "OPTIMIZATION", "profile": "FULL",
                 "campaign_id": args.campaign_id, "failure_type": type(exc).__name__,
-                "failure_detail": str(exc)[:500] if isinstance(exc, V2OptimizationError) else None,
+                "failure_detail": str(exc)[:500] if isinstance(
+                    exc, (V2OptimizationError, TrustedEvaluatorError)
+                ) else None,
                 "provider_call_attempts": spent, "usage": "UNKNOWN",
                 "live_model_called": spent > 0, "automatic_replay": False,
                 "request_history": {

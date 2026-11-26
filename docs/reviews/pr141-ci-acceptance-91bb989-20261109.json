@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-09",
+  "kind": "PR_CI_ACCEPTANCE",
+  "commit": "91bb98926aab1e4fe94204bd9b08d8601623807b",
+  "pull_request": {
+    "number": 141,
+    "url": "https://github.com/ObiVanBanan/BananLoop/pull/141",
+    "state": "open",
+    "draft": true
+  },
+  "workflow_runs": {
+    "tests": {
+      "run_id": 42518153915,
+      "url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42518153915",
+      "conclusion": "success",
+      "pytest": {
+        "ubuntu_python_3_11": {"passed": 1016, "skipped": 7, "subtests_passed": 7, "duration_seconds": 76.74},
+        "ubuntu_python_3_12": {"passed": 1016, "skipped": 7, "subtests_passed": 7, "duration_seconds": 100.04},
+        "ubuntu_python_3_13": {"passed": 1016, "skipped": 7, "subtests_passed": 7, "duration_seconds": 98.91},
+        "windows_python_3_12": {"passed": 1005, "skipped": 18, "subtests_passed": 7, "duration_seconds": 601.75}
+      }
+    },
+    "role_benchmark_offline": {
+      "run_id": 42518153831,
+      "url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42518153831",
+      "conclusion": "success",
+      "provider_requests": 0,
+      "platforms": ["ubuntu-latest Python 3.11", "ubuntu-latest Python 3.12", "ubuntu-latest Python 3.13", "windows-latest Python 3.12"]
+    },
+    "dashboard_browser": {
+      "run_id": 42518153856,
+      "url": "https://github.com/ObiVanBanan/BananLoop/actions/runs/42518153856",
+      "conclusion": "success"
+    }
+  },
+  "local_verification": {
+    "integrated_acceptance": "2 passed",
+    "command": "PYTHONPATH=/tmp/bananloop-pr141-latest/src .venv/bin/python -m pytest -o addopts= -q tests/test_rpdi13_integrated_acceptance.py -k 'not live'",
+    "browser_probe_node_check": "passed",
+    "git_diff_check": "passed"
+  },
+  "report_contract": {
+    "baseline_candidate_delta_json_and_markdown_assertions": "passed",
+    "validation_baseline_and_candidate_compared_on_same_frozen_scope": true
+  },
+  "live_model_calls": 0,
+  "autonomous_full_live_campaign_proven": false,
+  "limitations": [
+    "The integrated acceptance parent Researcher and protocol-verifier responses remain deterministic fixtures; this CI run is offline.",
+    "The synthetic one-case quality score in integrated acceptance is execution evidence, not an external benchmark quality claim.",
+    "The full autonomous live campaign still requires a Researcher-generated parent protocol, real independent verifier response, supervised approval, live optimization and integration verification, trusted DEV/VALIDATION/HOLDOUT, and final report."
+  ]
+}

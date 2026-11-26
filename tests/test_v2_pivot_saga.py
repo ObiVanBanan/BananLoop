@@ -45,6 +45,11 @@ import urllib.request
 SHA = "a" * 64
 
 
+@pytest.fixture(autouse=True)
+def isolate_project_registry(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+
 def _spec_payload(repo: Path, *, mode: str, scope: AutonomyScopeV2, goal: str):
     return {
         "schema_version": 2,
@@ -1269,6 +1274,29 @@ def test_v2_human_steering_cli_records_proposal_and_decision(tmp_path, capsys):
         idempotency_key="cli-approved-pivot",
     )) == 0
     assert json.loads(capsys.readouterr().out)["state"] == "ACTIVE"
+
+
+def test_v2_pivot_decision_resolves_custom_project_state_dir_campaign(tmp_path, capsys):
+    import argparse
+    from bananloop.cli import cmd_v2_pivot_decision
+
+    setup = _setup(tmp_path, mode="SUPERVISED", isolated_state=True)
+    proposal = setup["proposal"]
+    _saga(setup).record_pivot_proposal(proposal)
+    approval = PivotDecisionCommand(
+        campaign_id=setup["parent_id"], request_id="custom-state-owner-approval",
+        proposal_id=proposal.proposal_id, digest=proposal.digest, decision="approve",
+    )
+
+    assert cmd_v2_pivot_decision(argparse.Namespace(
+        repo=str(setup["repo"]), state_dir=str(setup["state_root"]),
+        campaign_id=setup["parent_id"], request_id=approval.request_id,
+        proposal_id=proposal.proposal_id, digest=proposal.digest,
+        decision="approve", on_reject=None,
+    )) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "APPROVED"
+    assert result["digest"] == proposal.digest
 
 
 def test_supervised_expansion_executes_from_the_approved_plan_through_cli(tmp_path, capsys):

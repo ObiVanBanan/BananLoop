@@ -598,7 +598,9 @@ def cmd_v2_explore(args: argparse.Namespace) -> int:
 
     result = run_v2_explore(args)
     print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
-    return 0 if result.get("status") not in {"BUDGET_EXHAUSTED", "STOP_REQUESTED", "RUN_FAILED"} else 2
+    return 0 if result.get("status") not in {
+        "BUDGET_EXHAUSTED", "STOP_REQUESTED", "SUPERVISOR_STALLED", "RUN_FAILED",
+    } else 2
 
 
 def cmd_v2_optimize(args: argparse.Namespace) -> int:
@@ -1139,12 +1141,18 @@ def parser() -> argparse.ArgumentParser:
                             help="exact public source file path visible to the researcher; repeat as needed")
     v2_explore.add_argument("--optimization-write-path", action="append", default=[],
                             help="exact file eligible for a supervised Optimization child; must also be a read path")
+    v2_explore.add_argument("--evaluator-fixture",
+                            help="owner-controlled evaluator bundle and tier inputs; pass the same fixture on every resume")
     v2_explore.add_argument("--model", default="gpt-6-luna")
     v2_explore.add_argument("--max-agent-calls", type=int, default=8,
                             help="total model calls budgeted across Exploration, verification, and a child run")
+    v2_explore.add_argument("--max-evaluator-calls", type=int, default=16,
+                            help="trusted evaluator call budget; one candidate needs four repeatability receipts")
     v2_explore.add_argument("--max-model-tokens", type=int, default=2048,
                             help="per-call ledger ceiling; SIWC may not enforce this provider-side")
     v2_explore.add_argument("--max-iterations", type=int, default=2)
+    v2_explore.add_argument("--supervisor-stall-limit", type=int,
+                            help="stop Exploration after this many consecutive iterations without milestone progress")
     v2_explore.add_argument("--approve-up-to-calls", type=int, default=0,
                             help="explicit consent to spend up to this many ChatGPT plan requests now")
     v2_explore.add_argument("--timeout-seconds", type=int, default=120)

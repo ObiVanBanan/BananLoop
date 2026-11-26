@@ -1,0 +1,53 @@
+{
+  "schema": "bananloop-live-titanic-optimization-acceptance-v1",
+  "date": "2026-11-08",
+  "platform": "Linux",
+  "code_revision": "a4d097fdc13bf4f1b143c2d37a988530f40fdbc0",
+  "campaign_id": "c-22222222222222222222222222222222",
+  "campaign_status": "ALL_NODES_COMPLETE",
+  "test_result": "1 passed in 13.89s",
+  "command": "BANANLOOP_TITANIC_LIVE=1 BANANLOOP_TITANIC_LIVE_EPOCHS=1 .venv/bin/python -m pytest -o addopts= -q -ra tests/test_titanic_benchmark.py::test_titanic_v2_optimization_campaign_runs_to_terminal_holdout",
+  "live_model_calls": 1,
+  "automatic_retries": 0,
+  "provider": {
+    "auth": "Sign in with ChatGPT",
+    "model": "gpt-6-luna",
+    "response_id": "resp_07a2dff8fa94af0c016af08c4d163887d2af7fc0b10a4a2d99",
+    "input_tokens": 13741,
+    "output_tokens": 304,
+    "reasoning_tokens": 125,
+    "total_tokens": 14045,
+    "separately_billed_api_key": false,
+    "monetary_cost": "UNKNOWN"
+  },
+  "budget": {
+    "resource": "model_tokens",
+    "cap": 65000,
+    "spent": 14045,
+    "unknown": 0,
+    "breached": false
+  },
+  "pipeline": {
+    "candidate_created": true,
+    "trusted_dev_completed": true,
+    "independent_verification_completed": true,
+    "validation_completed": true,
+    "trusted_holdout_completed": true
+  },
+  "holdout": {
+    "status": "VERIFIED",
+    "case_count": 196,
+    "repeatability_runs": 2,
+    "metric": "accuracy",
+    "value": 0.7806122448979592,
+    "stretch_target": 0.95,
+    "stretch_target_met": false,
+    "receipt_digest": "c1cba50d488d3548653ec0a5b852616a95e7e5d11f504889bd50026d309c50c1"
+  },
+  "limitations": [
+    "Parent campaign approvals and integration-verifier response were deterministic fixtures.",
+    "This validates live Optimization, not a fully autonomous live Exploration-to-Optimization campaign.",
+    "The 95% stretch accuracy target was not met.",
+    "Monetary subscription cost is unavailable."
+  ]
+}

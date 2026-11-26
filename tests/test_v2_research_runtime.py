@@ -78,7 +78,7 @@ def make_researcher_invoke(model_reply):
 
 
 def _runtime(tmp_path, *, max_agent_calls=3, ledger_agent_calls=None,
-             role_calls_per_instance=2):
+             role_calls_per_instance=2, exploration_supervision=None):
     source = tmp_path / "source"
     _source_repo(source)
     roles = _role_registry(calls_per_instance=role_calls_per_instance)
@@ -96,6 +96,8 @@ def _runtime(tmp_path, *, max_agent_calls=3, ledger_agent_calls=None,
         },
         "budget": {"max_agent_calls": max_agent_calls},
         "role_registry_digest": roles.digest(), "evaluation": None,
+        **({"exploration_supervision": exploration_supervision}
+           if exploration_supervision is not None else {}),
     })
     graph = _graph(tmp_path / "campaign.sqlite3", spec)
     ledger = BudgetLedger(tmp_path / "registry.sqlite3")
@@ -112,6 +114,96 @@ def _runtime(tmp_path, *, max_agent_calls=3, ledger_agent_calls=None,
         state_root=tmp_path, role_registry=roles,
     )
     return runtime, graph, queue
+
+
+def test_supervisor_stops_stalled_exploration_and_persists_decision_on_resume(tmp_path):
+    runtime, graph, queue = _runtime(
+        tmp_path, max_agent_calls=6, role_calls_per_instance=6,
+        exploration_supervision={"max_stalled_iterations": 2},
+    )
+    calls = []
+    recovered_queue = recovered_graph = None
+
+    def ungrounded_followup(public_input, **_pin):
+        calls.append(public_input)
+        text = f"durable observation {len(calls)}"
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        return {
+            "next_experiment": f"run distinct public experiment {len(calls)}",
+            "artifact_text": {"observation.txt": text},
+            "research_findings": [{
+                "claim_key": f"observation:{len(calls)}",
+                "statement": f"An unverified public observation {len(calls)} was recorded.",
+                "stance": "UNCERTAIN", "kind": "OBSERVATION", "confidence": 0.2,
+                "evidence_refs": [f"artifact://sha256/{digest}"],
+            }],
+        }
+
+    try:
+        result = runtime.run_campaign(
+            visible_paths=["README.md"],
+            invoke=make_researcher_invoke(ungrounded_followup), max_iterations=5,
+        )
+        assert result["status"] == "SUPERVISOR_STALLED"
+        assert len(calls) == 3  # initial progress, followed by two stalled experiments
+        assert "Supervisor checkpoint:" in calls[2]["role_context"]["public_task"]
+        assert queue.campaign_control("campaign-test")["state"] == "STOPPED"
+        report = json.loads(Path(result["report_path"]).read_text())
+        supervision = report["supervision"]
+        assert supervision["stalled_iterations"] == 2
+        assert supervision["reason"]
+        assert supervision["milestones"]
+        checkpoints = supervision["checkpoints"]
+        assert [item["decision"] for item in checkpoints] == [
+            "PROGRESS", "REPLAN_REQUIRED", "STOP",
+        ]
+        assert [item["stalled_iterations"] for item in checkpoints] == [0, 1, 2]
+        assert all(item["reason"] for item in checkpoints)
+
+        projection = ResearchLedger(graph.conn).project(
+            graph=graph, queue=queue, campaign_ids=("campaign-test",),
+            source_snapshot_id=queue.get_job_for_action(
+                "campaign-test", "exploration:explore",
+            )["request"]["base_commit"],
+            protocol_digest=ResearchLedger.protocol_digest_for_binding(
+                queue.get_job_for_action("campaign-test", "exploration:explore")
+                ["request"]["role_binding"],
+            ),
+        )
+        assert len(projection.evidence) == 3
+        assert len(report["completed_experiments"]) == 3
+        assert queue.get_job_for_action(
+            "campaign-test", "exploration:iteration-3",
+        ) is None
+
+        queue_path = queue.path
+        queue.close()
+        graph.close()
+        recovered_queue = DurableWorkerQueue(queue_path)
+        recovered_graph = GraphRepository.open(
+            str(tmp_path / "campaign.sqlite3"), campaign_id="campaign-test",
+        )
+        recovered = V2ResearchRuntime(
+            graph=recovered_graph, queue=recovered_queue,
+            campaign_id="campaign-test", state_root=tmp_path,
+            role_registry=runtime.role_registry,
+        )
+        resumed = recovered.run_campaign(
+            visible_paths=["README.md"],
+            invoke=make_researcher_invoke(ungrounded_followup), max_iterations=5,
+        )
+        assert resumed["status"] == "SUPERVISOR_STALLED"
+        assert len(calls) == 3
+        assert json.loads(Path(resumed["report_path"]).read_text())["supervision"] == supervision
+    finally:
+        if recovered_queue is not None:
+            recovered_queue.close()
+        else:
+            queue.close()
+        if recovered_graph is not None:
+            recovered_graph.close()
+        else:
+            graph.close()
 
 
 def test_two_real_exploration_nodes_use_refutation_memory_and_preserve_pins(tmp_path):
@@ -244,6 +336,30 @@ def test_two_real_exploration_nodes_use_refutation_memory_and_preserve_pins(tmp_
         assert projection.causal_memory[0].status == "CONTRADICTED"
         assert len(projection.contradictions) == 1
         assert all(item.verification_status == "UNVERIFIED_ROLE_FINDING" for item in projection.evidence)
+    finally:
+        queue.close()
+        graph.close()
+
+
+def test_research_lane_stops_when_worker_proposes_protocol_for_independent_review(tmp_path, monkeypatch):
+    runtime, graph, queue = _runtime(tmp_path, max_agent_calls=4)
+    calls = []
+    monkeypatch.setattr(queue, "get_result", lambda _job_id: {
+        "result": {"protocol_draft": {"protocol_id": "frozen-by-core"}},
+    })
+
+    def completed_with_protocol(*, node_id, **_kwargs):
+        calls.append(node_id)
+        return {"job_id": "completed-proposal-job", "status": "EXPLORATION_COMPLETED"}
+
+    monkeypatch.setattr(runtime, "run_one", completed_with_protocol)
+    try:
+        result = runtime.run_campaign(
+            visible_paths=["README.md"], invoke=lambda *_a, **_k: {}, max_iterations=3,
+        )
+        assert result["status"] == "PROTOCOL_REVIEW_PENDING"
+        assert result["iterations_this_call"] == 1
+        assert len(calls) == 1
     finally:
         queue.close()
         graph.close()
@@ -692,9 +808,14 @@ def test_hypothesis_portfolio_rejects_action_not_bound_to_selected_candidate(tmp
 def test_completed_research_job_is_projected_after_runtime_restart_without_redelivery(tmp_path):
     runtime, graph, queue = _runtime(tmp_path)
     calls = []
+    frozen_snapshot_id = []
 
-    def model_reply(*_args, **_kwargs):
+    def model_reply(public_input, **_kwargs):
         calls.append("called")
+        assert (
+            f"Trusted frozen source_snapshot_id: {frozen_snapshot_id[0]}."
+            in public_input["instruction"]
+        )
         return {
             "next_experiment": "repeat with a matched control",
             "artifact_text": {"observation.txt": "observed once"},
@@ -703,6 +824,7 @@ def test_completed_research_job_is_projected_after_runtime_restart_without_redel
     try:
         invoke = make_researcher_invoke(model_reply)
         job = runtime.adapter.enqueue(node_id="explore", visible_paths=["README.md"])
+        frozen_snapshot_id.append(job["request"]["base_commit"])
         _manifest, _member, executor = _pinned_executor(
             queue, graph, "campaign-test", runtime.role_registry, job, invoke,
         )
