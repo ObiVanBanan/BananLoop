@@ -13,6 +13,7 @@ import sqlite3
 import subprocess
 import sys
 from collections import Counter
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,7 +21,7 @@ CASES = {
     "full": "shortest-valid-ci-l2-ece",
     "multi": "budgeted-imputation-mcar50",
     "rejection": "carps-star-discrepancy-subset-select",
-    "verifier": "sketched-newton-cov-estimator",
+    "verifier": "budgeted-imputation-mcar50",
 }
 ROLES = {"researcher", "independent_verifier", "optimizer", "integration_verifier"}
 SAFE_FIELDS = ("status", "failure_type", "failure_detail", "failure_site",
@@ -51,10 +52,10 @@ def git(checkout, *args):
 
 def read_db(path):
     """Read live SQLite state, including WAL; do not use immutable=1."""
-    calls, jobs, errors, timeline = [], [], [], []
+    calls, jobs, errors, timeline, integration = [], [], [], [], []
     try:
-        with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True,
-                             timeout=2) as db:
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True,
+                                     timeout=2)) as db:
             db.execute("PRAGMA query_only=ON")
             tables = {r[0] for r in db.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
@@ -71,6 +72,11 @@ def read_db(path):
                                                       "EVALUAT", "CHAMPION", "TERMINAL",
                                                       "REFLECT", "STRATEG", "RESEARCH")):
                             timeline.append({"seq": seq, "event": event})
+            if "evaluator_integration_evidence" in tables:
+                for cid, digest, decision in db.execute(
+                    "SELECT campaign_id,evidence_digest,decision FROM evaluator_integration_evidence"
+                ):
+                    integration.append({"campaign_id": cid, "digest": digest, "decision": decision})
             if {"worker_jobs", "worker_events"} <= tables:
                 role_join = ("LEFT JOIN team_role_call_jobs r ON r.job_id=j.job_id"
                              if "team_role_call_jobs" in tables else "")
@@ -92,7 +98,7 @@ def read_db(path):
     except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
         errors.append(type(exc).__name__)
     return {"db": str(path), "calls": calls, "jobs": jobs,
-            "timeline": timeline[-50:], "read_errors": errors}
+            "timeline": timeline[-50:], "integration": integration, "read_errors": errors}
 
 
 def diagnose(root, *, arm=None, state=None):
@@ -119,7 +125,7 @@ def diagnose(root, *, arm=None, state=None):
                 exploration = BananLoopFullBackend._read_json_object_from_output(path)
             except (OSError, ValueError):
                 pass
-    dbs = [read_db(p) for p in sorted(state.rglob("*.sqlite3"))
+    dbs = [read_db(p) for p in sorted(set(state.rglob("*.sqlite3")) | set(state.rglob("*.db")))
            if p.is_file() and not p.is_symlink()] if state.is_dir() else []
     calls = {}
     pending = []
@@ -133,8 +139,14 @@ def diagnose(root, *, arm=None, state=None):
         pending.extend(j for j in db["jobs"]
                        if j["state"] in {"UNKNOWN", "DISPATCHED", "LEASED"})
     role_counts = Counter(c["role_id"] for c in calls.values()
-                          if c["dispatched"] is True and c["status"] == "COMPLETED")
+                          if c["dispatched"] is True and c["status"] == "COMPLETED"
+                          and c["role_id"] in ROLES)
     child = result.get("child_campaign_id")
+    if not child:
+        children = [p.get("child_campaign_id") for p in exploration.get("optimization_pivot", [])
+                    if isinstance(p, dict) and p.get("status") == "BENCHMARK_AUTO_CHILD_CREATED"]
+        if len(children) == 1:
+            child = children[0]
     reports = []
     cli_failures = []
     for path in sorted(state.rglob("v2-optimization-*.json")) if state.is_dir() else []:
@@ -149,6 +161,10 @@ def diagnose(root, *, arm=None, state=None):
         comparison = {}
     decisions = Counter(e.get("decision") for e in report.get("integration_evidence", [])
                         if isinstance(e, dict) and isinstance(e.get("decision"), str))
+    durable_decisions = {e["digest"]: e["decision"] for d in dbs for e in d["integration"]
+                         if child and e["campaign_id"] == child}
+    if durable_decisions:
+        decisions = Counter(durable_decisions.values())
     artifact = result.get("final_artifact") or {}
     artifact_ok = isinstance(artifact, dict) and artifact.get("status") == "CAPTURED"
     if artifact_ok:
@@ -202,6 +218,8 @@ def diagnose(root, *, arm=None, state=None):
             logs[filename] = {"path": str(path), "bytes": path.stat().st_size}
     if launcher:
         stage = "TERMINAL"
+    elif read_object(root / "preflight-diagnostics.json").get("status") == "PREP_BLOCKED":
+        stage = "BLOCKED_PREFLIGHT"
     elif "bananloop-optimization.stdout" in logs:
         stage = "HARBOR_OPTIMIZATION"
     elif "harbor-preparation.stdout" in logs:
@@ -262,7 +280,7 @@ def run(args):
     harbor = args.harbor.expanduser().absolute()
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
     model = args.model
-    task_id = CASES[args.case]
+    task_id = args.task or CASES[args.case]
     selection = {"case": args.case, "task_id": task_id, "model": model,
                  "seconds": args.seconds, "source_sha": sha,
                  "mode": "REAL_PROVIDER_AND_PUBLIC_DEV", "automatic_retry": False}
@@ -277,7 +295,10 @@ def run(args):
             reasoning=args.reasoning, codex_version=version, candidate_source_sha=sha)
         digest = manifest["manifest_sha256"]
         runner._atomic_json(root / "manifest.json", manifest, replace=False)
-        pair = next(x for x in manifest["tasks"] if x["task"]["task_id"] == task_id)
+        pairs = [x for x in manifest["tasks"] if x["task"]["task_id"] == task_id]
+        if len(pairs) != 1:
+            raise ValueError("Selected task must be in the pinned ARE catalogue")
+        pair = pairs[0]
         arm_id = pair["pair_id"] + "-bananloop_full"
         offline = runner.offline_preflight(
             runtime_root=runtime, codex_auth_status="Logged in using ChatGPT",
@@ -319,6 +340,7 @@ def main():
     launch = sub.add_parser("run", help="explicitly start one real Full arm")
     launch.add_argument("--case", choices=CASES, required=True)
     launch.add_argument("--model", default="gpt-6-luna")
+    launch.add_argument("--task", help="override default with another pinned ARE task ID")
     launch.add_argument("--reasoning", default="medium", help="manifest label; runtime role policy remains authoritative")
     launch.add_argument("--runtime-root", type=Path, required=True)
     launch.add_argument("--harbor", type=Path, required=True)
