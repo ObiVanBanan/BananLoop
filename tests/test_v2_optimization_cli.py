@@ -3,6 +3,7 @@ from __future__ import annotations
 from bananloop.trusted_evaluator import TrustedEvaluatorError, TrustedPublicEvaluatorFailure
 from bananloop.v2_optimization_cli import (
     _aggregate_successful_request_usage, _initial_optimization_task_nodes,
+    _attach_request_usage,
     _public_evaluator_failure_detail,
 )
 from bananloop.v2_optimization_runtime import (
@@ -137,3 +138,25 @@ def test_followup_schedule_mutation_key_is_bounded_and_identity_specific():
     assert len(command_id) <= 200
     assert command_id == _iteration_schedule_command_id(candidate, receipt)
     assert command_id != _iteration_schedule_command_id(candidate, "b" * 64)
+
+
+
+def test_usage_summary_preserves_known_tokens_after_invalid_response():
+    report = {"request_history": {"optimizer": [
+        {"status": "COMPLETED", "dispatched": True, "request_id": "r1",
+         "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12}},
+        {"status": "FAILED", "dispatched": True, "request_id": "r2",
+         "usage": {"input_tokens": 20, "output_tokens": 3, "total_tokens": 23}},
+        {"status": "FAILED", "dispatched": True, "request_id": None, "usage": "UNKNOWN"},
+    ]}}
+    _attach_request_usage(report, spent=3)
+    assert report["usage"] == "UNKNOWN"
+    assert report["usage_summary"]["known_usage"] == {
+        "input_tokens": 30, "output_tokens": 5, "total_tokens": 35}
+    assert report["usage_summary"]["known_usage_requests"] == 2
+    assert report["usage_summary"]["unknown_usage_requests"] == 1
+    assert report["usage_summary"]["dispatched_requests"] == 3
+    report["request_history"]["optimizer"].pop()
+    _attach_request_usage(report, spent=2)
+    assert report["usage"]["total_tokens"] == 35
+    assert report["usage_summary"]["complete"] is True
