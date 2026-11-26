@@ -236,6 +236,8 @@ def diagnose(root, *, arm=None, state=None):
         "worker_diagnostics": safe_fields(result), "exploration_diagnostics": safe_fields(exploration),
         "optimization_cli_diagnostics": cli_failures,
         "harbor_bridge": bridge, "cleanup_status": launcher.get("cleanup_status", "UNKNOWN"),
+        "champion_recovery": result.get("champion_recovery"),
+        "usage": result.get("usage"),
         "role_completed_request_counts": dict(role_counts), "provider_receipts": list(calls.values()),
         "job_state_counts": dict(counts), "unresolved_jobs": pending,
         "database_evidence": [{"db": d["db"], "timeline": d["timeline"],
