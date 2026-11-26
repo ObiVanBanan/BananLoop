@@ -73,6 +73,56 @@ def _aggregate_successful_request_usage(
     return totals
 
 
+def _request_usage_summary(
+    request_history: dict[str, list[dict[str, Any]]], *, spent: int,
+) -> dict[str, Any]:
+    """Retain known provider usage independently of semantic or job success."""
+    totals = {key: 0 for key in ("input_tokens", "output_tokens", "total_tokens")}
+    known_fields = dict.fromkeys(totals, 0)
+    records = [item for history in request_history.values()
+               if isinstance(history, list) for item in history]
+    seen = set()
+    unknown = max(0, spent - len(records))
+    dispatched = known = 0
+    for record in records:
+        if not isinstance(record, dict) or record.get("dispatched") is not True:
+            unknown += 1
+            continue
+        rid = record.get("request_id")
+        if isinstance(rid, str) and rid:
+            if rid in seen:
+                unknown += 1
+                continue
+            seen.add(rid)
+        dispatched += 1
+        usage = record.get("usage")
+        if record.get("status") not in {"COMPLETED", "FAILED"} or not isinstance(usage, dict):
+            unknown += 1
+            continue
+        complete = True
+        for key in totals:
+            value = usage.get(key)
+            if type(value) is int and value >= 0:
+                totals[key] += value
+                known_fields[key] += 1
+            else:
+                complete = False
+        if complete:
+            known += 1
+        else:
+            unknown += 1
+    return {"known_usage": totals, "known_field_counts": known_fields,
+            "known_usage_requests": known, "unknown_usage_requests": unknown,
+            "dispatched_requests": dispatched, "attempted_calls": spent,
+            "complete": spent > 0 and len(records) == spent and known == spent and unknown == 0}
+
+
+def _attach_request_usage(report: dict[str, Any], *, spent: int) -> None:
+    summary = _request_usage_summary(report["request_history"], spent=spent)
+    report["usage_summary"] = summary
+    report["usage"] = summary["known_usage"] if summary["complete"] else "UNKNOWN"
+
+
 def _public_evaluator_failure_detail(exc: BaseException) -> str | None:
     """Return only a Core-allowlisted public evaluator code from an exception chain."""
     seen: set[int] = set()
@@ -821,9 +871,7 @@ def run_v2_optimize(args: Namespace, *,
                 },
                 "automatic_replay": False,
             })
-            result["usage"] = _aggregate_successful_request_usage(
-                result["request_history"], spent=spent,
-            )
+            _attach_request_usage(result, spent=spent)
             result = _close_completed_child_allocation(
                 result, spec=spec, database=database, registry=registry,
             )
@@ -841,6 +889,7 @@ def run_v2_optimize(args: Namespace, *,
                     for name, provider in providers.items()
                 },
             }
+            _attach_request_usage(report, spent=spent)
             report["report_path"] = _write_cli_report(
                 state_root, report, campaign_id=args.campaign_id,
             )
@@ -871,6 +920,7 @@ def run_v2_optimize(args: Namespace, *,
             diagnostics = safe_chatgpt_failure_diagnostics(exc)
             if diagnostics:
                 report["failure_diagnostics"] = diagnostics
+            _attach_request_usage(report, spent=spent)
             report["report_path"] = _write_cli_report(
                 state_root, report, campaign_id=args.campaign_id,
             )
