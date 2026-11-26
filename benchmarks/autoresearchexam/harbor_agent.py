@@ -865,6 +865,7 @@ class AREBananLoopOptimizationAgent(BaseAgent):
                 "live_model_called": report.get("live_model_called", "UNKNOWN"),
                 "provider_call_attempts": report.get("provider_call_attempts", "UNKNOWN"),
                 "usage": report.get("usage", "UNKNOWN"),
+                "usage_summary": report.get("usage_summary"),
                 "task_started_epoch": grader.started_epoch,
                 "task_deadline_epoch": grader.deadline_epoch,
                 "candidate_iterations_used": grader.candidate_iterations_used,
