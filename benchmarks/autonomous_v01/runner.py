@@ -1712,6 +1712,8 @@ class BananLoopFullBackend:
                     status = "LIMIT_EXHAUSTED"
                 elif bridge_receipt.get("public_submission_unknown"):
                     status = "INTERRUPTED_UNKNOWN"
+                elif bridge_receipt.get("bananloop_status") in {"DEADLINE_FINALIZED", "DEADLINE_NO_VERIFIED_CHAMPION"}:
+                    status = bridge_receipt["bananloop_status"]
                 elif bridge_receipt.get("bananloop_status") == "RUN_FAILED":
                     status = "OPTIMIZATION_FAILED"
         else:
@@ -1735,6 +1737,35 @@ class BananLoopFullBackend:
             if (not isinstance(champion, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", champion)
                     or report["baseline_candidate_delta"]["candidate_snapshot_id"] != champion):
                 return terminal("VERIFIED_CANDIDATE_ID_INVALID", harbor_bridge_receipt=bridge_receipt)
+        elif status == "DEADLINE_FINALIZED":
+            try:
+                report = read_json(child_root / "reports" / f"v2-optimization-{child_id}.json")
+                selected = report["champion"]
+                champion = selected["snapshot_id"]
+                if (report.get("status") != "DEADLINE_FINALIZED"
+                        or report.get("campaign_id") != child_id
+                        or report["baseline_candidate_delta"]["status"] != "VERIFIED"
+                        or report["baseline_candidate_delta"]["candidate_snapshot_id"] != champion
+                        or report["baseline_candidate_delta"]["tier"] != "dev"):
+                    raise ValueError("deadline-selected report scope mismatch")
+                database = child_root / "campaign.sqlite3"
+                if not database.is_file() or database.is_symlink():
+                    raise ValueError("deadline campaign database missing or unsafe")
+                with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
+                    row = conn.execute(
+                        "SELECT h.promoted_snapshot_id FROM champion_promotion_history h "
+                        "JOIN evaluator_integration_receipts v ON v.receipt_digest=h.integration_receipt_digest "
+                        "AND v.campaign_id=h.campaign_id AND v.candidate_snapshot_id=h.promoted_snapshot_id "
+                        "AND v.decision='PASS' WHERE h.campaign_id=? AND h.revision=? "
+                        "AND h.integration_receipt_digest=?",
+                        (child_id, selected["revision"], selected["integration_receipt_digest"]),
+                    ).fetchone()
+                    if not row or row[0] != champion:
+                        raise ValueError("deadline selection lacks durable promotion")
+                champion_diagnostics.update(lookup="BEST_VERIFIED_PROMOTION_FOUND",
+                                            selected_revision=selected["revision"])
+            except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
+                return terminal("VERIFIED_CANDIDATE_REPORT_MISSING", harbor_bridge_receipt=bridge_receipt)
         elif status != "COMPLETED":
             champion = _verified_champion_from_state(child_root, child_id,
                                                       diagnostics=champion_diagnostics)
@@ -1791,7 +1822,7 @@ class BananLoopFullBackend:
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
                 champion_diagnostics.update(export="FAILED", error_type=type(exc).__name__,
                                             error_detail=str(exc) if type(exc) is ValueError else None)
-                if completed_child:
+                if completed_child or status == "DEADLINE_FINALIZED":
                     return terminal("VERIFIED_CANDIDATE_SNAPSHOT_INVALID",
                                     harbor_bridge_receipt=bridge_receipt,
                                     champion_recovery=champion_diagnostics)
@@ -1800,7 +1831,7 @@ class BananLoopFullBackend:
             final_artifact = CodexDirectBackend.snapshot_final_artifacts(
                 task=task, repo=artifact_repo, arm_root=arm_root,
             )
-        if status == "COMPLETED" and final_artifact["status"] != "CAPTURED":
+        if status in {"COMPLETED", "DEADLINE_FINALIZED"} and final_artifact["status"] != "CAPTURED":
             status = "FAILED"
         return {"status": status, "exploration_status": explore_report.get("status"),
                 "model_turns_observed": observed_calls + optimization_calls,

@@ -9,6 +9,7 @@ def test_empty_archive_is_not_live_pass(tmp_path):
     result = diagnose(tmp_path)
     assert result["worker_status"] == "MISSING_OUTPUT"
     assert result["scenario_results"]["full"] == "NOT_PASSED"
+    assert result["scenario_results"]["deadline"] == "NOT_PASSED"
     assert result["scenario_results"]["multi"] == "NOT_PASSED"
     assert result["scenario_results"]["verifier"] == "NOT_OBSERVED"
 

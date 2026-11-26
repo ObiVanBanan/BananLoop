@@ -20,6 +20,7 @@ from pathlib import Path
 CASES = {
     "full": "shortest-valid-ci-l2-ece",
     "multi": "budgeted-imputation-mcar50",
+    "deadline": "budgeted-imputation-mcar50",
     "rejection": "carps-star-discrepancy-subset-select",
     "verifier": "budgeted-imputation-mcar50",
 }
@@ -240,7 +241,17 @@ def diagnose(root, *, arm=None, state=None):
     }
     # Rejection and UNKNOWN are not manufactured. They are observations, not
     # claims that the next prompt consumed memory or that recovery succeeded.
+    deadline_checks = {
+        **{k: v for k, v in full_checks.items()
+           if k not in {"worker_completed", "harbor_completed"}},
+        "worker_deadline_finalized": result.get("status") == "DEADLINE_FINALIZED",
+        "harbor_deadline_finalized": bridge.get("bananloop_status") == "DEADLINE_FINALIZED",
+        "selected_best_verified": report.get("selection_policy") == "BEST_VERIFIED_PUBLIC_DEV_PROMOTION"
+                                  and (result.get("champion_recovery") or {}).get("lookup")
+                                  == "BEST_VERIFIED_PROMOTION_FOUND",
+    }
     checkpoints = {
+        "deadline": "PASS" if all(deadline_checks.values()) else "NOT_PASSED",
         "full": "PASS" if all(full_checks.values()) else "NOT_PASSED",
         "multi": ("PASS" if all(full_checks.values()) and role_counts["optimizer"] >= 3
                   and sum(verifier_decisions.values()) >= 3 else "NOT_PASSED"),
@@ -284,7 +295,8 @@ def diagnose(root, *, arm=None, state=None):
         "job_state_counts": dict(counts), "unresolved_jobs": pending,
         "database_evidence": [{"db": d["db"], "timeline": d["timeline"],
                                "read_errors": d["read_errors"]} for d in dbs],
-        "comparison": comparison, "integration_decisions": dict(decisions),
+        "comparison": comparison, "deadline_checks": deadline_checks,
+        "integration_decisions": dict(decisions),
         "verifier_receipt_decisions": dict(verifier_decisions),
         "artifact_hashes_match": artifact_ok, "artifact_source": result.get("final_artifact_source"),
         "checks": full_checks, "scenario_results": checkpoints, "logs": logs,

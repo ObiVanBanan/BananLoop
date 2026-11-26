@@ -160,3 +160,12 @@ def test_usage_summary_preserves_known_tokens_after_invalid_response():
     _attach_request_usage(report, spent=2)
     assert report["usage"]["total_tokens"] == 35
     assert report["usage_summary"]["complete"] is True
+
+
+def test_deadline_admission_reserves_time_without_resetting_outer_deadline():
+    from bananloop.v2_optimization_cli import _deadline_stop_requested
+
+    assert not _deadline_stop_requested(None, 120, now=1000)
+    assert not _deadline_stop_requested(1241, 120, now=1000)
+    assert _deadline_stop_requested(1240, 120, now=1000)
+    assert _deadline_stop_requested(999, 120, now=1000)
