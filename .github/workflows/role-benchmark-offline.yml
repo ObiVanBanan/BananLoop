@@ -49,3 +49,4 @@ jobs:
           tests/test_benchmark_batches.py
           tests/test_sealed_meter_accounting.py
           tests/test_benchmark_export_roster.py
+          tests/test_benchmark_suite.py
