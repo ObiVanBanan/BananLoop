@@ -215,7 +215,7 @@ def build_full_optimization_runtime(
 def test_integration_verifier_prompt_matches_strict_check_array_contract():
     assert "JSON array of check-name strings" in INTEGRATION_VERIFIER_INSTRUCTIONS
     assert "never an object/map of names to booleans" in INTEGRATION_VERIFIER_INSTRUCTIONS
-    assert "diagnostics or return a JSON array of strings" in INTEGRATION_VERIFIER_INSTRUCTIONS
+    assert "diagnostics as a JSON array of strings" in INTEGRATION_VERIFIER_INSTRUCTIONS
     for name in (
         "candidate_identity", "protocol_identity", "evaluation_receipt",
         "budget_receipt", "artifact_integrity", "regression_policy",
