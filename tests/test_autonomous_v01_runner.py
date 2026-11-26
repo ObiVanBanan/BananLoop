@@ -827,3 +827,17 @@ def test_full_backend_closes_inherited_pipe_when_term_ignoring_child_remains():
             process.wait()
         if process.stdout is not None:
             process.stdout.close()
+
+
+
+def test_usage_ledger_preserves_known_partial_totals_and_unknown_event(tmp_path):
+    ledger = UsageLedger(tmp_path / "usage.sqlite3")
+    ledger.record("arm", "optimization", {
+        "model_turns_observed": 3, "usage": {"input_tokens": 30, "output_tokens": 5},
+        "usage_unknown": True,
+    })
+    report = ledger.summary()
+    assert report["input_tokens"] == 30
+    assert report["output_tokens"] == 5
+    assert report["model_turns_observed"] == 3
+    assert report["unknown_usage_events"] == 1
