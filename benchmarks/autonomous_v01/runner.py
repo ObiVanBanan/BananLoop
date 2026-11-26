@@ -1134,10 +1134,14 @@ class CodexDirectBackend:
                 "files": files, "violations": violations, "total_bytes": total_bytes}
 
 
-def _verified_champion_from_state(child_root: Path, child_id: str) -> str | None:
+def _verified_champion_from_state(child_root: Path, child_id: str,
+                                  *, diagnostics: dict[str, Any] | None = None) -> str | None:
     """Read a durable promotion linked to its exact PASS receipt."""
+    detail = diagnostics if diagnostics is not None else {}
     database = child_root / "campaign.sqlite3"
+    detail["database"] = str(database)
     if not database.is_file() or database.is_symlink():
+        detail["lookup"] = "DATABASE_MISSING_OR_UNSAFE"
         return None
     try:
         with closing(sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True, timeout=1)) as conn:
@@ -1153,8 +1157,23 @@ def _verified_champion_from_state(child_root: Path, child_id: str) -> str | None
                    WHERE state.id=1 AND state.campaign_id=?""",
                 (child_id,),
             ).fetchone()
-    except sqlite3.Error:
+            for table, label in (
+                ("champion_promotion_history", "promotion_count"),
+                ("evaluator_integration_receipts", "integration_receipt_count"),
+            ):
+                detail[label] = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE campaign_id=?", (child_id,)
+                ).fetchone()[0]
+            current = conn.execute(
+                "SELECT snapshot_id,revision FROM champion_state WHERE id=1 AND campaign_id=?",
+                (child_id,),
+            ).fetchone()
+            if current:
+                detail["current_snapshot_id"], detail["current_revision"] = current
+    except sqlite3.Error as exc:
+        detail.update(lookup="DATABASE_READ_FAILED", error_type=type(exc).__name__)
         return None
+    detail["lookup"] = "VERIFIED_PROMOTION_FOUND" if row else "NO_MATCHING_PASS_PROMOTION"
     return row[0] if row else None
 
 
@@ -1705,6 +1724,7 @@ class BananLoopFullBackend:
         child_root = state_dir / "campaigns" / child_id
         completed_child = bool(bridge_receipt and bridge_receipt.get("bananloop_status") == "ALL_NODES_COMPLETE")
         champion = None
+        champion_diagnostics: dict[str, Any] = {}
         if completed_child:
             from bananloop.v2_optimization_cli import _saved_completed_run_report
 
@@ -1715,11 +1735,13 @@ class BananLoopFullBackend:
             if (not isinstance(champion, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", champion)
                     or report["baseline_candidate_delta"]["candidate_snapshot_id"] != champion):
                 return terminal("VERIFIED_CANDIDATE_ID_INVALID", harbor_bridge_receipt=bridge_receipt)
-        elif status in {"TIMED_OUT", "OPTIMIZATION_FAILED", "INTERRUPTED_UNKNOWN", "LIMIT_EXHAUSTED"}:
-            champion = _verified_champion_from_state(child_root, child_id)
+        elif status != "COMPLETED":
+            champion = _verified_champion_from_state(child_root, child_id,
+                                                      diagnostics=champion_diagnostics)
         if isinstance(champion, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", champion):
             key = hashlib.sha256(champion.encode("ascii")).hexdigest()[:16]
             snapshot = child_root / "s" / child_id / key
+            champion_diagnostics.update(snapshot_id=champion, snapshot_path=str(snapshot))
             try:
                 if (snapshot.is_symlink() or not snapshot.is_dir()
                         or child_root.is_symlink()
@@ -1732,18 +1754,52 @@ class BananLoopFullBackend:
                 if revision != champion:
                     raise ValueError("verified snapshot HEAD differs from the recorded champion")
                 if subprocess.check_output(
-                    ["git", "-C", str(snapshot), "status", "--porcelain", "--untracked-files=all"],
+                    ["git", "-C", str(snapshot), "status", "--porcelain", "--untracked-files=no"],
                     stderr=subprocess.PIPE, timeout=15,
                 ).strip():
-                    raise ValueError("verified snapshot has uncommitted or untracked files")
-            except (OSError, ValueError, subprocess.SubprocessError):
-                if completed_child:
-                    return terminal("VERIFIED_CANDIDATE_SNAPSHOT_INVALID", harbor_bridge_receipt=bridge_receipt)
-            else:
+                    raise ValueError("verified snapshot has uncommitted tracked changes")
+                untracked = bool(subprocess.check_output(
+                    ["git", "-C", str(snapshot), "status", "--porcelain", "--untracked-files=all"],
+                    stderr=subprocess.PIPE, timeout=15,
+                ).strip())
+                champion_diagnostics["untracked_files_present"] = untracked
+                if untracked:
+                    # Evaluator-generated files must not contaminate the export.
+                    # Materialize only the exact, verified committed tree.
+                    with tempfile.TemporaryDirectory(prefix="verified-export-", dir=arm_root) as tmp:
+                        export = Path(tmp) / "snapshot"
+                        subprocess.run(["git", "clone", "--no-hardlinks", "--no-checkout",
+                                        "--quiet", str(snapshot), str(export)], check=True,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+                        subprocess.run(["git", "-C", str(export), "checkout", "--detach",
+                                        "--quiet", champion], check=True,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+                        exported = subprocess.check_output(
+                            ["git", "-C", str(export), "rev-parse", "--verify", "HEAD^{commit}"],
+                            stderr=subprocess.PIPE, text=True, timeout=15).strip()
+                        if exported != champion:
+                            raise ValueError("export HEAD differs from verified champion")
+                        final_artifact = CodexDirectBackend.snapshot_final_artifacts(
+                            task=task, repo=export, arm_root=arm_root,
+                        )
+                else:
+                    final_artifact = CodexDirectBackend.snapshot_final_artifacts(
+                        task=task, repo=snapshot, arm_root=arm_root,
+                    )
                 artifact_repo = snapshot
-        final_artifact = CodexDirectBackend.snapshot_final_artifacts(
-            task=task, repo=artifact_repo, arm_root=arm_root,
-        )
+                champion_diagnostics["export"] = final_artifact.get("status", "UNKNOWN")
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                champion_diagnostics.update(export="FAILED", error_type=type(exc).__name__,
+                                            error_detail=str(exc) if type(exc) is ValueError else None)
+                if completed_child:
+                    return terminal("VERIFIED_CANDIDATE_SNAPSHOT_INVALID",
+                                    harbor_bridge_receipt=bridge_receipt,
+                                    champion_recovery=champion_diagnostics)
+                final_artifact = {"status": "UNKNOWN", "files": []}
+        else:
+            final_artifact = CodexDirectBackend.snapshot_final_artifacts(
+                task=task, repo=artifact_repo, arm_root=arm_root,
+            )
         if status == "COMPLETED" and final_artifact["status"] != "CAPTURED":
             status = "FAILED"
         return {"status": status, "exploration_status": explore_report.get("status"),
@@ -1758,7 +1814,11 @@ class BananLoopFullBackend:
                     "bananloop": hashlib.sha256(bl_config_path.read_bytes()).hexdigest(),
                     "harbor": hashlib.sha256(harbor_config_path.read_bytes()).hexdigest(),
                 }, "final_artifact": final_artifact,
-                "final_artifact_source": "VERIFIED_CHAMPION" if artifact_repo != repo else "BASELINE",
+                "final_artifact_source": (
+                    "VERIFIED_CHAMPION" if artifact_repo != repo and final_artifact.get("status") == "CAPTURED"
+                    else "UNKNOWN" if champion is not None else "BASELINE"
+                ),
+                "champion_recovery": champion_diagnostics,
                 "harbor_bridge_receipt": bridge_receipt}
 
 
