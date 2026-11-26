@@ -31,6 +31,9 @@ from .scheduler import HybridScheduler, SchedulerPlan
 from .worker_queue import DurableWorkerQueue, WorkerBudgetError, WorkerQueueError
 
 
+SUPERVISOR_STALL_REASON = "Exploration stalled without a new milestone."
+
+
 class V2RuntimeError(RuntimeError):
     """The requested work is not an authorized v2 Exploration attempt."""
 
@@ -415,6 +418,56 @@ class V2ResearchRuntime:
             trusted_artifact_digests=trusted_artifact_digests,
         )
 
+    def supervision(self) -> dict[str, Any] | None:
+        """Project the frozen milestones from committed Exploration completions."""
+        spec = self.graph.campaign_spec()
+        if not isinstance(spec, ExplorationCampaignSpecV2) or spec.exploration_supervision is None:
+            return None
+        limit = spec.exploration_supervision.max_stalled_iterations
+        milestones = {"grounded_evidence": None, "protocol_handoff": None}
+        checkpoints = []
+        stalled = 0
+        for row in self.graph.conn.execute(
+            "SELECT seq,payload_json FROM events WHERE event_type='EXPLORATION_COMPLETED' ORDER BY seq"
+        ):
+            event = json.loads(row["payload_json"])
+            if event.get("human_decision_request") is not None:
+                continue
+            job_id = event["job_id"]
+            durable = self.queue.get_result(job_id)
+            if durable is None or durable["output_digest"] != event["output_digest"]:
+                raise V2RuntimeError("supervision checkpoint lacks matching durable worker evidence")
+            progress = []
+            if milestones["grounded_evidence"] is None and event.get("evidence_refs"):
+                progress.append("grounded_evidence")
+            if milestones["protocol_handoff"] is None and durable["result"].get("protocol_draft") is not None:
+                progress.append("protocol_handoff")
+            for milestone in progress:
+                milestones[milestone] = job_id
+            stalled = 0 if progress else stalled + 1
+            if progress:
+                decision, reason = "PROGRESS", "New frozen milestone reached."
+            elif stalled >= limit:
+                decision, reason = "STOP", SUPERVISOR_STALL_REASON
+            else:
+                decision, reason = "REPLAN_REQUIRED", "Use existing evidence to address the next unmet milestone."
+            checkpoints.append({
+                "event_cursor": row["seq"], "node_id": event["node_id"], "job_id": job_id,
+                "evidence_refs": event["evidence_refs"], "progress": progress,
+                "decision": decision, "reason": reason, "stalled_iterations": stalled,
+            })
+            if decision == "STOP" or milestones["protocol_handoff"] is not None:
+                break
+        return {
+            "goal": spec.goal,
+            "max_stalled_iterations": limit,
+            "agent_call_limit": spec.budget.max_agent_calls,
+            "stalled_iterations": stalled,
+            "reason": checkpoints[-1]["reason"] if checkpoints else "Awaiting first Exploration result.",
+            "milestones": milestones,
+            "checkpoints": checkpoints,
+        }
+
     def plan(self):
         spec = self.graph.campaign_spec()
         if not isinstance(spec, ExplorationCampaignSpecV2):
@@ -427,7 +480,18 @@ class V2ResearchRuntime:
         if control["state"] == "PAUSED":
             return SchedulerPlan((), "PAUSED", self.graph.graph_revision())
         if control["state"] == "STOPPED":
-            return SchedulerPlan((), "STOP_REQUESTED", self.graph.graph_revision())
+            status = (
+                "SUPERVISOR_STALLED"
+                if spec.exploration_supervision is not None and control["reason"] == SUPERVISOR_STALL_REASON
+                else "STOP_REQUESTED"
+            )
+            return SchedulerPlan((), status, self.graph.graph_revision())
+        supervision = self.supervision()
+        if supervision:
+            checkpoints = supervision["checkpoints"]
+            if checkpoints and checkpoints[-1]["decision"] == "STOP":
+                self.stop(reason=checkpoints[-1]["reason"])
+                return SchedulerPlan((), "SUPERVISOR_STALLED", self.graph.graph_revision())
         budget = BudgetLedger(self.queue.path)
         try:
             snapshot = budget.snapshot(self.campaign_id)
@@ -452,14 +516,26 @@ class V2ResearchRuntime:
                     if item.node_id == node_id and item.lane == "EVIDENCE_WORKER"
                     and item.phase == "EXPLORATION"]
         if not eligible:
-            if plan.reason in {"PAUSED", "STOP_REQUESTED"}:
+            if plan.reason in {"PAUSED", "STOP_REQUESTED", "SUPERVISOR_STALLED"}:
                 return {"status": plan.reason, "campaign_id": self.campaign_id}
             raise V2RuntimeError(
                 f"node {node_id!r} is not a schedulable v2 Exploration job; scheduler: {plan.reason}"
             )
         if not callable(invoke):
             raise V2RuntimeError("a pinned, tested model-invoke boundary is required")
-        job = self.adapter.enqueue(node_id=node_id, visible_paths=visible_paths)
+        guidance = None
+        supervision = self.supervision()
+        if supervision and supervision["checkpoints"]:
+            checkpoint = supervision["checkpoints"][-1]
+            if checkpoint["decision"] == "REPLAN_REQUIRED":
+                guidance = (
+                    "Supervisor checkpoint: prioritize a grounded evaluator protocol handoff. "
+                    "Use the existing public evidence and report a concrete blocker if the protocol "
+                    "cannot be drafted within the frozen goal and permissions."
+                )
+        job = self.adapter.enqueue(
+            node_id=node_id, visible_paths=visible_paths, supervisor_guidance=guidance,
+        )
         manifest_authority = TeamManifestAuthority(self.queue.path)
         try:
             spec = self.graph.campaign_spec()
@@ -521,8 +597,10 @@ class V2ResearchRuntime:
         if (isinstance(max_iterations, bool) or not isinstance(max_iterations, int)
                 or not 1 <= max_iterations <= 100):
             raise V2RuntimeError("max_iterations must be an integer from 1 to 100")
-        self.plan()  # Validate the persisted Full spec and pinned roles before any graph mutation.
+        plan = self.plan()  # Validate the persisted Full spec and pinned roles before any graph mutation.
         completed: list[dict[str, Any]] = []
+        if plan.reason == "SUPERVISOR_STALLED":
+            return self._finish_campaign_run(plan.reason, completed)
         pending = self._pending_human_decision()
         if pending is not None:
             return self._finish_campaign_run("PAUSED_NEEDS_INPUT", completed)
@@ -551,7 +629,7 @@ class V2ResearchRuntime:
                 return self._finish_campaign_run(status, completed)
             except WorkerQueueError:
                 current = self.plan()
-                if current.reason not in {"PAUSED", "STOP_REQUESTED"}:
+                if current.reason not in {"PAUSED", "STOP_REQUESTED", "SUPERVISOR_STALLED"}:
                     raise
                 return self._finish_campaign_run(current.reason, completed)
             except EvidenceAdapterError as exc:
@@ -574,6 +652,8 @@ class V2ResearchRuntime:
                     return self._finish_campaign_run("PROTOCOL_REVIEW_PENDING", completed)
             if result.get("human_decision_request") is not None:
                 return self._finish_campaign_run("PAUSED_NEEDS_INPUT", completed)
+            if self.supervision() and self.plan().reason == "SUPERVISOR_STALLED":
+                return self._finish_campaign_run("SUPERVISOR_STALLED", completed)
             self._recover_followups()
             if self._convergence_reason is not None:
                 return self._finish_campaign_run(
@@ -632,6 +712,11 @@ class V2ResearchRuntime:
             "graph_revision": snapshot["graph_revision"],
             "as_of": utc_now(),
         }
+        supervision = self.supervision()
+        if supervision is not None:
+            report["supervision"] = supervision
+            if status == "SUPERVISOR_STALLED":
+                report["stop_reason"] = supervision["checkpoints"][-1]["reason"]
         reports = self.state_root / "reports"
         reports.mkdir(parents=True, exist_ok=True)
         target = reports / f"v2-exploration-{self.campaign_id}.json"
@@ -651,6 +736,7 @@ class V2ResearchRuntime:
             "iterations_this_call": len(completed), "completed": completed,
             "graph_revision": snapshot["graph_revision"],
             "report_path": str(target),
+            **({"supervision": supervision} if supervision is not None else {}),
         }
 
     def _recover_followups(self) -> None:

@@ -956,6 +956,8 @@ class _CampaignSpecV2Base(BaseModel):
         data = handler(self)
         if data.get("evaluator_fixture_digest") is None:
             data.pop("evaluator_fixture_digest", None)
+        if data.get("exploration_supervision") is None:
+            data.pop("exploration_supervision", None)
         return data
 
     def approved_hash(self) -> str:
@@ -984,9 +986,18 @@ class _CampaignSpecV2Base(BaseModel):
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+class ExplorationSupervisionV2(BaseModel):
+    """Owner-approved limit for Exploration iterations without milestone progress."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_stalled_iterations: int = Field(strict=True, ge=2, le=100)
+
+
 class ExplorationCampaignSpecV2(_CampaignSpecV2Base):
     mode: Literal["EXPLORATION"]
     evaluation: None = None
+    exploration_supervision: ExplorationSupervisionV2 | None = None
 
 
 class OptimizationTaskV2(BaseModel):

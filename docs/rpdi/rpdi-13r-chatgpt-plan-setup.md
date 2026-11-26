@@ -65,6 +65,16 @@ bananloop v2 explore --repo . --state-dir /tmp/bananloop-v2-state \
   --read-path README.md --approve-up-to-calls 1
 ```
 
+For an Exploration campaign whose next milestone is an evaluator protocol
+proposal, set `--supervisor-stall-limit 2` on the initial request and keep
+that setting on resume. The frozen plan tracks the first grounded public
+evidence and the protocol draft handoff. When a completed iteration makes
+no new milestone progress, the next research request prioritizes the
+remaining handoff. Two consecutive stalled iterations stop the campaign
+with `SUPERVISOR_STALLED` and preserve the evidence and checkpoint reasons
+in the report. The option uses the existing call and iteration budgets.
+It leaves protocol approval to the independent verifier and pivot policy.
+
 The same stable request ID, goal, repo HEAD, paths, model and budget must be
 used to resume the campaign. The default total `--max-agent-calls 8` is split
 across four pinned roles: researcher, independent protocol verifier, optimizer,

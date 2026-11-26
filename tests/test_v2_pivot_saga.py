@@ -45,6 +45,11 @@ import urllib.request
 SHA = "a" * 64
 
 
+@pytest.fixture(autouse=True)
+def isolate_project_registry(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+
+
 def _spec_payload(repo: Path, *, mode: str, scope: AutonomyScopeV2, goal: str):
     return {
         "schema_version": 2,

@@ -610,7 +610,8 @@ def test_completed_pivot_child_finalizes_parent_from_frozen_approval_lineage(tmp
         parent_conn.close()
 
 
-def test_cli_entrypoint_creates_persisted_v2_campaign_without_auth(tmp_path):
+@pytest.mark.parametrize("stall_limit", [None, 2])
+def test_cli_entrypoint_creates_persisted_v2_campaign_without_auth(tmp_path, stall_limit):
     repo = _repo(tmp_path)
     command = [
         sys.executable, "-m", "bananloop.cli", "v2", "explore",
@@ -618,11 +619,19 @@ def test_cli_entrypoint_creates_persisted_v2_campaign_without_auth(tmp_path):
         "--request-id", "cli-entrypoint", "--goal", "Test a controlled toy question",
         "--read-path", "README.md",
     ]
+    if stall_limit is not None:
+        command.extend(["--supervisor-stall-limit", str(stall_limit)])
     result = subprocess.run(command, capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(result.stdout)
     assert payload["status"] == "READY_FOR_OWNER_APPROVAL"
     assert payload["profile"] == "FULL" and payload["live_model_called"] is False
+    if stall_limit is None:
+        assert "supervision" not in payload
+    else:
+        assert payload["supervision"]["max_stalled_iterations"] == stall_limit
+        assert payload["supervision"]["checkpoints"] == []
+        assert set(payload["supervision"]["milestones"]) == {"grounded_evidence", "protocol_handoff"}
     assert (tmp_path / "state" / "campaigns" / payload["campaign_id"] / "campaign.sqlite3").is_file()
 
 
@@ -677,7 +686,9 @@ def test_v2_cli_requires_exact_owner_call_approval_before_auth_or_inference(tmp_
     assert result["status"] == "READY_FOR_OWNER_APPROVAL"
 
 
-def test_v2_cli_live_allowance_uses_pinned_mock_transport_and_resumes(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("stall_limit", [None, 2])
+def test_v2_cli_live_allowance_uses_pinned_mock_transport_and_resumes(tmp_path, monkeypatch, capsys,
+                                                                  stall_limit):
     repo = _repo(tmp_path)
     state_dir = tmp_path / "state"
     calls = []
@@ -744,9 +755,9 @@ def test_v2_cli_live_allowance_uses_pinned_mock_transport_and_resumes(tmp_path, 
 
     monkeypatch.setattr("bananloop.v2_campaign_cli.ChatGPTPlanAuth", MockAuth)
     monkeypatch.setattr("bananloop.v2_campaign_cli.ChatGPTPlanResearcher", MockResearcher)
-    args = _args(repo, state_dir, approve_up_to_calls=1)
+    args = _args(repo, state_dir, approve_up_to_calls=1, max_agent_calls=8, max_iterations=5)
 
-    def invoke_cli():
+    def invoke_cli(expected_exit=0):
         argv = [
             "v2", "explore", "--repo", args.repo, "--state-dir", args.state_dir,
             "--request-id", args.request_id, "--goal", args.goal,
@@ -755,9 +766,11 @@ def test_v2_cli_live_allowance_uses_pinned_mock_transport_and_resumes(tmp_path, 
             str(args.max_iterations), "--approve-up-to-calls", str(args.approve_up_to_calls),
             "--timeout-seconds", str(args.timeout_seconds), "--model", args.model,
         ]
+        if stall_limit is not None:
+            argv.extend(["--supervisor-stall-limit", str(stall_limit)])
         parsed = parser().parse_args(argv)
         assert parsed.func is cmd_v2_explore
-        assert parsed.func(parsed) == 0
+        assert parsed.func(parsed) == expected_exit
         return json.loads(capsys.readouterr().out)
 
     first = invoke_cli()
@@ -771,6 +784,23 @@ def test_v2_cli_live_allowance_uses_pinned_mock_transport_and_resumes(tmp_path, 
     assert len(calls) == 2
     assert calls[1]["role_context"]["public_task"].startswith("test a distinct condition")
 
+    if stall_limit is not None:
+        stopped = invoke_cli(expected_exit=2)
+        assert stopped["status"] == "SUPERVISOR_STALLED"
+        assert len(calls) == 3
+        assert "Supervisor checkpoint:" in calls[2]["role_context"]["public_task"]
+        assert json.loads(Path(stopped["report_path"]).read_text())["supervision"] == stopped["supervision"]
+
+        def unexpected_auth():
+            pytest.fail("a stopped campaign must exit before auth initialization")
+
+        monkeypatch.setattr("bananloop.v2_campaign_cli.ChatGPTPlanAuth", unexpected_auth)
+        reopened = invoke_cli(expected_exit=2)
+        assert reopened["status"] == "SUPERVISOR_STALLED"
+        assert reopened["supervision"] == stopped["supervision"]
+        assert reopened["live_model_called"] is False
+        assert len(calls) == 3
+
     registry = CampaignRegistry(repo, paths=RuntimePaths.for_repo(repo, state_dir))
     _entry, state_root, _ = registry.reserve(args.goal, args.request_id)
     queue = registry.worker_queue()
@@ -779,12 +809,12 @@ def test_v2_cli_live_allowance_uses_pinned_mock_transport_and_resumes(tmp_path, 
             "SELECT COUNT(*) FROM worker_results WHERE job_id IN "
             "(SELECT job_id FROM worker_jobs WHERE campaign_id=?)",
             (first["campaign_id"],),
-        ).fetchone()[0] == 2
+        ).fetchone()[0] == len(calls)
         assert queue.conn.execute(
             "SELECT COUNT(*) FROM worker_events e JOIN worker_jobs j USING(job_id) "
             "WHERE j.campaign_id=? AND e.event_type='JOB_COMPLETED'",
             (first["campaign_id"],),
-        ).fetchone()[0] == 2
+        ).fetchone()[0] == len(calls)
     finally:
         queue.close()
 
