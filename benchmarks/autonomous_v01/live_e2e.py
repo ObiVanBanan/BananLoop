@@ -271,6 +271,8 @@ def diagnose(root, *, arm=None, state=None):
             logs[filename] = {"path": str(path), "bytes": path.stat().st_size}
     if launcher:
         stage = "TERMINAL"
+    elif read_object(root / "review-attestation-preflight.json").get("status") == "BLOCKED":
+        stage = "BLOCKED_PROTOCOL_ATTESTATION"
     elif read_object(root / "preflight-diagnostics.json").get("status") == "PREP_BLOCKED":
         stage = "BLOCKED_PREFLIGHT"
     elif "bananloop-optimization.stdout" in logs:
@@ -365,6 +367,28 @@ def run(args):
         if offline.get("status") != "READY_NON_RPDI_DIAGNOSTIC" or offline.get("blockers"):
             print(json.dumps({"status": "BLOCKED_PREFLIGHT", "blockers": offline.get("blockers")}))
             return 2
+        if task_id == "budgeted-imputation-mcar50":
+            from .imputation_review_attestation import prepare_review_runtime
+
+            try:
+                runtime = prepare_review_runtime(
+                    checkout=checkout, runtime_root=runtime, output_root=root,
+                    catalogue=runner.read_json(runner.CATALOGUE), task=pairs[0]["task"],
+                )
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+                runner._atomic_json(root / "review-attestation-preflight.json", {
+                    "status": "BLOCKED", "error_type": type(exc).__name__,
+                    "reason": str(exc) if type(exc) is ValueError else "local audit failed",
+                }, replace=False)
+                print("Local DEV image audit failed; no model calls authorized.", flush=True)
+                return 2
+            runner._atomic_json(root / "review-attestation-preflight.json", {
+                "status": "VERIFIED_LOCAL_PUBLIC_FILE_MATCH",
+                "attestation_sha256": hashlib.sha256(
+                    (root / "protocol-review-attestation.json").read_bytes()
+                ).hexdigest(),
+                "runtime_root": str(runtime),
+            }, replace=False)
         create_bound_preflight(
             manifest_path=root / "manifest.json", expected_manifest_sha256=digest,
             candidate_checkout=checkout, candidate_source_sha=sha, task_id=task_id,

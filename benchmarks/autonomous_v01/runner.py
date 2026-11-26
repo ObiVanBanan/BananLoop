@@ -1492,9 +1492,10 @@ class BananLoopFullBackend:
         }.get(adapter["adapter_id"])
         if repeatability is not None:
             goal += f" The pinned public protocol requires repeatability_runs={repeatability}."
-        goal += (" The final comparison uses the same frozen public DEV scorer, task data and "
-                 "image for BananLoop Full and the archived Codex Direct candidates. "
-                 "Evidence is limited to public DEV.")
+        goal += (" This arm is a single-system public DEV evaluation against its frozen "
+                 "baseline. Any paired Codex comparison is a separate owner-side evaluation. "
+                 "No archived Codex candidate, comparative equivalence, or blind score "
+                 "is established by this protocol.")
         if adapter["adapter_id"] == "carps-public-v1":
             goal += (" Set timeout_seconds=300 for the CARPS protocol. The eight Docker "
                      "evaluations share a 180-second panel budget, with remaining time for cleanup.")
@@ -1504,18 +1505,13 @@ class BananLoopFullBackend:
                      "check on each draw. Outer repeats compare result digests exactly, so "
                      "the protocol must keep repeatability_runs=1 for this timing aggregate.")
         if adapter["adapter_id"] == "imputation-public-v2":
-            evidence_path = ROOT / "benchmarks/autoresearchexam/imputation-public-dev-image-evidence.json"
-            evidence = read_json(evidence_path)
-            if evidence["image_id"] != task["public_dev_image_id"]:
-                raise ValueError("imputation DEV image evidence does not match the catalogue")
-            goal += (" Set timeout_seconds=1500 and repeatability_runs=1 for the public "
-                     "imputation aggregate. The 42 cells can each take up to 30 seconds. "
-                     "The Harbor callback passes the approved protocol timeout or the remaining "
-                     "campaign time, whichever is shorter, to the Docker DEV runner. "
-                     "The local image audit compared every /app file byte-for-byte with the "
-                     "public environment/app build inputs. The runner uses only the six "
-                     "data/dev NPZ files and their manifest. The audit measured these hashes: "
-                     + json.dumps(evidence, sort_keys=True, separators=(",", ":")))
+            goal += (" Use timeout_seconds=1500 as the protocol's per-evaluation ceiling "
+                     "and repeatability_runs=1 for the 42-cell public imputation aggregate. "
+                     "The absolute arm deadline is unchanged and the actual Docker DEV "
+                     "runner is bounded by the remaining campaign time. The ceiling is "
+                     "not an expected duration or a grant of additional time. "
+                     "Assess local image identity and public file evidence from pinned review "
+                     "material, not from claims in this goal.")
         if adapter["adapter_id"] == "sopcc-public-v1":
             goal += " The pinned SOPCC protocol requires timeout_seconds=3600."
         if adapter.get("adapter_id") == "sketched-newton-public-v1":
