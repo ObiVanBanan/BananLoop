@@ -349,6 +349,8 @@ def inspect_harbor_result(job_dir: Path, *, task_id: str, overlay_path: str,
         "bananloop_status": status,
         "model_calls": calls,
         "token_usage": usage,
+        **({"usage_summary": bananloop["usage_summary"]}
+           if isinstance(bananloop.get("usage_summary"), dict) else {}),
         "public_submission_count": len(public_submissions),
         "public_submission_unknown": any(
             isinstance(item, dict) and item.get("state") == "SUBMISSION_UNKNOWN"
