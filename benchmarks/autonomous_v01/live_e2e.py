@@ -26,7 +26,7 @@ CASES = {
 ROLES = {"researcher", "independent_verifier", "optimizer", "integration_verifier"}
 SAFE_FIELDS = ("status", "failure_type", "failure_detail", "failure_site",
                "failure_diagnostics", "error_type", "stage", "failure_stage",
-               "schema_categories", "exception_type", "error_class")
+               "schema_categories", "exception_type", "error_class", "termination_reason")
 
 
 def read_object(path):
@@ -52,7 +52,7 @@ def git(checkout, *args):
 
 def read_db(path):
     """Read live SQLite state, including WAL; do not use immutable=1."""
-    calls, jobs, errors, timeline, integration = [], [], [], [], []
+    calls, jobs, errors, timeline, integration, verifier_receipts = [], [], [], [], [], []
     try:
         with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True,
                                      timeout=2)) as db:
@@ -77,6 +77,11 @@ def read_db(path):
                     "SELECT campaign_id,evidence_digest,decision FROM evaluator_integration_evidence"
                 ):
                     integration.append({"campaign_id": cid, "digest": digest, "decision": decision})
+            if "evaluator_integration_receipts" in tables:
+                for cid, digest, decision in db.execute(
+                    "SELECT campaign_id,receipt_digest,decision FROM evaluator_integration_receipts"
+                ):
+                    verifier_receipts.append({"campaign_id": cid, "digest": digest, "decision": decision})
             if {"worker_jobs", "worker_events"} <= tables:
                 role_join = ("LEFT JOIN team_role_call_jobs r ON r.job_id=j.job_id"
                              if "team_role_call_jobs" in tables else "")
@@ -98,7 +103,27 @@ def read_db(path):
     except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
         errors.append(type(exc).__name__)
     return {"db": str(path), "calls": calls, "jobs": jobs,
-            "timeline": timeline[-50:], "integration": integration, "read_errors": errors}
+            "timeline": timeline[-50:], "integration": integration,
+            "verifier_receipts": verifier_receipts, "read_errors": errors}
+
+
+def _runtime_dirs(state):
+    """Enumerate actual registry/campaign roots, never candidate Git snapshots."""
+    if not state.is_dir() or state.is_symlink():
+        return []
+    roots = {state}
+    for path in state.iterdir():
+        if (path.is_dir() and not path.is_symlink()
+                and ((path / "campaigns").is_dir()
+                     or (path / "campaign-registry.sqlite3").is_file())):
+            roots.add(path)
+    for root in tuple(roots):
+        campaigns = root / "campaigns"
+        if campaigns.is_dir() and not campaigns.is_symlink():
+            roots.update(p for p in campaigns.iterdir()
+                         if p.is_dir() and not p.is_symlink()
+                         and (p / "campaign.sqlite3").is_file())
+    return sorted(roots)
 
 
 def diagnose(root, *, arm=None, state=None):
@@ -125,8 +150,12 @@ def diagnose(root, *, arm=None, state=None):
                 exploration = BananLoopFullBackend._read_json_object_from_output(path)
             except (OSError, ValueError):
                 pass
-    dbs = [read_db(p) for p in sorted(set(state.rglob("*.sqlite3")) | set(state.rglob("*.db")))
-           if p.is_file() and not p.is_symlink()] if state.is_dir() else []
+    runtime_dirs = _runtime_dirs(state)
+    dbs = [read_db(p) for p in sorted({
+        p for folder in runtime_dirs for p in folder.iterdir()
+        if p.name in {"campaign.sqlite3", "campaign-registry.sqlite3", "registry.sqlite3"}
+        and p.is_file() and not p.is_symlink()
+    })]
     calls = {}
     pending = []
     counts = Counter()
@@ -149,14 +178,23 @@ def diagnose(root, *, arm=None, state=None):
             child = children[0]
     reports = []
     cli_failures = []
-    for path in sorted(state.rglob("v2-optimization-*.json")) if state.is_dir() else []:
+    recovered_comparisons = []
+    for path in sorted(p for folder in runtime_dirs
+                       if not (folder / "reports").is_symlink()
+                       for p in (folder / "reports").glob("v2-optimization-*.json")):
         value = read_object(path)
         if path.name.startswith("v2-optimization-cli-"):
-            cli_failures.append({"path": str(path), **safe_fields(value)})
+            if child and value.get("campaign_id") == child:
+                cli_failures.append({"path": str(path), **safe_fields(value)})
+                comparison = value.get("baseline_candidate_delta")
+                if isinstance(comparison, dict):
+                    recovered_comparisons.append(comparison)
         elif value.get("campaign_id") == child and child:
             reports.append(value)
     report = reports[-1] if len(reports) == 1 else {}
-    comparison = report.get("baseline_candidate_delta") or {}
+    comparison = report.get("baseline_candidate_delta") or (
+        recovered_comparisons[0] if len(recovered_comparisons) == 1 else {}
+    )
     if not isinstance(comparison, dict):
         comparison = {}
     decisions = Counter(e.get("decision") for e in report.get("integration_evidence", [])
@@ -165,6 +203,10 @@ def diagnose(root, *, arm=None, state=None):
                          if child and e["campaign_id"] == child}
     if durable_decisions:
         decisions = Counter(durable_decisions.values())
+    verifier_decisions = Counter({
+        e["digest"]: e["decision"] for d in dbs for e in d["verifier_receipts"]
+        if child and e["campaign_id"] == child
+    }.values())
     artifact = result.get("final_artifact") or {}
     artifact_ok = isinstance(artifact, dict) and artifact.get("status") == "CAPTURED"
     if artifact_ok:
@@ -189,7 +231,7 @@ def diagnose(root, *, arm=None, state=None):
         "four_roles_with_completed_request_ids": ROLES <= set(role_counts),
         "dev_comparison_verified": comparison.get("status") == "VERIFIED"
                                    and comparison.get("tier") == "dev",
-        "independent_integration_pass": decisions["PASS"] > 0,
+        "independent_integration_pass": verifier_decisions["PASS"] > 0,
         "artifact_hashes_match": artifact_ok,
         "verified_champion_archived": result.get("final_artifact_source") == "VERIFIED_CHAMPION",
         "cleanup_verified": launcher.get("cleanup_status") == "CLEANED",
@@ -201,7 +243,7 @@ def diagnose(root, *, arm=None, state=None):
     checkpoints = {
         "full": "PASS" if all(full_checks.values()) else "NOT_PASSED",
         "multi": ("PASS" if all(full_checks.values()) and role_counts["optimizer"] >= 3
-                  and sum(decisions.values()) >= 3 else "NOT_PASSED"),
+                  and sum(verifier_decisions.values()) >= 3 else "NOT_PASSED"),
         "rejection": "OBSERVED_REVIEW_REQUIRED" if decisions["FAIL"] or decisions["REJECT"]
                      else "NOT_OBSERVED",
         "verifier": "OBSERVED_REVIEW_REQUIRED" if any(
@@ -243,6 +285,7 @@ def diagnose(root, *, arm=None, state=None):
         "database_evidence": [{"db": d["db"], "timeline": d["timeline"],
                                "read_errors": d["read_errors"]} for d in dbs],
         "comparison": comparison, "integration_decisions": dict(decisions),
+        "verifier_receipt_decisions": dict(verifier_decisions),
         "artifact_hashes_match": artifact_ok, "artifact_source": result.get("final_artifact_source"),
         "checks": full_checks, "scenario_results": checkpoints, "logs": logs,
         "limit": "Public DEV diagnostic; semantic reflection, recovery and model provenance need trace review. No blind/HOLDOUT claim.",
