@@ -123,6 +123,22 @@ def _attach_request_usage(report: dict[str, Any], *, spent: int) -> None:
     report["usage"] = summary["known_usage"] if summary["complete"] else "UNKNOWN"
 
 
+def _provider_timeout_in_chain(exc: BaseException) -> bool:
+    """Distinguish a transport timeout from an evaluator or local Git timeout."""
+    from .provider_diagnostics import safe_failure_site
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, TimeoutError):
+            site = safe_failure_site(current)
+            if site and site.startswith("bananloop.chatgpt_responses:"):
+                return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _recover_failed_dev_comparison(runtime: V2OptimizationRuntime) -> dict[str, Any]:
     """Recover a verified public DEV comparison from the last durable promotion.
 
@@ -961,6 +977,8 @@ def run_v2_optimize(args: Namespace, *,
             diagnostics = safe_chatgpt_failure_diagnostics(exc)
             if diagnostics:
                 report["failure_diagnostics"] = diagnostics
+            if _provider_timeout_in_chain(exc):
+                report["termination_reason"] = "PROVIDER_TIMEOUT"
             if benchmark_time_only and spec.benchmark_integration_tier == "dev":
                 report["baseline_candidate_delta"] = _recover_failed_dev_comparison(runtime)
             _attach_request_usage(report, spent=spent)
