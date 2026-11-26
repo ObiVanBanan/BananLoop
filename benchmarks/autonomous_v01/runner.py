@@ -522,14 +522,17 @@ class UsageLedger:
                 stats["unknown_usage_events"] += int(unknown)
                 summary["unknown_usage_events"] += int(unknown)
                 continue
+            unknown_event = event.get("usage_unknown") is True
             for key in ("input_tokens", "output_tokens"):
                 value = usage.get(key)
                 if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                     stats[key] += value
                     summary[key] += value
                 else:
-                    stats["unknown_usage_events"] += 1
-                    summary["unknown_usage_events"] += 1
+                    unknown_event = True
+            if unknown_event:
+                stats["unknown_usage_events"] += 1
+                summary["unknown_usage_events"] += 1
         return summary
 
 
@@ -1666,10 +1669,20 @@ class BananLoopFullBackend:
                     or any(type(raw_usage.get(key)) is not int
                            for key in ("input_tokens", "output_tokens"))
                 )
+                usage_summary = bridge_receipt.get("usage_summary")
+                if isinstance(usage_summary, dict):
+                    known = usage_summary.get("known_usage")
+                    if isinstance(known, dict):
+                        raw_usage = known
+                    optimization_usage_unknown = (
+                        optimization_usage_unknown or usage_summary.get("complete") is not True
+                    )
                 usage.record(arm_id, "bananloop_full_optimization", {
                     "model_turns_observed": optimization_calls,
                     "usage": raw_usage if isinstance(raw_usage, dict) else None,
                     "usage_unknown": optimization_usage_unknown,
+                    **({"provider_usage_summary": usage_summary}
+                       if isinstance(usage_summary, dict) else {}),
                 })
                 usage_unknown = usage_unknown or optimization_usage_unknown
                 if bridge_receipt.get("bananloop_status") == "DEADLINE_EXCEEDED":
