@@ -1535,8 +1535,10 @@ def _build_protocol_review_material(
                if protocol.execution_backend_id is not None else "")
             + ("This protocol's sole declared tier is DEV. Assess its fitness for a public DEV "
                "diagnostic only; it makes no claim of validation, holdout, or independently "
-               "blinded benchmark evidence. Confirm the two systems use the same frozen DEV "
-               "contract when assessing fair comparison. "
+               "blinded benchmark evidence. For a single-system protocol, assess the frozen "
+               "baseline/candidate scope without requiring an unrelated Codex artifact. "
+               "If comparative fairness is claimed, require actual evidence for both systems "
+               "and do not infer equivalence from a goal or from shared source alone. "
                if tuple(tier.tier for tier in protocol.tiers) == ("dev",) else "")
             + "The public_attestations are bounded, digest-verified claims from cited public benchmark "
             "documentation; treat their content as evidence about the published contract, not as "

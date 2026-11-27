@@ -91,12 +91,13 @@ OPTIMIZER_INSTRUCTIONS = (
 )
 INTEGRATION_VERIFIER_INSTRUCTIONS = (
     "You are an independent reviewer of trusted Core evaluation evidence. Return one strict "
-    "JSON object with candidate_snapshot_id, protocol_digest, decision (PASS or FAIL), "
-    "checks, and optional diagnostics. The checks value MUST be a JSON array of check-name "
+    "JSON object with decision (PASS or FAIL), "
+    "checks, and diagnostics. Do not copy candidate_snapshot_id or protocol_digest; Core binds those. "
+    "The checks value MUST be a JSON array of check-name "
     "strings, never an object/map of names to booleans. Use only these exact names: "
     "candidate_identity, protocol_identity, evaluation_receipt, budget_receipt, "
     "artifact_integrity, regression_policy. A PASS requires all six names in that array. "
-    "Omit diagnostics or return a JSON array of strings, never a single string. "
+    "Return diagnostics as a JSON array of strings (empty if none), never a single string. "
     "Review only the supplied public evidence summary. If any supplied Core check failed, "
     "or evidence is insufficient, return FAIL and explain why. Never invent evidence or scores."
 )
@@ -429,7 +430,24 @@ class ChatGPTPlanResearcher:
             ],
             "store": False, "stream": True,
         }
-        if requires_protocol_intent:
+        if self.protocol == "v2-integration-verifier-one-shot-v1":
+            body["text"] = {"format": {
+                "type": "json_schema", "name": "bananloop_integration_decision_v1",
+                "strict": True, "schema": {
+                    "type": "object", "additionalProperties": False,
+                    "required": ["decision", "checks", "diagnostics"],
+                    "properties": {
+                        "decision": {"type": "string", "enum": ["PASS", "FAIL"]},
+                        "checks": {"type": "array", "minItems": 1, "maxItems": 6,
+                                   "items": {"type": "string", "enum": [
+                                       "candidate_identity", "protocol_identity", "evaluation_receipt",
+                                       "budget_receipt", "artifact_integrity", "regression_policy"]}},
+                        "diagnostics": {"type": "array", "maxItems": 32,
+                                        "items": {"type": "string"}},
+                    },
+                },
+            }}
+        elif requires_protocol_intent:
             body["text"] = _fixture_research_response_format()
         elif "registered_experiments" in public_input:
             registered = public_input["registered_experiments"]
@@ -566,12 +584,27 @@ class ChatGPTPlanIntegrationVerifier(ChatGPTPlanResearcher):
             "candidate_snapshot_id": request["candidate_snapshot_id"],
             "protocol_digest": request["protocol_digest"],
         }
-        return self(
+        # The immutable job request, not the LLM, owns receipt identity.
+        import re
+
+        scope = {name: request[name] for name in ("candidate_snapshot_id", "protocol_digest")}
+        if (not isinstance(scope["candidate_snapshot_id"], str)
+                or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", scope["candidate_snapshot_id"])
+                or not isinstance(scope["protocol_digest"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", scope["protocol_digest"])):
+            raise SIWCError("integration verifier request has invalid Core scope")
+        output = self(
             public_input, provider=pin.get("provider"), model=model,
             model_version=pin.get("model_version"), prompt_digest=pin.get("prompt_digest"),
             max_model_tokens=int(pin.get("max_model_tokens") or 1),
             timeout_seconds=pin.get("timeout_seconds"),
         )
+        # Legacy exact echoes remain compatible; a conflicting explicit scope
+        # is rejected, never silently accepted as a decision for this job.
+        for name, value in scope.items():
+            if name in output and output[name] != value:
+                raise SIWCError("integration verifier returned a conflicting Core scope")
+        return {**output, **scope}
 
 
 class ChatGPTPlanProtocolVerifier(ChatGPTPlanResearcher):

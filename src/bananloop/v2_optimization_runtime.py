@@ -1223,6 +1223,7 @@ class V2OptimizationRuntime:
         max_steps: int = 20,
         benchmark_time_only: bool = False,
         worker_id: str = "v2-optimization",
+        deadline_stop_requested: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Run scheduler-selected Optimization/evaluation/verification steps.
 
@@ -1249,6 +1250,16 @@ class V2OptimizationRuntime:
                     return self._finish_campaign_run(result)
                 return self._finish_campaign_run({
                     "status": plan.reason, "campaign_id": self.campaign_id,
+                    "steps_this_call": len(steps), "steps": steps,
+                    "graph_revision": plan.graph_revision,
+                })
+            if deadline_stop_requested is not None and deadline_stop_requested():
+                spec = self.graph.campaign_spec()
+                if not benchmark_time_only or spec.benchmark_integration_tier != "dev":
+                    raise V2OptimizationError("deadline finalization requires time-only public DEV")
+                self.stop(reason="benchmark deadline finalization reserve")
+                return self._finish_campaign_run({
+                    "status": "DEADLINE_FINALIZED", "campaign_id": self.campaign_id,
                     "steps_this_call": len(steps), "steps": steps,
                     "graph_revision": plan.graph_revision,
                 })
@@ -1402,7 +1413,14 @@ class V2OptimizationRuntime:
             ).current()
         except ChampionPromotionError:
             champion_report = None
+        current_champion = champion_report
+        if result["status"] == "DEADLINE_FINALIZED":
+            champion_report = self._best_verified_dev_promotion()
+            if champion_report is None:
+                result["status"] = "DEADLINE_NO_VERIFIED_CHAMPION"
         baseline_candidate_delta = self._build_baseline_candidate_delta(champion_report)
+        if result["status"] == "DEADLINE_FINALIZED" and baseline_candidate_delta.get("status") != "VERIFIED":
+            raise V2OptimizationError("deadline-selected promotion lacks verified DEV comparison")
         evaluation_receipts = []
         for row in self.graph.conn.execute(
             "SELECT receipt_digest,candidate_snapshot_id,receipt_json "
@@ -1439,6 +1457,9 @@ class V2OptimizationRuntime:
             "provider_calls": provider_calls,
             "parent": spec.parent.model_dump(mode="json") if spec.parent else None,
             "champion": champion_report,
+            **({"current_champion": current_champion,
+                "selection_policy": "BEST_VERIFIED_PUBLIC_DEV_PROMOTION"}
+               if result["status"].startswith("DEADLINE_") else {}),
             "verification": [step for step in result.get("steps", [])
                              if str(step.get("status", "")).startswith("INDEPENDENT_VERIFICATION_")],
             "limitations": [
@@ -1620,6 +1641,63 @@ class V2OptimizationRuntime:
         return {**result, "report_path": str(target),
                 "report_markdown_path": str(markdown_target)}
 
+    def _best_verified_dev_promotion(self) -> dict[str, Any] | None:
+        """Rank only durable promoted PASS candidates, without new evaluation.
+
+        The integration policy compares with the original baseline. The most
+        recent promotion is therefore not necessarily the best measured one.
+        """
+        from .trusted_evaluator import EvaluatorRunReceiptV1
+
+        spec = self.graph.campaign_spec()
+        authority = EvaluatorProtocolAuthority(self.graph.conn)
+        proposal, _ = authority.approved_protocol(spec.evaluation.approval_digest)
+        protocol = proposal.protocol
+        if spec.benchmark_integration_tier != "dev" or tuple(t.tier for t in protocol.tiers) != ("dev",):
+            raise V2OptimizationError("deadline selection requires frozen DEV-only scope")
+        rows = self.graph.conn.execute(
+            "SELECT h.revision,h.promoted_snapshot_id,h.integration_receipt_digest,"
+            "e.candidate_run_receipt_digest,e.baseline_run_receipt_digest "
+            "FROM champion_promotion_history h JOIN evaluator_integration_receipts v "
+            "ON v.receipt_digest=h.integration_receipt_digest AND v.campaign_id=h.campaign_id "
+            "AND v.candidate_snapshot_id=h.promoted_snapshot_id AND v.decision='PASS' "
+            "JOIN evaluator_integration_evidence e ON e.evidence_digest=v.core_evidence_digest "
+            "WHERE h.campaign_id=? ORDER BY h.revision", (self.campaign_id,),
+        ).fetchall()
+        best = None
+        best_rank = None
+        for revision, candidate, integration_digest, candidate_digest, baseline_digest in rows:
+            authority.require_integration_decision(
+                integration_digest, decision="PASS", campaign_id=self.campaign_id,
+                approval_digest=spec.evaluation.approval_digest, spec_hash=spec.approved_hash(),
+                source_snapshot_id=protocol.source_snapshot_id,
+                protocol_digest=protocol.content_digest(), candidate_snapshot_id=candidate,
+            )
+            receipt = authority.require_run_receipt(
+                candidate_digest, campaign_id=self.campaign_id, spec_hash=spec.approved_hash(),
+                approval_digest=spec.evaluation.approval_digest,
+                protocol_digest=protocol.content_digest(), candidate_snapshot_id=candidate,
+            )
+            baseline = authority.require_run_receipt(
+                baseline_digest, campaign_id=self.campaign_id, spec_hash=spec.approved_hash(),
+                approval_digest=spec.evaluation.approval_digest,
+                protocol_digest=protocol.content_digest(), candidate_snapshot_id=protocol.source_snapshot_id,
+            )
+            if (not isinstance(receipt, EvaluatorRunReceiptV1) or receipt.tier != "dev"
+                    or baseline.tier != "dev"
+                    or receipt.tier_manifest_sha256 != baseline.tier_manifest_sha256
+                    or receipt.case_count != baseline.case_count):
+                raise V2OptimizationError("deadline promotion has inconsistent DEV scope")
+            metric = self.trusted_evaluator.public_dev_metric_summary(receipt)
+            rank = metric["value"] if protocol.direction == "MAXIMIZE" else -metric["value"]
+            if best_rank is None or rank > best_rank:
+                best_rank = rank
+                best = {"campaign_id": self.campaign_id, "snapshot_id": candidate,
+                        "revision": revision, "candidate_run_receipt_digest": candidate_digest,
+                        "baseline_run_receipt_digest": baseline_digest,
+                        "integration_receipt_digest": integration_digest}
+        return best
+
     def _build_baseline_candidate_delta(self, champion_report: dict[str, Any] | None) -> dict[str, Any]:
         """Build an owner-only comparison using the frozen integration tier."""
         spec = self.graph.campaign_spec()
@@ -1658,9 +1736,13 @@ class V2OptimizationRuntime:
             if receipt.tier == integration_tier:
                 receipts.append(receipt)
         baseline = next((item for item in reversed(receipts)
-                         if item.candidate_snapshot_id == protocol.source_snapshot_id), None)
+                         if item.candidate_snapshot_id == protocol.source_snapshot_id
+                         and (not champion_report.get("baseline_run_receipt_digest")
+                              or item.receipt_digest == champion_report["baseline_run_receipt_digest"])), None)
         candidate = next((item for item in reversed(receipts)
-                          if item.candidate_snapshot_id == champion_id), None)
+                          if item.candidate_snapshot_id == champion_id
+                          and (not champion_report.get("candidate_run_receipt_digest")
+                               or item.receipt_digest == champion_report["candidate_run_receipt_digest"])), None)
         if baseline is None or candidate is None:
             missing = []
             if baseline is None:

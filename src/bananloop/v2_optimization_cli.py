@@ -73,6 +73,113 @@ def _aggregate_successful_request_usage(
     return totals
 
 
+def _request_usage_summary(
+    request_history: dict[str, list[dict[str, Any]]], *, spent: int,
+) -> dict[str, Any]:
+    """Retain known provider usage independently of semantic or job success."""
+    totals = {key: 0 for key in ("input_tokens", "output_tokens", "total_tokens")}
+    known_fields = dict.fromkeys(totals, 0)
+    records = [item for history in request_history.values()
+               if isinstance(history, list) for item in history]
+    seen = set()
+    unknown = max(0, spent - len(records))
+    dispatched = known = 0
+    for record in records:
+        if not isinstance(record, dict) or record.get("dispatched") is not True:
+            unknown += 1
+            continue
+        rid = record.get("request_id")
+        if isinstance(rid, str) and rid:
+            if rid in seen:
+                unknown += 1
+                continue
+            seen.add(rid)
+        dispatched += 1
+        usage = record.get("usage")
+        if record.get("status") not in {"COMPLETED", "FAILED"} or not isinstance(usage, dict):
+            unknown += 1
+            continue
+        complete = True
+        for key in totals:
+            value = usage.get(key)
+            if type(value) is int and value >= 0:
+                totals[key] += value
+                known_fields[key] += 1
+            else:
+                complete = False
+        if complete:
+            known += 1
+        else:
+            unknown += 1
+    return {"known_usage": totals, "known_field_counts": known_fields,
+            "known_usage_requests": known, "unknown_usage_requests": unknown,
+            "dispatched_requests": dispatched, "attempted_calls": spent,
+            "complete": spent > 0 and len(records) == spent and known == spent and unknown == 0}
+
+
+def _attach_request_usage(report: dict[str, Any], *, spent: int) -> None:
+    summary = _request_usage_summary(report["request_history"], spent=spent)
+    report["usage_summary"] = summary
+    report["usage"] = summary["known_usage"] if summary["complete"] else "UNKNOWN"
+
+
+def _provider_timeout_in_chain(exc: BaseException) -> bool:
+    """Distinguish a transport timeout from an evaluator or local Git timeout."""
+    from .provider_diagnostics import safe_failure_site
+
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, TimeoutError):
+            site = safe_failure_site(current)
+            if site and site.startswith("bananloop.chatgpt_responses:"):
+                return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _recover_failed_dev_comparison(runtime: V2OptimizationRuntime) -> dict[str, Any]:
+    """Recover a verified public DEV comparison from the last durable promotion.
+
+    This does not schedule an evaluator, replay a model request, or complete
+    the campaign. In particular a timed-out verifier stays UNKNOWN.
+    """
+    from .champion_promotion import ChampionPromotionService
+
+    incomplete = {"status": "INCOMPLETE", "tier": "dev", "comparison_table": []}
+    try:
+        spec = runtime.graph.campaign_spec()
+        if spec.benchmark_integration_tier != "dev":
+            return {**incomplete, "reason": "not a public DEV campaign"}
+        authority = EvaluatorProtocolAuthority(runtime.graph.conn)
+        champion = ChampionPromotionService(runtime.graph.conn, authority).current()
+        row = runtime.graph.conn.execute(
+            "SELECT integration_receipt_digest FROM champion_promotion_history "
+            "WHERE campaign_id=? AND revision=? AND promoted_snapshot_id=?",
+            (runtime.campaign_id, champion["revision"], champion["snapshot_id"]),
+        ).fetchone()
+        if row is None:
+            return {**incomplete, "reason": "no durable Champion promotion"}
+        proposal, _ = authority.approved_protocol(spec.evaluation.approval_digest)
+        authority.require_integration_decision(
+            row[0], decision="PASS", campaign_id=runtime.campaign_id,
+            approval_digest=spec.evaluation.approval_digest,
+            spec_hash=spec.approved_hash(),
+            source_snapshot_id=proposal.protocol.source_snapshot_id,
+            protocol_digest=proposal.protocol.content_digest(),
+            candidate_snapshot_id=champion["snapshot_id"],
+        )
+        comparison = runtime._build_baseline_candidate_delta(champion)
+        return {**comparison, "source": "DURABLE_PRE_FAILURE_CHAMPION",
+                "campaign_completed": False, "champion_revision": champion["revision"]}
+    except Exception as exc:
+        # Keep the original run failure visible even if recovery fails.
+        from .provider_diagnostics import safe_failure_site
+        return {**incomplete, "reason": "durable comparison recovery failed",
+                "error_type": type(exc).__name__, "failure_site": safe_failure_site(exc)}
+
+
 def _public_evaluator_failure_detail(exc: BaseException) -> str | None:
     """Return only a Core-allowlisted public evaluator code from an exception chain."""
     seen: set[int] = set()
@@ -85,6 +192,19 @@ def _public_evaluator_failure_detail(exc: BaseException) -> str | None:
                 return detail
         current = current.__cause__ or current.__context__
     return None
+
+
+# Keep time for the owner report, Harbor shutdown and exact Git export.
+# This is an admission reserve, not a second or extended campaign deadline.
+DEADLINE_FINALIZATION_RESERVE_SECONDS = 120
+
+
+def _deadline_stop_requested(deadline_epoch: float | None, model_timeout: int,
+                             *, now: float | None = None) -> bool:
+    if deadline_epoch is None:
+        return False
+    current = time.time() if now is None else now
+    return deadline_epoch - current <= DEADLINE_FINALIZATION_RESERVE_SECONDS + model_timeout
 
 
 def _task_request_timeout(deadline_epoch: float | None, ceiling: int,
@@ -144,8 +264,12 @@ def _mark_optimization_complete(database: Path, spec: OptimizationCampaignSpecV2
     """Record terminal campaign state only after the scheduler reports completion."""
     from .lock import CampaignLock
 
-    if report.get("status") != "ALL_NODES_COMPLETE":
-        raise V2OptimizationCLIError("only a fully completed optimization can become terminal")
+    scheduler_status = report.get("status")
+    if scheduler_status not in {"ALL_NODES_COMPLETE", "DEADLINE_FINALIZED", "DEADLINE_NO_VERIFIED_CHAMPION"}:
+        raise V2OptimizationCLIError("only a completed or deadline-finalized optimization can become terminal")
+    terminal_status = "GOAL_MET" if scheduler_status == "ALL_NODES_COMPLETE" else "STOPPED"
+    if terminal_status == "STOPPED" and spec.benchmark_integration_tier != "dev":
+        raise V2OptimizationCLIError("deadline finalization requires public DEV")
     report_digest = hashlib.sha256(json.dumps(
         report, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
     ).encode("utf-8")).hexdigest()
@@ -158,18 +282,18 @@ def _mark_optimization_complete(database: Path, spec: OptimizationCampaignSpecV2
         row = conn.execute("SELECT spec_hash,status FROM campaigns WHERE id=1").fetchone()
         if row is None or row[0] != spec.approved_hash():
             raise V2OptimizationCLIError("campaign identity changed before terminal recording")
-        if row[1] == "GOAL_MET":
+        if row[1] == terminal_status:
             conn.commit()
             return
         if row[1] not in {"READY", "RUNNING"}:
-            raise V2OptimizationCLIError("campaign cannot enter GOAL_MET from its current state")
+            raise V2OptimizationCLIError("campaign cannot enter terminal state from its current state")
         now = utc_now()
-        conn.execute("UPDATE campaigns SET status='GOAL_MET',updated_at=? WHERE id=1", (now,))
+        conn.execute("UPDATE campaigns SET status=?,updated_at=? WHERE id=1", (terminal_status, now))
         conn.execute(
             "INSERT INTO events(event_type,payload_json,created_at) VALUES(?,?,?)",
             ("V2_CAMPAIGN_TERMINAL", json.dumps({
                 "campaign_id": report.get("campaign_id"),
-                "spec_hash": spec.approved_hash(), "status": "GOAL_MET",
+                "spec_hash": spec.approved_hash(), "status": terminal_status,
                 "scheduler_status": report["status"], "report_digest": report_digest,
             }, sort_keys=True, separators=(",", ":")), now),
         )
@@ -187,15 +311,16 @@ def _mark_optimization_complete(database: Path, spec: OptimizationCampaignSpecV2
 def _close_completed_child_allocation(result: dict[str, Any], *,
                                       spec: OptimizationCampaignSpecV2,
                                       database: Path, registry: CampaignRegistry) -> dict[str, Any]:
-    if result.get("status") != "ALL_NODES_COMPLETE":
+    if result.get("status") not in {"ALL_NODES_COMPLETE", "DEADLINE_FINALIZED", "DEADLINE_NO_VERIFIED_CHAMPION"}:
         return result
+    terminal_status = "GOAL_MET" if result["status"] == "ALL_NODES_COMPLETE" else "STOPPED"
     _mark_optimization_complete(database, spec, result)
     allocation_closed = False
     if spec.parent is not None:
         settlement_ledger = BudgetLedger(registry.path)
         try:
             settlement_ledger.close_child(
-                spec.parent.allocation_id, terminal_status="GOAL_MET",
+                spec.parent.allocation_id, terminal_status=terminal_status,
             )
         finally:
             settlement_ledger.close()
@@ -203,7 +328,7 @@ def _close_completed_child_allocation(result: dict[str, Any], *,
         result = _mark_parent_campaign_complete(
             result, spec=spec, database=database, registry=registry,
         )
-    result["campaign_terminal_status"] = "GOAL_MET"
+    result["campaign_terminal_status"] = terminal_status
     result["child_allocation_closed"] = allocation_closed
     return result
 
@@ -214,8 +339,10 @@ def _mark_parent_campaign_complete(result: dict[str, Any], *,
                                    registry: CampaignRegistry) -> dict[str, Any]:
     """Finalize the parent after its authorized child and evaluator handoff complete."""
     parent_ref = spec.parent
-    if parent_ref is None or result.get("status") != "ALL_NODES_COMPLETE":
+    scheduler_status = result.get("status")
+    if parent_ref is None or scheduler_status not in {"ALL_NODES_COMPLETE", "DEADLINE_FINALIZED", "DEADLINE_NO_VERIFIED_CHAMPION"}:
         return result
+    terminal_status = "GOAL_MET" if scheduler_status == "ALL_NODES_COMPLETE" else "STOPPED"
     if not (parent_ref.parent_spec_hash and parent_ref.pivot_decision_id
             and parent_ref.pivot_proposal_id and parent_ref.pivot_proposal_digest
             and parent_ref.protocol_handoff_digest):
@@ -240,7 +367,7 @@ def _mark_parent_campaign_complete(result: dict[str, Any], *,
     if (not isinstance(final_report, dict)
             or final_report.get("campaign_id") != parent_ref.parent_campaign_id
             or final_report.get("optimization_campaign_id") != child_id
-            or final_report.get("status") != "ALL_NODES_COMPLETE"):
+            or final_report.get("status") != scheduler_status):
         raise V2OptimizationCLIError("parent final report does not prove this completed optimization")
 
     if not database.is_file() or database.is_symlink():
@@ -261,7 +388,7 @@ def _mark_parent_campaign_complete(result: dict[str, Any], *,
     exploration = final_report.get("exploration_report")
     review = exploration.get("protocol_review", {}) if isinstance(exploration, dict) else {}
     if (child is None or child["spec_hash"] != spec.approved_hash()
-            or child["status"] != "GOAL_MET"
+            or child["status"] != terminal_status
             or handoff is None or handoff["handoff_digest"] != parent_ref.protocol_handoff_digest
             or handoff["child_spec_hash"] != spec.approved_hash()
             or handoff["approval_digest"] != review.get("approval_digest")):
@@ -316,25 +443,25 @@ def _mark_parent_campaign_complete(result: dict[str, Any], *,
                     or decision["decision"] != "approve" or decision["status"] != "APPROVED"):
                 raise V2OptimizationCLIError("parent owner approval does not match frozen child lineage")
             allowed_status = "PAUSED_NEEDS_INPUT"
-        if campaign["status"] not in {allowed_status, "GOAL_MET"}:
-            raise V2OptimizationCLIError("parent campaign cannot enter GOAL_MET from its current state")
-        if campaign["status"] != "GOAL_MET":
+        if campaign["status"] not in {allowed_status, terminal_status}:
+            raise V2OptimizationCLIError("parent campaign cannot enter terminal state from its current state")
+        if campaign["status"] != terminal_status:
             now = utc_now()
-            final_report["campaign_terminal_status"] = "GOAL_MET"
+            final_report["campaign_terminal_status"] = terminal_status
             final_report["terminalized_at"] = now
             digest = hashlib.sha256(json.dumps(
                 final_report, sort_keys=True, separators=(",", ":"),
                 ensure_ascii=False, allow_nan=False,
             ).encode("utf-8")).hexdigest()
             conn.execute(
-                "UPDATE campaigns SET status='GOAL_MET',updated_at=? WHERE id=1", (now,),
+                "UPDATE campaigns SET status=?,updated_at=? WHERE id=1", (terminal_status, now),
             )
             conn.execute(
                 "INSERT INTO events(event_type,payload_json,created_at) VALUES(?,?,?)",
                 ("V2_CAMPAIGN_TERMINAL", json.dumps({
                     "campaign_id": parent_ref.parent_campaign_id,
                     "spec_hash": parent_ref.parent_spec_hash,
-                    "status": "GOAL_MET", "scheduler_status": "ALL_NODES_COMPLETE",
+                    "status": terminal_status, "scheduler_status": scheduler_status,
                     "child_campaign_id": child_id, "report_digest": digest,
                 }, sort_keys=True, separators=(",", ":")), now),
             )
@@ -343,7 +470,7 @@ def _mark_parent_campaign_complete(result: dict[str, Any], *,
                 "SELECT created_at FROM events WHERE event_type='V2_CAMPAIGN_TERMINAL' "
                 "ORDER BY seq DESC LIMIT 1",
             ).fetchone()
-            final_report["campaign_terminal_status"] = "GOAL_MET"
+            final_report["campaign_terminal_status"] = terminal_status
             final_report.setdefault(
                 "terminalized_at", terminal_event["created_at"] if terminal_event else utc_now(),
             )
@@ -364,7 +491,7 @@ def _mark_parent_campaign_complete(result: dict[str, Any], *,
         report_path.with_suffix(".md"),
         _render_final_report_markdown(final_report).encode("utf-8"),
     )
-    result["parent_campaign_terminal_status"] = "GOAL_MET"
+    result["parent_campaign_terminal_status"] = terminal_status
     result["final_report_path"] = str(report_path)
     result["final_report_markdown_path"] = str(report_path.with_suffix(".md"))
     return result
@@ -800,6 +927,10 @@ def run_v2_optimize(args: Namespace, *,
                 integration_verifier_executor=verifier_executor,
                 max_steps=args.max_steps, benchmark_time_only=benchmark_time_only,
                 worker_id="v2-optimization-cli",
+                deadline_stop_requested=(
+                    lambda: _deadline_stop_requested(task_deadline_epoch, args.timeout_seconds)
+                ) if benchmark_time_only and spec.benchmark_integration_tier == "dev"
+                    and task_deadline_epoch is not None else None,
             )
             if benchmark_time_only and (
                 result.get("status") in {"STEP_LIMIT", "BUDGET_EXHAUSTED"}
@@ -821,9 +952,7 @@ def run_v2_optimize(args: Namespace, *,
                 },
                 "automatic_replay": False,
             })
-            result["usage"] = _aggregate_successful_request_usage(
-                result["request_history"], spent=spent,
-            )
+            _attach_request_usage(result, spent=spent)
             result = _close_completed_child_allocation(
                 result, spec=spec, database=database, registry=registry,
             )
@@ -841,6 +970,7 @@ def run_v2_optimize(args: Namespace, *,
                     for name, provider in providers.items()
                 },
             }
+            _attach_request_usage(report, spent=spent)
             report["report_path"] = _write_cli_report(
                 state_root, report, campaign_id=args.campaign_id,
             )
@@ -871,6 +1001,11 @@ def run_v2_optimize(args: Namespace, *,
             diagnostics = safe_chatgpt_failure_diagnostics(exc)
             if diagnostics:
                 report["failure_diagnostics"] = diagnostics
+            if _provider_timeout_in_chain(exc):
+                report["termination_reason"] = "PROVIDER_TIMEOUT"
+            if benchmark_time_only and spec.benchmark_integration_tier == "dev":
+                report["baseline_candidate_delta"] = _recover_failed_dev_comparison(runtime)
+            _attach_request_usage(report, spent=spent)
             report["report_path"] = _write_cli_report(
                 state_root, report, campaign_id=args.campaign_id,
             )

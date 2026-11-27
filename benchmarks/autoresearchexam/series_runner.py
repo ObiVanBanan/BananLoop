@@ -327,7 +327,8 @@ def inspect_harbor_result(job_dir: Path, *, task_id: str, overlay_path: str,
         raise ValueError(f"BananLoop bridge reported terminal failure ({status})")
     if status not in {"ALL_NODES_COMPLETE", "STEP_LIMIT", "ITERATION_LIMIT",
                       "DEADLINE_EXCEEDED", "CONVERGED_REPEATED_EXPERIMENT", "COMPLETED",
-                      "LIMIT_EXHAUSTED", "RUN_FAILED"}:
+                      "LIMIT_EXHAUSTED", "RUN_FAILED", "DEADLINE_FINALIZED",
+                      "DEADLINE_NO_VERIFIED_CHAMPION"}:
         raise ValueError("BananLoop bridge returned an unrecognized terminal status")
     calls = bananloop.get("provider_call_attempts")
     if type(calls) is not int or calls < 0:
@@ -349,6 +350,8 @@ def inspect_harbor_result(job_dir: Path, *, task_id: str, overlay_path: str,
         "bananloop_status": status,
         "model_calls": calls,
         "token_usage": usage,
+        **({"usage_summary": bananloop["usage_summary"]}
+           if isinstance(bananloop.get("usage_summary"), dict) else {}),
         "public_submission_count": len(public_submissions),
         "public_submission_unknown": any(
             isinstance(item, dict) and item.get("state") == "SUBMISSION_UNKNOWN"

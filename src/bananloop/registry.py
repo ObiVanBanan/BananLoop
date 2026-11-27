@@ -7,10 +7,14 @@ import sqlite3
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 from .contracts import RuntimePaths, utc_now
 from .lock import CampaignLock
+
+if TYPE_CHECKING:
+    from .budget_ledger import BudgetLedger
+    from .worker_queue import DurableWorkerQueue
 
 
 class RegistryError(RuntimeError):

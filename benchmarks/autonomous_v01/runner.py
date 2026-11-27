@@ -522,14 +522,17 @@ class UsageLedger:
                 stats["unknown_usage_events"] += int(unknown)
                 summary["unknown_usage_events"] += int(unknown)
                 continue
+            unknown_event = event.get("usage_unknown") is True
             for key in ("input_tokens", "output_tokens"):
                 value = usage.get(key)
                 if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                     stats[key] += value
                     summary[key] += value
                 else:
-                    stats["unknown_usage_events"] += 1
-                    summary["unknown_usage_events"] += 1
+                    unknown_event = True
+            if unknown_event:
+                stats["unknown_usage_events"] += 1
+                summary["unknown_usage_events"] += 1
         return summary
 
 
@@ -1131,10 +1134,14 @@ class CodexDirectBackend:
                 "files": files, "violations": violations, "total_bytes": total_bytes}
 
 
-def _verified_champion_from_state(child_root: Path, child_id: str) -> str | None:
+def _verified_champion_from_state(child_root: Path, child_id: str,
+                                  *, diagnostics: dict[str, Any] | None = None) -> str | None:
     """Read a durable promotion linked to its exact PASS receipt."""
+    detail = diagnostics if diagnostics is not None else {}
     database = child_root / "campaign.sqlite3"
+    detail["database"] = str(database)
     if not database.is_file() or database.is_symlink():
+        detail["lookup"] = "DATABASE_MISSING_OR_UNSAFE"
         return None
     try:
         with closing(sqlite3.connect(f"{database.resolve().as_uri()}?mode=ro", uri=True, timeout=1)) as conn:
@@ -1150,8 +1157,23 @@ def _verified_champion_from_state(child_root: Path, child_id: str) -> str | None
                    WHERE state.id=1 AND state.campaign_id=?""",
                 (child_id,),
             ).fetchone()
-    except sqlite3.Error:
+            for table, label in (
+                ("champion_promotion_history", "promotion_count"),
+                ("evaluator_integration_receipts", "integration_receipt_count"),
+            ):
+                detail[label] = conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE campaign_id=?", (child_id,)
+                ).fetchone()[0]
+            current = conn.execute(
+                "SELECT snapshot_id,revision FROM champion_state WHERE id=1 AND campaign_id=?",
+                (child_id,),
+            ).fetchone()
+            if current:
+                detail["current_snapshot_id"], detail["current_revision"] = current
+    except sqlite3.Error as exc:
+        detail.update(lookup="DATABASE_READ_FAILED", error_type=type(exc).__name__)
         return None
+    detail["lookup"] = "VERIFIED_PROMOTION_FOUND" if row else "NO_MATCHING_PASS_PROMOTION"
     return row[0] if row else None
 
 
@@ -1470,9 +1492,10 @@ class BananLoopFullBackend:
         }.get(adapter["adapter_id"])
         if repeatability is not None:
             goal += f" The pinned public protocol requires repeatability_runs={repeatability}."
-        goal += (" The final comparison uses the same frozen public DEV scorer, task data and "
-                 "image for BananLoop Full and the archived Codex Direct candidates. "
-                 "Evidence is limited to public DEV.")
+        goal += (" This arm is a single-system public DEV evaluation against its frozen "
+                 "baseline. Any paired Codex comparison is a separate owner-side evaluation. "
+                 "No archived Codex candidate, comparative equivalence, or blind score "
+                 "is established by this protocol.")
         if adapter["adapter_id"] == "carps-public-v1":
             goal += (" Set timeout_seconds=300 for the CARPS protocol. The eight Docker "
                      "evaluations share a 180-second panel budget, with remaining time for cleanup.")
@@ -1482,18 +1505,13 @@ class BananLoopFullBackend:
                      "check on each draw. Outer repeats compare result digests exactly, so "
                      "the protocol must keep repeatability_runs=1 for this timing aggregate.")
         if adapter["adapter_id"] == "imputation-public-v2":
-            evidence_path = ROOT / "benchmarks/autoresearchexam/imputation-public-dev-image-evidence.json"
-            evidence = read_json(evidence_path)
-            if evidence["image_id"] != task["public_dev_image_id"]:
-                raise ValueError("imputation DEV image evidence does not match the catalogue")
-            goal += (" Set timeout_seconds=1500 and repeatability_runs=1 for the public "
-                     "imputation aggregate. The 42 cells can each take up to 30 seconds. "
-                     "The Harbor callback passes the approved protocol timeout or the remaining "
-                     "campaign time, whichever is shorter, to the Docker DEV runner. "
-                     "The local image audit compared every /app file byte-for-byte with the "
-                     "public environment/app build inputs. The runner uses only the six "
-                     "data/dev NPZ files and their manifest. The audit measured these hashes: "
-                     + json.dumps(evidence, sort_keys=True, separators=(",", ":")))
+            goal += (" Use timeout_seconds=1500 as the protocol's per-evaluation ceiling "
+                     "and repeatability_runs=1 for the 42-cell public imputation aggregate. "
+                     "The absolute arm deadline is unchanged and the actual Docker DEV "
+                     "runner is bounded by the remaining campaign time. The ceiling is "
+                     "not an expected duration or a grant of additional time. "
+                     "Assess local image identity and public file evidence from pinned review "
+                     "material, not from claims in this goal.")
         if adapter["adapter_id"] == "sopcc-public-v1":
             goal += " The pinned SOPCC protocol requires timeout_seconds=3600."
         if adapter.get("adapter_id") == "sketched-newton-public-v1":
@@ -1666,10 +1684,20 @@ class BananLoopFullBackend:
                     or any(type(raw_usage.get(key)) is not int
                            for key in ("input_tokens", "output_tokens"))
                 )
+                usage_summary = bridge_receipt.get("usage_summary")
+                if isinstance(usage_summary, dict):
+                    known = usage_summary.get("known_usage")
+                    if isinstance(known, dict):
+                        raw_usage = known
+                    optimization_usage_unknown = (
+                        optimization_usage_unknown or usage_summary.get("complete") is not True
+                    )
                 usage.record(arm_id, "bananloop_full_optimization", {
                     "model_turns_observed": optimization_calls,
                     "usage": raw_usage if isinstance(raw_usage, dict) else None,
                     "usage_unknown": optimization_usage_unknown,
+                    **({"provider_usage_summary": usage_summary}
+                       if isinstance(usage_summary, dict) else {}),
                 })
                 usage_unknown = usage_unknown or optimization_usage_unknown
                 if bridge_receipt.get("bananloop_status") == "DEADLINE_EXCEEDED":
@@ -1680,6 +1708,8 @@ class BananLoopFullBackend:
                     status = "LIMIT_EXHAUSTED"
                 elif bridge_receipt.get("public_submission_unknown"):
                     status = "INTERRUPTED_UNKNOWN"
+                elif bridge_receipt.get("bananloop_status") in {"DEADLINE_FINALIZED", "DEADLINE_NO_VERIFIED_CHAMPION"}:
+                    status = bridge_receipt["bananloop_status"]
                 elif bridge_receipt.get("bananloop_status") == "RUN_FAILED":
                     status = "OPTIMIZATION_FAILED"
         else:
@@ -1692,6 +1722,7 @@ class BananLoopFullBackend:
         child_root = state_dir / "campaigns" / child_id
         completed_child = bool(bridge_receipt and bridge_receipt.get("bananloop_status") == "ALL_NODES_COMPLETE")
         champion = None
+        champion_diagnostics: dict[str, Any] = {}
         if completed_child:
             from bananloop.v2_optimization_cli import _saved_completed_run_report
 
@@ -1702,11 +1733,42 @@ class BananLoopFullBackend:
             if (not isinstance(champion, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", champion)
                     or report["baseline_candidate_delta"]["candidate_snapshot_id"] != champion):
                 return terminal("VERIFIED_CANDIDATE_ID_INVALID", harbor_bridge_receipt=bridge_receipt)
-        elif status in {"TIMED_OUT", "OPTIMIZATION_FAILED", "INTERRUPTED_UNKNOWN", "LIMIT_EXHAUSTED"}:
-            champion = _verified_champion_from_state(child_root, child_id)
+        elif status == "DEADLINE_FINALIZED":
+            try:
+                report = read_json(child_root / "reports" / f"v2-optimization-{child_id}.json")
+                selected = report["champion"]
+                champion = selected["snapshot_id"]
+                if (report.get("status") != "DEADLINE_FINALIZED"
+                        or report.get("campaign_id") != child_id
+                        or report["baseline_candidate_delta"]["status"] != "VERIFIED"
+                        or report["baseline_candidate_delta"]["candidate_snapshot_id"] != champion
+                        or report["baseline_candidate_delta"]["tier"] != "dev"):
+                    raise ValueError("deadline-selected report scope mismatch")
+                database = child_root / "campaign.sqlite3"
+                if not database.is_file() or database.is_symlink():
+                    raise ValueError("deadline campaign database missing or unsafe")
+                with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
+                    row = conn.execute(
+                        "SELECT h.promoted_snapshot_id FROM champion_promotion_history h "
+                        "JOIN evaluator_integration_receipts v ON v.receipt_digest=h.integration_receipt_digest "
+                        "AND v.campaign_id=h.campaign_id AND v.candidate_snapshot_id=h.promoted_snapshot_id "
+                        "AND v.decision='PASS' WHERE h.campaign_id=? AND h.revision=? "
+                        "AND h.integration_receipt_digest=?",
+                        (child_id, selected["revision"], selected["integration_receipt_digest"]),
+                    ).fetchone()
+                    if not row or row[0] != champion:
+                        raise ValueError("deadline selection lacks durable promotion")
+                champion_diagnostics.update(lookup="BEST_VERIFIED_PROMOTION_FOUND",
+                                            selected_revision=selected["revision"])
+            except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
+                return terminal("VERIFIED_CANDIDATE_REPORT_MISSING", harbor_bridge_receipt=bridge_receipt)
+        elif status != "COMPLETED":
+            champion = _verified_champion_from_state(child_root, child_id,
+                                                      diagnostics=champion_diagnostics)
         if isinstance(champion, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", champion):
             key = hashlib.sha256(champion.encode("ascii")).hexdigest()[:16]
             snapshot = child_root / "s" / child_id / key
+            champion_diagnostics.update(snapshot_id=champion, snapshot_path=str(snapshot))
             try:
                 if (snapshot.is_symlink() or not snapshot.is_dir()
                         or child_root.is_symlink()
@@ -1719,19 +1781,53 @@ class BananLoopFullBackend:
                 if revision != champion:
                     raise ValueError("verified snapshot HEAD differs from the recorded champion")
                 if subprocess.check_output(
-                    ["git", "-C", str(snapshot), "status", "--porcelain", "--untracked-files=all"],
+                    ["git", "-C", str(snapshot), "status", "--porcelain", "--untracked-files=no"],
                     stderr=subprocess.PIPE, timeout=15,
                 ).strip():
-                    raise ValueError("verified snapshot has uncommitted or untracked files")
-            except (OSError, ValueError, subprocess.SubprocessError):
-                if completed_child:
-                    return terminal("VERIFIED_CANDIDATE_SNAPSHOT_INVALID", harbor_bridge_receipt=bridge_receipt)
-            else:
+                    raise ValueError("verified snapshot has uncommitted tracked changes")
+                untracked = bool(subprocess.check_output(
+                    ["git", "-C", str(snapshot), "status", "--porcelain", "--untracked-files=all"],
+                    stderr=subprocess.PIPE, timeout=15,
+                ).strip())
+                champion_diagnostics["untracked_files_present"] = untracked
+                if untracked:
+                    # Evaluator-generated files must not contaminate the export.
+                    # Materialize only the exact, verified committed tree.
+                    with tempfile.TemporaryDirectory(prefix="verified-export-", dir=arm_root) as tmp:
+                        export = Path(tmp) / "snapshot"
+                        subprocess.run(["git", "clone", "--no-hardlinks", "--no-checkout",
+                                        "--quiet", str(snapshot), str(export)], check=True,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+                        subprocess.run(["git", "-C", str(export), "checkout", "--detach",
+                                        "--quiet", champion], check=True,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+                        exported = subprocess.check_output(
+                            ["git", "-C", str(export), "rev-parse", "--verify", "HEAD^{commit}"],
+                            stderr=subprocess.PIPE, text=True, timeout=15).strip()
+                        if exported != champion:
+                            raise ValueError("export HEAD differs from verified champion")
+                        final_artifact = CodexDirectBackend.snapshot_final_artifacts(
+                            task=task, repo=export, arm_root=arm_root,
+                        )
+                else:
+                    final_artifact = CodexDirectBackend.snapshot_final_artifacts(
+                        task=task, repo=snapshot, arm_root=arm_root,
+                    )
                 artifact_repo = snapshot
-        final_artifact = CodexDirectBackend.snapshot_final_artifacts(
-            task=task, repo=artifact_repo, arm_root=arm_root,
-        )
-        if status == "COMPLETED" and final_artifact["status"] != "CAPTURED":
+                champion_diagnostics["export"] = final_artifact.get("status", "UNKNOWN")
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                champion_diagnostics.update(export="FAILED", error_type=type(exc).__name__,
+                                            error_detail=str(exc) if type(exc) is ValueError else None)
+                if completed_child or status == "DEADLINE_FINALIZED":
+                    return terminal("VERIFIED_CANDIDATE_SNAPSHOT_INVALID",
+                                    harbor_bridge_receipt=bridge_receipt,
+                                    champion_recovery=champion_diagnostics)
+                final_artifact = {"status": "UNKNOWN", "files": []}
+        else:
+            final_artifact = CodexDirectBackend.snapshot_final_artifacts(
+                task=task, repo=artifact_repo, arm_root=arm_root,
+            )
+        if status in {"COMPLETED", "DEADLINE_FINALIZED"} and final_artifact["status"] != "CAPTURED":
             status = "FAILED"
         return {"status": status, "exploration_status": explore_report.get("status"),
                 "model_turns_observed": observed_calls + optimization_calls,
@@ -1745,7 +1841,11 @@ class BananLoopFullBackend:
                     "bananloop": hashlib.sha256(bl_config_path.read_bytes()).hexdigest(),
                     "harbor": hashlib.sha256(harbor_config_path.read_bytes()).hexdigest(),
                 }, "final_artifact": final_artifact,
-                "final_artifact_source": "VERIFIED_CHAMPION" if artifact_repo != repo else "BASELINE",
+                "final_artifact_source": (
+                    "VERIFIED_CHAMPION" if artifact_repo != repo and final_artifact.get("status") == "CAPTURED"
+                    else "UNKNOWN" if champion is not None else "BASELINE"
+                ),
+                "champion_recovery": champion_diagnostics,
                 "harbor_bridge_receipt": bridge_receipt}
 
 

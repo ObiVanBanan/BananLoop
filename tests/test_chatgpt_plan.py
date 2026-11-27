@@ -471,7 +471,6 @@ def test_integration_verifier_siwc_receives_only_core_summary(tmp_path):
     auth, _ = _auth(tmp_path)
     _connect(auth)
     output = {
-        "candidate_snapshot_id": "a" * 40, "protocol_digest": "b" *  64,
         "decision": "FAIL", "checks": ["candidate_identity"],
         "diagnostics": ["Core evidence reports a failed check"],
     }
@@ -493,6 +492,11 @@ def test_integration_verifier_siwc_receives_only_core_summary(tmp_path):
         model_version="pin-v1", prompt_digest="3" * 64, max_model_tokens=100,
     )
     assert result["decision"] == "FAIL"
+    assert result["candidate_snapshot_id"] == request["candidate_snapshot_id"]
+    assert result["protocol_digest"] == request["protocol_digest"]
+    schema = conn.sent[0][2]["text"]["format"]["schema"]
+    assert set(schema["properties"]) == {"decision", "checks", "diagnostics"}
+    assert "candidate_snapshot_id" not in verifier.last_response
     user_input = json.loads(conn.sent[0][2]["input"][1]["content"])
     assert user_input["protocol"] == "v2-integration-verifier-one-shot-v1"
     assert user_input["role_context"] == request["role_context"]

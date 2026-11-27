@@ -32,6 +32,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -U pip
       - run: python -m pip install -e ".[test]"
+      - name: Run Ruff
+        run: python -m ruff check .
       - name: Prepare private Windows pytest root
         if: matrix.os == 'windows-latest'
         shell: pwsh
