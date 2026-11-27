@@ -23,8 +23,11 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    import numpy as np
 
 TASK_ID = "carps-star-discrepancy-subset-select"
 TASK_VERSION = "1.1.0"

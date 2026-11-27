@@ -20,7 +20,7 @@ import sqlite3
 import stat
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Literal
 
 from cryptography.hazmat.primitives import serialization

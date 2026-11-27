@@ -251,6 +251,42 @@ def test_final_optimization_report_resolves_parent_from_custom_registry_root(tmp
         queue.close()
 
 
+def test_deadline_finalization_stops_before_dispatching_another_step():
+    from types import SimpleNamespace
+
+    from bananloop.v2_optimization_runtime import V2OptimizationRuntime
+
+    runtime = object.__new__(V2OptimizationRuntime)
+    runtime.campaign_id = "campaign-deadline"
+    runtime.plan = lambda: SimpleNamespace(
+        candidates=[{"node_id": "next-optimization"}],
+        reason="READY",
+        graph_revision=7,
+    )
+    runtime.graph = SimpleNamespace(
+        campaign_spec=lambda: SimpleNamespace(benchmark_integration_tier="dev"),
+    )
+    stopped = []
+    runtime.stop = lambda *, reason: stopped.append(reason)
+    runtime.run_one = lambda **_kwargs: (_ for _ in ()).throw(
+        AssertionError("deadline reserve must prevent another dispatched step")
+    )
+    runtime._finish_campaign_run = lambda result: result
+
+    result = runtime.run_campaign(
+        visible_paths=["src"],
+        benchmark_time_only=True,
+        deadline_stop_requested=lambda: True,
+    )
+
+    assert result["status"] == "DEADLINE_FINALIZED"
+    assert result["campaign_id"] == "campaign-deadline"
+    assert result["steps_this_call"] == 0
+    assert result["steps"] == []
+    assert result["graph_revision"] == 7
+    assert stopped == ["benchmark deadline finalization reserve"]
+
+
 def test_optimizer_model_bridge_exposes_only_allowlisted_text_and_gateway_writes():
     class Gateway:
         def __init__(self):

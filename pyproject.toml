@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 dependencies = ["pydantic>=2.7", "PyJWT[crypto]>=2.10"]
 
 [project.optional-dependencies]
-test = ["pytest>=8", "cryptography>=42"]
+test = ["pytest>=8", "cryptography>=42", "ruff>=0.14,<1"]
 benchmark = ["cryptography>=42"]
 mutation = ["pytest>=8", "pytest-gremlins==1.13.1"]
 
@@ -23,6 +23,14 @@ bananloop-chatgpt = "bananloop.chatgpt_plan:main"
 addopts = "-q"
 testpaths = ["tests", "spikes/rpdi00"]
 pythonpath = ["src", "."]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+include = ["*.py", "**/*.py"]
+
+[tool.ruff.lint]
+select = ["F821", "F822", "F823"]
 
 [tool.pytest-gremlins]
 # Initial, opt-in scope: evaluation and promotion decisions.
